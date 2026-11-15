@@ -23,14 +23,17 @@ function fixture() {
 }
 const model = (run: ModelConsolidationOptions["run"]): ModelConsolidationOptions => ({ enabled: true, run });
 function pending(f: ReturnType<typeof fixture>) { return f.candidates.list({ project: f.project, status: "all" }); }
-test("default disabled performs no home, guard, quota or callback work; explicit agent/bad model never calls", async () => {
+test("default disabled performs no home, guard, quota or callback work; agent runs (#431); unknown actor or bad model never calls", async () => {
   let work = 0;
   const inaccessible = new Proxy({}, { get() { work++; throw Error("must not read"); } });
   const disabled = await proposeModelConsolidations(inaccessible as MemoryStore, inaccessible as CandidateStore, [], undefined, inaccessible as ModelConsolidationGuard); expect(disabled).toMatchObject({ state: "disabled", calls: 0, ids: [] }); expect(work).toBe(0);
   const f = fixture(), row = f.note("public model source"); let calls = 0, reserves = 0; const reserve = f.candidates.reserveConsolidationModel.bind(f.candidates); f.candidates.reserveConsolidationModel = bytes => { reserves++; return reserve(bytes); };
-  await expect(proposeModelConsolidations(f.store, f.candidates, [row], model(async () => { calls++; return null; }), { ...f.guard, actor: "agent" })).rejects.toThrow("person");
+  // #431 AC4: an agent-marked session runs model consolidation through the same guard; an unknown actor still refuses before any call.
+  expect((await proposeModelConsolidations(f.store, f.candidates, [row], model(async () => { calls++; return null; }), { ...f.guard, actor: "agent" })).state).toBe("known");
+  expect(calls).toBe(1); calls = 0;
+  await expect(proposeModelConsolidations(f.store, f.candidates, [row], model(async () => { calls++; return null; }), { ...f.guard, actor: "robot" as never })).rejects.toThrow("person or an agent-marked session");
   for (const invalid of [{ enabled: false, run: async () => { calls++; return null; } }, { enabled: true }]) expect((await proposeModelConsolidations(f.store, f.candidates, [row], invalid as ModelConsolidationOptions, f.guard)).state).toBe("unknown");
-  expect(calls).toBe(0); expect(reserves).toBe(0);
+  expect(calls).toBe(0); expect(reserves).toBe(1);
 });
 test("enabled model uses at most two batches of eight whole source quotes and writes only unacceptably marked candidates", async () => {
   const f = fixture(), rows = Array.from({ length: 17 }, (_, i) => f.note(`public source ${i}`)), before = f.bytes(), inputs: number[] = [];

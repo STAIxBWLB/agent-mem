@@ -171,7 +171,8 @@ test("AC4: review list stamps nothing, with or without a terminal and with or wi
     await cli(r, [...args], { ...extra });
     expect(shownAt(r, a), args.join(" ")).toBeNull(); expect(shownAt(r, b)).toBeNull();
   }
-  await expect(cli(r, ["review", "list", "--json"], { env: { CLAUDECODE: "fixture" }, stdinTTY: false })).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
+  // #431: an agent-marked review list runs like a person's and, like it, stamps nothing.
+  expect(await cli(r, ["review", "list", "--json"], { env: { CLAUDECODE: "fixture" }, stdinTTY: false })).toContain(a); expect(shownAt(r, a)).toBeNull();
   expect(shownAt(r, a)).toBeNull(); expect(shownAt(r, b)).toBeNull();
   // `list </dev/null` as a script or cron runs it: the 7-day clock must not start with nobody reading.
   const real = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/amem.js"), "review", "list"], { cwd: r.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: r.memory }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -296,12 +297,13 @@ test("review walk: an accept the policy refuses is reported and leaves the candi
   expect(after.get(bad, r.project)!.status).toBe("pending"); expect(after.get(good, r.project)!.status).toBe("pending");
 });
 
-test("review walk needs both terminals when unmarked and remains refused to marked agents; bare review remains the person list", async () => {
+test("review walk needs both terminals for everyone, marked or not (#431); bare review remains the person list", async () => {
   const r = rig();
   expect(await cli(r, ["review", "walk"], { stdinTTY: true, stdoutTTY: true })).toBe("no candidates pending");
   await expect(cli(r, ["review", "walk"], { stdinTTY: false, stdoutTTY: true })).rejects.toThrow("review walk requires a terminal on stdin");
   await expect(cli(r, ["review", "walk"], { stdoutTTY: false })).rejects.toThrow("stdout must be a terminal");
-  await expect(cli(r, ["review", "walk"], { env: { CLAUDECODE: "1" }, stdinTTY: true, stdoutTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  expect(await cli(r, ["review", "walk"], { env: { CLAUDECODE: "1" }, stdinTTY: true, stdoutTTY: true })).toBe("no candidates pending");
+  await expect(cli(r, ["review", "walk"], { env: { CLAUDECODE: "1" }, stdinTTY: false, stdoutTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   const a = r.put("listed not walked"); r.candidates.close();
   expect(await cli(r, ["review"], { stdinTTY: false })).toContain(a);                  // scripts keep the list
   expect(await cli(r, ["review", "--json"])).toContain(a);
@@ -476,4 +478,26 @@ test("the stamp comments and docs no longer claim that review list stamps (revie
     expect(text, file).not.toContain("only `amem review list` and `review walk`");
     expect(text, file).not.toMatch(/the brief line, `amem review list` or/);
   }
+});
+
+// ---- #431 AC5: non-interactive review for agent-marked sessions ----
+
+test("#431: review decide previews and stamps shown, then applies exactly the named decision only with --confirm", async () => {
+  const r = rig(), agent = { env: { CLAUDECODE: "1" }, stdinTTY: false, stdoutTTY: false };
+  const a = r.put("decide accept body"), b = r.put("decide reject body"), c = r.put("decide defer body"); r.candidates.close();
+  const preview = JSON.parse(await cli(r, ["review", "decide", a, "accept", "--json"], agent));
+  expect(preview).toMatchObject({ candidateId: a, decision: "accept", next: `amem review decide ${a} accept --confirm` }); expect(preview.body).toContain("decide accept body");
+  expect(shownAt(r, a)).not.toBeNull();
+  const check = () => new CandidateStore({ memoryDir: r.memory });
+  let store = check(); try { expect(store.get(a, r.project)!.status).toBe("pending"); } finally { store.close(); }
+  const accepted = JSON.parse(await cli(r, ["review", "decide", a, "accept", "--confirm", "--json"], agent));
+  expect(accepted.noteId).toMatch(/^[a-f0-9]{32}$/);
+  const notes = new MemoryStore({ memoryDir: r.memory, screen: () => "keep" });
+  try { expect(notes.get(accepted.noteId, r.project)).toMatchObject({ peer: "claude", source: "person" }); } finally { notes.close(); }
+  expect(await cli(r, ["review", "decide", b, "reject", "--confirm"], agent)).toBe(`rejected candidate ${b}`);
+  expect(await cli(r, ["review", "decide", c, "defer", "--confirm"], agent)).toContain("stays pending");
+  store = check();
+  try { expect(store.get(a, r.project)!.status).toBe("accepted"); expect(store.get(b, r.project)!.status).toBe("rejected"); expect(store.get(c, r.project)!.status).toBe("pending"); } finally { store.close(); }
+  await expect(cli(r, ["review", "decide", b, "accept", "--confirm"], agent)).rejects.toThrow();
+  await expect(cli(r, ["review", "decide", c, "maybe"], agent)).rejects.toThrow();
 });

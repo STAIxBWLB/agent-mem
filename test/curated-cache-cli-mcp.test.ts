@@ -49,25 +49,13 @@ test("unmarked person CLI brief builds the quiet project's curated cache", async
   expect(f.cache()?.curated?.binding).toBeTruthy();
 });
 
-test("CLAUDECODE-marked CLI brief routes through MCP without updating a curated cache", async () => {
-  const f = fixture(); prepareQuietCache(f);
-  const before = readFileSync(f.file);
-  const mcp = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project });
-  try {
-    const expected = await mcp.tools.amem_brief({ intent: "quiet context" }) as QuietBrief;
-    const output = await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], {
-      cwd: f.root, env: { CLAUDECODE: "" }, stdinTTY: false,
-    }));
-    const result = JSON.parse(output) as QuietBrief;
-    expect(result).toEqual(expected);
-    expect(result).toMatchObject({ brief: "", bytes: 0, state: "known" });
-    expect(readFileSync(f.file)).toEqual(before);
-    rmSync(f.file);
-    await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], {
-      cwd: f.root, env: { CLAUDECODE: "" }, stdinTTY: false,
-    }));
-    expect(existsSync(f.file)).toBe(false);
-  } finally { mcp.close(); }
+test("#431 AC2: a CLAUDECODE-marked CLI brief prepares the curated cache like a person run", async () => {
+  const f = fixture();
+  expect(existsSync(f.file)).toBe(false);
+  const output = await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], { cwd: f.root, env: { CLAUDECODE: "" }, stdinTTY: false }));
+  expect(JSON.parse(output) as QuietBrief).toMatchObject({ brief: "", bytes: 0, state: "known" });
+  expect(f.cache()).toMatchObject({ project: f.project, section: "curated", rows: [] });
+  expect(f.cache()?.curated?.binding).toBeTruthy();
 });
 
 test("direct MCP amem_brief neither creates a missing cache nor overwrites an existing one", async () => {

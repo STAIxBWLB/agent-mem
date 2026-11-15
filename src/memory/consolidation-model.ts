@@ -33,7 +33,7 @@ async function invoke(model: ModelConsolidationOptions, input: ModelConsolidatio
 export async function proposeModelConsolidations(store: MemoryStore, candidates: CandidateStore, rows: readonly View[], model: ModelConsolidationOptions | undefined, guard: ModelConsolidationGuard): Promise<ModelConsolidationReport> {
   const report: ModelConsolidationReport = { state: model === undefined ? "disabled" : "known", ids: [], calls: 0, nonAnswers: 0, rejected: 0, oversized: 0, limited: false, timedOut: false, truncated: false };
   if (model === undefined) return report;
-  if (guard.actor !== "person") throw Error("model consolidation requires person intent");
+  if (guard.actor !== "person" && guard.actor !== "agent") throw Error("model consolidation requires a person or an agent-marked session");
   try {
     if (!model || model.enabled !== true || typeof model.run !== "function" || !guard.project.trim() || guard.project.length > 400) throw Error("model consolidation unavailable");
     guard.check();
@@ -42,7 +42,7 @@ export async function proposeModelConsolidations(store: MemoryStore, candidates:
     const project = guard.project, sourceCurrent = store.beginRecallRead(), sources: ModelConsolidationNote[] = [], seen = new Set<string>();
     const check = (batch: readonly ModelConsolidationNote[]) => {
       guard.check(); sourceCurrent();
-      if (guard.actor !== "person" || guard.project !== project) throw Error("model consolidation context changed");
+      if (guard.project !== project) throw Error("model consolidation context changed");
       const placements = batch.length ? store.entryPlacements(batch.map(row => row.id), project) : new Map<string, "local" | "synced">();
       store.withDeferredPromotions(() => {
         for (const row of batch) {

@@ -53,10 +53,11 @@ test("shared parser/help/completions expose only migrate writer roots and forwar
   for(const shell of ["zsh","bash","fish"])expect(completionScript(shell)).toContain("--sync-placement");
 });
 
-for(const mode of ["--dry-run","--apply","--resume","--abandon"])test("agent activation refuses before home access: "+mode,()=>{
+// #431 AC3: an agent-marked session reaches the same activation steps a person does; a missing home still fails before anything is created.
+for(const mode of ["--dry-run","--apply","--resume","--abandon"])test("agent activation runs the person path and creates no home: "+mode,()=>{
   const f=hookFixture();cleanup.push(f.close);expect(existsSync(f.base)).toBe(false);
-  const result=run(f,["migrate","--sync-placement",mode,"--json"],true);
-  expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("requires a person");expect(existsSync(f.base)).toBe(false);
+  const agent=run(f,["migrate","--sync-placement",mode,"--json"],true),person=run(f,["migrate","--sync-placement",mode,"--json"]);
+  expect(agent.stderr.toString()).not.toContain("requires a person");expect(agent.exitCode).toBe(person.exitCode);expect(existsSync(f.base)).toBe(false);
 });
 
 for(const conflict of ["--shards","--public-prune-view","--deactivate","--generation"])test("migration families refuse before home access: "+conflict,()=>{
@@ -116,17 +117,16 @@ test("missing prerequisites/floor and missing explicit CLI root refuse with next
   result=run(f,["migrate","--sync-placement","--apply","--json"]);expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("explicit complete --writer-root");
 });
 
-test("only a person can abandon a changed pre-marker attempt and reopen the ordinary home",async()=>{
+test("#431: an agent-marked session abandons a changed pre-marker attempt like a person, and reopens the ordinary home",async()=>{
   const f=await placementActivationFixture();cleanup.push(f.close);
   const options=f.options("apply");options.checkpoint=stage=>{if(stage==="after-root-map")throw Error("interrupted initial apply");};
   await expect(activateSyncPlacement(options)).rejects.toThrow();
   writeFileSync(join(f.base,"amem.config.json"),JSON.stringify({piiPatterns:["NEVER_PUBLIC_","new restriction"]}),{mode:0o600});
   const resumed=run(f,["migrate","--sync-placement","--resume","--json"]);expect(resumed.exitCode).not.toBe(0);expect(resumed.stderr.toString()).toContain("frozen policy input");
-  const before=inspectionFilesystemSnapshot(f.base),agent=run(f,["migrate","--sync-placement","--abandon","--json"],true);
-  expect(agent.exitCode).not.toBe(0);expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
-  expect(success(run(f,["migrate","--sync-placement","--abandon","--json"]))).toMatchObject({active:false,abandoned:true});
+  expect(success(run(f,["migrate","--sync-placement","--abandon","--json"],true))).toMatchObject({active:false,abandoned:true});
   expect(run(f,["list","--json"]).exitCode).toBe(0);
-  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  expect(success(run(f,["migrate","--sync-placement","--dry-run","--writer-root",activationOwnRoot,"--json"],true)).active).toBe(false);
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"],true)).active).toBe(true);
   const active=inspectionFilesystemSnapshot(f.base),refused=run(f,["migrate","--sync-placement","--abandon","--json"]);
   expect(refused.exitCode).not.toBe(0);expect(inspectionFilesystemSnapshot(f.base)).toEqual(active);
 },60_000);

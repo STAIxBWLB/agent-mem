@@ -109,6 +109,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     } },
     accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Require the selected candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
     reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
+    decide: { description: "Non-interactive review of one candidate: preview it (stamped shown) without --confirm; accept, reject or defer it with --confirm", options: { ...json, ...policy, "--confirm": flag("Apply the previewed decision") },
+      args: [{ name: "full-candidate-id" }, { name: "decision", values: ["accept", "reject", "defer"] }], mutates: "confirm", policyFree: true },
     walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } } },
   } },
   decay: { description: "Preview old live long-term notes unprotected by open goals; apply only with --apply --confirm", mutates: "apply", options: {
@@ -123,6 +125,10 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
   } },
   status: { description: "Report shard migration and pending old-layout appends", options: json },
+  formats: { description: "Format floors in formats.json", commands: {
+    raise: { description: "Preview the record and the writer inventory; append it to formats.json only with --confirm, refused while any known writer is below the floor", mutates: "confirm",
+      options: { ...json, "--confirm": flag("Append the previewed record") }, args: [{ name: "surface", values: ["home", "curated", "capture", "hook-spool", "candidates", "work-lists", "sync"] }, { name: "min-reader" }] },
+  } },
   doctor: { description: "One read-only report (F15): duplicates and stale notes, pending candidates, capture freshness per CLI, the brief's token cost, index equals rebuild, reader leases, the policy in effect, ingest and sync cadence", options: json },
   prune: { description: "Plan or apply exact-entry durable expiry in a generation", mutates: true, options: {
     ...json, "--cutoff": text("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),

@@ -85,6 +85,8 @@ export interface CliContext {
   edit?: (initial: string) => string | Promise<string>;
   /** Where `sync --progress` writes (default process.stderr) and whether that is a terminal; fixtures stand in for both. */
   stderr?: (text: string) => void; stderrTTY?: boolean;
+  /** Test seams for `amem formats raise`: the process table (`pid args` lines; default `ps -axo pid=,args=`) and the clock that dates the record. */
+  processTable?: () => string; now?: () => number; embeddedAmem?: (dir: string) => boolean;
   /** Test seam: the `sync --if-due` deadline in milliseconds (the CLI always uses 30 seconds). */
   syncDeadlineMs?: number;
   /** Called with the signal name when a person's signal ended `sync --if-due`, after its handlers are removed. `main` re-raises it once the output is written; absent, nothing happens. */
@@ -389,7 +391,6 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const modes = ["--dry-run","--apply","--resume","--abandon","--deactivate"].filter(key=>options[key]===true);
     if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
       throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
-    if (actor === "agent") throw new AgentUsageError("Sync placement activation requires a person; ask the person to run amem migrate --sync-placement --dry-run and review the home-wide forward-only transition.");
   } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined)) {
     throw new AgentUsageError("--writer-root and --abandon apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
@@ -483,7 +484,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const result = await buildIntentBrief(createIntentBriefSource(store, project),
         { project, cwd: root, repo: project, intent, paths, symbols, maxBytes, policy, policyVersion, assertCurrent, now: () => store.readNow(), stale: createRecallStalenessProbe({ cwd: root, rootConfirmed, policy }) });
       assertCurrent(); outputReady(result.items.map(view => view.id), project);
-      if (actor === "person") store.prepareCuratedBriefs([project]);
+      store.prepareCuratedBriefs([project]);
       return options["--json"] ? JSON.stringify({ brief: result.text, bytes: result.bytes, truncated: result.truncated, state: result.state }, null, 2) : result.text;
     } finally { store.close(); }
   }
@@ -496,7 +497,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const { activateSyncPlacement } = await import("./memory/sync-placement-activation.ts");
       const result = await activateSyncPlacement({ memoryDir:memoryHome(),mode:options["--abandon"]?"abandon":mode as "dry-run"|"apply"|"resume",
         writerRoots:repeated(argv,"--writer-root"),ownRoot:fileURLToPath(new URL("..",import.meta.url)),
-        authorize:()=>cliAttribution()?.actor==="person" });
+        authorize:()=>true });
       if (options["--json"] === true) return JSON.stringify(result,null,2);
       // Metadata only: the source reader and locator are never serialized into this receipt.
       return `sync placement: ${result.mode}; ${result.active?"active":"inactive"}; home-wide, forward-only (no deactivate)\n${JSON.stringify(result,null,2)}`;
@@ -534,6 +535,42 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
       ...shardMigrationStatus(where.home) };
     return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context));
+  }
+  if (parsed.path[0] === "formats" && parsed.path[1] === "raise") {
+    const { planFormatRaise, applyFormatRaise, formatRaiseRefusal, installVersion, runningAmemRoots } = await import("./memory/formats-raise.ts");
+    const { readSetupWriterRoots } = await import("./setup.ts"), { readEffectiveSyncPlacementWriterRoots } = await import("./memory/sync-placement-effective-writers.ts");
+    const [surface, minReader] = parsed.positionals;
+    if (!surface || !minReader || parsed.positionals.length !== 2) throw new Error("usage: amem formats raise <surface> <min-reader> [--confirm] [--json]");
+    const home = realPath(memoryHome()), own = realPath(fileURLToPath(new URL("..", import.meta.url)));
+    const inventory = (): import("./memory/formats-raise.ts").FormatWriterInventory => {
+      const writers: import("./memory/formats-raise.ts").FormatWriter[] = [], incomplete: string[] = [], seen = new Set<string>();
+      const add = (source: "setup" | "sync-placement" | "running" | "library-host" | "self", root: string, pid?: number, host?: string) => {
+        let canonical = root; try { canonical = realPath(root); } catch { /* a missing root reads as an unknown version */ }
+        const key = `${source}\0${canonical}\0${pid ?? ""}`; if (seen.has(key)) return; seen.add(key);
+        writers.push({ source, root: canonical, version: installVersion(canonical), ...(pid !== undefined ? { pid } : {}), ...(host !== undefined ? { host } : {}) });
+      };
+      add("self", own);
+      try { for (const root of readSetupWriterRoots(home)) add("setup", root); } catch (error) { incomplete.push(`setup receipts: ${(error as Error).message.split("\n")[0]}`); }
+      if ((readPlacementRuntimeMarkers(home).profile as { publicationFormat?: string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
+        try { for (const root of readEffectiveSyncPlacementWriterRoots(home)) add("sync-placement", root); } catch { incomplete.push("sync-placement writer roots unreadable"); }
+      }
+      try {
+        const table = () => (context.processTable ?? (() => require("node:child_process").execFileSync("ps", ["-axo", "pid=,args="], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } }) as string))();
+        for (const { pid, root, host } of runningAmemRoots(table, context.embeddedAmem)) add(host ? "library-host" : "running", root, pid, host);
+      } catch { incomplete.push("running processes could not be listed"); }
+      return { writers: writers.sort((a, b) => a.source.localeCompare(b.source) || a.root.localeCompare(b.root) || (a.pid ?? 0) - (b.pid ?? 0)), incomplete };
+    };
+    const now = context.now ? () => new Date(context.now!()) : undefined;
+    const plan = planFormatRaise(home, surface, minReader, inventory(), now);
+    if (options["--confirm"] !== true) {
+      const refusal = formatRaiseRefusal(plan);
+      if (options["--json"] === true) return JSON.stringify({ ...plan, refusal: refusal ?? null }, null, 2);
+      return [`preview: append ${JSON.stringify(plan.record)} to ${plan.file}`, `existing floors: ${plan.existing.length ? plan.existing.map(floor => `${floor.surface}>=${floor.minReader}`).join(", ") : "none"}`,
+        `writers checked (${plan.writers.length}):`, ...plan.writers.map(writer => `  ${writer.source.padEnd(14)} ${writer.version ?? "unknown"}  ${writer.root}${writer.pid ? ` (pid ${writer.pid}${writer.host ? `, ${writer.host}` : ""})` : ""}`),
+        refusal ? `refused: ${refusal}` : `ready: rerun with --confirm to append the record`].join("\n");
+    }
+    const record = applyFormatRaise(plan, () => planFormatRaise(home, surface, minReader, inventory(), now));
+    return options["--json"] === true ? JSON.stringify({ appended: record, file: plan.file }, null, 2) : `appended ${JSON.stringify(record)} to ${plan.file}`;
   }
   if (sub === "doctor") {
     // F15: one read-only report; see src/memory/doctor.ts for exactly what "read-only" covers.
@@ -625,10 +662,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if (review) {
     const id = parsed.positionals[0];
-    if (sub !== "list" && sub !== "walk" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error("review accept/reject requires a full 64-character candidate id");
+    if (sub !== "list" && sub !== "walk" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error(`review ${sub} requires a full 64-character candidate id`);
     if (sub === "walk" && !(context.stdinTTY ?? process.stdin.isTTY)) throw Error("review walk requires a terminal on stdin; stdout must be a terminal too");
     if (sub === "walk" && context.write === undefined && !(context.stdoutTTY ?? process.stdout.isTTY)) throw new Error("review walk prints each candidate and asks about it, so stdout must be a terminal (not redirected to a file or a pipe)");
-    if (sub === "walk" && actor === "agent") throw Error("Memory operation unavailable or refused; no partial result is shown.");
     const project = boundProject(), aliases = aliasedKeys(memoryHome(), project), candidates = new CandidateStore(aliases.length ? { reconcile: { canonical: project, aliases } } : {});
     let overlapStore: MemoryStore | undefined;
     try {
@@ -658,6 +694,49 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const selected = candidates.get(id!, project);
         if (!selected || !candidatePermitted(selected)) throw Error("Memory operation unavailable or refused; no partial result is shown.");
       }
+      const body = (candidate: import("./memory/candidates.ts").Candidate): string => { const input = candidate.input;
+        if (input.kind === "promotion") {
+          const viewStore = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
+          try {
+            const target = viewStore.get(input.target.id, project);
+            administrative({ candidate, target });
+            return target && target.id === input.target.id && candidateTargetRevision(target) === input.target.revision
+              ? `promotion. Goal goal:${input.goalId}, mem:${target.id}. ${target.title ? `${target.title}: ` : ""}${target.text}`
+              : `promotion. Goal goal:${input.goalId}, target mem:${input.target.id} changed or is unavailable; reject or skip`;
+          } finally { viewStore.close(); }
+        }
+        if (input.kind === "model-answer") return `Model answer (not evidence; cannot accept, author an independent note with amem note add). ${input.text}`;
+        if (input.kind === "consolidation") return `${input.action}. Sources: ${input.targets.map(target => `mem:${target.id}`).join(", ")}. ${input.text}`;
+        return input.kind === "memory" ? `${input.title ? `${input.title}: ` : ""}${input.text}` : input.kind === "fail" ? `fail. Approach: ${input.approach} Symptom: ${input.symptom} Cause: ${input.cause} Retry when: ${input.retryWhen}`
+          : input.kind === "correction" ? `correction. ${input.proposedText} Reason: ${input.reason}` : `decay. ${input.reason}`; };
+      if (sub === "decide") {
+        // #431 AC5: what `review walk` gives a person, one candidate at a time and without a terminal. The preview prints the
+        // candidate and its overlaps and stamps it shown (the caller read it); --confirm then applies exactly the named decision.
+        const decision = parsed.positionals[1];
+        if (decision !== "accept" && decision !== "reject" && decision !== "defer") throw new Error("usage: amem review decide <full-candidate-id> accept|reject|defer [--confirm]");
+        const candidate = candidates.get(id!, project);
+        if (!candidate || !candidatePermitted(candidate)) throw new Error("candidate unavailable");
+        if (candidate.status !== "pending") throw new Error(`candidate is ${candidate.status}, not pending`);
+        if (decision === "accept" && candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; use `amem demote` or `amem forget` after review");
+        if (decision === "accept" && candidate.input.kind === "model-answer") throw new Error("model answers cannot be accepted; author an independent note with amem note add");
+        if (options["--confirm"] !== true) {
+          const shown = terminalSafe(body(candidate)), overlaps = await overlapsFor(candidate);
+          const preview = { candidateId: candidate.id, kind: candidate.input.kind, createdAt: candidate.createdAt, decision, body: shown,
+            overlaps: overlaps.map(overlap => ({ id: overlap.id, score: overlap.score, title: overlap.title ?? null })), next: `amem review decide ${candidate.id} ${decision} --confirm` };
+          administrative(preview);
+          markShown(realPath(candidates.dir), [project, ...aliases], Date.now(), [candidate.id]);
+          return options["--json"] ? JSON.stringify(preview, null, 2)
+            : [`${candidate.id}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${shown}`, ...preview.overlaps.map(overlap => `  overlap mem:${overlap.id} (${overlap.score.toFixed(3)}): ${terminalSafe(overlap.title ?? "untitled")}`),
+              `preview only: run ${preview.next} to ${decision} it`].join("\n");
+        }
+        if (decision === "defer") return options["--json"] ? JSON.stringify({ candidateId: candidate.id, status: "pending", decision }, null, 2) : `deferred candidate ${candidate.id}; it stays pending`;
+        if (decision === "reject") {
+          candidates.reject(candidate.id, { project, actor, verdict: "public" });
+          return options["--json"] ? JSON.stringify({ candidateId: candidate.id, status: "rejected" }, null, 2) : `rejected candidate ${candidate.id}`;
+        }
+        candidates.close(); overlapStore?.close(); overlapStore = undefined;
+        return runCli(["review", "accept", candidate.id, "--kind", candidate.input.kind, ...(options["--json"] === true ? ["--json"] : [])], context);
+      }
       if (sub === "walk") {
         // F7 / AC4: each candidate is stamped shown as it is put in front of the person, then accepted, edited (written as the person's own note and the candidate closed), rejected or skipped.
         // The candidate is WRITTEN to the terminal before the question, and stamped shown only after that write succeeded: a person who answers a/e/r must have seen what it is, and a Ctrl-C
@@ -672,21 +751,6 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (!rows.length) return "no candidates pending";
         const done = { accepted: 0, edited: 0, rejected: 0, skipped: 0, failed: 0 };
         const lines = { push: (...texts: string[]) => { for (const text of texts) write(text); return 0; } };
-        const body = (candidate: (typeof rows)[number]): string => { const input = candidate.input;
-          if (input.kind === "promotion") {
-            const viewStore = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
-            try {
-              const target = viewStore.get(input.target.id, project);
-              administrative({ candidate, target });
-              return target && target.id === input.target.id && candidateTargetRevision(target) === input.target.revision
-                ? `promotion. Goal goal:${input.goalId}, mem:${target.id}. ${target.title ? `${target.title}: ` : ""}${target.text}`
-                : `promotion. Goal goal:${input.goalId}, target mem:${input.target.id} changed or is unavailable; reject or skip`;
-            } finally { viewStore.close(); }
-          }
-          if (input.kind === "model-answer") return `Model answer (not evidence; cannot accept, author an independent note with amem note add). ${input.text}`;
-          if (input.kind === "consolidation") return `${input.action}. Sources: ${input.targets.map(target => `mem:${target.id}`).join(", ")}. ${input.text}`;
-          return input.kind === "memory" ? `${input.title ? `${input.title}: ` : ""}${input.text}` : input.kind === "fail" ? `fail. Approach: ${input.approach} Symptom: ${input.symptom} Cause: ${input.cause} Retry when: ${input.retryWhen}`
-            : input.kind === "correction" ? `correction. ${input.proposedText} Reason: ${input.reason}` : `decay. ${input.reason}`; };
         const step = async (args: string[]) => { try { await runCli(args, context); return true; } catch (error) { lines.push(`  ${(error as Error).message.split("\n")[0]}`); done.failed++; return false; } };
         for (const [index, candidate] of rows.entries()) {
           assertWalkCurrent();
@@ -1119,7 +1183,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       progress = await placementProgress(syncHome, typeof options["--progress"] === "string" ? options["--progress"] as string : "auto", context);
       placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));
     }
-    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: identity.actor === "person", rankedSearch: identity.actor === "person" && !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },
       // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.

@@ -16,7 +16,7 @@ afterEach(() => {
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), "amem-cli-")); dirs.push(dir); return dir; };
 const context = (cwd: string, stdinTTY = false) => ({ cwd, env: {}, stdinTTY });
 
-for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`${key} marks attribution; help, version and completion work, unsupported reads use the MCP refusal`, async () => {
+for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`${key} marks attribution; help, version and completion work, history and as-of reads run (#431)`, async () => {
   const home = join(temp(), "isolated-memory");
   for (const value of ["", "invalid marker", "1", "codex"]) {
     expect(agentMarked({ [key]: value })).toBe(true);
@@ -24,11 +24,10 @@ for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "
     for (const args of [["--help"], ["help"], ["--help", "--json"]]) expect(await runCli(args, agent)).toContain("usage: amem");
     for (const args of [["--version"], ["version"], ["--version", "--json"]]) expect(await runCli(args, agent)).toMatch(/^amem \d/);
     expect(await runCli(["completion", "bash"], agent)).toContain("_amem_candidates");
-    for (const args of [["list", "--history"], ["search", "fixture", "--as-of", "2026-01-01T00:00:00.000Z"], ["show", "a".repeat(32), "--history"]]) {
-      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(/^agent-marked (list|search|show) accepts (only|no options)/);
-    }
+    for (const args of [["list", "--history"], ["search", "fixture", "--as-of", "2026-01-01T00:00:00.000Z"]]) expect(await runCli(args, agent), args.join(" ")).toContain("retained memory as of");
+    // An unknown id keeps the uniform marked message: a marked failure never reveals the store's own error text.
+    await expect(runCli(["show", "a".repeat(32), "--history"], agent)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
   }
-  expect(existsSync(home)).toBe(false);
 });
 
 test("marked writes work without TTY and carry actor/peer attribution", async () => {
@@ -57,7 +56,7 @@ test("person reads are unscreened and flags keep their list default; promotion r
   expect(JSON.parse(await runCli(["goal", "list", "--json"], context(root)))).toHaveLength(1);
 });
 
-test("bin refuses Node before TS and agent unsupported reads use the fixed amem refusal", () => {
+test("bin refuses Node before TS and an agent history read runs (#431)", () => {
   const bin = join(import.meta.dir, "../bin/amem.js");
   const node = Bun.spawnSync(["node", bin, "--help"], { stdout: "pipe", stderr: "pipe" });
   expect(node.exitCode).toBe(1); expect(node.stderr.toString()).toContain("Bun >=1.4.2 is required");
@@ -67,7 +66,7 @@ test("bin refuses Node before TS and agent unsupported reads use the fixed amem 
   const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
   expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
   const child = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(child.exitCode).toBe(1); expect(child.stderr.toString()).toContain("agent-marked list accepts only --limit and --since.");
+  expect(child.exitCode).toBe(0); expect(child.stdout.toString()).toContain("retained memory as of");
 });
 
 test("help and version work without opening a store", async () => {

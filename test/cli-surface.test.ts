@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { agentMarked, runCli } from "../src/cli.ts";
@@ -68,12 +68,12 @@ for (const marker of MARKERS) test(`${marker}: --help, help, --version and versi
   } finally { r.restore(); }
 });
 
-for (const marker of MARKERS) test(`${marker}: unsupported historical reads use the generic MCP refusal; help flags stay static`, async () => {
+for (const marker of MARKERS) test(`${marker}: historical reads run like a person's (#431); help flags stay static`, async () => {
   const r = rig();
   try {
     const agent = { cwd: r.cwd, env: { [marker]: "x", AMEM_HOME: join(r.root, "agent-memory") }, stdinTTY: false, stdoutTTY: false };
-    for (const args of [["list", "--history"], ["search", "needle", "--as-of", "2026-01-01T00:00:00.000Z"], ["show", "a".repeat(32), "--history"]]) {
-      await expect(runCli(args, agent), args.join(" ")).rejects.toThrow(/^agent-marked (list|search|show) accepts (only|no options)/);
+    for (const args of [["list", "--history"], ["search", "needle", "--as-of", "2026-01-01T00:00:00.000Z"]]) {
+      const output = await runCli(args, agent); expect(output, args.join(" ")).toContain("retained memory as of"); expect(output).not.toMatch(HOST);
     }
     for (const args of [["--help", "--json"], ["list", "--help"], ["review", "--help"], ["--version", "--json"]]) {
       const output = await runCli(args, agent); expect(output).not.toMatch(HOST);
@@ -92,7 +92,7 @@ test("ingest keeps its capture-only agent-facing path", async () => {
   } finally { r.restore(); }
 });
 
-test("the bin prints help and version in an agent shell and uses the generic error for an unsupported read", () => {
+test("the bin prints help and version in an agent shell and runs a history read (#431)", () => {
   const bin = resolve(import.meta.dir, "../bin/amem.js");
   const home = mkdtempSync(join(tmpdir(), "amem-surface-bin-")); roots.push(home);
   const env = { PATH: process.env.PATH, HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_PEER_ID: "codex" };
@@ -100,6 +100,23 @@ test("the bin prints help and version in an agent shell and uses the generic err
   expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("usage: amem"); expect(help.stdout.toString()).not.toMatch(HOST);
   const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
   expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
-  const refused = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(refused.exitCode).toBe(1); expect(refused.stderr.toString()).toContain("agent-marked list accepts only --limit and --since."); expect(refused.stderr.toString()).not.toMatch(HOST);
+  const history = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
+  expect(history.exitCode).toBe(0); expect(history.stdout.toString()).toContain("retained memory as of"); expect(history.stdout.toString()).not.toMatch(HOST);
+});
+
+test("#431 AC8: an agent-marked history read keeps the configured policy screen; a person's read stays unscreened", async () => {
+  const r = rig();
+  try {
+    const home = join(r.root, "screen-memory"), person = { cwd: r.cwd, env: { AMEM_HOME: home }, stdinTTY: false, stdoutTTY: false };
+    const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = home;
+    try {
+      await runCli(["note", "add", "ordinary history row"], person);
+      await runCli(["note", "add", "NEVER_PUBLIC_HISTORY row"], person);
+      writeFileSync(join(home, "amem.config.json"), JSON.stringify({ piiPatterns: ["NEVER_PUBLIC_"] }), { mode: 0o600 });
+      const agent = { ...person, env: { ...person.env, CODEX_THREAD_ID: "x" } };
+      const agentOut = await runCli(["list", "--history"], agent), personOut = await runCli(["list", "--history"], person);
+      expect(agentOut).toContain("ordinary history row"); expect(agentOut).not.toContain("NEVER_PUBLIC_HISTORY");
+      expect(personOut).toContain("NEVER_PUBLIC_HISTORY");
+    } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+  } finally { r.restore(); }
 });

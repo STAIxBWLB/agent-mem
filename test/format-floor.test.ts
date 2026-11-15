@@ -70,7 +70,7 @@ test("a floor file this version cannot read refuses as format_floor_unreadable",
   }
 });
 
-test("no source file writes formats.json: raising a floor is a person's step", () => {
+test("only amem formats raise writes formats.json; every other reference only reads it (#431)", () => {
   const src = resolve(import.meta.dir, "../src"), offenders: string[] = [];
   const walk = (dir: string) => { for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const file = join(dir, entry.name);
@@ -78,8 +78,8 @@ test("no source file writes formats.json: raising a floor is a person's step", (
   } };
   walk(src);
   // These readers watch or require the person-authored floor; none raises it.
-  const readers = [join(src, "ui", "inbox.ts"), join(src, "sync-placement-writer-context.ts"), join(src, "memory", "sync-placement-prerequisites.ts")];
-  expect(offenders.sort()).toEqual(readers.sort());
+  const readers = [join(src, "ui", "inbox.ts"), join(src, "sync-placement-writer-context.ts"), join(src, "memory", "sync-placement-prerequisites.ts"), join(src, "commands-table.ts")];
+  expect(offenders.sort()).toEqual([...readers, join(src, "memory", "formats-raise.ts")].sort());
   for (const reader of readers) expect(readFileSync(reader, "utf8")).not.toMatch(/writeFile|writeSync|appendFile|renameSync|linkSync|truncate|chmod|mkdir|unlink|rmSync/);
   expect(readFileSync(join(src, "memory", "formats.ts"), "utf8")).not.toMatch(/writeFileSync|writeSync|appendFileSync|renameSync|linkSync/);
 });

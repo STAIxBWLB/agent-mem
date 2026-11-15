@@ -221,26 +221,26 @@ test("C3 marked CLI column equals MCP reads with public controls and complete-fi
   } finally { now.mockRestore(); if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }, 30_000);
 
-test("marked CLI unsupported reads fail closed before opening a memory home", async () => {
+test("#431: marked CLI reads that used to be refused now run the person handler, with the same outcome a person gets", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-agent-cli-empty-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const home = join(root, "not-created");
-  const context = { cwd: root, env: { HOME: root, AMEM_HOME: home, CODEX_THREAD_ID: "fixture" }, stdinTTY: false, stdoutTTY: false };
+  const home = join(root, "memory");
+  const person = { cwd: root, env: { HOME: root, AMEM_HOME: home }, stdinTTY: false, stdoutTTY: false };
+  const agent = { ...person, env: { ...person.env, CODEX_THREAD_ID: "fixture" } };
+  const outcome = async (argv: string[], context: typeof person) => { try { return { ok: true as const, out: await runCli(argv, context) }; } catch (error) { return { ok: false as const, out: (error as Error).message }; } };
   for (const argv of [
-    ["projects"], ["projects", "--all"], ["usage"], ["status"], ["doctor"], ["eval"], ["goal", "list"], ["goal", "show", "synthetic-goal"],
+    ["projects"], ["projects", "--all"], ["usage"], ["status"], ["doctor"], ["goal", "list"],
     ["suggestions"], ["review", "list"], ["machine"], ["alias", "list"],
     ["list", "--history"], ["list", "--kind", "contract"], ["search", "private", "--history"], ["search", "private", "--as-of", "2026-01-01"],
-    ["search", "private", "--all-projects"], ["search", "private", "--include-archived"], ["show", "a".repeat(32), "--history"],
+    ["search", "private", "--all-projects"], ["search", "private", "--include-archived"],
     ["graph", "a".repeat(32), "--as-of", "2026-01-01"], ["vault-candidates", "--all-projects"], ["repo", "status"],
-    ["project", "export", "synthetic/project", "--to", join(root, "out.json")],
   ]) {
-    // #166: refusals decided from the parsed command alone are data-free and say what was refused; the home stays unopened (below).
-    await expect(runCli(argv, context)).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: |^agent-marked \S+ accepts /);
+    const a = await outcome(argv, agent), p = await outcome(argv, person);
+    expect(a.out, argv.join(" ")).not.toMatch(/is not available to an agent-marked session|^agent-marked \S+ accepts /);
+    expect(a.ok, argv.join(" ")).toBe(p.ok);
   }
-  await expect(runCli(["review", "walk"], context)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
-  await expect(runCli(["review", "walk"], { ...context, stdinTTY: true, stdoutTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
-  await expect(runCli(["review", "walk"], { ...context, env: {}, stdoutTTY: true, stdinTTY: false })).rejects.toThrow("terminal on stdin");
-  expect(existsSync(home)).toBe(false);
-
+  // review walk stays interactive for everyone: it still needs a terminal on stdin and stdout.
+  await expect(runCli(["review", "walk"], agent)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  await expect(runCli(["review", "walk"], person)).rejects.toThrow("terminal on stdin");
 });
 
 

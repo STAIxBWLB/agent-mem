@@ -124,7 +124,11 @@ test("project export writes the bundle for one project, refuses to overwrite, an
   expect(readFileSync(to, "utf8")).not.toContain("beta");
   await expect(runCli(["project", "export", A, "--to", to], person)).rejects.toThrow(/exists/);
   await expect(runCli(["project", "export", A], person)).rejects.toThrow(/--to/);
-  await expect(runCli(["project", "export", A, "--to", to], { ...person, env: { CLAUDECODE: "1" } })).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
+  // #431 AC1: an agent-marked session exports like a person, through the same policy screen; its errors keep the uniform marked message.
+  const agentTo = join(dir, "agent.json"), agent = { ...person, env: { ...person.env, CLAUDECODE: "1" }, stdinTTY: false };
+  expect(await json(["project", "export", A, "--to", agentTo, "--json"], agent)).toMatchObject({ project: A, withheld: 0, counts: { capture: 2 } });
+  expect(readFileSync(agentTo, "utf8")).toContain("alpha one"); expect(readFileSync(agentTo, "utf8")).not.toContain("beta");
+  await expect(runCli(["project", "export", A, "--to", to], agent)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
 });
 
 test("search --all-projects crosses, says so in text and JSON, and plain search never does; ahub memory's raw command refuses the flag", async () => {

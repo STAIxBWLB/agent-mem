@@ -6,7 +6,6 @@ import { runCli } from "../src/cli.ts";
 import * as mcpMemory from "../src/mcp-memory.ts";
 
 const UNAVAILABLE = "Memory operation unavailable or refused; no partial result is shown.";
-const READS = "Agent reads: search, list, show, brief, graph, vault-candidates, capacity.";
 const MARKERS = /AGENTHUB_PEER_ID|CLAUDECODE|CLAUDE_CODE_SESSION_ID|CODEX_THREAD_ID|PI_SESSION_ID/;
 const roots: string[] = [];
 const oldHome = process.env.AMEM_HOME;
@@ -35,18 +34,17 @@ test("marked usage errors show parseCommand's own message", async () => {
   }
 });
 
-test("marked routing refusals name the command or the accepted options", async () => {
+test("#431: marked doctor, status and the wider read options run the person handler; read-route value checks stay", async () => {
   const { context } = agent();
-  expect(await message(["doctor"], context)).toBe(`amem doctor is not available to an agent-marked session. ${READS}`);
-  expect(await message(["status"], context)).toBe(`amem status is not available to an agent-marked session. ${READS}`);
-  expect(await message(["search", "--tier", "long", "foo"], context)).toBe("agent-marked search accepts only --limit, --since and --explain.");
+  expect(await runCli(["status", "--json"], context)).toContain('"home"');
+  expect(JSON.parse(await runCli(["doctor", "--json"], context))).toMatchObject({ schema: "amem.doctor/v1" });
+  expect(await runCli(["list", "--history"], context)).toContain("retained memory as of");
   expect(await message(["search", "foo", "--limit", "500"], context)).toBe("--limit takes a whole number from 1 to 100.");
-  expect(await message(["list", "--history"], context)).toBe("agent-marked list accepts only --limit and --since.");
 });
 
 test("refusal messages never name a marker or suggest leaving the session", async () => {
   const { context } = agent();
-  for (const args of [["doctor"], ["status"], ["serch"], ["search", "--tier", "long", "x"], ["list", "--history"], ["show", "a", "b"], ["graph", "x", "--hops", "3"], ["capacity", "--json", "--bogus"]]) {
+  for (const args of [["serch"], ["show", "a", "b"], ["graph", "x", "--hops", "3"], ["capacity", "--json", "--bogus"], ["search", "foo", "--limit", "500"]]) {
     const text = await message(args, context);
     expect(text).not.toMatch(MARKERS);
     expect(text).not.toMatch(/unset|outside|without the|bypass/i);
