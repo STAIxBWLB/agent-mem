@@ -448,8 +448,8 @@ test("#344 actual SessionEnd stages the bounded transcript tail before replay fo
 });
 
 for (const control of [
-  { name: "Stop retains inline replay", hookEvent: "Stop" as const, tagMode: "preserve" as const, received: "Stop", effective: "Stop" },
-  { name: "SessionEnd tagged Stop retains inline replay", hookEvent: "SessionEnd" as const, tagMode: "stop" as const, received: "SessionEnd", effective: "Stop" },
+  { name: "Stop batches a partial group", hookEvent: "Stop" as const, tagMode: "preserve" as const, received: "Stop", effective: "Stop" },
+  { name: "SessionEnd tagged Stop batches a partial group", hookEvent: "SessionEnd" as const, tagMode: "stop" as const, received: "SessionEnd", effective: "Stop" },
   { name: "missing SessionEnd scan tag retains inline replay", hookEvent: "SessionEnd" as const, tagMode: "missing" as const, received: "SessionEnd", effective: null },
   { name: "unknown SessionEnd scan tag retains inline replay", hookEvent: "SessionEnd" as const, tagMode: "unknown" as const, received: "SessionEnd", effective: "UnexpectedFixtureEvent" },
 ]) test(`#344 ${control.name}`, async () => {
@@ -463,14 +463,36 @@ for (const control of [
     const trace = observed.rows(), scan = trace.find(row => row.kind === "scan")!;
     expect(scan.received).toBe(control.received);
     expect(scan.effective).toBe(control.effective);
-    expect(trace.filter(row => row.kind === "replay" && row.waitForReady === false)).toHaveLength(1);
-    expect(cursorPosition(f)).toEqual({ offset: recapEnd, size: source.length });
-    expect(readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!.transcriptStopReason).toBe("deadline");
+    const batched = control.effective === "Stop";
+    expect(trace.filter(row => row.kind === "replay" && row.waitForReady === false)).toHaveLength(batched ? 0 : 1);
+    expect(cursorPosition(f)).toEqual({ offset: batched ? source.length : recapEnd, size: source.length });
+    expect(readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!.transcriptStopReason).toBe(batched ? undefined : "deadline");
     const tailPending = pending(f).filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact);
-    expect(tailPending.map(row => [row.event, row.excerpt])).toEqual([["Recap", summary.recap]]);
-    expect(tailPending[0]!.session).toBe(transcriptSession(sessionId));
+    expect(tailPending.map(row => row.excerpt).sort()).toEqual((batched ? [summary.recap, summary.compact] : [summary.recap]).sort());
+    expect(tailPending.every(row => row.session === transcriptSession(sessionId))).toBe(true);
     expect(f.rows().filter(row => row.excerpt === summary.recap || row.excerpt === summary.compact)).toHaveLength(0);
     expect(readFileSync(transcript)).toEqual(source);
+  } finally { f.close(); }
+});
+
+test("Stop replays at four staged summaries and preserves the unscanned tail", async () => {
+  const f = hookFixture(), transcript = join(f.root, "batch-boundary.jsonl"), observed = observeStageFirst(f, "preserve"), session = "batch-boundary";
+  const entries = Array.from({ length: 5 }, (_, i) => JSON.stringify({ type: "system", subtype: "away_summary", timestamp: new Date().toISOString(), content: `boundary recap ${i}` }) + "\n");
+  const source = entries.join(""); writeFileSync(transcript, source);
+  try {
+    await f.seed();
+    const first = f.runFunctional("Stop", { session_id: session, transcript_path: transcript }, observed.env);
+    expect(first.exitCode, first.stderr.toString()).toBe(0);
+    expect(observed.rows().filter(row => row.kind === "replay" && row.waitForReady === false)).toHaveLength(1);
+    expect(cursorPosition(f)).toEqual({ offset: Buffer.byteLength(entries.slice(0, 4).join("")), size: Buffer.byteLength(source) });
+    expect(readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!.transcriptStopReason).toBe("deadline");
+    expect(pending(f).filter(row => row.excerpt.startsWith("boundary recap"))).toHaveLength(4);
+    const next = f.runFunctional("Stop", { session_id: session, transcript_path: transcript });
+    expect(next.exitCode, next.stderr.toString()).toBe(0);
+    const rows = f.rows().filter(row => row.excerpt.startsWith("boundary recap"));
+    expect(rows.map(row => row.excerpt).sort()).toEqual(Array.from({ length: 5 }, (_, i) => `boundary recap ${i}`));
+    expect(cursorPosition(f)).toEqual({ offset: Buffer.byteLength(source), size: Buffer.byteLength(source) });
+    expect(readFileSync(transcript, "utf8")).toBe(source);
   } finally { f.close(); }
 });
 
