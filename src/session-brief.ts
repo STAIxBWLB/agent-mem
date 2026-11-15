@@ -229,6 +229,10 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const reservedSummary = newest && newest.size - 1 <= RECORD_BYTES && newest.size <= remaining ? newest : undefined;
     if (reservedSummary) remaining -= reservedSummary.size;
     else if (newest) coverage.capture = "partial";
+    const firstRecord = preparedRecords[0];
+    const reservedRecord = firstRecord && firstRecord.size - 1 <= RECORD_BYTES && firstRecord.size <= remaining ? firstRecord : undefined;
+    if (reservedRecord) remaining -= reservedRecord.size;
+    else if (firstRecord) coverage.capture = "partial";
     const emitPrepared = (row: PreparedCapture): boolean => {
       if (row.size - 1 > RECORD_BYTES || row.size > remaining) { coverage.capture = "partial"; return false; }
       lines.push(row.line); remaining -= row.size;
@@ -341,7 +345,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
       });
       if (nativeCache) {
-        for (const row of preparedRecords) emitPrepared(row);
+        if (reservedRecord) { lines.push(reservedRecord.line); if (reservedRecord.partial) coverage.capture = "partial"; }
+        for (const row of preparedRecords.slice(reservedRecord ? 1 : 0)) emitPrepared(row);
         emitReserved();
         for (const row of preparedSummaries.slice(1)) emitPrepared(row);
       } else {
@@ -372,7 +377,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       guard();
       let context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
       while (Buffer.byteLength(context) > maximum && lines.length) {
-        const removed = JSON.parse(lines.pop()!) as { section?: Section };
+        const repoIndex = lines.findLastIndex(line => line.startsWith('{"section":"repo",'));
+        const removed = JSON.parse(lines.splice(repoIndex >= 0 ? repoIndex : lines.length - 1, 1)[0]!) as { section?: Section };
         if (removed.section && coverage[removed.section] === "complete") coverage[removed.section] = "partial";
         context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
       }
