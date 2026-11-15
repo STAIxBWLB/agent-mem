@@ -22,7 +22,7 @@ import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { activationSourceMarkers, assertPlacementActivationOwner, type PlacementActivationOwner, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
 import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, writerInventoryEvidence, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
-import type { InspectionBound } from "./inspection-bound.ts";
+import { inspectionBoundReceipt, type InspectionBound } from "./inspection-bound.ts";
 
 /** Home-wide source capture ceilings. Every file is read twice (bytes, then a stable recheck), so the read budget is 2x. */
 export const PLACEMENT_CAPTURE_MAX_SOURCE_BYTES = 64 * 1024 * 1024, PLACEMENT_CAPTURE_MAX_ROWS = 20000;
@@ -317,7 +317,7 @@ function previewSources(home:string,owner?:PlacementActivationOwner):PlacementSo
   catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;
-      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(error.bound);
+      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
     }
     return fail();
   }
@@ -369,7 +369,7 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="staging"||code==="pending")throw new SharedWriterRevisionError(code);}
       if (error instanceof SyncPlacementJournalError) throw error;
-      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(error.bound);
+      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
     }
     return fail();
   }
@@ -383,7 +383,7 @@ export function captureSyncPlacementActivationContext(home: string, port: Placem
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;
-      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(error.bound);
+      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
     }
     return fail();
   }
