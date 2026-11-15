@@ -85,7 +85,7 @@ test("repo content and floor diagnostics cannot displace the reserved Record and
       if (!("id" in summary)) throw Error("fixture summary did not commit");
       await buildCaptureBriefCache(capture, { base: f.base, project: f.project, cwd: f.cwd, builtThrough: summary.id });
     } finally { capture.close(); }
-    const body = { schema: REPO_SCHEMA, op: "note" as const, at: "2026-10-20T10:00:00.000Z", kind: "decision" as const, text: "public repo ".repeat(200), about: [], actor: "person" as const };
+    const body = { schema: REPO_SCHEMA as typeof REPO_SCHEMA, op: "note" as const, at: "2026-10-20T10:00:00.000Z", kind: "decision" as const, text: "public repo ".repeat(200), about: [], actor: "person" as const };
     mkdirSync(join(f.cwd, ".amem")); writeFileSync(join(f.cwd, ".amem", "log.jsonl"), JSON.stringify({ ...body, id: repoEntryId(body) }) + "\n");
     const result = await runHook("SessionStart", {}, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
     const context = result.output!.hookSpecificOutput.additionalContext;
