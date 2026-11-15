@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, renameSync, rmSync, writeFileSync, fsyncSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, renameSync, rmSync, writeFileSync, fsyncSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { FORMAT_SURFACES, FORMATS_FILE, readFormatFloors, type FormatFloor } from "./formats.ts";
@@ -11,9 +11,9 @@ import { realPath } from "./platform.ts";
  * cannot be read refuses too: an unproven writer is treated as below. Records are never rewritten or removed.
  */
 const PLAIN = /^(\d+)\.(\d+)\.(\d+)$/;
-const MAX_WRITERS = 256, PACKAGE_BYTES = 64 * 1024;
+const MAX_WRITERS = 256, PACKAGE_BYTES = 64 * 1024, MAX_ANCESTORS = 12;
 export type FormatRaiseSurface = typeof FORMAT_SURFACES[number] | "home";
-export interface FormatWriter { source: "setup" | "sync-placement" | "running" | "self"; root: string; version: string | null; pid?: number }
+export interface FormatWriter { source: "setup" | "sync-placement" | "running" | "library-host" | "self"; root: string; version: string | null; pid?: number; host?: string }
 export interface FormatWriterInventory { writers: FormatWriter[]; incomplete: string[] }
 export interface FormatRaisePlan {
   home: string; file: string; record: FormatFloor; writers: FormatWriter[]; below: FormatWriter[]; incomplete: string[];
@@ -40,15 +40,33 @@ export function installVersion(root: string): string | null {
   } catch { return null; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
-/** Install roots of running amem processes, from their command line (`<root>/bin/amem.js` or `<root>/src/cli.ts`). Bounded. */
-export function runningAmemRoots(table: () => string): { pid: number; root: string }[] {
-  const out: { pid: number; root: string }[] = [];
+/**
+ * Install roots of running processes that load agent-mem: an amem CLI (`<root>/bin/amem.js` or `<root>/src/cli.ts`), or a host that embeds
+ * it as a library (ahub, vmem), found as `node_modules/@staix/agent-mem` in an ancestor of a script path on its command line. Bounded.
+ * `embedded(dir)` answers whether `dir/node_modules/@staix/agent-mem` exists; it defaults to the filesystem.
+ */
+export function runningAmemRoots(table: () => string, embedded: (dir: string) => boolean = dir => existsSync(join(dir, "node_modules", "@staix", "agent-mem", "package.json"))): { pid: number; root: string; host?: string }[] {
+  const out: { pid: number; root: string; host?: string }[] = [], memo = new Map<string, string | null>();
+  const library = (script: string): string | null => {
+    let dir = dirname(script);
+    for (let depth = 0; depth < MAX_ANCESTORS && dir !== dirname(dir); depth++, dir = dirname(dir)) {
+      if (memo.has(dir)) return memo.get(dir)!;
+      let found: string | null = null;
+      try { if (embedded(dir)) found = join(dir, "node_modules", "@staix", "agent-mem"); } catch { /* unreadable: look further up */ }
+      if (found) { memo.set(dir, found); return found; }
+    }
+    return null;
+  };
   for (const line of table().split("\n")) {
     const match = /^\s*(\d+)\s+(.*)$/.exec(line); if (!match) continue;
     const pid = Number(match[1]); if (pid === process.pid) continue;
-    for (const token of match[2]!.split(/\s+/)) {
-      const entry = /^(\/.+)\/(?:bin\/amem\.js|src\/cli\.ts)$/.exec(token); if (!entry) continue;
-      out.push({ pid, root: entry[1]! }); break;
+    const tokens = match[2]!.split(/\s+/);
+    const cli = tokens.map(token => /^(\/.+)\/(?:bin\/amem\.js|src\/cli\.ts)$/.exec(token)).find(Boolean);
+    if (cli) out.push({ pid, root: cli[1]! });
+    else for (const token of tokens) {
+      if (!token.startsWith("/") || !/\.(?:[cm]?[jt]s)$/.test(token)) continue;
+      const root = library(token); if (!root) continue;
+      out.push({ pid, root, host: token }); break;
     }
     if (out.length >= MAX_WRITERS) break;
   }
@@ -69,7 +87,7 @@ export function planFormatRaise(home: string, surface: string, minReader: string
 export function formatRaiseRefusal(plan: FormatRaisePlan): string | undefined {
   if (plan.alreadyAtLeast) return `formats.json already records a ${plan.record.surface} floor at or above ${plan.record.minReader}; nothing to raise`;
   if (plan.incomplete.length) return `the writer inventory is incomplete (${plan.incomplete.join("; ")}); fix it before raising a floor`;
-  if (plan.below.length) return `writers below ${plan.record.minReader}: ${plan.below.map(writer => `${writer.source} ${writer.root}${writer.pid ? ` (pid ${writer.pid})` : ""} at ${writer.version ?? "unknown version"}`).join("; ")}. Upgrade or stop them, then rerun`;
+  if (plan.below.length) return `writers below ${plan.record.minReader}: ${plan.below.map(writer => `${writer.source} ${writer.root}${writer.pid ? ` (pid ${writer.pid}${writer.host ? `, ${writer.host}` : ""})` : ""} at ${writer.version ?? "unknown version"}`).join("; ")}. Upgrade or stop them, then rerun`;
   return undefined;
 }
 

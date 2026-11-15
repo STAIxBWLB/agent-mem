@@ -86,7 +86,7 @@ export interface CliContext {
   /** Where `sync --progress` writes (default process.stderr) and whether that is a terminal; fixtures stand in for both. */
   stderr?: (text: string) => void; stderrTTY?: boolean;
   /** Test seams for `amem formats raise`: the process table (`pid args` lines; default `ps -axo pid=,args=`) and the clock that dates the record. */
-  processTable?: () => string; now?: () => number;
+  processTable?: () => string; now?: () => number; embeddedAmem?: (dir: string) => boolean;
   /** Test seam: the `sync --if-due` deadline in milliseconds (the CLI always uses 30 seconds). */
   syncDeadlineMs?: number;
   /** Called with the signal name when a person's signal ended `sync --if-due`, after its handlers are removed. `main` re-raises it once the output is written; absent, nothing happens. */
@@ -544,10 +544,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const home = realPath(memoryHome()), own = realPath(fileURLToPath(new URL("..", import.meta.url)));
     const inventory = (): import("./memory/formats-raise.ts").FormatWriterInventory => {
       const writers: import("./memory/formats-raise.ts").FormatWriter[] = [], incomplete: string[] = [], seen = new Set<string>();
-      const add = (source: "setup" | "sync-placement" | "running" | "self", root: string, pid?: number) => {
+      const add = (source: "setup" | "sync-placement" | "running" | "library-host" | "self", root: string, pid?: number, host?: string) => {
         let canonical = root; try { canonical = realPath(root); } catch { /* a missing root reads as an unknown version */ }
         const key = `${source}\0${canonical}\0${pid ?? ""}`; if (seen.has(key)) return; seen.add(key);
-        writers.push({ source, root: canonical, version: installVersion(canonical), ...(pid !== undefined ? { pid } : {}) });
+        writers.push({ source, root: canonical, version: installVersion(canonical), ...(pid !== undefined ? { pid } : {}), ...(host !== undefined ? { host } : {}) });
       };
       add("self", own);
       try { for (const root of readSetupWriterRoots(home)) add("setup", root); } catch (error) { incomplete.push(`setup receipts: ${(error as Error).message.split("\n")[0]}`); }
@@ -556,7 +556,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       }
       try {
         const table = () => (context.processTable ?? (() => require("node:child_process").execFileSync("ps", ["-axo", "pid=,args="], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } }) as string))();
-        for (const { pid, root } of runningAmemRoots(table)) add("running", root, pid);
+        for (const { pid, root, host } of runningAmemRoots(table, context.embeddedAmem)) add(host ? "library-host" : "running", root, pid, host);
       } catch { incomplete.push("running processes could not be listed"); }
       return { writers: writers.sort((a, b) => a.source.localeCompare(b.source) || a.root.localeCompare(b.root) || (a.pid ?? 0) - (b.pid ?? 0)), incomplete };
     };
@@ -566,7 +566,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const refusal = formatRaiseRefusal(plan);
       if (options["--json"] === true) return JSON.stringify({ ...plan, refusal: refusal ?? null }, null, 2);
       return [`preview: append ${JSON.stringify(plan.record)} to ${plan.file}`, `existing floors: ${plan.existing.length ? plan.existing.map(floor => `${floor.surface}>=${floor.minReader}`).join(", ") : "none"}`,
-        `writers checked (${plan.writers.length}):`, ...plan.writers.map(writer => `  ${writer.source.padEnd(14)} ${writer.version ?? "unknown"}  ${writer.root}${writer.pid ? ` (pid ${writer.pid})` : ""}`),
+        `writers checked (${plan.writers.length}):`, ...plan.writers.map(writer => `  ${writer.source.padEnd(14)} ${writer.version ?? "unknown"}  ${writer.root}${writer.pid ? ` (pid ${writer.pid}${writer.host ? `, ${writer.host}` : ""})` : ""}`),
         refusal ? `refused: ${refusal}` : `ready: rerun with --confirm to append the record`].join("\n");
     }
     const record = applyFormatRaise(plan, () => planFormatRaise(home, surface, minReader, inventory(), now));

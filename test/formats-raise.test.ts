@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
@@ -36,12 +36,12 @@ test("#431 AC6: an agent-marked preview names the record and the writers; --conf
 });
 
 test("#431 AC6: a raise refuses while a running writer or this install is below the floor, and names it", async () => {
-  const r = rig(), old = r.install("0.20.0");
+  const r = rig(), old = realpathSync(r.install("0.20.0"));
   const table = `  777 bun ${join(old, "bin", "amem.js")} hook session-start\n`;
   const preview = await runCli(["formats", "raise", "home", floor], r.context(table, false));
   expect(preview).toContain(`refused: writers below ${floor}: running ${old} (pid 777) at 0.20.0`);
   await expect(runCli(["formats", "raise", "home", floor, "--confirm"], r.context(table, false))).rejects.toThrow(`running ${old} (pid 777) at 0.20.0`);
-  await expect(runCli(["formats", "raise", "home", above, "--confirm"], r.context("", false))).rejects.toThrow(`self ${own}`);
+  await expect(runCli(["formats", "raise", "home", above, "--confirm"], r.context("", false))).rejects.toThrow(`self ${realpathSync(own)}`);
   expect(existsSync(join(r.home, "formats.json"))).toBe(false);
 });
 
@@ -52,4 +52,19 @@ test("#431 AC6: a running writer whose install cannot be read counts as below; b
   await expect(runCli(["formats", "raise", "sync", "latest"], r.context("", false))).rejects.toThrow("plain release version");
   expect(runningAmemRoots(() => " 1 bun /a/b/bin/amem.js mcp\n 2 bun /c/src/cli.ts\n 3 ls -la\n").map(row => row.root)).toEqual(["/a/b", "/c"]);
   expect(versionBelow("0.26.3", "0.27.0")).toBe(true); expect(versionBelow("0.27.0", "0.27.0")).toBe(false);
+});
+
+test("#431 B2: a host that embeds agent-mem as a library (ahub, vmem) is a writer, and a below-floor one refuses the raise", async () => {
+  const r = rig(), host = join(r.root, "ahub-0.39.0"), lib = join(host, "node_modules", "@staix", "agent-mem");
+  mkdirSync(join(host, "src", "cli"), { recursive: true }); mkdirSync(lib, { recursive: true });
+  writeFileSync(join(lib, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.20.0" }));
+  const script = join(host, "src", "cli", "main.ts"), table = `  5150 /opt/homebrew/bin/bun ${script} --project /x\n  5151 /opt/homebrew/bin/bun /elsewhere/tool.ts\n`;
+  const preview = JSON.parse(await runCli(["formats", "raise", "curated", floor, "--json"], r.context(table, false)));
+  expect(preview.writers.find((w: { source: string }) => w.source === "library-host")).toMatchObject({ root: realpathSync(lib), version: "0.20.0", pid: 5150, host: script });
+  expect(preview.refusal).toContain(`library-host ${realpathSync(lib)} (pid 5150, ${script}) at 0.20.0`);
+  await expect(runCli(["formats", "raise", "curated", floor, "--confirm"], r.context(table, false))).rejects.toThrow("library-host");
+  expect(existsSync(join(r.home, "formats.json"))).toBe(false);
+  // Upgrading the embedded copy clears the refusal.
+  writeFileSync(join(lib, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: ownVersion }));
+  expect(JSON.parse(await runCli(["formats", "raise", "curated", floor, "--json"], r.context(table, false))).refusal).toBeNull();
 });
