@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "cf65c98c4d73537217a57fa9297b945cd5c8a50b",
+      "verifiedAgainst": "6d5a9ae1d9b9d489beb3b6dcaa5ca8e3b6f657a0",
       "paths": [
         "package.json",
         "bin/",
