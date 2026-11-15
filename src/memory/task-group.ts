@@ -3,12 +3,15 @@ import type { View } from "./store.ts";
 /**
  * #423: the task a curated note belongs to, for grouping. A note's own `task` wins; otherwise the first `task:` node in
  * `about` (sorted, so every reader picks the same one). The `@<created>` suffix is dropped so a note written with a task
- * and a note that only mentions "task #N" in the same project fold together. Notes without a task never group.
+ * and a note that only mentions "task #N" in the same project fold together. Notes without a task never group, and a
+ * `shared` note never folds with a project note.
  */
-export function taskGroupKey(view: Pick<View, "task" | "about" | "project">): string | undefined {
+export function taskGroupKey(view: Pick<View, "task" | "about" | "project"> & { scope?: View["scope"] }): string | undefined {
   const raw = view.task ?? view.about.find(node => node.startsWith("task:"))?.slice(5);
   if (!raw) return undefined;
-  return raw.includes("#") ? raw.replace(/@\d+$/, "") : `${view.project}#${raw.replace(/@\d+$/, "")}`;
+  const task = raw.includes("#") ? raw.replace(/@\d+$/, "") : `${view.project}#${raw.replace(/@\d+$/, "")}`;
+  // A shared note and a project note of one task are different audiences: never fold one into the other.
+  return view.scope === "shared" ? `shared:${task}` : task;
 }
 
 /**
@@ -16,7 +19,7 @@ export function taskGroupKey(view: Pick<View, "task" | "about" | "project">): st
  * it folded in. Items with no curated view or no task are kept as they are with `folded: 0`. Read-time only: rows and
  * the derived index are untouched.
  */
-export function groupByTask<T>(items: readonly T[], view: (item: T) => Pick<View, "task" | "about" | "project"> | undefined): { item: T; folded: number }[] {
+export function groupByTask<T>(items: readonly T[], view: (item: T) => (Pick<View, "task" | "about" | "project"> & { scope?: View["scope"] }) | undefined): { item: T; folded: number }[] {
   const out: { item: T; folded: number }[] = [], leader = new Map<string, { item: T; folded: number }>();
   for (const item of items) {
     const v = view(item), key = v ? taskGroupKey(v) : undefined;

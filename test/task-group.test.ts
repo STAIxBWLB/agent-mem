@@ -20,6 +20,7 @@ test("taskGroupKey reads the note's task, then a task node, and drops the creati
   expect(taskGroupKey({ project, task: "proj#229@1700", about: [] })).toBe("proj#229");
   expect(taskGroupKey({ project, task: null, about: ["path:a.ts", "task:proj#229"] })).toBe("proj#229");
   expect(taskGroupKey({ project, task: null, about: ["issue:o/r#1"] })).toBeUndefined();
+  expect(taskGroupKey({ project, task: "proj#229@1", about: [], scope: "shared" })).not.toBe(taskGroupKey({ project, task: "proj#229@1", about: [], scope: "project" }));
   const rows = [{ id: 1, project, task: null, about: ["task:proj#1"] }, { id: 2, project, task: null, about: [] }, { id: 3, project, task: "proj#1@9", about: [] }];
   expect(groupByTask(rows, row => row).map(entry => [entry.item.id, entry.folded])).toEqual([[1, 1], [2, 0]]);
 });
