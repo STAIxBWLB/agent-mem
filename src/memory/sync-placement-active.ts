@@ -35,10 +35,30 @@ export function assertPlacementViewAdvance(home: string, activation: SyncPlaceme
     if (old !== undefined && !chain.commitments.includes(old)) fail();
   }
 }
+/**
+ * Last verified binding keyed by the lstat stamps of every object the full read checks (#420). A sync calls this several
+ * times per fence check; an unchanged stamp is the same identity the full read already accepts between its own reads.
+ * ponytail: one entry per process; drop it if a same-size rewrite inside one timestamp tick must be caught across calls.
+ */
+const freeze = <T>(value: T): T => { if (value && typeof value === "object" && !Object.isFrozen(value)) { for (const inner of Object.values(value)) freeze(inner); Object.freeze(value); } return value; };
+let bindingMemo: { key: string; value: Pick<ActivePlacementBinding, "epoch" | "activation"> } | undefined;
 /** No mutation/reader registration/index open. Missing preparation is distinct from malformed retained evidence. */
 export function readActivePlacementBinding(homeInput: string, profileInput: unknown, shardsInput: unknown): ActivePlacementBinding | undefined {
   const profile = validatePlacementProfile(profileInput), shards = validatePlacementShards(shardsInput, profile);
   const home = realPath(homeInput), root = lstatSync(home, { bigint: true }); owned(root, true);
+  const stampKey = () => {
+    const dir = join(home, "sync-placement", "epochs", profile.placementHead), stamps: string[] = [];
+    for (const [file, isDir] of [[home, true], [join(home, "sync-placement"), true], [join(home, "sync-placement", "epochs"), true], [dir, true], [join(dir, "epoch.json"), false],
+      [join(dir, "activation.json"), false], [join(home, "sync-placement", "active.json"), false], [join(home, "profile.json"), false], [join(home, "shards.json"), false]] as const) {
+      const st = lstatSync(file, { bigint: true, throwIfNoEntry: false }); if (!st) return undefined; owned(st, isDir);
+      stamps.push([st.dev, st.ino, st.size, st.mtimeNs, st.ctimeNs].map(String).join(":"));
+    }
+    return canonicalJSON([home, canonicalJSON(profile), canonicalJSON(shards), stamps]);
+  }, memoKey = stampKey();
+  if (memoKey !== undefined && bindingMemo?.key === memoKey) {
+    assertPlacementViewAdvance(home, bindingMemo.value.activation, profile, shards);
+    return { profile, shards, epoch: bindingMemo.value.epoch, activation: bindingMemo.value.activation };
+  }
   const checks: (() => void)[] = [() => { const now = lstatSync(home, { bigint: true }); owned(now, true); if (now.dev !== root.dev || now.ino !== root.ino) fail(); }];
   const directory = (dir: string): boolean => {
     const s = lstatSync(dir, { bigint: true, throwIfNoEntry: false }); if (!s) return false; owned(s, true);
@@ -71,5 +91,6 @@ export function readActivePlacementBinding(homeInput: string, profileInput: unkn
   if (read(join(home, "profile.json"))?.text !== canonicalJSON(profile) + "\n" || read(join(home, "shards.json"))?.text !== canonicalJSON(shards) + "\n") fail();
   assertPlacementViewAdvance(home, activation, profile, shards);
   for (const check of checks) check();
+  if (memoKey !== undefined && stampKey() === memoKey) bindingMemo = { key: memoKey, value: { epoch: freeze(epoch), activation: freeze(activation) } };
   return { profile, shards, epoch, activation };
 }

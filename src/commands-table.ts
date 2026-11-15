@@ -83,7 +83,9 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   rebuild: { description: "Rebuild the derived index", options: json, mutates: true },
   dedupe: { description: "Preview duplicate reconciliation", options: { ...json, "--apply": flag("Append reconciliation operations") }, mutates: "apply" },
   sync: { description: "Sync a private remote (--if-due: only when the schedule and the failure backoff allow it; --force ignores both)", options: { ...json, ...policy, "--remote": text("Private git URL"),
-    "--if-due": flag("Sync only when due (hourly after a success, 15 minutes doubling to a day after failures); stops after 30 seconds"), "--force": flag("With --if-due: ignore the schedule and the backoff") }, mutates: true, policyFree: true },
+    "--if-due": flag("Sync only when due (hourly after a success, 15 minutes doubling to a day after failures); stops after 30 seconds"), "--force": flag("With --if-due: ignore the schedule and the backoff"),
+    "--progress": { description: "Placement sync progress on stderr: auto (human lines when stderr is a terminal, otherwise none), human, json (one versioned event per line) or off; stdout is unchanged", value: ["auto", "human", "json", "off"] },
+    "--status": flag("Read-only: show recorded placement sync operations (running, finished or interrupted) and exit; opens no memory, takes no lock") }, mutates: true, policyFree: true },
   machine: { description: "Show or label this machine", options: { ...json, "--label": text("Machine label") }, mutates: "label" },
   import: { description: "Import external memory", options: { ...json, ...policy, "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor"), "--capture-days": text("Import recent claude-mem observations and summaries into capture") }, mutates: true, policyFree: true,
     commands: {

@@ -74,8 +74,16 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   expect(preview).toMatchObject({active:false,forwardOnly:true,source:{declined:1}});expect(JSON.stringify(preview)).not.toContain("NEVER_PUBLIC_ACTIVATION_BODY");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
   expect(success(run(f,[...args,"--apply"])).active).toBe(true);
   const rootmap=JSON.parse(readFileSync(join(f.base,"sync-placement-writer-roots.json"),"utf8"));expect(rootmap.roots).toHaveLength(2);
-  const {remote,url}=localCliRemote(f),sent=success(run(f,["sync","--remote",url,"--json"]));
+  const {remote,url}=localCliRemote(f),progressed=run(f,["sync","--remote",url,"--json","--progress","json"]),sent=success(progressed);
   expect(sent.ok,JSON.stringify(sent)).toBe(true);expect(sent.placementPublication).toMatchObject({exported:1,withheld:1});expect(reachableInspectionRowIds(remote)).toEqual([f.allowed]);
+  // #418: versioned stderr events, one final stdout document, and a read-only status from another invocation.
+  const events=progressed.stderr.toString().split("\n").filter(line=>line.startsWith("{")).map(line=>JSON.parse(line) as {schema:string;state:string;phase:string;operationId:string});
+  expect(events.length).toBeGreaterThan(5);expect(events.every(event=>event.schema==="agent-mem.sync-progress/v1"&&event.operationId===events[0]!.operationId)).toBe(true);
+  expect(events.map(event=>event.phase)).toContain("policy-evaluation");expect(events.at(-1)).toMatchObject({state:"succeeded",phase:"receipt"});
+  expect(progressed.stderr.toString()).not.toContain("NEVER_PUBLIC");expect(progressed.stderr.toString()).not.toContain(url);
+  const statusBefore=inspectionFilesystemSnapshot(f.base),status=success(run(f,["sync","--status","--json"])) as {operations:{state:string;operationId:string}[];malformed:number};
+  expect(status.operations[0]).toMatchObject({state:"succeeded",operationId:events[0]!.operationId});expect(status.malformed).toBe(0);expect(inspectionFilesystemSnapshot(f.base)).toEqual(statusBefore);
+  expect(run(f,["sync","--status","--remote",url]).exitCode).not.toBe(0);
   const cadence=success(run(f,["sync","--if-due","--force","--json"],false,CADENCE_E2E_DEADLINE_MS));expect(cadence.ok).toBe(true);expect(cadence.skipped).toBeUndefined();
   const epoch=JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead;
   writeFileSync(join(extra,"src","index.ts"),"// changed unregistered writer\n",{mode:0o644});

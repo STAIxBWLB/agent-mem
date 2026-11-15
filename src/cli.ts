@@ -83,6 +83,8 @@ export interface CliContext {
   /** Whether stdout is a terminal, for the real stdout only (default `process.stdout.isTTY`). */
   stdoutTTY?: boolean;
   edit?: (initial: string) => string | Promise<string>;
+  /** Where `sync --progress` writes (default process.stderr) and whether that is a terminal; fixtures stand in for both. */
+  stderr?: (text: string) => void; stderrTTY?: boolean;
   /** Test seam: the `sync --if-due` deadline in milliseconds (the CLI always uses 30 seconds). */
   syncDeadlineMs?: number;
   /** Called with the signal name when a person's signal ended `sync --if-due`, after its handlers are removed. `main` re-raises it once the output is written; absent, nothing happens. */
@@ -1072,6 +1074,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   // configured remote, nothing when the schedule or the failure backoff says it is not due (`--force` skips that), and it stops a running git step after 30 seconds.
   const ifDue = sub === "sync" && options["--if-due"] === true, syncHome = memoryHome();
   if (options["--force"] === true && !ifDue) throw new Error("--force only applies with sync --if-due");
+  if (sub === "sync" && options["--status"] === true) {
+    // #418: read-only status from the telemetry sidecars; no realm, lock, proof, journal or schedule is touched.
+    if (Object.keys(options).some(name => name !== "--status" && name !== "--json")) throw new Error("sync --status takes only --json");
+    const { readSyncStatus, renderSyncStatus } = await import("./memory/sync-progress.ts"), report = readSyncStatus(syncHome);
+    return options["--json"] ? JSON.stringify(report, null, 2) : renderSyncStatus(report);
+  }
   if (sub === "sync") { assertFormatFloor(syncHome, "sync"); const refusal = placementRuntimeRefusal(syncHome); if (refusal) throw new Error("amem sync: " + refusal); }
   if (ifDue) {
     if (options["--remote"] === undefined && !remoteConfigured(syncHome)) return options["--json"] ? JSON.stringify({ ok: true, skipped: "no sync remote configured" }) : "no sync remote configured: nothing to do";
@@ -1091,6 +1099,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (args[index] === "--capture-days") { captureArgs.add(index); captureArgs.add(index + 1); }
     else if (args[index]?.startsWith("--capture-days=")) captureArgs.add(index);
   }
+  // `sync --progress` is the CLI's own rendering choice; the raw command, which hosts share, never sees it.
+  if (sub === "sync") for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--progress") { captureArgs.add(index); captureArgs.add(index + 1); }
+    else if (args[index]?.startsWith("--progress=")) captureArgs.add(index);
+  }
   // --filter and --explain select standalone CLI behavior; hosts keep their existing raw command arguments.
   const legacySearch = options["--filter"] === true;
   const explainSearch = sub === "search" && options["--explain"] === true;
@@ -1098,23 +1111,28 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const memoryArgs = captureImport && !options["--json"] ? [...syncArgs, "--json"] : syncArgs;
   let output: string;
   let placementWriters: import("./sync-placement-writer-context.ts").PlacementWriterContext | undefined;
+  let progress: import("./memory/sync-progress.ts").SyncProgress | undefined;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
     if (sub === "sync" && (readPlacementRuntimeMarkers(syncHome).profile as { publicationFormat?:string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
       const { activePlacementWriterContext } = await import("./sync-placement-writer-context.ts");
+      progress = await placementProgress(syncHome, typeof options["--progress"] === "string" ? options["--progress"] as string : "auto", context);
       placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));
     }
     output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: identity.actor === "person", rankedSearch: identity.actor === "person" && !legacySearch, ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
-      sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
+      sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },
       // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.
       forgetNearby: note => forgetNearby({ base: memoryHome(), project: note.project, text: note.text, title: note.title, screen: value => configured.screenStandalone(value) }) }));
   } catch (error) {
+    if (sub === "sync") progress?.finish(stop?.cause() ? "cancelled" : "failed", stop?.cause() ? "cancelled" : "unavailable");
     if (sub === "sync") stampSync((error as Error).message, stop?.cause());
     if (sub === "sync" && placementWriters?.lastRefusal) throw Error(`${placementWriters.lastRefusal.message} ${(error as Error).message}`);
     throw error;
   }
   finally {
+    // A run that never reached the transport's receipt (an early refusal) must not stay "running".
+    progress?.finish("failed", "unavailable");
     stop?.dispose();
     // A run its person ended ends like that signal (130, 143, 129, 131), as `amem doctor` does, also when `--json` reports it as a result instead of an error: the caller decides when.
     const ended = stop?.cause() === "person" ? stop.signalName() : undefined;
@@ -1144,6 +1162,18 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
 }
 
 /** Color for human output only on an interactive stdout without NO_COLOR or TERM=dumb (#125). */
+/**
+ * #418: one reporter per placement sync. The private sidecar backs `sync --status` in every mode; stderr gets human
+ * lines or versioned JSON events. Each part fails alone and silently: telemetry never fails or alters the sync.
+ */
+async function placementProgress(home: string, mode: string, context: CliContext): Promise<import("./memory/sync-progress.ts").SyncProgress> {
+  const { SyncProgress, renderSyncProgress, syncProgressSidecar } = await import("./memory/sync-progress.ts");
+  const write = context.stderr ?? ((text: string) => { process.stderr.write(text); });
+  const render = mode === "json" ? "json" : mode === "human" || mode === "auto" && (context.stderrTTY ?? process.stderr.isTTY) ? "human" : undefined;
+  const parts = [syncProgressSidecar(home), ...(render ? [(snapshot: import("./memory/sync-progress.ts").SyncProgressSnapshot) => write((render === "json" ? JSON.stringify(snapshot) : renderSyncProgress(snapshot)) + "\n")] : [])];
+  const live = new Set(parts.keys());
+  return new SyncProgress({ sink: snapshot => { for (const index of live) try { parts[index]!(snapshot); } catch { live.delete(index); } } });
+}
 function outputStyle(context: CliContext): Style { return style(colorEnabled(context.env ?? process.env, context.stdoutTTY ?? process.stdout.isTTY)); }
 
 /** Native ingest remains capture-only and agent-reachable; this formats only its returned receipt. */

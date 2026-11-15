@@ -23,9 +23,10 @@ import { activationSourceMarkers, assertPlacementActivationOwner, type Placement
 import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, writerInventoryEvidence, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 import { inspectionBoundReceipt, type InspectionBound } from "./inspection-bound.ts";
+import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS } from "./sync-placement-bound.ts";
 
 /** Home-wide source capture ceilings. Every file is read twice (bytes, then a stable recheck), so the read budget is 2x. */
-export const PLACEMENT_CAPTURE_MAX_SOURCE_BYTES = 64 * 1024 * 1024, PLACEMENT_CAPTURE_MAX_ROWS = 20000;
+export const PLACEMENT_CAPTURE_MAX_SOURCE_BYTES = PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_CAPTURE_MAX_ROWS = PLACEMENT_SOURCE_MAX_ROWS;
 /** Source capture refusal before any effect. Code stays "bound" for existing callers; the message names the phase and bound. */
 export class PlacementSourceBoundError extends SyncPlacementJournalError {
   constructor(readonly bound?: InspectionBound) {

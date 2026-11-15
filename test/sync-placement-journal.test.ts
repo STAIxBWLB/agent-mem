@@ -158,3 +158,14 @@ test("a changed sharing-writer pin invalidates the prepared epoch even after mar
   expect(() => holdPlacementRow(f.home, f.request(), f.port, "person")).toThrow();
   expect(f.state()).toEqual(before);
 });
+
+test("#420 AC3: a journal prefix chunk rewritten in place under its unchanged name is decoded again, never served from the prefix cache", async () => {
+  const f = await fixture(), dir = join(f.home, "sync-placement", "epochs", f.epochHash);
+  while (!readdirSync(dir).includes("records-00001.jsonl")) holdPlacementRow(f.home, f.request(f.declined), f.port);
+  holdPlacementRow(f.home, f.request(f.declined), f.port); // the cached prefix now serves a later snapshot
+  const sequence = f.state().sequence; expect(sequence).toBeGreaterThan(2);
+  const file = join(dir, "records-00000.jsonl"), bytes = readFileSync(file), at = bytes.indexOf("\"held\"") > 0 ? bytes.indexOf("\"held\"") : bytes.indexOf("\"sequence\":2") + 12;
+  await Bun.sleep(20); // past a coarse ctime tick, so the rewrite is visible to the stat stamp
+  bytes[at] = bytes[at] === 0x31 ? 0x32 : 0x31; writeFileSync(file, bytes); // same size, same inode
+  expect(() => f.state()).toThrow();
+}, 60_000);

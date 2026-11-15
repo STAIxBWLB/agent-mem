@@ -17,12 +17,21 @@ const identity = (key: PlacementKey) => canonicalJSON([key.realm, key.id]);
 /** Data projection only. Journal fields and committed-outcome syntax are not person or remote-proof credentials. */
 export class PlacementProjection {
   readonly #epochHash: string;
+  readonly #epoch: PlacementEpoch;
   #sequence = 0;
   #headHash: string;
   readonly #states = new Map<string, PlacementProjectedState>();
   readonly #rowHashes = new Map<string, string>();
   readonly #requests = new Map<string, PlacementRecord>();
-  constructor(epoch: PlacementEpoch) { this.#epochHash = placementEpochHash(validatePlacementEpoch(epoch)); this.#headHash = this.#epochHash; }
+  constructor(epoch: PlacementEpoch) { this.#epoch = validatePlacementEpoch(epoch); this.#epochHash = placementEpochHash(this.#epoch); this.#headHash = this.#epochHash; }
+  /** Independent copy: stored states and records are never mutated in place (apply copies, readers get copies), so sharing them is safe. */
+  clone(): PlacementProjection {
+    const out = new PlacementProjection(this.#epoch); out.#sequence = this.#sequence; out.#headHash = this.#headHash;
+    for (const [key, value] of this.#states) out.#states.set(key, value);
+    for (const [key, value] of this.#rowHashes) out.#rowHashes.set(key, value);
+    for (const [key, value] of this.#requests) out.#requests.set(key, value);
+    return out;
+  }
   get epochHash(): string { return this.#epochHash; }
   get sequence(): number { return this.#sequence; }
   get headHash(): string { return this.#headHash; }

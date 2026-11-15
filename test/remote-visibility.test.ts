@@ -103,3 +103,22 @@ test("end to end: a public push target whose URL merely contains github.com cann
   expect(message).toContain("confirmation of this entry");
   expect(existsSync(join(repo, ".amem"))).toBe(false);
 });
+
+test("#420 AC4: an exact non-GitHub URL in the home's privateRemotes is private; others stay unknown; GitHub and password URLs are refused at load", async () => {
+  const home = realPath(mkdtempSync(join(tmpdir(), "amem-private-remotes-"))); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  process.env.AMEM_HOME = home; const gh = fakeGh("public");
+  const self = "ssh://git@git.example.org/memory/notes.git", mirror = "https://git.example.org/mirror/github.com/acme/notes";
+  writeFileSync(join(home, "amem.config.json"), JSON.stringify({ privateRemotes: [self, mirror] }), { mode: 0o600 });
+  expect(await remoteVisibility(self)).toBe("private");
+  expect(await remoteVisibility(mirror)).toBe("private");
+  expect(await remoteVisibility(self.replace("notes", "other"))).toBe("unknown");
+  expect(await remoteVisibility(` ${self}`)).toBe("unknown");
+  expect(await remoteVisibility("https://github.com/acme/notes.git")).toBe("public"); // GitHub is still asked of GitHub
+  expect(gh.log().length).toBe(1);
+  for (const bad of ["https://github.com/acme/notes.git", "git@github.com:acme/notes.git", "GitHub.com:acme/notes", "https://user:secret@git.example.org/memory/notes.git"]) {
+    writeFileSync(join(home, "amem.config.json"), JSON.stringify({ privateRemotes: [self, bad] }), { mode: 0o600 });
+    expect(await remoteVisibility(self), bad).toBe("unknown"); // an unreadable policy never attests anything
+  }
+  writeFileSync(join(home, "amem.config.json"), JSON.stringify({ privateRemotes: Array.from({ length: 17 }, (_, i) => `ssh://git@git.example.org/m/${i}.git`) }), { mode: 0o600 });
+  expect(await remoteVisibility("ssh://git@git.example.org/m/0.git")).toBe("unknown");
+});

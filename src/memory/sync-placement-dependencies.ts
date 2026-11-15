@@ -6,6 +6,7 @@ import { validatePruneRow } from "./prune.ts";
 import { SUGGESTED } from "./store.ts";
 import { placementKeyId, validatePlacementKey, type PlacementKey, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { OutboundVerdict, SyncPolicyCategory } from "./sync-screen.ts";
+import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS } from "./sync-placement-bound.ts";
 
 export interface DependencySource {
   key: PlacementKey; row: unknown; sourcePlacement: "local" | "synced"; policy: OutboundVerdict; held: boolean;
@@ -85,11 +86,12 @@ function preflight(raw: unknown): void {
     const source = descriptors(sources.own[String(i)]!.value), row = source.row;
     if (!row || !("value" in row)) return fail();
     bytes += size(row.value, 0) + 1;
-    if (bytes > 8 * 1024 * 1024) fail();
+    if (bytes > PLACEMENT_SOURCE_MAX_BYTES) fail();
   }
   for (const key of ["publicEndpoints", "verifiedPrunes"]) if (fields[key]) arrayFields(fields[key]!.value, 20000);
 }
-/** ponytail: descriptor-only JSON safety stops at depth64, one million nodes and16MiB including supplied evidence.
+/** ponytail: descriptor-only JSON safety stops at depth 64, one million nodes and twice the 64 MiB source envelope
+ * (selected rows plus already-public endpoint evidence, which never exceeds the rows it backs; #419, 16 MiB before 0.26.3).
  * A reviewed chunked endpoint interface is required before larger proofs can enter this compiler. */
 function copyInput(value: unknown): unknown {
   let bytes = 0, nodes = 0;
@@ -98,7 +100,7 @@ function copyInput(value: unknown): unknown {
     if (++nodes > 1_000_000 || depth > 64) fail();
     if (v === null || typeof v === "boolean") { bytes += 5; return v; }
     if (typeof v === "number") { if (!Number.isFinite(v)) fail(); bytes += 24; return v; }
-    if (typeof v === "string") { bytes += Buffer.byteLength(v); if (bytes > 16 * 1024 * 1024) fail(); return v; }
+    if (typeof v === "string") { bytes += Buffer.byteLength(v); if (bytes > 2 * PLACEMENT_SOURCE_MAX_BYTES) fail(); return v; }
     if (!v || typeof v !== "object" || types.isProxy(v) || seen.has(v) || Object.getOwnPropertySymbols(v).length) fail();
     const array = Array.isArray(v), proto = Object.getPrototypeOf(v);
     if (array ? proto !== Array.prototype : proto !== Object.prototype && proto !== null) fail();
@@ -168,7 +170,7 @@ function compile(raw: PlacementDependencyInput): DependencyDecision[] {
     const key = validatePlacementKey(item.key), row = object(item.row), id = placementKeyId(key);
     if (!selected.has(realmId(key.realm)) || row.id !== key.id || hashJSON(row) !== key.rowHash) fail();
     if (hashes.has(key.id) && hashes.get(key.id) !== key.rowHash) fail(); hashes.set(key.id, key.rowHash);
-    if (output && (sourceBytes += Buffer.byteLength(canonicalJSON(row) + "\n")) > 8 * 1024 * 1024) fail();
+    if (output && (sourceBytes += Buffer.byteLength(canonicalJSON(row) + "\n")) > PLACEMENT_SOURCE_MAX_BYTES + PLACEMENT_SOURCE_MAX_ROWS) fail();
     let policy: OutboundVerdict = { ok: true };
     if (output) {
       const verdict = object(item.policy); keys(verdict, ["ok"], ["category"]);

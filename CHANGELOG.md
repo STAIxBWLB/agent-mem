@@ -2,6 +2,19 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.26.3
+
+### Fixed
+
+- Reuse a complete placement writer/source proof for at most 1 s between effect boundaries instead of re-measuring every writer install before and after each row. Every fence check still verifies mutation ownership, the active epoch, writer revisions, cache identity and selectors, and each effect boundary (end of row evaluation, plan, journal batches, artifact, publication, import) takes a fresh complete proof, so host-callback or concurrent-writer changes refuse before any plan or publication. Complete-proof counts no longer grow with row count; a synthetic 100-row first sync with 4 writer roots took 6123 attestations (234 s) before; a 1000-row first sync now takes 231. Recovery and exact-ref semantics are unchanged. Refs #417.
+- Report placement sync progress: `amem sync --progress auto|human|json|off` writes phase, row/record/object counters, outcome counts and separate last-work/last-alive times to stderr (human lines on a terminal by default), with stdout and `--json` unchanged. `amem sync --status [--json]` reads private per-operation sidecars under `sync-status/` without opening memory or taking locks, and reports a dead running owner as interrupted. No percentage or ETA is shown. Refs #418.
+- Align first placement sync with the 64 MiB/20000-row activation envelope: materialization, publication-plan source prefixes and the dependency compiler no longer stop at 8 MiB, so a selected project plus user overlay of about 12 MB/5,154 rows publishes. Sizes are admitted before the first policy evaluation, journal record/object capacity is checked before the first durable plan byte, and these refusals return `placementPublication.bound` (phase, kind, limit, observed) instead of the generic unavailable checklist, leaving sources, epoch, journal and remote unchanged. Refs #419.
+- Stop re-decoding the whole placement journal on every append: snapshots reuse the decoded prefix chunks and publication reads reuse the validated plan bundle while their file stamps are unchanged, so a first sync's journal work grows linearly with rows instead of quadratically. On the synthetic bench (`scripts/bench-placement-sync.ts`, no writer roots) a 1000-row first sync takes 136 s, where the old code had not finished 5000 rows after 4 h 41 min; the reported 1131-entry sync took 2 h 31 min. About 85 ms per journal record remains, all in the per-write fence checks. Remote Git objects take one process each instead of three, and audited commits are not re-read. No file, record, ref or recovery format changes. Refs #420.
+
+### Added
+
+- `privateRemotes` in the home's `amem.config.json`: up to 16 exact URLs of a self-hosted Git server that the person states are private, so `amem sync` works without GitHub. It is a statement, not a check; GitHub URLs are still asked of GitHub, and a GitHub URL or a URL with a password in the list is a config error. Refs #420.
+
 ## 0.26.2
 
 ### Fixed

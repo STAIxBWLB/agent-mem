@@ -119,15 +119,34 @@ function intent(value: unknown, epochHash: string): Intent {
     || input.lineHash !== digest(line(record)) || input.prefixBytes + line(record).length > PLACEMENT_JOURNAL_CHUNK_MAX_BYTES) return fail();
   return { schema: input.schema, epochHash, record, chunk: input.chunk, prefixBytes: input.prefixBytes, prefixHash: input.prefixHash, lineHash: input.lineHash };
 }
+const stamp = (stat: BigIntStats) => [String(stat.dev), String(stat.ino), String(stat.size), String(stat.mtimeNs), String(stat.ctimeNs)].join(":");
+const freeze = <T>(value: T): T => { if (value && typeof value === "object" && !Object.isFrozen(value)) { for (const inner of Object.values(value)) freeze(inner); Object.freeze(value); } return value; };
+/**
+ * Decoded journal prefix (every chunk but the last) keyed by directory and the stat stamps of epoch.json and those chunks (#420).
+ * Appends only grow the last chunk or add a new one, so a sync re-decodes at most one 64 KiB chunk per snapshot instead of
+ * the whole journal. A changed stamp is a miss and the chunk is read and decoded again; the end-of-snapshot token check still runs.
+ * ponytail: one entry per process and stat stamps as identity (the same trust the token check already gives an unchanged file);
+ * keep a content digest per chunk if an in-place same-size rewrite inside one timestamp tick must be caught.
+ */
+let journalPrefix: { key: string; count: number; records: PlacementRecord[]; chunks: Chunk[]; projection: PlacementProjection } | undefined;
+/** Decoded last chunk, matched by its bytes: a grown last chunk decodes only the appended suffix (#420). */
+let journalTail: { key: string; name: string; bytes: Buffer; records: PlacementRecord[]; projection: PlacementProjection } | undefined;
+/** Whole snapshot for an unchanged inventory token (every file snapshot reads is in it). Callers get fresh arrays and a projection clone. */
+let journalSnapshot: { token: string; value: Snapshot } | undefined;
+// Records are frozen and shared (the bulk); every small mutable field is a fresh copy, so a caller's mutation never reaches the memo.
+const detachSnapshot = (value: Snapshot): Snapshot => ({ ...value, records: value.records.map(freeze), chunks: value.chunks.map(chunk => ({ ...chunk })), projection: value.projection.clone(),
+  epoch: structuredClone(value.epoch), activation: structuredClone(value.activation),
+  ...(value.intent ? { intent: structuredClone(value.intent) } : {}), ...(value.pendingRecord ? { pendingRecord: structuredClone(value.pendingRecord) } : {}) });
 function snapshot(p: Paths): Snapshot {
   const before = inventory(p);
+  if (journalSnapshot?.token === canonicalJSON([p.dir, before.token])) return detachSnapshot(journalSnapshot.value);
   const epoch = decode(readOwned(join(p.dir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
   if (placementEpochHash(epoch) !== p.hash) return fail("conflict");
   const plan = decode(readOwned(join(p.dir, "activation.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), value => activation(epoch, p.hash, value));
   const pendingBytes = readOwned(join(p.dir, "append-intent.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
   const intentPending = pendingBytes !== undefined && (!pendingBytes.length || pendingBytes.at(-1) !== 10);
   const pending = pendingBytes && !intentPending ? decode(pendingBytes, value => intent(value, p.hash)) : undefined;
-  const projection = new PlacementProjection(epoch), records: PlacementRecord[] = [], chunks: Chunk[] = [];
+  let projection = new PlacementProjection(epoch); const records: PlacementRecord[] = [], chunks: Chunk[] = [];
   const apply = (bytes: Buffer) => {
     let start = 0;
     while (start < bytes.length) {
@@ -137,7 +156,13 @@ function snapshot(p: Paths): Snapshot {
     }
   };
   const chunkNames = [...before.files.keys()].filter(name => /^records-\d{5}\.jsonl$/.test(name));
+  const prefixKey = (count: number) => canonicalJSON([p.dir, stamp(before.files.get("epoch.json")!), chunkNames.slice(0, count).map(name => [name, stamp(before.files.get(name)!)])]);
+  const cached = journalPrefix && journalPrefix.count < chunkNames.length && journalPrefix.key === prefixKey(journalPrefix.count) ? journalPrefix : undefined;
+  let prefix: typeof journalPrefix, tail: typeof journalTail;
+  if (cached) { projection = cached.projection.clone(); records.push(...cached.records); chunks.push(...cached.chunks); }
   for (const [index, name] of chunkNames.entries()) {
+    if (index < (cached?.count ?? 0)) continue;
+    if (index > 0 && index === chunkNames.length - 1) prefix = { key: prefixKey(index), count: index, records: records.map(freeze), chunks: [...chunks], projection: projection.clone() };
     if (name !== `records-${String(index).padStart(5, "0")}.jsonl`) fail();
     const bytes = readOwned(join(p.dir, name), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES)!;
     chunks.push({ name, size: bytes.length, hash: digest(bytes) });
@@ -148,7 +173,14 @@ function snapshot(p: Paths): Snapshot {
       const suffix = bytes.subarray(pending.prefixBytes), expected = line(pending.record);
       if (suffix.length > expected.length || !expected.subarray(0, suffix.length).equals(suffix)) fail();
       if (suffix.length === expected.length) apply(suffix);
-    } else { if (!bytes.length) fail(); apply(bytes); }
+    } else {
+      if (!bytes.length) fail();
+      const last = index === chunkNames.length - 1, known = last ? journalTail : undefined;
+      if (known && known.key === prefixKey(index) && known.name === name && bytes.length >= known.bytes.length && bytes.subarray(0, known.bytes.length).equals(known.bytes)) {
+        projection = known.projection.clone(); records.length = 0; records.push(...known.records); apply(bytes.subarray(known.bytes.length));
+      } else apply(bytes);
+      if (last) tail = { key: prefixKey(index), name, bytes: Buffer.from(bytes), records: records.map(freeze), projection: projection.clone() };
+    }
   }
   if (pending) {
     const found = chunkNames.includes(pending.chunk);
@@ -167,7 +199,11 @@ function snapshot(p: Paths): Snapshot {
   if ((records.length > 0 || pendingBytes !== undefined) && (!activeFence || fencePending || activeFence.epochHash !== p.hash
     || activeFence.homeHash !== epoch.homeHash || activeFence.generation !== epoch.generation)) fail();
   if (inventory(p).token !== before.token) fail("changed");
-  return { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1 + before.renewalObjects, pending: !!pending || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { pendingRecordSequence: pending.record.sequence, pendingRecord: validatePlacementRecord(pending.record) } : {}), ...(pending ? { intent: pending } : {}) };
+  if (prefix) journalPrefix = prefix;
+  if (tail) journalTail = tail;
+  const result: Snapshot = { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1 + before.renewalObjects, pending: !!pending || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { pendingRecordSequence: pending.record.sequence, pendingRecord: validatePlacementRecord(pending.record) } : {}), ...(pending ? { intent: pending } : {}) };
+  journalSnapshot = { token: canonicalJSON([p.dir, before.token]), value: detachSnapshot(result) };
+  return result;
 }
 export function readPlacementJournal(home: string, epochHash: string): PlacementJournalRead {
   return protectedIO(() => {
@@ -349,14 +385,23 @@ export interface PlacementPublicationStored {
   bundle: PlacementPublicationBundle; phase: "prepared" | "artifact-built" | "publication-intent" | "completed";
   facts: PlacementPublicationFact[]; pending: boolean; pendingPhase?: PlacementPublicationFact["phase"];
 }
+/** Validated plan bundle keyed by the stat stamps of epoch.json, the root and every plan chunk (#420); same ceiling as journalPrefix. */
+let publicationBundle: { key: string; bundle: PlacementPublicationBundle } | undefined;
 function publicationRead(p: Paths, attemptHash: string): PlacementPublicationStored {
-  const stem = `publication-${attemptHash}-`, root = decode(readOwned(join(p.dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementPublicationRoot);
-  const epoch = decode(readOwned(join(p.dir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
-  if (root.seal !== attemptHash || root.epochHash !== p.hash || root.generation !== epoch.generation || root.homeHash !== epoch.homeHash) fail("corrupt");
-  const chunks = root.chunks.map(c => decode(readOwned(join(p.dir, `${stem}chunk-${String(c.index).padStart(5, "0")}.json`), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES), value => value));
-  const bundle = validatePlacementPublicationBundle({ root, chunks });
-  const allowed = new Set(publicationFileNames(root));
-  for (const name of inventory(p).files.keys()) if (name.startsWith(stem) && !allowed.has(name)) fail("corrupt");
+  const stem = `publication-${attemptHash}-`, files = inventory(p).files;
+  const keyOf = (found: Map<string, BigIntStats>) => canonicalJSON([p.dir, attemptHash, [...found].filter(([name]) => name === "epoch.json" || name === stem + "root.json" || name.startsWith(stem + "chunk-")).map(([name, stat]) => [name, stamp(stat)])]);
+  const key = keyOf(files);
+  let bundle = publicationBundle?.key === key ? publicationBundle.bundle : undefined;
+  if (!bundle) {
+    const root = decode(readOwned(join(p.dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementPublicationRoot);
+    const epoch = decode(readOwned(join(p.dir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
+    if (root.seal !== attemptHash || root.epochHash !== p.hash || root.generation !== epoch.generation || root.homeHash !== epoch.homeHash) fail("corrupt");
+    const chunks = root.chunks.map(c => decode(readOwned(join(p.dir, `${stem}chunk-${String(c.index).padStart(5, "0")}.json`), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES), value => value));
+    bundle = freeze(validatePlacementPublicationBundle({ root, chunks }));
+    if (keyOf(inventory(p).files) === key) publicationBundle = { key, bundle }; // Never cache bytes read across a concurrent change.
+  }
+  const root = bundle.root, allowed = new Set(publicationFileNames(root));
+  for (const name of files.keys()) if (name.startsWith(stem) && !allowed.has(name)) fail("corrupt");
   const facts: PlacementPublicationFact[] = []; let phase: PlacementPublicationStored["phase"] = "prepared", pending = false, absent = false; let pendingPhase: PlacementPublicationFact["phase"] | undefined;
   for (const [index, suffix] of ["artifact", "intent", "receipt"].entries()) {
     const bytes = readOwned(join(p.dir, stem + suffix + ".json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
@@ -409,12 +454,20 @@ function reservedPublicationJournalNames(p: Paths): string[] {
   for (const root of complete) names.push(...placementPublicationReservedJournalNames(root, read, sizes));
   return names;
 }
+/** A complete (newline-terminated) root is immutable: keep the last decoded one by its stat stamp (#420), same ceiling as journalPrefix. */
+let reservationRoot: { key: string; root: PlacementPublicationRoot } | undefined;
 function publicationRootsForReservation(p: Paths): PlacementPublicationRoot[] {
-  const roots: PlacementPublicationRoot[] = [];
-  for (const name of inventory(p).files.keys()) if (/^publication-[a-f0-9]{64}-root\.json$/.test(name)) {
-    const bytes = readOwned(join(p.dir, name), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
-    if (!bytes?.length || bytes.at(-1) !== 10) continue;
-    const root = decode(bytes, validatePlacementPublicationRoot), receiptBytes = readOwned(join(p.dir, `publication-${root.seal}-receipt.json`), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
+  const roots: PlacementPublicationRoot[] = [], files = inventory(p).files;
+  for (const [name, stat] of files) if (/^publication-[a-f0-9]{64}-root\.json$/.test(name)) {
+    const key = canonicalJSON([p.dir, name, stamp(stat)]);
+    let root = reservationRoot?.key === key ? reservationRoot.root : undefined;
+    if (!root) {
+      const bytes = readOwned(join(p.dir, name), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
+      if (!bytes?.length || bytes.at(-1) !== 10) continue;
+      root = freeze(decode(bytes, validatePlacementPublicationRoot));
+      const now = state(join(p.dir, name)); if (now && stamp(now) === stamp(stat)) reservationRoot = { key, root };
+    }
+    const receiptBytes = readOwned(join(p.dir, `publication-${root.seal}-receipt.json`), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
     if (receiptBytes?.length && receiptBytes.at(-1) === 10) {
       const read = publicationRead(p, root.seal); if (read.phase === "completed" && !read.pending) continue;
     }

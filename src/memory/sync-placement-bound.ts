@@ -1,0 +1,39 @@
+/** Placement sync size contract and its privacy-safe refusal receipt (#419). Numbers only: no row, path or policy text. */
+import { types } from "node:util";
+import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
+
+/**
+ * One source envelope from activation to first sync: home-wide capture, the selected-source prefixes a publication
+ * plan binds, and the canonical rows materialization admits (selected sources plus verified incoming rows) share
+ * 64 MiB and 20000 rows. Journal limits are separate and unchanged (20000 records and 256 objects per epoch).
+ */
+export const PLACEMENT_SOURCE_MAX_BYTES = 64 * 1024 * 1024, PLACEMENT_SOURCE_MAX_ROWS = 20000;
+
+export type PlacementSyncBoundPhase = "source-capture" | "materialization" | "publication-plan";
+const KINDS = ["source-bytes", "source-rows", "journal-records", "journal-objects", "bytes", "rows", "source-files", "metadata-bytes", "row-bytes", "retained-identities"] as const;
+export type PlacementSyncBoundKind = typeof KINDS[number];
+export interface PlacementSyncBound { phase: PlacementSyncBoundPhase; kind: PlacementSyncBoundKind; limit: number; observed: number }
+
+const phases: Record<PlacementSyncBoundPhase, string> = { "source-capture": "source capture", materialization: "materialization", "publication-plan": "publication planning" };
+export function placementSyncBoundMessage(bound: PlacementSyncBound): string {
+  const remedy = bound.kind === "journal-records" || bound.kind === "journal-objects"
+    ? "The active epoch journal cannot hold this publication; retain the inputs and report this bound."
+    : "Retain the inputs and report this bound; no row was omitted to fit.";
+  return `Placement sync refused before any publication attempt: ${phases[bound.phase]} exceeds its supported ${bound.kind} bound (observed ${bound.observed}, limit ${bound.limit}). No source, selector, epoch, journal or remote ref was changed. ${remedy}`;
+}
+/** Expected input refusal before a publication attempt exists. Code stays "bound" for existing callers. */
+export class PlacementSyncBoundError extends SyncPlacementJournalError {
+  constructor(readonly bound: PlacementSyncBound) { super("bound"); this.message = placementSyncBoundMessage(bound); this.name = "PlacementSyncBoundError"; }
+}
+/** Only allowlisted own data properties of a journal bound error become a receipt; any other exception yields none. */
+export function placementSyncBoundReceipt(error: unknown): PlacementSyncBound | undefined {
+  try {
+    if (!error || typeof error !== "object" || types.isProxy(error) || !(error instanceof SyncPlacementJournalError)) return undefined;
+    const own = (object: object, key: string): unknown => Object.getOwnPropertyDescriptor(object, key)?.value;
+    const raw = own(error, "bound"); if (own(error, "code") !== "bound" || !raw || typeof raw !== "object" || types.isProxy(raw)) return undefined;
+    const kind = own(raw, "kind"), limit = own(raw, "limit"), observed = own(raw, "observed"), phase = own(raw, "phase") ?? "source-capture";
+    if (typeof kind !== "string" || !(KINDS as readonly string[]).includes(kind) || typeof phase !== "string" || !Object.hasOwn(phases, phase)
+      || typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 0 || typeof observed !== "number" || !Number.isSafeInteger(observed) || observed < 0) return undefined;
+    return { phase: phase as PlacementSyncBoundPhase, kind: kind as PlacementSyncBoundKind, limit, observed };
+  } catch { return undefined; }
+}

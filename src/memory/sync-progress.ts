@@ -1,0 +1,192 @@
+/**
+ * #418: advisory progress for a long-running placement sync. Telemetry only: never mutation authority, a publication
+ * receipt or proof of success. A snapshot carries phase names, unit counts and timestamps, never a memory body, path,
+ * project name, row id, policy pattern, credential or remote URL.
+ *
+ * There is no timer. Every update is a cooperative checkpoint reached by real work, so a blocked call or a starved
+ * event loop leaves an honest stale `lastAliveUnixMs` instead of a manufactured heartbeat.
+ */
+import { randomBytes } from "node:crypto";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { processLiveness, processSignature, type Liveness } from "./platform.ts";
+
+export const SYNC_PROGRESS_SCHEMA = "agent-mem.sync-progress/v1", SYNC_PROGRESS_INTERVAL_MS = 1000, SYNC_PROGRESS_DIR = "sync-status";
+const MAX_OPERATIONS = 8, MAX_BYTES = 4096, MAX_NAMES = 64;
+const PHASES = ["writer-verification", "remote-verification", "source-capture", "policy-evaluation", "dependency-decisions", "artifact-construction",
+  "publication-plan", "journal", "publication", "acknowledgment", "import", "receipt"] as const;
+const UNITS = ["rows", "records", "objects"] as const, STATES = ["running", "succeeded", "failed", "cancelled", "interrupted"] as const;
+const CAUSES = ["bound", "unknown-outcome", "unavailable", "cancelled"] as const;
+export type SyncProgressPhase = typeof PHASES[number];
+export type SyncProgressUnit = typeof UNITS[number];
+export type SyncProgressState = typeof STATES[number];
+export type SyncProgressCause = typeof CAUSES[number];
+export interface SyncProgressCounts { permitted: number; local: number; declined: number; held: number }
+export interface SyncProgressSnapshot {
+  schema: typeof SYNC_PROGRESS_SCHEMA; operationId: string; state: SyncProgressState; phase: SyncProgressPhase;
+  /** How many times this operation entered this phase; completed counts are monotonic within one phase attempt. */
+  attempt: number;
+  startedUnixMs: number; elapsedMs: number; phaseElapsedMs: number;
+  /** Absent when the phase has no countable unit or its total is not genuinely known. No percentage or ETA is derived. */
+  unit?: SyncProgressUnit; completed?: number; total?: number;
+  counts?: SyncProgressCounts;
+  /** Complete writer/source proofs and cheap fence checks so far (#417 measurement counters). */
+  proofs: { complete: number; fence: number };
+  /** Advances only when a unit of work or a phase completes; `lastAliveUnixMs` is any checkpoint the process reached. */
+  lastWorkProgressUnixMs: number; lastAliveUnixMs: number;
+  cause?: SyncProgressCause;
+}
+export type SyncProgressSink = (snapshot: SyncProgressSnapshot) => void;
+export interface SyncProgressOptions { sink: SyncProgressSink; intervalMs?: number; now?: () => number; mono?: () => number; operationId?: string }
+
+/** Reporter shared by the CLI and the transport. A sink that throws is dropped; it can never fail or alter the sync. */
+export class SyncProgress {
+  readonly operationId: string;
+  private sink?: SyncProgressSink; private readonly intervalMs: number; private readonly now: () => number; private readonly mono: () => number;
+  private readonly started: number; private readonly startedMono: number; private phaseMono: number; private emitted = -Infinity;
+  private current: SyncProgressPhase = "writer-verification"; private readonly entered = new Map<SyncProgressPhase, number>();
+  private unit?: SyncProgressUnit; private completed?: number; private total?: number; private outcome?: SyncProgressCounts;
+  private state: SyncProgressState = "running"; private cause?: SyncProgressCause; private work: number; private aliveAt: number;
+  private readonly proofs = { complete: 0, fence: 0 };
+  constructor(options: SyncProgressOptions) {
+    this.sink = options.sink; this.intervalMs = Math.max(0, options.intervalMs ?? SYNC_PROGRESS_INTERVAL_MS);
+    this.now = options.now ?? Date.now; this.mono = options.mono ?? (() => performance.now());
+    this.operationId = options.operationId ?? randomBytes(8).toString("hex");
+    this.started = this.work = this.aliveAt = this.now(); this.startedMono = this.phaseMono = this.mono(); this.emit(true);
+  }
+  snapshot(): SyncProgressSnapshot {
+    const mono = this.mono();
+    return { schema: SYNC_PROGRESS_SCHEMA, operationId: this.operationId, state: this.state, phase: this.current, attempt: this.entered.get(this.current) ?? 1,
+      startedUnixMs: this.started, elapsedMs: Math.round(mono - this.startedMono), phaseElapsedMs: Math.round(mono - this.phaseMono),
+      ...(this.unit ? { unit: this.unit, completed: this.completed ?? 0, ...(this.total !== undefined ? { total: this.total } : {}) } : {}),
+      ...(this.outcome ? { counts: { ...this.outcome } } : {}), proofs: { ...this.proofs },
+      lastWorkProgressUnixMs: this.work, lastAliveUnixMs: this.aliveAt, ...(this.cause ? { cause: this.cause } : {}) };
+  }
+  private emit(force: boolean): void {
+    if (!this.sink) return; const mono = this.mono();
+    if (!force && mono - this.emitted < this.intervalMs) return; this.emitted = mono;
+    try { this.sink(this.snapshot()); } catch { this.sink = undefined; }
+  }
+  /** A phase change is always reported at once, before its long work begins. */
+  phase(phase: SyncProgressPhase, unit?: SyncProgressUnit, total?: number): void {
+    if (this.state !== "running") return;
+    this.current = phase; this.entered.set(phase, (this.entered.get(phase) ?? 0) + 1);
+    this.unit = unit; this.completed = unit ? 0 : undefined; this.total = unit && total !== undefined && Number.isSafeInteger(total) && total >= 0 ? total : undefined;
+    this.phaseMono = this.mono(); this.work = this.aliveAt = this.now(); this.emit(true);
+  }
+  advance(count = 1): void { if (this.state !== "running" || !this.unit) return; this.completed = (this.completed ?? 0) + count; this.work = this.aliveAt = this.now(); this.emit(false); }
+  /** A reached checkpoint that completed no unit: it never moves completed counts or the last-work timestamp. */
+  alive(): void { if (this.state !== "running") return; this.aliveAt = this.now(); this.emit(false); }
+  proof(complete: boolean): void { this.proofs[complete ? "complete" : "fence"]++; this.alive(); }
+  counts(counts: SyncProgressCounts): void { this.outcome = { ...counts }; }
+  /** Terminal state. Success is reported only by the caller that holds the real sync receipt. */
+  finish(state: Exclude<SyncProgressState, "running" | "interrupted">, cause?: SyncProgressCause): void {
+    if (this.state !== "running") return; this.state = state; this.cause = state === "succeeded" ? undefined : cause; this.aliveAt = this.now();
+    if (state === "succeeded") this.work = this.aliveAt; this.emit(true);
+  }
+}
+
+const seconds = (ms: number) => `${Math.max(0, Math.round(ms / 1000))}s`;
+/** One human line; unknown totals stay unknown and no percentage or ETA is printed. */
+export function renderSyncProgress(snapshot: SyncProgressSnapshot, now = Date.now()): string {
+  const phase = snapshot.phase.replaceAll("-", " "), units = snapshot.unit ? `: ${snapshot.completed ?? 0}${snapshot.total !== undefined ? `/${snapshot.total}` : ""} ${snapshot.unit}` : "";
+  const counts = snapshot.counts ? `; permitted ${snapshot.counts.permitted}, local ${snapshot.counts.local}, declined ${snapshot.counts.declined}, held ${snapshot.counts.held}` : "";
+  const attempt = snapshot.attempt > 1 ? `; attempt ${snapshot.attempt}` : "";
+  if (snapshot.state !== "running") return `amem sync: ${snapshot.state}${snapshot.cause ? ` (${snapshot.cause})` : ""} in ${phase}${units}${counts}; elapsed ${seconds(snapshot.elapsedMs)}`;
+  return `amem sync: ${phase}${units}${attempt}${counts}; elapsed ${seconds(snapshot.elapsedMs)}; last work progress ${seconds(now - snapshot.lastWorkProgressUnixMs)} ago`;
+}
+
+interface Owner { pid: number; signature?: string }
+function privateDirectory(dir: string): boolean {
+  const stat = lstatSync(dir, { throwIfNoEntry: false });
+  return !!stat && stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0;
+}
+function names(dir: string): string[] {
+  const reader = opendirSync(dir), found: string[] = [];
+  try { for (;;) { const entry = reader.readSync(); if (!entry || found.length >= MAX_NAMES) break; if (/^[a-f0-9]{16}\.json$/.test(entry.name)) found.push(entry.name); } } finally { reader.closeSync(); }
+  return found;
+}
+function readBounded(file: string): Buffer | undefined {
+  const before = lstatSync(file, { throwIfNoEntry: false });
+  if (!before || !before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.uid !== process.getuid?.() || before.size > MAX_BYTES) return undefined;
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd); if (!stat.isFile() || stat.size > MAX_BYTES) return undefined;
+    const bytes = Buffer.alloc(stat.size); let at = 0;
+    while (at < bytes.length) { const count = readSync(fd, bytes, at, bytes.length - at, at); if (count <= 0) return undefined; at += count; }
+    return bytes;
+  } finally { closeSync(fd); }
+}
+const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+/** Allowlisted enumerations and non-negative integers only: a tampered sidecar cannot inject text into a terminal. */
+function validate(value: unknown, operationId: string): { snapshot: SyncProgressSnapshot; owner: Owner } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>, owner = v.owner as Record<string, unknown> | undefined, proofs = v.proofs as Record<string, unknown> | undefined, counts = v.counts as Record<string, unknown> | undefined;
+  if (v.schema !== SYNC_PROGRESS_SCHEMA || v.operationId !== operationId || !(STATES as readonly unknown[]).includes(v.state) || !(PHASES as readonly unknown[]).includes(v.phase)
+    || ![v.attempt, v.startedUnixMs, v.elapsedMs, v.phaseElapsedMs, v.lastWorkProgressUnixMs, v.lastAliveUnixMs].every(count)
+    || !proofs || !count(proofs.complete) || !count(proofs.fence) || !owner || !count(owner.pid) || owner.signature !== undefined && (typeof owner.signature !== "string" || owner.signature.length > 256)
+    || v.unit !== undefined && (!(UNITS as readonly unknown[]).includes(v.unit) || !count(v.completed)) || v.total !== undefined && !count(v.total)
+    || v.cause !== undefined && !(CAUSES as readonly unknown[]).includes(v.cause)
+    || counts !== undefined && ![counts.permitted, counts.local, counts.declined, counts.held].every(count)) return undefined;
+  const snapshot: SyncProgressSnapshot = { schema: SYNC_PROGRESS_SCHEMA, operationId, state: v.state as SyncProgressState, phase: v.phase as SyncProgressPhase, attempt: v.attempt as number,
+    startedUnixMs: v.startedUnixMs as number, elapsedMs: v.elapsedMs as number, phaseElapsedMs: v.phaseElapsedMs as number,
+    ...(v.unit !== undefined ? { unit: v.unit as SyncProgressUnit, completed: v.completed as number, ...(v.total !== undefined ? { total: v.total as number } : {}) } : {}),
+    ...(counts ? { counts: { permitted: counts.permitted as number, local: counts.local as number, declined: counts.declined as number, held: counts.held as number } } : {}),
+    proofs: { complete: proofs.complete as number, fence: proofs.fence as number }, lastWorkProgressUnixMs: v.lastWorkProgressUnixMs as number, lastAliveUnixMs: v.lastAliveUnixMs as number,
+    ...(v.cause !== undefined ? { cause: v.cause as SyncProgressCause } : {}) };
+  return { snapshot, owner: { pid: owner.pid as number, ...(typeof owner.signature === "string" ? { signature: owner.signature } : {}) } };
+}
+function load(dir: string, name: string): { snapshot: SyncProgressSnapshot; owner: Owner } | undefined {
+  try { const bytes = readBounded(join(dir, name)); return bytes ? validate(JSON.parse(bytes.toString("utf8")), name.slice(0, 16)) : undefined; } catch { return undefined; }
+}
+
+/**
+ * Telemetry sidecar under `<home>/sync-status/<operationId>.json`: outside every source, journal and proof namespace,
+ * one file per operation, replaced atomically at most once per reporting interval. It keeps the newest 8 operations;
+ * a running operation whose owner is alive is never pruned. Any failure throws into the reporter, which drops the sink.
+ */
+export function syncProgressSidecar(home: string, owner: Owner = { pid: process.pid, ...(processSignature(process.pid) ? { signature: processSignature(process.pid)! } : {}) }): SyncProgressSink {
+  const dir = join(home, SYNC_PROGRESS_DIR); let ready = false;
+  return snapshot => {
+    if (!ready) {
+      mkdirSync(dir, { mode: 0o700, recursive: true }); if (!privateDirectory(dir)) throw new Error("sync status directory unavailable");
+      const kept = names(dir).filter(name => name !== `${snapshot.operationId}.json`).map(name => ({ name, mtimeMs: lstatSync(join(dir, name), { throwIfNoEntry: false })?.mtimeMs ?? 0 })).sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const { name } of kept.slice(MAX_OPERATIONS - 1)) {
+        const old = load(dir, name);
+        if (!old || old.snapshot.state !== "running" || processLiveness(old.owner.pid, old.owner.signature) === "gone") rmSync(join(dir, name), { force: true });
+      }
+      ready = true;
+    }
+    const file = join(dir, `${snapshot.operationId}.json`), temporary = join(dir, `.${snapshot.operationId}.tmp`);
+    rmSync(temporary, { force: true }); writeFileSync(temporary, JSON.stringify({ ...snapshot, owner }) + "\n", { mode: 0o600, flag: "wx" }); renameSync(temporary, file);
+  };
+}
+
+export interface SyncOperationStatus extends SyncProgressSnapshot { ownerLiveness: Liveness; lastAliveAgoMs: number; lastWorkProgressAgoMs: number }
+export interface SyncStatusReport { operations: SyncOperationStatus[]; malformed: number }
+/**
+ * Read-only status for another terminal: opens no realm, takes no lock, renews no proof and writes nothing. A running
+ * operation whose owner is gone is reported as interrupted, never as a success; unreadable sidecars are only counted.
+ */
+export function readSyncStatus(home: string, now = Date.now(), liveness: (pid: number, signature?: string) => Liveness = processLiveness): SyncStatusReport {
+  const dir = join(home, SYNC_PROGRESS_DIR), report: SyncStatusReport = { operations: [], malformed: 0 };
+  if (!privateDirectory(dir)) return report;
+  for (const name of names(dir)) {
+    const read = load(dir, name); if (!read) { report.malformed++; continue; }
+    const ownerLiveness = read.snapshot.state === "running" ? liveness(read.owner.pid, read.owner.signature) : "gone";
+    report.operations.push({ ...read.snapshot, ...(read.snapshot.state === "running" && ownerLiveness === "gone" ? { state: "interrupted" as const } : {}), ownerLiveness,
+      lastAliveAgoMs: Math.max(0, now - read.snapshot.lastAliveUnixMs), lastWorkProgressAgoMs: Math.max(0, now - read.snapshot.lastWorkProgressUnixMs) });
+  }
+  report.operations.sort((a, b) => b.startedUnixMs - a.startedUnixMs || a.operationId.localeCompare(b.operationId));
+  report.operations.splice(MAX_OPERATIONS); return report;
+}
+export function renderSyncStatus(report: SyncStatusReport, now = Date.now()): string {
+  if (!report.operations.length) return `no placement sync operation recorded${report.malformed ? ` (${report.malformed} unreadable status file${report.malformed === 1 ? "" : "s"} ignored)` : ""}`;
+  const lines = report.operations.map(row => {
+    const line = renderSyncProgress(row, now).replace(/^amem sync: /, "");
+    const tail = row.state === "running" ? `; last observed alive ${seconds(row.lastAliveAgoMs)} ago${row.ownerLiveness === "unknown" ? "; owner liveness unknown" : ""}; percentage and ETA unknown`
+      : row.state === "interrupted" ? `; owner process is gone; last observed alive ${seconds(row.lastAliveAgoMs)} ago; not a successful sync` : "";
+    return `${row.operationId} ${row.state === "interrupted" ? line.replace(/; last work progress .*$/, "").replace(/^/, "interrupted in ") : line}${tail}`;
+  });
+  return [...lines, ...(report.malformed ? [`(${report.malformed} unreadable status file${report.malformed === 1 ? "" : "s"} ignored)`] : [])].join("\n");
+}

@@ -3,7 +3,7 @@
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
 <!-- facts:version -->
-Version: 0.26.2. Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.26.3. Requires Bun 1.4.2 or later; no runtime dependencies.
 <!-- /facts:version -->
 
 ## Quick start
@@ -114,6 +114,7 @@ The machine-local file `amem.config.json` in the memory home (see `amem status` 
 - `denyPaths`: substrings of a path that are never captured and that decline any note, candidate or MCP answer naming them. `piiPatterns`: case-insensitive literal substrings (never regular expressions) that decline a value and redact a capture excerpt. Each list holds up to 64 entries of up to 256 bytes.
 - `records`: optional boolean, enabled by default. `false` disables the static native SessionStart instruction and new Claude, Codex, Pi and Kimi `Record` extraction; a repository may disable it but cannot re-enable a machine opt-out. See [assistant records](#assistant-records-313).
 - `briefBytes`, `excerptBytes`, `capturePaths` can only lower the built-in ceilings (the 1200-byte SessionStart context, 2000-character capture excerpt, 32 captured paths). `capture.capMb` and `capture.retentionDays` are the lowest layer of the capture size and retention bounds: a shard's own `config.json` and the home's `capture-config.json` still override them.
+- `privateRemotes`: up to 16 exact remote URLs of a self-hosted Git server that you state are private. `amem sync` (all forms) and repository promotion treat an exact match as a private remote; any other non-GitHub URL stays unknown and is refused. It is your statement, not a check: amem cannot see who can read that server. GitHub URLs are always asked of GitHub (listing one is an error), a URL with a password is an error, and only the home's own file may carry this key.
 - A file with an unknown key, a bad value, a link, or more than 64 KiB is an error that names the file. An unreadable policy is never treated as no policy.
 - `<private>...</private>` spans are dropped before anything else reads the text, at every write boundary (capture, MCP candidates and work lists, notes, goals, promotion and import), so they are never screened, counted or stored. Tags match like HTML (case-insensitive, with attributes or spaces, and `<private/>` opens a span); an unclosed span drops the rest of the text.
 
@@ -617,6 +618,8 @@ amem migrate --sync-placement --abandon --json
 ```
 
 Dry-run shows root versions/pins and safe policy counts, never row text or patterns, and writes nothing. Initial writer errors name the root category and cause, with upgrade/setup instructions. If a pre-marker interruption retained an intent and its inputs changed, person `--abandon` removes only its owned initial metadata so a fresh preview/apply can follow. It cannot remove a v3 marker, active fence or journal history. After apply, choose the private remote on the first v3 sync (`amem sync --remote <private-git-url>`); ordinary and cadence sync then read the immutable root locator and measure the installs afresh. Allowed originals can publish while declined originals remain in the local append-only history, with counts in the sync receipt. No writer roots need to be repeated on sync.
+
+A long first sync reports its phase, row counters and last progress on stderr when stderr is a terminal (`--progress json` for one versioned event per line, `--progress off` to silence it); stdout and `--json` output are unchanged. From another terminal, `amem sync --status` shows running, finished or interrupted operations without opening memory or taking a lock. One sync covers the selected project plus the user overlay. Activation and first sync share a 64 MiB/20000-row source envelope; a refusal names its phase, bound kind, limit and observed size.
 
 On an active home, the same dry-run/apply commands explicitly renew the writer inventory on its existing epoch (#282). Declare the complete new 0.22.0-or-later roots after updating host pins and managed setup receipts. Ordinary and cadence sync then locate the new inventory and measure it afresh; original activation data, holds and prior receipts are unchanged. Pending publication or source-recovery work must first be finished with the inventoried install, for example after `dot ai rollback amem` or restoring the host's previous pin.
 

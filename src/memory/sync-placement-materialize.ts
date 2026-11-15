@@ -1,12 +1,13 @@
 /** Shared internal row materialization. All source/transport authority and effect boundaries belong to the caller. */
 import { createHash } from "node:crypto";
 import { canonicalJSON, hashJSON } from "./generation.ts";
-import { SYNC_SCREEN_MAX_BYTES, SYNC_SCREEN_MAX_ROWS, type OutboundVerdict } from "./sync-screen.ts";
+import type { OutboundVerdict } from "./sync-screen.ts";
+import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS, PlacementSyncBoundError } from "./sync-placement-bound.ts";
 import type { PlacementCapture } from "./sync-placement-capture.ts";
 import { compilePlacementDependencies, type DependencySource, type VerifiedDependencyEndpoint } from "./sync-placement-dependencies.ts";
 import { compilePlacementGitObjects, type PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_DESCRIPTOR_SCHEMA, PLACEMENT_FORMAT } from "./sync-placement-format.ts";
-import { placementKeyId, SyncPlacementJournalError, type PlacementKey, type PlacementRealm } from "./sync-placement-journal-format.ts";
+import { placementKeyId, type PlacementKey, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { PlacementProjection } from "./sync-placement-projection.ts";
 import type { PlacementPublicationBundle, PlacementPublicationDecision, PlacementPublicationObject, PlacementPublicationTarget } from "./sync-placement-publication-plan.ts";
 import type { ShardHistory } from "./shard-sync-history.ts";
@@ -26,6 +27,8 @@ export interface PlacementMaterializeInput {
   readTree(index: number, head: string): Promise<string>;
   publisherLineages(index: number, rows: readonly PruneRow[]): ReadonlyMap<string, PublicPruneLineage>;
   createdUnixSeconds: number; frozen?: PlacementPublicationBundle;
+  /** Advisory telemetry only (#418): phase names and unit counts, never a row, key or verdict detail. */
+  progress?: { phase(name: "policy-evaluation" | "dependency-decisions" | "artifact-construction", unit?: "rows", total?: number): void; advance(): void };
 }
 export interface PlacementMaterializeTargetResult { candidate: ShardHistory; objects: PlannedGitObject[]; commit?: string }
 export interface PlacementMaterializeResult {
@@ -54,26 +57,33 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
   const {capture,projection,old,frozen,createdUnixSeconds}=input;
   const workTargets = input.targets.map(target => ({...target,objects:[] as PlannedGitObject[],commit:undefined as string|undefined,candidate:undefined as ShardHistory|undefined}));
     const sources: DependencySource[] = [], blocked = new Set<string>(), verified = input.verifiedPrunes;
-    let sourceBytes=0;
-    const admit=(row:unknown)=>{const bytes=Buffer.byteLength(canonicalJSON(row));if(sources.length>=SYNC_SCREEN_MAX_ROWS||sourceBytes+bytes>SYNC_SCREEN_MAX_BYTES)throw new SyncPlacementJournalError("bound");sourceBytes+=bytes;};
+    // Collect every selected original first: size admission below is pure and precedes the first policy evaluation
+    // (and its writer proofs), so an unsupported source set refuses before any expensive per-row work (#419).
+    const admitted: Omit<DependencySource, "policy">[] = [], seenSources = new Set<string>();
     const prunedByTarget = new Map(workTargets.map(target => [target, target.pruned]));
     for (const source of capture.rows.values()) {
       const target = workTargets.find(target => sameRealm(physical(target), source.key.realm)); if (!target) refuse();
       const pruned = prunedByTarget.get(target)!.has(source.key.id) && !target.fetched.has(source.key.id);
       if (pruned) blocked.add(placementKeyId(source.key));
-      admit(source.row); sources.push({ key: source.key, row: source.row, sourcePlacement: source.sourcePlacement, policy: input.evaluate(source.row), held: !!projection.get(source.key)?.held || !!pruned });
+      seenSources.add(placementKeyId(source.key)); admitted.push({ key: source.key, row: source.row, sourcePlacement: source.sourcePlacement, held: !!projection.get(source.key)?.held || !!pruned });
     }
     for (const target of workTargets) for (const row of target.localPrunes.values()) {
-      const key = keyFor(target,row); if (sources.some(source => placementKeyId(source.key) === placementKeyId(key))) continue;
-      admit(row); sources.push({ key, row, sourcePlacement: "synced", policy: input.evaluate(row), held: !!projection.get(key)?.held });
+      const key = keyFor(target,row), id = placementKeyId(key); if (seenSources.has(id)) continue;
+      seenSources.add(id); admitted.push({ key, row, sourcePlacement: "synced", held: !!projection.get(key)?.held });
     }
     // Incoming verified occurrences are selected immutable originals too. Classify them before import so a private
     // remote goal cannot temporarily authorize a new dependent, and exposure/holds are durable in this same attempt.
-    const seenSources=new Set(sources.map(source=>placementKeyId(source.key)));
     for(const [index,target]of workTargets.entries())for(const row of old[index]?.rows.values()??[])if(row.op!=="prune"||row.generation===target.generation){
       const key=keyFor(target,row),id=placementKeyId(key);if(seenSources.has(id))continue;seenSources.add(id);
-      admit(row); sources.push({key,row,sourcePlacement:"synced",policy:input.evaluate(row),held:!!projection.get(key)?.held});
+      admitted.push({key,row,sourcePlacement:"synced",held:!!projection.get(key)?.held});
     }
+    // Source size, not outbound size: local and declined rows count too, because their decisions are bound in the plan.
+    if (admitted.length > PLACEMENT_SOURCE_MAX_ROWS) throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-rows", limit: PLACEMENT_SOURCE_MAX_ROWS, observed: admitted.length });
+    let sourceBytes = 0; for (const source of admitted) sourceBytes += Buffer.byteLength(canonicalJSON(source.row));
+    if (sourceBytes > PLACEMENT_SOURCE_MAX_BYTES) throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-bytes", limit: PLACEMENT_SOURCE_MAX_BYTES, observed: sourceBytes });
+    input.progress?.phase("policy-evaluation", "rows", admitted.length);
+    for (const source of admitted) { sources.push({ ...source, policy: input.evaluate(source.row) }); input.progress?.advance(); }
+    input.progress?.phase("dependency-decisions");
     // Strong endpoints are already in sources and current holds cannot be bypassed by past publication. Only
     // deletion/prune exceptions need a second verified occurrence fact; do not duplicate every historical body.
     const publicNeeded=new Set<string>();
@@ -126,6 +136,7 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
           }
         }
         target.objects=[];
+        if(pass===0&&index===0)input.progress?.phase("artifact-construction");
         if(publish){
           const previous=old[index]&&target.remote?{tree:await input.readTree(index,frozen?.root.targets[index]?.expectedRemoteHead??target.remote!),commit:frozen?.root.targets[index]?.expectedRemoteHead??target.remote!}:undefined;
           const objects=compilePlacementGitObjects(files,frozen?.root.targets[index]?.expectedRemoteHead??target.remote??null,createdUnixSeconds,previous);target.objects=objects.objects;target.commit=objects.commit;

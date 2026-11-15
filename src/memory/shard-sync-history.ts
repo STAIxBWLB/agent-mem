@@ -69,6 +69,8 @@ export class ShardHistoryAuditor {
   readonly #origins = new Map<string, ShardHistoryOrigin>();
   readonly #manifestOrigins = new Map<string, { commit: string; blob: string }>();
   readonly #parents = new Map<string, string[]>();
+  /** Root tree of each hash-verified commit: a commit object is immutable, so an audited commit is not re-read (#420). */
+  readonly #roots = new Map<string, string>();
   #running = false;
   constructor(options: ShardHistoryAuditorOptions) {
     this.#ref = shardSyncRef(options.realm);
@@ -217,7 +219,9 @@ export class ShardHistoryAuditor {
       for (const line of lines) {
         const [commit, ...parents] = line.split(" ");
         if (!oid(commit) || parents.some(parent => !oid(parent)) || seen.has(commit)) return fail(); seen.add(commit);
-        const verifiedRoot = this.#options.object ? await this.#commit(commit, parents) : undefined;
+        const known = this.#roots.get(commit), verifiedRoot = !this.#options.object ? undefined
+          : known !== undefined && canonicalJSON(this.#parents.get(commit)) === canonicalJSON(parents) ? known : await this.#commit(commit, parents);
+        if (verifiedRoot !== undefined) this.#roots.set(commit, verifiedRoot);
         if (this.#audited.has(commit)) { if (commit === tip) latest = await this.#tree(commit, verifiedRoot); continue; }
         const current = await this.#tree(commit, verifiedRoot);
         for (const parent of parents) {
