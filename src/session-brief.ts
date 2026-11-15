@@ -229,7 +229,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const reservedSummary = newest && newest.size - 1 <= RECORD_BYTES && newest.size <= remaining ? newest : undefined;
     if (reservedSummary) remaining -= reservedSummary.size;
     else if (newest) coverage.capture = "partial";
-    const firstRecord = preparedRecords[0];
+    const firstRecord = coverage.repo ? preparedRecords[0] : undefined;
     const reservedRecord = firstRecord && firstRecord.size - 1 <= RECORD_BYTES && firstRecord.size <= remaining ? firstRecord : undefined;
     if (reservedRecord) remaining -= reservedRecord.size;
     else if (firstRecord) coverage.capture = "partial";
