@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.26.2
+
+### Fixed
+
+- Raise initial sync-placement source capture from 8 MiB to 64 MiB of aggregate source bytes (20000 rows and the metadata ceilings unchanged), so a valid v2 shard home such as 23 MB/10,248 rows across 22 realms can complete `amem migrate --sync-placement --dry-run` and `--apply`. No row is omitted; capture still refuses above the ceiling. A capture refusal now names the bound kind, limit and observed value and states that no journal, marker or source changed, instead of suggesting an unavailable epoch transition; its error code stays `bound`. Bounded streaming activation for larger homes stays open in #414.
+
 ## 0.26.1
 
 ### Fixed

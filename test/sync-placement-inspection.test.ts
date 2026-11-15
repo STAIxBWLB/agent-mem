@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { PLACEMENT_CAPTURE_MAX_SOURCE_BYTES } from "../src/memory/sync-placement-capture.ts";
 import { createHash } from "node:crypto";
 import type { SpawnSyncOptionsWithBufferEncoding, SpawnSyncOptionsWithStringEncoding } from "node:child_process";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
@@ -105,7 +106,7 @@ test("a retained v2 handle cannot mislabel a rolled-back v3 fence as inactive", 
 for (const kind of ["bytes", "rows", "torn"] as const) test(`incomplete ${kind} source never returns a fingerprint or heals input`, async () => {
   const f = await fixture(), file = join(f.store.dir, "log", `${f.store.machine.id}.jsonl`);
   writeFileSync(file, kind === "rows" ? "{}\n".repeat(20001) : kind === "torn" ? "{unfinished" : "", { mode: 0o600 });
-  if (kind === "bytes") truncateSync(file, 8 * 1024 * 1024 + 1);
+  if (kind === "bytes") truncateSync(file, PLACEMENT_CAPTURE_MAX_SOURCE_BYTES + 1);
   const before = f.snapshot(), result = await inspectSyncPlacement(f.store, f.opts());
   expect(result.complete).toBe(false); expect("fingerprint" in result).toBe(false);
   if (!result.complete && kind !== "torn") expect(result.reason).toBe("input-bound");

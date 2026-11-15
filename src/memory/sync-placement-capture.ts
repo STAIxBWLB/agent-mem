@@ -22,6 +22,19 @@ import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { activationSourceMarkers, assertPlacementActivationOwner, type PlacementActivationOwner, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
 import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, writerInventoryEvidence, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
+import { inspectionBoundReceipt, type InspectionBound } from "./inspection-bound.ts";
+
+/** Home-wide source capture ceilings. Every file is read twice (bytes, then a stable recheck), so the read budget is 2x. */
+export const PLACEMENT_CAPTURE_MAX_SOURCE_BYTES = 64 * 1024 * 1024, PLACEMENT_CAPTURE_MAX_ROWS = 20000;
+/** Source capture refusal before any effect. Code stays "bound" for existing callers; the message names the phase and bound. */
+export class PlacementSourceBoundError extends SyncPlacementJournalError {
+  constructor(readonly bound?: InspectionBound) {
+    super("bound");
+    const detail = bound ? `${bound.kind} bound (observed ${bound.observed}, limit ${bound.limit})` : "read bound";
+    this.message = `Sync placement source capture exceeds its supported ${detail}; no journal, marker or source was changed. This is not journal corruption; retain the inputs and report this bound.`;
+    this.name = "PlacementSourceBoundError";
+  }
+}
 
 /** Host authentication/compatibility facts are re-read at every effect boundary, never inferred from a session marker. */
 export interface PlacementCapturePort {
@@ -64,12 +77,14 @@ function ownedDirectory(dir: string): BigIntStats {
   if (!s.isDirectory() || s.isSymbolicLink() || s.uid !== BigInt(process.getuid!()) || (s.mode & 0o022n) !== 0n) fail();
   return s;
 }
-/** ponytail: capture is capped at 256 metadata objects and 8 MiB/20000 source rows across all realms.
- * Larger homes need a reviewed chunked activation proof; no input is silently omitted at this ceiling. */
+/** ponytail: capture holds the whole home in memory, capped at 256 metadata objects and 64 MiB/20000 source rows
+ * across all realms (#414 raised 8 MiB; a 23 MB/10,248-row home was refused). Larger homes need a reviewed
+ * chunked/streaming activation proof; no input is silently omitted at this ceiling. */
 function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof, sourceOwner?:PlacementActivationOwner): PlacementSourcePreview {
   let selection: PlacementRealm[] | undefined;
   if (selected !== undefined) {
-    if (!Array.isArray(selected) || types.isProxy(selected) || selected.length > 256) fail("bound");
+    if (!Array.isArray(selected) || types.isProxy(selected)) fail();
+    if (selected.length > 256) throw new PlacementSourceBoundError({ kind: "source-files", limit: 256, observed: selected.length });
     const copied = memoryPolicySnapshot(selected); if (!copied) fail();
     selection = copied.map(realm => validatePlacementKey({ realm, id: "0".repeat(32), rowHash: "0".repeat(64) }).realm);
     if (!selection.length || new Set(selection.map(realm => canonicalJSON(realm))).size !== selection.length) fail();
@@ -87,7 +102,9 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   const bytes = (file: string, optional = false): Buffer | undefined => {
     const before = lstatSync(file, { bigint: true, throwIfNoEntry: false });
     if (!before) { if (!optional) fail(); facts.push([file, null]); sourceChecks.push(() => { if(lstatSync(file,{throwIfNoEntry:false})) fail(); }); return undefined; }
-    if (++metadataObjects > 256 || before.size > 262144n || metadataBytes + Number(before.size) > 8 * 1024 * 1024) fail("bound");
+    if (++metadataObjects > 256) throw new PlacementSourceBoundError({ kind: "source-files", limit: 256, observed: metadataObjects });
+    if (before.size > 262144n) throw new PlacementSourceBoundError({ kind: "metadata-bytes", limit: 262144, observed: Number(before.size) });
+    if (metadataBytes + Number(before.size) > 8 * 1024 * 1024) throw new PlacementSourceBoundError({ kind: "metadata-bytes", limit: 8 * 1024 * 1024, observed: metadataBytes + Number(before.size) });
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.uid !== root.uid || (before.mode & 0o022n) !== 0n) fail();
     const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
@@ -137,7 +154,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     if(name==="profile.lock"&&sourceOwner){assertPlacementActivationOwner(sourceOwner,home);continue;}
     if (lstatSync(join(home,name),{throwIfNoEntry:false})) fail();
   }
-  const reader = new SegmentReader(16 * 1024 * 1024, { maxSourceBytes: 8 * 1024 * 1024, maxRows: 20000 });
+  const reader = new SegmentReader(2 * PLACEMENT_CAPTURE_MAX_SOURCE_BYTES, { maxSourceBytes: PLACEMENT_CAPTURE_MAX_SOURCE_BYTES, maxRows: PLACEMENT_CAPTURE_MAX_ROWS });
   const rows = new Map<string, PlacementSourceRow>(), specialRows = new Map<string, PlacementSpecialSourceRow>(), sourceRowsByRealm = new Map<string, readonly PruneSourceRow[]>();
   const directories = [home], prefixes: PlacementPublicationSource[] = [];
   const realms: SyncPlacementActivationContext["realms"][number][] = [];
@@ -147,7 +164,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     directoryFact(dir); const listStamp = lstatSync(dir,{bigint:true});
     sourceChecks.push(() => { if(!same(listStamp,lstatSync(dir,{bigint:true}))) fail(); });
     const iterator = opendirSync(dir), names: string[] = [];
-    try { for (;;) { const item = iterator.readSync(); if (!item) break; if (names.length >= 256) fail("bound"); names.push(item.name); } }
+    try { for (;;) { const item = iterator.readSync(); if (!item) break; if (names.length >= 256) throw new PlacementSourceBoundError({ kind: "source-files", limit: 256, observed: names.length + 1 }); names.push(item.name); } }
     finally { iterator.closeSync(); }
     names.sort(); facts.push([dir, names]); return names;
   };
@@ -300,7 +317,7 @@ function previewSources(home:string,owner?:PlacementActivationOwner):PlacementSo
   catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;
-      if (error instanceof SegmentReadBudgetError) return fail("bound");
+      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
     }
     return fail();
   }
@@ -352,7 +369,7 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="staging"||code==="pending")throw new SharedWriterRevisionError(code);}
       if (error instanceof SyncPlacementJournalError) throw error;
-      if (error instanceof SegmentReadBudgetError) return fail("bound");
+      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
     }
     return fail();
   }
@@ -366,7 +383,7 @@ export function captureSyncPlacementActivationContext(home: string, port: Placem
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error)) {
       if (error instanceof SyncPlacementJournalError) throw error;
-      if (error instanceof SegmentReadBudgetError) return fail("bound");
+      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
     }
     return fail();
   }
