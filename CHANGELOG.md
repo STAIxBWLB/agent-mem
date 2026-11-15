@@ -2,6 +2,19 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.27.0
+
+- Fold current curated search hits from the same task into the best-ranked result, with a folded count; `--ungrouped`, MCP `ungrouped` and `groupTasks: false` expose individual hits. SessionStart curated notes use the same task grouping; the advisory stale hint now marks missing paths or notes whose every checkable path changed. Refs #423, #427.
+- Name pre-publication placement sync refusals with a fixed category, phase and next step; `placementPublication.refusal` and the status sidecar carry bounded, allowlisted diagnostics without source content. Refs #426, #428.
+- Explain the person-owned curated floor gate and distinguish deadline, SQLite lock and other work read failures in SessionStart, with recovery tools and fixed-label metrics. AC2, providing curated and work sections within the existing budget on a typical home, stays open pending labelled telemetry. Refs #424, #425.
+
+- Compatibility with N-1 (0.26.3), curated storage, indexes and brief sidecars: authoritative rows, hashes, kinds, scopes, operations, paths, index version and sidecar formats are unchanged. Grouping is a read-time selection and older readers continue their original selection. No format floor is raised or written.
+- Compatibility with N-1 (0.26.3), capture and spool: capture rows, spool formats and receipt identities are unchanged. SessionStart output selection and budget allocation can differ; existing rows and caches remain readable.
+- Compatibility with N-1 (0.26.3), metrics: the optional body-free `brief` field is additive. The older metrics reader accepts samples with the extra field but does not interpret section or reason labels; rolling retention remains unchanged.
+- Compatibility with N-1 (0.26.3), sync and placement wire: rows, wire, journal and receipt formats are unchanged. `placementPublication.refusal` is result-only. The status sidecar's optional allowlisted `category` is ignored by the 0.26.3 reader, which retains the existing status and cause without displaying the category.
+- Compatibility with N-1 (0.26.3), public APIs and root exports: `taskGroupKey` and `groupByTask` are additive root exports; `SearchHit.folded` and `SearchFilter.groupTasks` are additive fields. Existing APIs remain, while default curated search now groups task hits; callers requiring all hits can use `groupTasks: false`. Older versions do not supply the new exports or fields.
+- Compatibility with N-1 (0.26.3), console API 1: panel IDs, actions, snapshots and confirmation semantics are unchanged. The console consumes the updated brief, whose content and coverage may differ.
+
 ## 0.26.3
 
 ### Fixed
