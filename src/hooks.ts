@@ -446,7 +446,6 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       } catch { transcriptProgress = { stopReason: "unavailable" }; }
       if (!jcode) return "";
       const result = await captureAndWork(jcode.event, jcode.input, { cwd: jcode.cwd, agent: "jcode" }, canonicalPath(memoryHome()), startedAt + deadlineMs - 3);
-      if (jcode.event === "SessionStart") brief = (result && briefObservation(result.context)) || { work: "unknown", curated: "unknown", capture: "unknown" };
       if (result) { childRssKB = result.rssKB; childRawRssKB = result.rawRssKB; childSources = result.rssSources ?? emptyRssSources(); dropped = "dropped" in result && result.dropped === true; }
       return "";
     }
