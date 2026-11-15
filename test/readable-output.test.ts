@@ -176,8 +176,8 @@ test("status and doctor: TTY colors, plain stays plain, --json never carries ANS
   expect(Object.keys(JSON.parse(await run(["status", "--json"], {}, true)))).toEqual(["home", "config", "candidates", "active", "pending"]);
 }, 30_000);
 
-test("status and doctor keep their bounded refusal for agent reads", async () => {
-  for (const command of ["status", "doctor"]) await expect(run([command], { CODEX_THREAD_ID: "x" }, true)).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
+test("#431: status and doctor run for agent-marked sessions", async () => {
+  for (const command of ["status", "doctor"]) expect(await run([command], { CODEX_THREAD_ID: "x" }, true)).toMatch(new RegExp(`^amem ${command}|^memory home|home`, "m"));
 });
 
 test("setup confirmation shows the raw plan under --json and the readable plan otherwise", () => {

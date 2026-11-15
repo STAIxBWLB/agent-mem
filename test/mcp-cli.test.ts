@@ -41,7 +41,7 @@ test("MCP surface stays stable while marked CLI reads are screened and writes re
     expect(visible.some(row => row.text === "MCP-CLI public control")).toBe(true);
     expect(JSON.stringify(visible)).not.toContain("MCP-CLI private marker");
     const history = Bun.spawnSync([process.execPath, bin, "list", "--history"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
-    expect(history.exitCode).toBe(1); expect(history.stderr.toString()).toContain("agent-marked list accepts only --limit and --since.");
+    expect(history.exitCode).toBe(0); expect(history.stdout.toString()).toContain("retained memory as of"); // #431: history runs the person handler
 
     const unmarkedEnv: NodeJS.ProcessEnv = { ...env };
     for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) delete unmarkedEnv[key];
@@ -56,6 +56,6 @@ test("MCP surface stays stable while marked CLI reads are screened and writes re
     finally { after.close(); }
 
     const review = Bun.spawnSync([process.execPath, bin, "review", "list"], { cwd: root, env, stdout: "pipe", stderr: "pipe" });
-    expect(review.exitCode).toBe(1); expect(review.stderr.toString()).toContain("amem review list is not available to an agent-marked session.");
+    expect(review.exitCode).toBe(0); expect(review.stdout.toString()).toMatch(/^[a-f0-9]{64}  memory  pending  /m); // #431: review list runs for agents
   } finally { clearTimeout(timer); if (child.exitCode === null) { child.kill(); await child.exited; } rmSync(root, { recursive: true, force: true }); }
 });

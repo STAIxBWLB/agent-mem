@@ -56,7 +56,9 @@ for (const mode of ["legacy", "generation", "shards"] as const) {
     const history = JSON.parse(await f.cli(["search", "recallboundary", "--history", "--json"])); expect(history.entries.map((row: any) => row.id).sort()).toEqual([old, replacement, expired].sort());
     const chain = JSON.parse(await f.cli(["show", old, "--history", "--json"])); expect(chain.views.map((row: any) => row.id).sort()).toEqual([old, replacement].sort());
     const asOf = JSON.parse(await f.cli(["search", "recallboundary", "--as-of", past, "--json"])); expect(asOf.entries.map((row: any) => row.id)).toEqual([old]);
-    await expect(f.cli(["search", "recallboundary", "--history"], { env: { CLAUDECODE: "", HOME: f.root, AMEM_HOME: f.base } })).rejects.toThrow("agent-marked search accepts only --limit, --since and --explain.");
+    // #431: an agent-marked history read returns the same retained rows the person read above returns.
+    const agentHistory = JSON.parse(await f.cli(["search", "recallboundary", "--history", "--json"], { env: { CLAUDECODE: "", HOME: f.root, AMEM_HOME: f.base } }));
+    expect(agentHistory.entries.map((row: any) => row.id).sort()).toEqual([old, replacement, expired].sort());
     for (const args of [{ id: old, history: true }, { id: old, asOf: past }]) await expect(session.tools.amem_show(args)).rejects.toThrow("unavailable");
     f.advance(); f.use(store => store.forget(replacement, "person", f.project));
     expect(JSON.parse(await f.cli(["search", "recallboundary", "--json"])).map((row: any) => row.id)).toEqual([old]); expect(JSON.parse(await f.cli(["show", old, "--json"])).id).toBe(old);

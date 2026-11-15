@@ -240,9 +240,11 @@ test("the human report names every section, marks attention and shows the hint",
   expect(text).toMatch(/^amem doctor: (ok|attention|unavailable)/);
 });
 
-test("doctor is outside the marked CLI read ceiling and is refused before the home is opened", async () => {
-  const r = rig();
-  await expect(runCli(["doctor"], { cwd: r.cwd, env: { CODEX_THREAD_ID: "x", HOME: r.root, AMEM_HOME: r.memory }, stdinTTY: false })).rejects.toThrow(/is not available to an agent-marked session\. Agent reads: search, list, show, brief, graph, vault-candidates, capacity\./);
+test("#431 AC1: an agent-marked doctor gives the same report a person gets and still creates no home", async () => {
+  const r = rig(), env = { HOME: r.root, AMEM_HOME: r.memory };
+  const person = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env, stdinTTY: false }));
+  const agent = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: { ...env, CODEX_THREAD_ID: "x" }, stdinTTY: false }));
+  expect(agent.schema).toBe(person.schema); expect(Object.keys(agent).sort()).toEqual(Object.keys(person).sort());
   expect(existsSync(r.memory)).toBe(false);
 });
 

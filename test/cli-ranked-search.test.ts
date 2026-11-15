@@ -122,7 +122,7 @@ test("host raw recall stays screened/newest-first and ranked opt-in requires per
   } finally { f.store.close(); }
 });
 
-test("marked current-project reads match MCP DTOs; retained history and cross-project reads fail closed", async () => {
+test("marked current-project reads match MCP DTOs; retained history and cross-project reads run (#431)", async () => {
   const f = fixture();
   try {
     const id = f.note("needle current row");
@@ -140,12 +140,11 @@ test("marked current-project reads match MCP DTOs; retained history and cross-pr
         if (toolArgs.explain) expect(actual.hits.every((hit: { scoreDetails?: unknown }) => hit.scoreDetails !== undefined)).toBe(true);
       }
       expect(JSON.parse(await runCli(["show", id, "--json"], context))).toEqual(await mcp.tools.amem_show({ id }));
+      // #431: history, as-of and cross-project reads run the person handler for an agent-marked session too.
       for (const argv of [
-        ["search", "needle", "--history"], ["search", "needle", "--as-of", "2026-01-01T00:00:00Z"],
-        ["search", "needle", "--all-projects"], ["show", id, "--history"],
-      ]) {
-        await expect(runCli(argv, context)).rejects.toThrow(/^agent-marked (list|search|show) accepts (only|no options)/);
-      }
+        ["search", "needle", "--history", "--json"], ["search", "needle", "--as-of", "2026-01-01", "--json"],
+        ["search", "needle", "--all-projects", "--json"], ["show", id, "--history", "--json"],
+      ]) { let out: string; try { out = await runCli(argv, context); } catch (error) { throw new Error(`${argv.join(" ")}: ${(error as Error).message}`); } expect(JSON.parse(out), argv.join(" ")).toBeTruthy(); }
     } finally { mcp.close(); }
   } finally { f.store.close(); }
 });

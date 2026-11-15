@@ -200,7 +200,7 @@ test("ingest help returns guidance before intake, cwd access or any memory write
     }
     // Static help remains safe; an unsupported historical read uses the same fixed refusal as MCP.
     expect(await runCli(["--help"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).toContain("usage: amem");
-    await expect(runCli(["list","--history"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).rejects.toThrow("agent-marked list accepts only --limit and --since.");
+    expect(await runCli(["list","--history"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).toContain("retained memory as of"); // #431
     expect(existsSync(f.base)).toBe(false);
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}
 });
