@@ -63,3 +63,16 @@ test("status is read-only and bounded to the newest operations", () => {
   const before = readdirSync(join(dir, SYNC_PROGRESS_DIR)).sort(); expect(before.length).toBeLessThanOrEqual(8);
   expect(readSyncStatus(dir).operations.length).toBeLessThanOrEqual(8); expect(readdirSync(join(dir, SYNC_PROGRESS_DIR)).sort()).toEqual(before);
 });
+
+test("#426: a failed operation records its refusal category in the sidecar and amem sync --status shows it; a tampered category is rejected", () => {
+  const dir = home(), { now, mono } = clocks();
+  const progress = new SyncProgress({ sink: syncProgressSidecar(dir), intervalMs: 0, now, mono, operationId: "c".repeat(16) });
+  progress.phase("remote-verification"); progress.finish("failed", "unavailable", "remote");
+  const report = readSyncStatus(dir, now());
+  expect(report.operations[0]).toMatchObject({ state: "failed", cause: "unavailable", category: "remote", phase: "remote-verification" });
+  expect(renderSyncStatus(report, now())).toContain("failed (unavailable, remote) in remote verification");
+  const ok = new SyncProgress({ sink: () => {}, now, mono }); ok.finish("succeeded", undefined, "lock");
+  const file = join(dir, SYNC_PROGRESS_DIR, `${"c".repeat(16)}.json`), saved = JSON.parse(require("node:fs").readFileSync(file, "utf8"));
+  writeFileSync(file, JSON.stringify({ ...saved, category: "\u001b[31m/etc/passwd" }), { mode: 0o600 });
+  expect(readSyncStatus(dir, now()).operations).toHaveLength(0);
+});

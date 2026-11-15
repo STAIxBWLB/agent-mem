@@ -13,7 +13,8 @@ import { memoryHome } from "./home.ts";
 import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } from "./sync-screen.ts";
 import { shardSyncBinding } from "./sync-binding.ts";
 import type { PlacementSyncBound } from "./sync-placement-bound.ts";
-import type { SyncProgress } from "./sync-progress.ts";
+import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
+import type { PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 
 /**
  * #258 phase 2: hub memory between a person's machines through a git remote they configure. The memory directory is a
@@ -25,7 +26,9 @@ export interface SyncResult { ok: boolean; pushed: boolean; entries: number; war
   placementPublication?: { attemptHash?: string; outcome: "committed" | "unknown" | "not-needed"; withheld: number; exported: number;
     lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCheckSource?: "live" | "durable-intent"; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean;
     /** #419: an expected size refusal before any publication attempt; numbers only. */
-    bound?: PlacementSyncBound };
+    bound?: PlacementSyncBound;
+    /** #426: the fixed category and phase of a refusal before any publication attempt; no path, row or secret. */
+    refusal?: { category: PlacementRefusalCategory; phase: SyncProgressPhase } };
   pruneApplication?: {transport:"durable"|"unconfirmed";proofComplete:number;projectionActive:number|null;nativeApplied:number|null;held:number;phase:"preflight"|"prepared"|"active"|"complete"};
 }
 
