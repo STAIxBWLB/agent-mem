@@ -251,7 +251,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         guard();
         // ponytail: reserve cold-store variance plus cleanup/serialization before optional work.
         // A future paged deadline port can refine this section-level cutoff; the parent remains the hard stop.
-        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 80)) { coverage[section] = "unavailable"; if (options.nativeSession) reasons[section] = `deadline exhausted; use ${section === "work" ? "amem_work_state_read" : section === "curated" ? "amem_brief" : "amem_search"}`; return; }
+        if (options.timeRemaining && options.timeRemaining() < (section === "work" ? 10 : 80)) { coverage[section] = "unavailable"; if (options.nativeSession) reasons[section] = `deadline exhausted; ${section === "repo" ? "inspect repo log" : `use ${section === "work" ? "amem_work_state_read" : section === "curated" ? "amem_brief" : "amem_search"}`}`; return; }
         await work(); guard();
       }
       catch (error) {
@@ -259,7 +259,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         lines.splice(firstLine); remaining = priorRemaining; coverage[section] = "unavailable";
         if (options.nativeSession) {
           const cause = briefFailureReason(error, options.timeRemaining);
-          reasons[section] = `${cause}; use ${section === "work" ? "amem_work_state_read" : section === "curated" ? "amem_brief" : "amem_search"}`;
+          reasons[section] = `${cause}; ${section === "repo" ? "inspect repo log" : `use ${section === "work" ? "amem_work_state_read" : section === "curated" ? "amem_brief" : "amem_search"}`}`;
         }
       }
     };
