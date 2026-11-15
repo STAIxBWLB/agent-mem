@@ -133,6 +133,8 @@ let journalPrefix: { key: string; count: number; records: PlacementRecord[]; chu
 let journalTail: { key: string; name: string; bytes: Buffer; records: PlacementRecord[]; projection: PlacementProjection } | undefined;
 /** Whole snapshot for an unchanged inventory token (every file snapshot reads is in it). Callers get fresh arrays and a projection clone. */
 let journalSnapshot: { token: string; value: Snapshot } | undefined;
+/** Drop every decoded journal/publication memo; a sync calls this when it ends so a resident host never keeps a journal's records. */
+export function releasePlacementStorageCaches(): void { journalPrefix = undefined; journalTail = undefined; journalSnapshot = undefined; publicationBundle = undefined; reservationRoot = undefined; }
 // Records are frozen and shared (the bulk); every small mutable field is a fresh copy, so a caller's mutation never reaches the memo.
 const detachSnapshot = (value: Snapshot): Snapshot => ({ ...value, records: value.records.map(freeze), chunks: value.chunks.map(chunk => ({ ...chunk })), projection: value.projection.clone(),
   epoch: structuredClone(value.epoch), activation: structuredClone(value.activation),
