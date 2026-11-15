@@ -9,6 +9,7 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { PLACEMENT_REFUSAL_CATEGORIES, type PlacementRefusalCategory } from "./sync-placement-refusal-category.ts";
 import { processLiveness, processSignature, type Liveness } from "./platform.ts";
 
 export const SYNC_PROGRESS_SCHEMA = "agent-mem.sync-progress/v1", SYNC_PROGRESS_INTERVAL_MS = 1000, SYNC_PROGRESS_DIR = "sync-status";
@@ -35,6 +36,8 @@ export interface SyncProgressSnapshot {
   /** Advances only when a unit of work or a phase completes; `lastAliveUnixMs` is any checkpoint the process reached. */
   lastWorkProgressUnixMs: number; lastAliveUnixMs: number;
   cause?: SyncProgressCause;
+  /** #426: for a failed placement sync, the fixed category of the check that refused (allowlisted, no text). */
+  category?: PlacementRefusalCategory;
 }
 export type SyncProgressSink = (snapshot: SyncProgressSnapshot) => void;
 export interface SyncProgressOptions { sink: SyncProgressSink; intervalMs?: number; now?: () => number; mono?: () => number; operationId?: string }
@@ -46,7 +49,7 @@ export class SyncProgress {
   private readonly started: number; private readonly startedMono: number; private phaseMono: number; private emitted = -Infinity;
   private current: SyncProgressPhase = "writer-verification"; private readonly entered = new Map<SyncProgressPhase, number>();
   private unit?: SyncProgressUnit; private completed?: number; private total?: number; private outcome?: SyncProgressCounts;
-  private state: SyncProgressState = "running"; private cause?: SyncProgressCause; private work: number; private aliveAt: number;
+  private state: SyncProgressState = "running"; private cause?: SyncProgressCause; private category?: PlacementRefusalCategory; private work: number; private aliveAt: number;
   private readonly proofs = { complete: 0, fence: 0 };
   constructor(options: SyncProgressOptions) {
     this.sink = options.sink; this.intervalMs = Math.max(0, options.intervalMs ?? SYNC_PROGRESS_INTERVAL_MS);
@@ -60,7 +63,7 @@ export class SyncProgress {
       startedUnixMs: this.started, elapsedMs: Math.round(mono - this.startedMono), phaseElapsedMs: Math.round(mono - this.phaseMono),
       ...(this.unit ? { unit: this.unit, completed: this.completed ?? 0, ...(this.total !== undefined ? { total: this.total } : {}) } : {}),
       ...(this.outcome ? { counts: { ...this.outcome } } : {}), proofs: { ...this.proofs },
-      lastWorkProgressUnixMs: this.work, lastAliveUnixMs: this.aliveAt, ...(this.cause ? { cause: this.cause } : {}) };
+      lastWorkProgressUnixMs: this.work, lastAliveUnixMs: this.aliveAt, ...(this.cause ? { cause: this.cause } : {}), ...(this.category ? { category: this.category } : {}) };
   }
   private emit(force: boolean): void {
     if (!this.sink) return; const mono = this.mono();
@@ -80,8 +83,9 @@ export class SyncProgress {
   proof(complete: boolean): void { this.proofs[complete ? "complete" : "fence"]++; this.alive(); }
   counts(counts: SyncProgressCounts): void { this.outcome = { ...counts }; }
   /** Terminal state. Success is reported only by the caller that holds the real sync receipt. */
-  finish(state: Exclude<SyncProgressState, "running" | "interrupted">, cause?: SyncProgressCause): void {
-    if (this.state !== "running") return; this.state = state; this.cause = state === "succeeded" ? undefined : cause; this.aliveAt = this.now();
+  finish(state: Exclude<SyncProgressState, "running" | "interrupted">, cause?: SyncProgressCause, category?: PlacementRefusalCategory): void {
+    if (this.state !== "running") return; this.state = state; this.cause = state === "succeeded" ? undefined : cause;
+    this.category = state === "failed" && category && (PLACEMENT_REFUSAL_CATEGORIES as readonly string[]).includes(category) ? category : undefined; this.aliveAt = this.now();
     if (state === "succeeded") this.work = this.aliveAt; this.emit(true);
   }
 }
@@ -92,7 +96,7 @@ export function renderSyncProgress(snapshot: SyncProgressSnapshot, now = Date.no
   const phase = snapshot.phase.replaceAll("-", " "), units = snapshot.unit ? `: ${snapshot.completed ?? 0}${snapshot.total !== undefined ? `/${snapshot.total}` : ""} ${snapshot.unit}` : "";
   const counts = snapshot.counts ? `; permitted ${snapshot.counts.permitted}, local ${snapshot.counts.local}, declined ${snapshot.counts.declined}, held ${snapshot.counts.held}` : "";
   const attempt = snapshot.attempt > 1 ? `; attempt ${snapshot.attempt}` : "";
-  if (snapshot.state !== "running") return `amem sync: ${snapshot.state}${snapshot.cause ? ` (${snapshot.cause})` : ""} in ${phase}${units}${counts}; elapsed ${seconds(snapshot.elapsedMs)}`;
+  if (snapshot.state !== "running") return `amem sync: ${snapshot.state}${snapshot.cause ? ` (${snapshot.cause}${snapshot.category ? `, ${snapshot.category}` : ""})` : ""} in ${phase}${units}${counts}; elapsed ${seconds(snapshot.elapsedMs)}`;
   return `amem sync: ${phase}${units}${attempt}${counts}; elapsed ${seconds(snapshot.elapsedMs)}; last work progress ${seconds(now - snapshot.lastWorkProgressUnixMs)} ago`;
 }
 
@@ -127,13 +131,14 @@ function validate(value: unknown, operationId: string): { snapshot: SyncProgress
     || !proofs || !count(proofs.complete) || !count(proofs.fence) || !owner || !count(owner.pid) || owner.signature !== undefined && (typeof owner.signature !== "string" || owner.signature.length > 256)
     || v.unit !== undefined && (!(UNITS as readonly unknown[]).includes(v.unit) || !count(v.completed)) || v.total !== undefined && !count(v.total)
     || v.cause !== undefined && !(CAUSES as readonly unknown[]).includes(v.cause)
+    || v.category !== undefined && !(PLACEMENT_REFUSAL_CATEGORIES as readonly unknown[]).includes(v.category)
     || counts !== undefined && ![counts.permitted, counts.local, counts.declined, counts.held].every(count)) return undefined;
   const snapshot: SyncProgressSnapshot = { schema: SYNC_PROGRESS_SCHEMA, operationId, state: v.state as SyncProgressState, phase: v.phase as SyncProgressPhase, attempt: v.attempt as number,
     startedUnixMs: v.startedUnixMs as number, elapsedMs: v.elapsedMs as number, phaseElapsedMs: v.phaseElapsedMs as number,
     ...(v.unit !== undefined ? { unit: v.unit as SyncProgressUnit, completed: v.completed as number, ...(v.total !== undefined ? { total: v.total as number } : {}) } : {}),
     ...(counts ? { counts: { permitted: counts.permitted as number, local: counts.local as number, declined: counts.declined as number, held: counts.held as number } } : {}),
     proofs: { complete: proofs.complete as number, fence: proofs.fence as number }, lastWorkProgressUnixMs: v.lastWorkProgressUnixMs as number, lastAliveUnixMs: v.lastAliveUnixMs as number,
-    ...(v.cause !== undefined ? { cause: v.cause as SyncProgressCause } : {}) };
+    ...(v.cause !== undefined ? { cause: v.cause as SyncProgressCause } : {}), ...(v.category !== undefined ? { category: v.category as PlacementRefusalCategory } : {}) };
   return { snapshot, owner: { pid: owner.pid as number, ...(typeof owner.signature === "string" ? { signature: owner.signature } : {}) } };
 }
 function load(dir: string, name: string): { snapshot: SyncProgressSnapshot; owner: Owner } | undefined {

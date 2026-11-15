@@ -742,3 +742,46 @@ test("#419: first sync of a selected project above 8 MiB (about 8.9 MB) publishe
   expect(result.placementPublication!.exported + result.placementPublication!.withheld).toBe(760);
   assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_"]);
 }, 600_000);
+
+// #426: a refusal before any attempt names its category and phase, records the category, and never leaks the remote, paths or rows.
+async function refusal(options: (f: Awaited<ReturnType<typeof fixture>>, remote: string) => SyncOptions | Promise<SyncOptions>, prepare?: (f: Awaited<ReturnType<typeof fixture>>) => (() => void) | void) {
+  const { SyncProgress } = await import("../src/memory/sync-progress.ts");
+  const remote = bare(), f = await fixture({ seed: store => ({ ...many(store, 6), canary: store.note(note("NEVER_PUBLIC_REFUSAL")) }) }), seen: { category?: string; state: string }[] = [];
+  const progress = new SyncProgress({ sink: snapshot => seen.push({ state: snapshot.state, ...(snapshot.category ? { category: snapshot.category } : {}) }), intervalMs: 0 });
+  const undo = prepare?.(f);
+  try {
+    const result = await syncPlacementMemory(f.store, { ...await options(f, remote), progress }, undefined, undefined, frozen);
+    expect(result.ok).toBe(false); expect(f.plans()).toEqual([]); expect(refs(remote)).toEqual([]);
+    const text = JSON.stringify(result); for (const secret of [remote, f.home, "NEVER_PUBLIC_REFUSAL", PROJECT]) expect(text).not.toContain(secret);
+    return { result, final: seen.at(-1)! };
+  } finally { undo?.(); }
+}
+test("#426: a non-private remote refuses as category remote during writer verification", async () => {
+  const { result, final } = await refusal((f, remote) => ({ ...f.opts(remote), visibility: async () => "public" }));
+  expect(result.placementPublication?.refusal).toEqual({ category: "remote", phase: "writer-verification" });
+  expect(result.error).toContain("Placement sync refused (category remote, phase writer verification)"); expect(final).toEqual({ state: "failed", category: "remote" });
+}, 120_000);
+test("#426: a policy change inside the proof window refuses as category policy", async () => {
+  const { result, final } = await refusal((f, remote) => { let calls = 0; return { ...f.opts(remote), screen: () => { if (++calls === 3) f.changePolicyEpoch(); return true; } }; });
+  expect(result.placementPublication?.refusal?.category).toBe("policy"); expect(final).toEqual({ state: "failed", category: "policy" });
+}, 120_000);
+test("#426: a writer-install change refuses as category writer-pin", async () => {
+  const { result, final } = await refusal((f, remote) => { let evaluated = 0, changed = false; return { ...f.opts(remote), screen: () => { if (++evaluated === 4) changed = true; return true; },
+    placementAttestation: () => { const value = f.port.attest(); return changed ? { ...value, writers: value.writers.map(writer => ({ ...writer, pin: "3".repeat(64) })) } : value; } }; });
+  expect(result.placementPublication?.refusal?.category).toBe("writer-pin"); expect(result.error).toContain("upgrade it to the pinned version"); expect(final.category).toBe("writer-pin");
+}, 120_000);
+test("#426: a held home mutation refuses as category lock", async () => {
+  const { result, final } = await refusal((f, remote) => f.opts(remote), f => { const held = acquireMutation(f.home); if (!held) throw Error("synthetic lock unavailable"); return held; });
+  expect(result.placementPublication?.refusal?.category).toBe("lock"); expect(final.category).toBe("lock");
+}, 120_000);
+test("#426: an unknown error keeps the generic message with category other and its phase", async () => {
+  const materialize = await import("../src/memory/sync-placement-materialize.ts");
+  const spy = spyOn(materialize, "materializePlacementRows").mockImplementation(async () => { throw new Error("/secret/path NEVER_PUBLIC_REFUSAL"); });
+  try {
+    const { result, final } = await refusal((f, remote) => f.opts(remote));
+    // The mocked materializer throws before it reports its own phase: the last phase the transport entered is source capture.
+    expect(result.placementPublication?.refusal).toEqual({ category: "other", phase: "source-capture" });
+    expect(result.error).toContain("Placement sync is unavailable (category other, phase source capture)"); expect(result.error).not.toContain("/secret/path");
+    expect(final.category).toBe("other");
+  } finally { spy.mockRestore(); }
+}, 120_000);
