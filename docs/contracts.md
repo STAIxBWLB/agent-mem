@@ -755,6 +755,12 @@ Compatibility verification uses main `541004e0875075dd5a0ec72c384077bfa307a095` 
 
 The measurement-only ablation driver recognizes the shared-helper seam on new runtimes and retains the exact legacy two-file transforms for pinned historical runtimes. It still fences source anchors, hashes source/patch/driver provenance, checks corpus/BM25 controls and cleans disposable worktrees. It adds no production ranking switch.
 
+## Same-task grouping and the curated stale hint (#423)
+
+Search, `amem_search`, the SessionStart curated section and the prebuilt curated cache fold curated notes that share a task into one: the note's own `task`, else the first `task:` node in `about`, with the `@<created>` suffix dropped, and a `shared` note never folding with a project note (`taskGroupKey`, `groupByTask` in `src/index.ts`). The best-ranked note stays (the newest in the briefs) and carries `folded`, the number of same-task notes it hid within the ranked window. `amem search --ungrouped`, `amem_search {ungrouped: true}`, library `search(q, { groupTasks: false })` and `amem show <id>` reach every note; history and as-of reads never group. Grouping is read-time only: no log line is rewritten and `index.db` stays derived from rows. Capture hits are never grouped by task (they keep their one-per-session rule). The agent-hub session-start digest is out of scope here.
+
+`stale` on a curated hit is an advisory path-metadata hint, never evidence: it is set when a path the note names is missing under a confirmed repository root, or when every path it names that still exists changed after the note was written. One edited file among several no longer marks a note; a note with no checkable path carries no flag. `test/recall-staleness.test.ts` covers the rule.
+
 ## Outbound sync-policy inspection
 
 `inspectSyncPolicy(store, { screen?, policyVersion? })` is a synchronous, read-only package-root API. It selects the same physical own shared-v1 segment, or the same own/bridged synced rows in every opened generation/shard target and user overlay, as sync's pre-publication screen. Forgotten originals and non-note operations remain in that selection. It neither opens another project nor promotes, refreshes the derived index, rebinds a selector, migrates, publishes or contacts a remote. Read-only SQLite metadata queries may update ephemeral WAL read-marks in shared memory; inspection performs no database writes, and logical tables plus durable DB/WAL bytes remain unchanged.

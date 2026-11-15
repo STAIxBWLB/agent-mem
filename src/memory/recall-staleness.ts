@@ -44,13 +44,16 @@ export function createRecallStalenessProbe(options: RecallStalenessOptions): (vi
   // is required before treating concurrent hostile filesystem mutation as supported. No source/symbol index is stored.
   return view => {
     const at = Date.parse(view.at); if (!Number.isFinite(at)) return undefined;
-    let known = false;
+    // #423: `stale` means a referenced path is gone (under a confirmed root), or every referenced path that still exists
+    // changed after the note. One edited file among several a note names no longer marks it: in an active repository
+    // that marked most hits and stopped separating notes worth re-checking from current ones.
+    let present = 0, changed = 0;
     for (const node of view.about) {
       const path = nodePath(node); if (path === undefined) continue;
       const state = inspect(path);
-      if (state.state === "missing" && options.rootConfirmed === true || state.state === "present" && state.mtime > at) return true;
-      known ||= state.state === "present";
+      if (state.state === "missing" && options.rootConfirmed === true) return true;
+      if (state.state === "present") { present++; if (state.mtime > at) changed++; }
     }
-    return known ? false : undefined;
+    return present ? changed === present : undefined;
   };
 }

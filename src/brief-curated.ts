@@ -4,6 +4,7 @@ import type { MemoryStore, View } from "./memory/store.ts";
 import { displayText } from "./brief-capture.ts";
 import { BRIEF_CACHE_BYTES, writeBriefCache, type BriefCacheRow } from "./brief-cache.ts";
 import { PREFERENCE_SLOT } from "./memory/preference-brief.ts";
+import { taskGroupKey } from "./memory/task-group.ts";
 
 const PAGE_ROWS = 32, MAX_PAGES = 4, SECTION_RECORDS = 4, RECORD_BYTES = 768, MAX_AGE = 24 * 60 * 60 * 1000;
 
@@ -86,6 +87,7 @@ export function buildCuratedBriefCache(store: Pick<MemoryStore, "readPage" | "wi
   const now = (options.now ?? Date.now)(), policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
   const rows: BriefCacheRow[] = [], expires: number[] = [];
   let partial = false, after: { position: number; id: string } | undefined, complete = false;
+  const tasks = new Set<string>(); // #423: one row per task, the first in page order; later same-task rows take no slot
   let bytes = Buffer.byteLength(JSON.stringify({ schema: "agent-mem.brief-cache/v1", project: options.project, section: "curated", builtThrough: 1, partial: false, rows: [], curated: { builtAt: now, binding: options.binding, expiresAt: null } })) + 1;
   store.withDeferredPromotions(() => {
     for (let pageNo = 0; pageNo < MAX_PAGES; pageNo++) {
@@ -96,6 +98,8 @@ export function buildCuratedBriefCache(store: Pick<MemoryStore, "readPage" | "wi
         // #370: a preference is emitted by its own slot, so it never spends one of this section's rows (or its byte budget).
         if (source.kind === "preference") continue;
         if (!policy.screenStandalone(source)) continue;
+        const group = taskGroupKey(source);
+        if (group !== undefined && tasks.has(group)) continue;
         if (rows.length >= SECTION_RECORDS) { partial = true; complete = true; break; }
         const shown = noteDisplay(source);
         if (!policy.screenStandalone(shown.data)) continue;
@@ -103,6 +107,7 @@ export function buildCuratedBriefCache(store: Pick<MemoryStore, "readPage" | "wi
         const displayBytes = Buffer.byteLength(JSON.stringify({ section: "curated", evidence: true, data: shown.data }));
         if (displayBytes > RECORD_BYTES || bytes + rowBytes > BRIEF_CACHE_BYTES) { partial = true; continue; }
         rows.push(row); bytes += rowBytes; partial ||= shown.partial;
+        if (group !== undefined) tasks.add(group);
         if (source.expiresAt !== null) expires.push(Date.parse(source.expiresAt));
       }
       if (complete || !page.next) { complete = true; break; }

@@ -32,6 +32,7 @@ import { readMigrationSources } from "./migrate.ts";
 import type { PruneSourceRow, PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
 import { registerReaderLease, type ReaderLease } from "./reader-lease.ts";
+import { groupByTask, taskGroupKey } from "./task-group.ts";
 
 /**
  * #258: the hub's own memory. Append-only JSONL logs are the truth: `log/<machine>.jsonl` holds long-term entries and
@@ -181,8 +182,12 @@ export interface SearchFilter extends Filter {
   explain?: boolean;
   /** A host that writes capture with a `retentionDays` override passes the same value here; files decide otherwise. */
   captureRetentionDays?: number;
+  /** #423: fold curated hits that share a task into the best-scoring one (default true); false returns every hit. */
+  groupTasks?: boolean;
 }
-export interface SearchHit { source: "curated" | "capture"; score: number; scoreDetails?: SearchScoreDetails; view?: View; capture?: CaptureRow }
+export interface SearchHit { source: "curated" | "capture"; score: number;
+  /** #423: curated hits of the same task folded into this one (absent when none, or with `groupTasks: false`). */
+  folded?: number; scoreDetails?: SearchScoreDetails; view?: View; capture?: CaptureRow }
 export interface SearchResult { engine: "fts5" | "substring"; hits: SearchHit[] }
 export interface Graph { nodes: { id: Node; type: string; label: string; kind?: string; tier?: Tier }[]; edges: { from: Node; to: Node; rel: string }[] }
 
@@ -1269,11 +1274,15 @@ export class MemoryStore {
    */
   search(q: string, f: SearchFilter = {}): SearchResult {
     const limit = f.limit ?? 200;
-    if (!this.searchIndex.available) return { engine: "substring", hits: this.list({ ...f, q }).map(view => {
-      const hit: SearchHit = { source: "curated", score: 0, view };
-      if (f.explain) hit.scoreDetails = unrankedScoreDetails("curated", hit.score);
-      return hit;
-    }) };
+    if (!this.searchIndex.available) {
+      const listed = this.list({ ...f, q, limit: f.groupTasks === false ? f.limit : Number.MAX_SAFE_INTEGER });
+      const kept = f.groupTasks === false ? listed.map(item => ({ item, folded: 0 })) : groupByTask(listed, view => view).slice(0, f.limit ?? 200);
+      return { engine: "substring", hits: kept.map(({ item: view, folded }) => {
+        const hit: SearchHit = { source: "curated", score: 0, view, ...(folded ? { folded } : {}) };
+        if (f.explain) hit.scoreDetails = unrankedScoreDetails("curated", hit.score);
+        return hit;
+      }) };
+    }
     const visible = new Map(this.live(f).filter((v) => (!f.project || this.inScope(v.project, f.project) || v.scope === "shared")
       && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)).map((v) => [v.id, v]));
     for (const store of this.readStores()) store.syncSearchIndex();
@@ -1290,14 +1299,17 @@ export class MemoryStore {
     const page = Math.max(limit * 4, 32);
     for (const store of visible.size ? this.readStores() : []) {
       let found = 0;
-      const seen = new Set<string>(); // another process's sync between pages can shift offsets and repeat a ref
+      const seen = new Set<string>(), groups = new Set<string>(); // another process's sync between pages can shift offsets and repeat a ref
       for (let offset = 0; found < limit; offset += page) {
         const ranked = store.searchIndex.query(q, page, f.project === undefined ? undefined : this.scopeKeys(f.project), offset);
         for (const hit of ranked) {
           const view = visible.get(hit.ref);
           if (!view || seen.has(hit.ref)) continue;
           seen.add(hit.ref);
-          found++;
+          // #423: a folded same-task hit takes no slot, so the walk goes on until `limit` distinct groups.
+          const group = f.groupTasks === false ? undefined : taskGroupKey(view);
+          if (group === undefined || !groups.has(group)) found++;
+          if (group !== undefined) groups.add(group);
           const selected: SearchHit = { source: "curated", score: rankedScore(hit.rank, view.tier, hit.at, now), view };
           if (f.explain) selected.scoreDetails = rankedScoreDetails("curated", hit.rank, view.tier, hit.at, now, selected.score);
           hits.push(selected);
@@ -1334,7 +1346,8 @@ export class MemoryStore {
     }
     const ref = (h: SearchHit): string => h.view?.id ?? String(h.capture?.id ?? 0).padStart(12, "0");
     hits.sort((a, b) => b.score - a.score || ref(a).localeCompare(ref(b)));
-    const baseline = hits.slice(0, limit), captureSlots = baseline.filter(hit => hit.source === "capture").length;
+    const grouped = f.groupTasks === false ? hits : groupByTask(hits, hit => hit.view).map(({ item, folded }) => folded ? { ...item, folded } : item);
+    const baseline = grouped.slice(0, limit), captureSlots = baseline.filter(hit => hit.source === "capture").length;
     if (!captureSlots || !captureShard) return { engine: "fts5", hits: baseline };
     // Stream session representatives in complete weighted-score order; the legacy
     // baseline above still owns noncapture slots and exposed scores remain unweighted.

@@ -20,7 +20,8 @@ import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
 import { aliasedKeys, captureShardDir, readShardedSelection, resolveAlias, shardDir } from "./memory/shard.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, nearestRepoRootWithLog, readRepoScope, repoLogNearby, repoLogPresent, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
-import type { MemoryStore } from "./memory/store.ts";
+import type { MemoryStore, View } from "./memory/store.ts";
+import { taskGroupKey } from "./memory/task-group.ts";
 import { WorkListStore, type WorkListFields, type WorkListView } from "./memory/work-lists.ts";
 
 export interface BriefOptions { cwd: string; base?: string; project?: string; maxTokens?: number; policy?: StandalonePolicyOptions;
@@ -279,6 +280,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
       const recent = async <T>(section: "curated" | "capture", read: (window: ReadWindow) => { rows: T[]; next?: ReadRef },
         display: (row: T) => { data: unknown; partial: boolean }, selectedBefore = 0, skipCaptureIds: ReadonlySet<number> = new Set()) => {
         let after: ReadWindow["after"], selected = selectedBefore, complete = false;
+        const tasks = new Set<string>(); // #423: one curated row per task, the newest; later same-task rows take no slot
         for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
           guard();
           if (options.nativeSession && options.timeRemaining && options.timeRemaining() <= 0) throw new Error("brief deadline");
@@ -291,6 +293,9 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
             // Records have their own five-row, whole-line selection before raw captures.
             if (section === "capture" && (row as { event?: unknown }).event === "Record") continue;
             if (!await screen(row)) continue;
+            const group = section === "curated" ? taskGroupKey(row as unknown as View) : undefined;
+            if (group !== undefined && tasks.has(group)) continue;
+            if (group !== undefined) tasks.add(group);
             if (selected++ >= SECTION_RECORDS) { coverage[section] = "partial"; return; }
             await add(section, display(row), section === "curated");
           }

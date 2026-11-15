@@ -16,6 +16,7 @@ export const AMEM_NAMES: CommandNames = { memory: "amem", goal: "amem goal" };
 
 import type { ForgetNearby } from "./forget-nearby.ts";
 import { forgetNearbyText } from "./forget-nearby.ts";
+import { groupByTask } from "./task-group.ts";
 export interface MemoryCommandOptions {
   /** Host-authenticated person intent. Never accept this from model arguments. Required for retained history/as-of. */
   person?: boolean;
@@ -132,6 +133,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
       case "list": case "search": {
         const tier = flag("--tier"), kind = flag("--kind"), peer = flag("--peer"), machine = flag("--machine"), since = flag("--since"), limit = flag("--limit"), asOf = flag("--as-of");
         const history = rest.includes("--history"); if (history) rest.splice(rest.indexOf("--history"), 1);
+        const ungrouped = rest.includes("--ungrouped"); if (ungrouped) rest.splice(rest.indexOf("--ungrouped"), 1);
         if (since !== undefined && Number.isNaN(Date.parse(since))) fail(`--since needs a date or time (ISO 8601), not ${since}`);
         if (tier && tier !== "short" && tier !== "long") fail("--tier takes short or long");
         if (kind && !KINDS.includes(kind as Kind)) fail(`--kind takes ${KINDS.join(", ")}`);
@@ -143,11 +145,17 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         // Retained history has its own snapshot; the current index cannot rank it. Empty queries keep list semantics.
         // ponytail: fetch up to the current curated-view count before display caps, so metadata/readable exclusions consume no slots.
         // Upgrade to paged ranked views if this full-pool person read reaches the R3 ceiling.
-        const rankedResult = ranked ? store.withDeferredPromotions(() => store.search(q!, { project, includeCapture: false, limit: Math.max(1, state.views.length), ...(opts.explainSearch ? { explain: true } : {}) })) : undefined;
+        const rankedResult = ranked ? store.withDeferredPromotions(() => store.search(q!, { project, includeCapture: false, groupTasks: false, limit: Math.max(1, state.views.length), ...(opts.explainSearch ? { explain: true } : {}) })) : undefined;
         const scoreDetails = opts.explainSearch ? new Map(rankedResult?.hits.flatMap(hit => hit.view && hit.scoreDetails ? [[hit.view.id, hit.scoreDetails] as const] : []) ?? []) : undefined;
         const candidates = rankedResult ? rankedResult.hits.flatMap(hit => hit.view ? [hit.view] : []) : state.views;
         const all = candidates.filter(view => (!tier || view.tier === tier) && (!kind || view.kind === kind) && (!peer || view.peer === peer) && (!machine || view.machine === machine) && (!since || Date.parse(view.at) >= Date.parse(since)));
-        const readable = opts.readable(all), rows = readable.slice(0, limit ? Number(limit) : 50);
+        // #423: a search folds same-task notes into its best hit after every filter, so a folded note never hides behind one
+        // the reader cannot see. `--ungrouped` (or `amem show <id>`) reaches the folded notes; history keeps every row.
+        const group = sub === "search" && !!q?.trim() && !ungrouped && !history && asOf === undefined;
+        const readable = opts.readable(all), groupedRows = group ? groupByTask(readable, view => view) : readable.map(item => ({ item, folded: 0 }));
+        const shownGroups = groupedRows.slice(0, limit ? Number(limit) : 50), rows = shownGroups.map(entry => entry.item);
+        const folded = new Map(shownGroups.flatMap(entry => entry.folded ? [[entry.item.id, entry.folded] as const] : []));
+        const foldNote = (view: View) => folded.has(view.id) ? `  (+${folded.get(view.id)} same task)` : "";
         ready(rows);
         if (history || asOf !== undefined) {
           const emitted = recallForViews(state, rows), publicIds = new Set(rows.map(view => view.id)), allForgotten = q?.trim() ? [] : state.forgotten;
@@ -155,12 +163,12 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           const result = { at: state.at, entries: rows.map(decorated), forgotten, relations: state.relations.filter(edge => publicIds.has(edge.from) && publicIds.has(edge.to)), incomplete: emitted.incomplete || readable.length > rows.length || forgotten.length < allForgotten.length, notices: emitted.notices };
           return json ? JSON.stringify(result, null, 2) : [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
         }
-        if (json) return JSON.stringify(opts.explainSearch ? rows.map(view => ({ ...view, ...(scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })) : rows, null, 2);
+        if (json) return JSON.stringify(rows.map(view => ({ ...view, ...(folded.has(view.id) ? { folded: folded.get(view.id) } : {}), ...(opts.explainSearch && scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })), null, 2);
         const counted = opts.readable(store.withDeferredPromotions(() => store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
         const withheld = all.length - readable.length;
         return [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? opts.explainSearch
-          ? rows.flatMap(view => [`${stale(view) ? "(stale?) " : ""}${one(view)}`, ...(scoreDetails?.has(view.id) ? [`score: ${JSON.stringify(scoreDetails.get(view.id))}`] : [])])
-          : rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}`) : ["(nothing)"]),
+          ? rows.flatMap(view => [`${stale(view) ? "(stale?) " : ""}${one(view)}${foldNote(view)}`, ...(scoreDetails?.has(view.id) ? [`score: ${JSON.stringify(scoreDetails.get(view.id))}`] : [])])
+          : rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}${foldNote(view)}`) : ["(nothing)"]),
           ...(withheld ? [`(${withheld} withheld: they match a PII pattern; the dashboard shows them)`] : [])].join("\n");
       }
       case "show": {
