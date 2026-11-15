@@ -3,7 +3,7 @@
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
 <!-- facts:version -->
-Version: 0.26.3. Requires Bun 1.4.2 or later; no runtime dependencies.
+Version: 0.27.0. Requires Bun 1.4.2 or later; no runtime dependencies.
 <!-- /facts:version -->
 
 ## Quick start
@@ -578,7 +578,7 @@ Search gives these events the existing 1.25 conversation weight and session grou
 
 ## Assistant records (#313)
 
-Native SessionStart (`startup` and `compact`) preloads and screens the capture cache before work can spend the deadline, reserving only the newest permitted main-session Recap/Compact line. Work consumes the remaining pool. At the existing capture output position, up to five whole canonical Records use the then-remaining bytes; the reserved newest summary follows Records, and a second summary may use only bytes left after Records. The library brief follows the same reservation and output order. A line that cannot fit whole after the header and Record instruction is skipped and marks capture partial; budget allocation never truncates a display line or Record. The library and CLI still query capture directly and retain chronological raw-row fill after the preferred rows.
+Native SessionStart (`startup` and `compact`) preloads and screens the capture cache before work can spend the deadline, reserving the newest permitted main-session Recap/Compact line. When a repository section is present, it also reserves one prepared Record before optional sections. Work consumes the remaining pool. At the existing capture output position, up to five whole canonical Records use the then-remaining bytes; the reserved newest summary follows Records, and a second summary may use only bytes left after Records. The library brief reserves the newest summary before work and allocates Records at the same capture output position. A line that cannot fit whole after the header and Record instruction is skipped and marks capture partial; budget allocation never truncates a display line or Record. The library and CLI still query capture directly and retain chronological raw-row fill after the preferred rows.
 
 Stop/SessionEnd Record/summary commits and hook-spool replay prepare `brief-capture.json` (0600) in the project's machine directory. It preserves up to five canonical Records before up to two screened main-session summaries, including the current session, with their display values and the committed capture row watermark. Ordinary raw recent captures are excluded. Record commits refresh the cache too. The native read is one byte-capped file read, re-screens full source values under current policy, and never opens a capture database or rebuilds the cache. Missing or unreadable caches report `capture: capture cache missing`; total context bytes and native deadlines are unchanged. A busy snapshot can leave the cache missing until a later Record or summary commit. Refs #337.
 
