@@ -30,7 +30,9 @@ test("review uses host buttons and renders stored evidence as text with missing 
   const sections = detail!.sections as { title: string; body: Node }[];
   const evidence = JSON.stringify(sections.find(s => s.title.startsWith("Evidence"))!.body);
   expect(evidence).toContain(quote);
-  expect(evidence).toContain("not recorded in the candidate store");
+  // #323: a row without origin says so explicitly; it is never inferred.
+  expect(evidence).toContain("Origin unavailable: the proposer supplied no session or agent.");
+  expect((detail!.provenance as { label: string; value: string }[]).find(row => row.label === "Origin")?.value).toBe("unavailable");
   expect(evidence).not.toContain("innerHTML");
   snapshot!({ project: null, projects: ["fixture"], error: "Requested project is unavailable" });
   expect(buttons).toContain("Choose project fixture");

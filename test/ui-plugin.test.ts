@@ -47,7 +47,7 @@ function fixture() {
   store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "Undo in the console search is offered for ten seconds", about: [] });
   store.close();
   const candidates = new CandidateStore({ memoryDir: base });
-  const memory = candidates.put({ project, kind: "memory", text: "Console accept writes the same note as review accept", title: "Console accept", noteKind: "decision" }, "public");
+  const memory = candidates.put({ project, kind: "memory", text: "Console accept writes the same note as review accept", title: "Console accept", noteKind: "decision" }, "public", { session: "0123456789abcdef", peer: "codex", at: "2026-11-16T07:00:00.000Z" });
   const fail = candidates.put({ project, kind: "fail", approach: "polling the console every second", symptom: "the panel flickers", cause: "re-render on every poll", evidenceRefs: ["test:fixture"], retryWhen: "the shell diffs snapshots" }, "public");
   candidates.close();
   return { root, family, base, project, noteId, memory, fail };
@@ -136,6 +136,10 @@ test("all revision panels honor after, query selection and external source or po
   const review = await provider.snapshot({ after: 0, panel: "review", project: f.project, id: f.memory });
   const selected = await provider.snapshot({ after: Number(review.cursor), panel: "review", project: f.project, id: f.fail });
   expect(selected.selected).toBe(f.fail); expect(selected.cursor).not.toBe(review.cursor);
+  // #323 AC2: the Review rows carry the recorded origin ids, or null when the proposer supplied none.
+  const rowsOf = (snapshot: unknown) => (snapshot as { rows: { id: string; origin: unknown }[] }).rows;
+  expect(rowsOf(review).find(row => row.id === f.memory)?.origin).toEqual({ session: "0123456789abcdef", peer: "codex", at: "2026-11-16T07:00:00.000Z" });
+  expect(rowsOf(review).find(row => row.id === f.fail)?.origin).toBeNull();
   const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
   const capture = new CaptureStore({ memoryDir: f.base, project: f.project });
   try { capture.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "external capture revision marker" }); } finally { capture.close(); }

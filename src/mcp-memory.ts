@@ -25,6 +25,7 @@ import { projectState } from "./memory/lifecycle.ts";
 import { boundRepoRoot, readRepoScope, repoReadPolicy, type RepoView } from "./memory/repo-scope.ts";
 import { MemoryStore, openShardStore, type Graph, type View } from "./memory/store.ts";
 import { vaultCandidates } from "./memory/vault.ts";
+import { validOrigin, type CandidateOrigin } from "./memory/candidate-origin.ts";
 import { groupByTask } from "./memory/task-group.ts";
 /** #423: how many ranked hits per requested slot a grouped search reads, so folded same-task hits do not empty the page. */
 const TASK_GROUP_WINDOW = 4;
@@ -36,7 +37,10 @@ export const MCP_SCAN_LIMIT = 5000;
 const SEARCH_CANDIDATES = 5000;
 const READ_PAGE = 256;
 type SearchValue = { source: "curated"; evidence: true; view: View } | { source: "repo"; evidence: false; view: RepoView } | { source: "capture"; evidence: false; capture: CaptureRow };
-export interface MemoryMcpOptions { cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void }
+export interface MemoryMcpOptions {
+  /** #323: ids the host knows about the proposing session, read on each proposal; nothing is inferred when absent. */
+  origin?: () => { session?: string; peer?: string; turn?: string } | undefined;
+  cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void }
 export interface MemoryMcp { tools: McpHandlers; close(): void; onEmitted: NonNullable<McpOptions["onEmitted"]> }
 const unavailable = (): never => { throw new Error("memory operation unavailable"); };
 const bound = (args: Record<string, unknown>, keys: string[]) => { if (Object.keys(args).some(key => !keys.includes(key))) unavailable(); };
@@ -163,7 +167,12 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       // Config can tighten while the host screen awaits. Its synchronous check fences the final append.
       if (!currentPolicy().screenStandalone(complete)) unavailable();
       check();
-      return { id: candidates.put(input, "public"), ...(overlaps === undefined ? {} : { overlaps }) };
+      let supplied: ReturnType<NonNullable<MemoryMcpOptions["origin"]>>;
+      try { supplied = options.origin?.(); } catch { supplied = undefined; }
+      // Ids only and bounded (validOrigin); an invalid host value records no origin rather than refusing the proposal.
+      let origin: CandidateOrigin | undefined;
+      try { origin = validOrigin(supplied ? { ...supplied, at: new Date(store.readNow()).toISOString() } : undefined); } catch { origin = undefined; }
+      return { id: candidates.put(input, "public", origin), ...(overlaps === undefined ? {} : { overlaps }) };
     };
     const tools: McpHandlers = {
       async amem_evidence(args) {

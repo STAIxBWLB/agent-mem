@@ -37,7 +37,7 @@ export default (host) => {
     sections.push({ title: `Evidence (${evidence.length})`, open: evidence.length > 0, body: h("div", {},
       ui.rows(evidence, (e) => ui.row(e)) ?? ui.empty("No evidence attached", "This kind of candidate carries no references."),
       ...(r.targets ?? []).filter((t) => typeof t.text === "string").map((t) => h("blockquote", {}, h("pre", { class: "amem-pre", text: t.text }))),
-      h("p", { class: "amem-sub", text: "Source session, proposing agent and times seen are not recorded in the candidate store." })) });
+      h("p", { class: "amem-sub", text: origin(r.origin) })) });
     sections.push({ title: `Similar memories (${r.overlaps.length})`, open: r.overlaps.length > 0,
       body: ui.rows(r.overlaps, (o) => ui.row({ title: o.title ?? "Untitled note", sub: `mem:${o.id.slice(0, 8)} · overlap ${o.score.toFixed(2)}` })) ?? ui.empty("No similar memories") });
     if (r.edit !== null) {
@@ -46,11 +46,16 @@ export default (host) => {
       sections.push({ title: "Edit, then accept", body: h("form", { class: "amem-form", onsubmit: (e) => { e.preventDefault(); act({ action: "edit_accept", id: r.id, text: text.value }); } },
         text, h("button", { type: "submit", class: "btn", text: "Save edit and accept" })) });
     }
+    const originRows = r.origin && typeof r.origin === "object" ? [{ label: "Origin session", value: r.origin.session ?? "unavailable" }, { label: "Proposed by", value: r.origin.peer ?? "unavailable" }] : [{ label: "Origin", value: r.origin === "unknown" ? "unknown" : "unavailable" }];
     return ui.detail({ kind: `${r.kind} candidate`, title: line(r.text, 90), state: { text: "pending", tone: "warn" }, whoseMove: "you", actions, summary: r.text,
-      provenance: [{ label: "Proposed", value: day(r.createdAt), at: r.createdAt }, { label: "Project", value: project ?? "" }, ...(r.noteKind ? [{ label: "Note kind", value: r.noteKind }] : [])],
+      provenance: [{ label: "Proposed", value: day(r.createdAt), at: r.createdAt }, { label: "Project", value: project ?? "" }, ...originRows, ...(r.noteKind ? [{ label: "Note kind", value: r.noteKind }] : [])],
       sections, footer: [r.id] });
   };
 
+  // #323: the proposing session and agent as recorded ids, or why they are missing; never inferred from capture.
+  const origin = (o) => o === "unknown" ? "Origin unknown: this candidate was proposed before origin was recorded."
+    : o && typeof o === "object" ? `Origin: session ${o.session ?? "unavailable"}, proposed by ${o.peer ?? "unavailable"}${o.at ? ` at ${o.at}` : ""}.`
+    : "Origin unavailable: the proposer supplied no session or agent.";
   const views = {
     review(s) {
       const rows = s.rows ?? [], picked = rows.find((r) => r.id === s.selected);

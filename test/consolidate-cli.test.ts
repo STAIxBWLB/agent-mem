@@ -52,7 +52,7 @@ test("a capture Record reaches the CLI queue, accepts through the same capture r
     const accepted = JSON.parse(await cli(["review", "accept", result.candidates[0].id, "--json"], agent));
     const after = new MemoryStore({ memoryDir: base, screen: () => "keep" });
     try {
-      expect(after.get(accepted.noteId, project)).toMatchObject({ kind: "decision", about: ["path:src/writer.ts"] });
+      expect(after.get(accepted.noteId, project)).toMatchObject({ kind: "decision" }); expect(after.get(accepted.noteId, project)!.about).toEqual(expect.arrayContaining(["path:src/writer.ts", "peer:claude"])); // #323: the run's origin rides along as ids
     } finally { after.close(); }
     // The group key is already decided, so the same row is not queued again and the run still reads its window.
     expect(JSON.parse(await cli(["consolidate", "--json"], agent)).records).toMatchObject({ found: 1, queued: 0, alreadyReviewed: 1 });

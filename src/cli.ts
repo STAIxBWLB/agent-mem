@@ -24,6 +24,8 @@ import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/impor
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { captureSessionKey } from "./memory/capture-input.ts";
+import { originLine } from "./memory/candidate-origin.ts";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
@@ -346,7 +348,11 @@ const preloadMcp = () => Promise.all([import("./memory/store.ts"), import("./mem
 async function runCliCommand(argv: readonly string[], context: CliContext): Promise<string> {
   if (argv.length === 1 && argv[0] === "mcp") {
     await preloadMcp();
-    const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env) });
+    // #323: a host that knows the proposing session passes it; the CLI keys it like capture does, so a candidate points at the same session rows.
+    const env = context.env ?? process.env;
+    const originSession = captureSessionKey(env.AMEM_ORIGIN_SESSION), originPeer = env.AGENTHUB_PEER_ID?.trim() || undefined;
+    const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(env),
+      ...(originSession || originPeer ? { origin: () => ({ ...(originSession ? { session: originSession } : {}), ...(originPeer ? { peer: originPeer } : {}) }) } : {}) });
     await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
     return "";
   }
@@ -463,7 +469,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const assertCurrent = () => { binding(); assertProjectActive(base, project); if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")) throw Error("consolidation project binding changed"); };
       candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
       const readRecords = recordWindow(base, project, policyCwd);
-      const report = await proposeConsolidation(store, candidates, { project, actor, policy: policyOf, policyVersion: policyKey, assertCurrent, ...(readRecords ? { records: readRecords } : {}) });
+      const origin = { peer: identity.peer, at: new Date().toISOString(), ...(captureSessionKey((context.env ?? process.env).AMEM_ORIGIN_SESSION) ? { session: captureSessionKey((context.env ?? process.env).AMEM_ORIGIN_SESSION)! } : {}) };
+      const report = await proposeConsolidation(store, candidates, { project, actor, origin, policy: policyOf, policyVersion: policyKey, assertCurrent, ...(readRecords ? { records: readRecords } : {}) });
       return options["--json"] ? JSON.stringify(report, null, 2) : `${report.candidates.length} consolidation candidates queued for amem review; no curated notes changed${report.records ? `; ${report.records.queued} of ${report.records.found} Record(s)${report.records.truncated ? " in the newest 32" : ""}` : ""}${report.alreadyReviewed ? `; ${report.alreadyReviewed} already reviewed` : ""}${report.truncated ? "; scan truncated" : ""}${report.oversized ? `; ${report.oversized} proposals too large` : ""}${report.localExcluded ? `; ${report.localExcluded} local sources excluded` : ""}`;
     } finally { candidates?.close(); store.close(); }
   }
@@ -722,11 +729,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (options["--confirm"] !== true) {
           const shown = terminalSafe(body(candidate)), overlaps = await overlapsFor(candidate);
           const preview = { candidateId: candidate.id, kind: candidate.input.kind, createdAt: candidate.createdAt, decision, body: shown,
+            origin: candidate.originKnown ? candidate.origin ?? null : "unknown",
             overlaps: overlaps.map(overlap => ({ id: overlap.id, score: overlap.score, title: overlap.title ?? null })), next: `amem review decide ${candidate.id} ${decision} --confirm` };
           administrative(preview);
           markShown(realPath(candidates.dir), [project, ...aliases], Date.now(), [candidate.id]);
           return options["--json"] ? JSON.stringify(preview, null, 2)
-            : [`${candidate.id}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${shown}`, ...preview.overlaps.map(overlap => `  overlap mem:${overlap.id} (${overlap.score.toFixed(3)}): ${terminalSafe(overlap.title ?? "untitled")}`),
+            : [`${candidate.id}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${shown}`, `  ${originLine(candidate.origin, candidate.originKnown)}`, ...preview.overlaps.map(overlap => `  overlap mem:${overlap.id} (${overlap.score.toFixed(3)}): ${terminalSafe(overlap.title ?? "untitled")}`),
               `preview only: run ${preview.next} to ${decision} it`].join("\n");
         }
         if (decision === "defer") return options["--json"] ? JSON.stringify({ candidateId: candidate.id, status: "pending", decision }, null, 2) : `deferred candidate ${candidate.id}; it stays pending`;
@@ -755,7 +763,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         for (const [index, candidate] of rows.entries()) {
           assertWalkCurrent();
           if (!candidatePermitted(candidate)) throw Error("Memory operation unavailable or refused; no partial result is shown.");
-          lines.push(`${index + 1}/${rows.length}  ${candidate.id.slice(0, 12)}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${terminalSafe(body(candidate))}`);
+          lines.push(`${index + 1}/${rows.length}  ${candidate.id.slice(0, 12)}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${originLine(candidate.origin, candidate.originKnown)}`, `  ${terminalSafe(body(candidate))}`);
           for (const overlap of await overlapsFor(candidate)) lines.push(`  overlap mem:${overlap.id} (${overlap.score.toFixed(3)}): ${terminalSafe(overlap.title ?? "untitled")}`);
           assertWalkCurrent();
           markShown(base, scope, Date.now(), [candidate.id]);     // after the write: shown means the person could read it
@@ -802,7 +810,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           if (JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)) !== revision) throw Error("overlap policy changed");
           return JSON.stringify(hinted, null, 2);
         }
-        return rows.length ? rows.map(candidate => `${candidate.id}  ${candidate.input.kind}  ${candidate.status}  ${candidate.createdAt}`).join("\n") : "no candidates waiting for review";
+        return rows.length ? rows.map(candidate => `${candidate.id}  ${candidate.input.kind}  ${candidate.status}  ${candidate.createdAt}  ${originLine(candidate.origin, candidate.originKnown)}`).join("\n") : "no candidates waiting for review";
       }
       if (sub === "reject") {
         candidates.reject(id!, { project, actor, verdict: "public" });
@@ -1077,6 +1085,17 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const written = appendRepoLine(root, plan.line);
     return [...preview, `appended to ${written.path}. amem does not commit or push: review and commit it yourself.`,
       ...(repoLogIgnored(root) ? ["WARNING: git ignores .amem/log.jsonl here, so `git status` will not show it and it cannot be committed until you un-ignore it (a .gitignore or .git/info/exclude rule)."] : [])].join("\n");
+  }
+  if (sub === "show" && /^capture:[1-9][0-9]*$/.test(parsed.positionals[0] ?? "") && options["--history"] !== true && options["--as-of"] === undefined) {
+    // #323 item 3: a capture row (a Record included) by id, through the screened MCP read, with its session and row time.
+    const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome() });
+    try {
+      const shown = await memory.tools.amem_show({ id: parsed.positionals[0]! }) as { capture?: import("./memory/capture.ts").CaptureRow } | null;
+      const row = shown?.capture; if (!row) throw new Error(`no capture row ${parsed.positionals[0]} in this project (capture is machine-local and expires)`);
+      return options["--json"] === true ? JSON.stringify(row, null, 2)
+        : [`capture:${row.id}  ${row.event}${row.tool ? ` ${row.tool}` : ""}, ${row.at}, agent ${row.agent}, session ${row.session ?? "unavailable"}${row.subagent ? ", subagent" : ""}`,
+          ...(row.paths.length ? [`paths: ${row.paths.join(", ")}`] : []), "", terminalSafe(row.excerpt)].join("\n");
+    } finally { memory.close(); }
   }
   if (sub === "show" && /^repo:/.test(parsed.positionals[0] ?? "")) {
     const project = boundProject(), root = boundRepoRoot(repoCwd, memoryHome(), project), scoped = root ? repoReadPolicy(root) : undefined;

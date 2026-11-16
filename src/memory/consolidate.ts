@@ -4,11 +4,14 @@ import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
 import { recallViewIsLive } from "./recall.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { realPath } from "./platform.ts";
+import type { CandidateOrigin } from "./candidate-origin.ts";
 import { proposeModelConsolidations, type ModelConsolidationOptions, type ModelConsolidationReport } from "./consolidation-model.ts";
 import { recordCandidates, type RecordCandidateCounts, type RecordCandidateWindow } from "./record-candidates.ts";
 
 export interface ConsolidationOptions {
   project: string; actor: "person" | "agent"; policy: () => StandalonePolicy; policyVersion: () => string;
+  /** #323: ids of the run that proposes (its peer, its session if the host knows one); recorded on each candidate, never inferred. */
+  origin?: CandidateOrigin;
   allowed?: () => boolean; assertCurrent?: () => void;
   /** Person-enabled host callback only. Absent means no model work or budget reservation. */
   model?: ModelConsolidationOptions;
@@ -86,7 +89,7 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
       check();
       const id = candidateInputId(input), known = candidates.get(id, project);
       if (known && known.status !== "pending" || candidates.reviewedConsolidation(id, project)) { report.alreadyReviewed++; continue; }
-      candidates.put(input, "public");
+      candidates.put(input, "public", options.origin);
       report.candidates.push({ id, action: input.action, sources: input.targets.map(target => `mem:${target.id}`) });
     }
     // #368: the same one-at-a-time discipline for Record rows. A group key already in the queue is not proposed again, so a
@@ -103,7 +106,9 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
         check(); if (!await policy.screen(proposal.source)) { counts.refused++; continue; }
         check(); if (!await policy.screen(proposal.input)) { counts.refused++; continue; }
         check();
-        candidates.put(proposal.input, "public");
+        // A Record candidate's session is the one its bound source rows name (a fact of the proposal, not a capture inference).
+        const session = proposal.input.record?.sources[0]?.session;
+        candidates.put(proposal.input, "public", { ...options.origin, ...(session ? { session } : {}) });
         counts.queued++;
         report.candidates.push({ id: candidateInputId(proposal.input), action: `record:${proposal.input.kind === "fail" ? "fail" : proposal.input.noteKind}`,
           sources: (proposal.input.record?.sources ?? []).map(source => `capture:${source.session}@${source.at}`) });
