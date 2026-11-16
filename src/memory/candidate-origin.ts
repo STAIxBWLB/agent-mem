@@ -44,14 +44,15 @@ export function originNodes(origin: CandidateOrigin | undefined): string[] {
 
 export type OriginRecheck = "available" | "origin expired" | "unavailable" | "unknown";
 /**
- * #323 item 4: whether a note's origin session can still be re-checked against capture. Capture is machine-local and expires, so a
- * session with no retained row is `origin expired`, never a failed check; no recorded session is `unavailable`.
+ * #323 item 4: whether a note's origin session can still be re-checked against capture. Only a confirmed absence from a readable,
+ * session-capable store is `origin expired` (never a failed check). An unreadable, missing, unsupported or policy-withheld capture is
+ * `unavailable`, so expiry is never claimed and withheld rows are never disclosed; no recorded session is `unavailable` too.
  */
-export function originRecheck(origin: CandidateOrigin | undefined, known: boolean, retained: (session: string) => boolean): OriginRecheck {
+export function originRecheck(origin: CandidateOrigin | undefined, known: boolean, lookup: (session: string) => "present" | "absent" | "unavailable" | "unsupported"): OriginRecheck {
   if (!known) return "unknown";
   if (!origin?.session) return "unavailable";
-  let present = false; try { present = retained(origin.session); } catch { present = false; }
-  return present ? "available" : "origin expired";
+  let state: ReturnType<typeof lookup>; try { state = lookup(origin.session); } catch { return "unavailable"; }
+  return state === "present" ? "available" : state === "absent" ? "origin expired" : "unavailable";
 }
 
 /** One line for previews and the note provenance; absent fields read `unavailable`, never a guess. */

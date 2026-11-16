@@ -718,9 +718,15 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           : input.kind === "correction" ? `correction. ${input.proposedText} Reason: ${input.reason}` : `decay. ${input.reason}`; };
       // #323 item 4: can the origin still be re-checked against capture? An expired session is reported as such, never as a failed check.
       const recheckOf = (candidate: import("./memory/candidates.ts").Candidate) => {
+        // Read-only: a preview never creates or migrates capture storage; a missing or cold shard is unavailable, not expired.
         let capture: import("./memory/capture.ts").CaptureStore | undefined;
-        try { return originRecheck(candidate.origin, candidate.originKnown, session => { const opened = capture ??= new CaptureStore({ memoryDir: memoryHome(), project, cwd: policyCwd }); return opened.hasSession(session); }); }
-        catch { return "unavailable" as const; } finally { capture?.close(); }
+        try {
+          const policy = policyOf();
+          return originRecheck(candidate.origin, candidate.originKnown, session => {
+            const opened = capture ??= new CaptureStore({ memoryDir: memoryHome(), project, cwd: policyCwd, readOnly: true });
+            return opened.sessionState(session, row => policy.screenStandalone(row));
+          });
+        } catch { return "unavailable" as const; } finally { capture?.close(); }
       };
       if (sub === "decide") {
         // #431 AC5: what `review walk` gives a person, one candidate at a time and without a terminal. The preview prints the

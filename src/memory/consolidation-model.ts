@@ -88,9 +88,11 @@ export async function proposeModelConsolidations(store: MemoryStore, candidates:
       if (text.length > 3000) { report.oversized++; continue; }
       const candidate: Extract<CandidateInput, { kind: "model-answer" }> = { project, kind: "model-answer", marker: "model-answer", targets: batch.map(row => ({ id: row.id, revision: row.revision })), text };
       guard.check();
+      // #323 AC3: the run origin goes through the same full host screen as the candidate, with it; a declined origin is dropped.
+      const origin = guard.origin && await guard.policy.screen({ project, candidate, origin: guard.origin }) && guard.policy.screenStandalone({ project, candidate, origin: guard.origin }) ? guard.origin : undefined;
       const permitted = await guard.policy.screen({ project, output: value, candidate }); check(batch);
       if (!permitted) { report.rejected++; continue; }
-      report.ids.push(candidates.put(candidate, "public", guard.origin && guard.policy.screenStandalone(guard.origin) ? guard.origin : undefined));
+      report.ids.push(candidates.put(candidate, "public", origin));
     }
     return report;
   } catch { report.state = "unknown"; report.rejected++; return report; }

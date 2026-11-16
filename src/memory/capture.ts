@@ -737,13 +737,22 @@ export class CaptureStore {
    * window holds only the newest 32, so proving a candidate with that window would read every older row as pruned. These are
    * point lookups on the `at` index with an explicit per-turn cap: no scan, no window, and no index or spool work.
    */
-  /** #323 item 4: whether any retained row of this project carries `session` (one indexed point query, no body read). */
-  hasSession(session: string): boolean {
+  /**
+   * #323 item 4: whether this project still retains a row of `session` that `visible` admits. `unsupported` when the shard predates
+   * session attribution, so expiry is never claimed from a store that could not hold the session. Bounded: at most 64 rows read.
+   * Call on a `readOnly` store so a preview never creates or migrates capture storage.
+   */
+  sessionState(session: string, visible: (row: CaptureRow) => boolean): "present" | "absent" | "unavailable" | "unsupported" {
     this.checkReadBinding();
     if (typeof session !== "string" || !SESSION_KEY.test(session)) throw new Error("invalid session key");
     const columns = new Set((this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(column => column.name));
-    if (!columns.has("session")) return false;
-    return this.db.query("SELECT 1 FROM rows WHERE project = ? AND session = ? LIMIT 1").get(this.key, session) !== null;
+    if (!columns.has("session")) return "unsupported";
+    const rows = (this.db.query("SELECT * FROM rows WHERE project = ? AND session = ? ORDER BY id LIMIT 64").all(this.key, session) as RawRow[]).map(toRow);
+    // Rows that exist but are all withheld by the caller's policy read as `unavailable`, the same answer as an unreadable store:
+    // neither their existence (present) nor a false expiry (absent) is disclosed.
+    if (!rows.length) return "absent";
+    let shown = false; try { shown = rows.some(row => visible(row)); } catch { return "unavailable"; }
+    return shown ? "present" : "unavailable";
   }
 
   readRecordTurns(turns: readonly { session: string; at: string }[]): CaptureRow[] {

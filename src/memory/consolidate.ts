@@ -45,8 +45,6 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
   if (options.allowed?.() === false) throw Error("consolidation unavailable");
   if (realPath(candidates.dir) !== realPath(store.profile.home)) throw Error("consolidation requires its own candidate home");
   const project = options.project, version = options.policyVersion(), policy = options.policy();
-  // #323 AC3: the configured screen sees the run origin before any candidate stores it; a declined origin is recorded as none.
-  const runOrigin = options.origin && policy.screenStandalone(options.origin) ? options.origin : undefined;
   if (!project.trim() || typeof version !== "string") throw Error("consolidation context unavailable");
   const sourceCurrent = store.beginRecallRead();
   const check = () => {
@@ -56,6 +54,11 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
   check();
   if (!await policy.screen({ project })) throw Error("consolidation refused by current policy");
   check();
+  // #323 AC3: the full host policy screens the run origin, then the synchronous snapshot again after the check fence; a declined
+  // origin is recorded as none and the run goes on. The policy version is fenced by check() before every put below.
+  let runOrigin = options.origin && await policy.screen({ project, origin: options.origin }) ? options.origin : undefined;
+  check();
+  if (runOrigin && !policy.screenStandalone({ project, origin: runOrigin })) runOrigin = undefined;
   const raw = store.withDeferredPromotions(() => store.list({ project, limit: 257 })), rows: View[] = [];
   for (const value of raw) {
     check(); const row = memoryPolicySnapshot(value);

@@ -87,6 +87,7 @@ test("#323 AC3: origin takes ids only; text, paths, secrets and unknown fields a
   const f = fixture();
   expect(() => f.put("refused origin", { session: "/etc/passwd" } as never)).toThrow();
   // A library caller's configured privacy screen sees the ids before persistence; a declined origin refuses the write.
+  // (The MCP path's full async host policy is covered below.)
   const policy = createStandalonePolicy({ piiPatterns: ["blocked-peer"] });
   expect(() => f.candidates.put({ project: f.project, kind: "memory", text: "screened origin" } as CandidateInput, "public", { peer: "blocked-peer" }, origin => policy.screenStandalone(origin))).toThrow("configured privacy policy");
   expect(f.candidates.list({ project: f.project, status: "all" })).toHaveLength(0);
@@ -106,6 +107,11 @@ test("#323: MCP proposals record the host-supplied origin with its time; an inva
   const screened = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project, policy: { piiPatterns: ["blocked-peer"] }, origin: () => ({ peer: "blocked-peer" }) }); cleanup.push(() => screened.close());
   const third = (await screened.tools.amem_remember({ text: "remembered by a screened peer" }) as { id: string }).id;
   expect(f.candidates.get(third, f.project)!.origin).toBeUndefined();
+  // The full asynchronous host policy sees the origin too: a host screen that declines it drops the origin, and the proposal stands.
+  const hostScreened = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project, origin: () => ({ peer: "host-declined" }),
+    policy: { host: { screen: async (value: unknown) => !JSON.stringify(value).includes("host-declined") } } as never }); cleanup.push(() => hostScreened.close());
+  const fourth = (await hostScreened.tools.amem_remember({ text: "remembered under a host screen" }) as { id: string }).id;
+  expect(f.candidates.get(fourth, f.project)!.origin).toBeUndefined();
 });
 
 test("#323 AC2: review list, review decide and review walk show the origin, or unavailable", async () => {
@@ -136,12 +142,14 @@ test("#323 item 3: amem show capture:<id> prints a capture row's session and row
   expect(row.session).toMatch(/^[a-f0-9]{16}$/); expect(shown).toContain(`session ${row.session}`); expect(row.session).toBe("0011223344556677"); expect(shown).toContain(row.at); expect(shown).toContain("PostToolUse");
 });
 
-test("#323 item 4: a re-check reports an expired origin distinctly, never as a failed check", () => {
-  expect(originRecheck({ session: SESSION }, true, () => true)).toBe("available");
-  expect(originRecheck({ session: SESSION }, true, () => false)).toBe("origin expired");
-  expect(originRecheck({ session: SESSION }, true, () => { throw new Error("capture unreadable"); })).toBe("origin expired");
-  expect(originRecheck({ peer: "codex" }, true, () => true)).toBe("unavailable");
-  expect(originRecheck(undefined, false, () => true)).toBe("unknown");
+test("#323 item 4: only a confirmed absence is an expired origin; unreadable, unsupported or withheld capture is unavailable", () => {
+  expect(originRecheck({ session: SESSION }, true, () => "present")).toBe("available");
+  expect(originRecheck({ session: SESSION }, true, () => "absent")).toBe("origin expired");
+  expect(originRecheck({ session: SESSION }, true, () => "unsupported")).toBe("unavailable");
+  expect(originRecheck({ session: SESSION }, true, () => "unavailable")).toBe("unavailable");
+  expect(originRecheck({ session: SESSION }, true, () => { throw new Error("capture unreadable"); })).toBe("unavailable");
+  expect(originRecheck({ peer: "codex" }, true, () => "present")).toBe("unavailable");
+  expect(originRecheck(undefined, false, () => "present")).toBe("unknown");
 });
 
 test("#323 item 4: review decide shows the re-check state from retained capture", async () => {
@@ -156,6 +164,22 @@ test("#323 item 4: review decide shows the re-check state from retained capture"
   expect(JSON.parse(await runCli(["review", "decide", kept, "accept", "--json"], ctx)).originRecheck).toBe("available");
   expect(JSON.parse(await runCli(["review", "decide", gone, "accept", "--json"], ctx)).originRecheck).toBe("origin expired");
   expect(await runCli(["review", "decide", gone, "accept"], ctx)).toContain("(recheck: origin expired)");
+  // A retained row the configured policy withholds is neither disclosed as present nor claimed expired.
+  capture.append({ project, agent: "codex", event: "PostToolUse", excerpt: "WITHHELD_MARKER turn", session: "aaaaaaaaaaaaaaaa" });
+  const hidden = f.candidates.put({ project, kind: "memory", text: "withheld origin" } as CandidateInput, "public", { session: "aaaaaaaaaaaaaaaa" });
+  (await import("node:fs")).writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["WITHHELD_MARKER"] }), { mode: 0o600 });
+  expect(JSON.parse(await runCli(["review", "decide", hidden, "accept", "--json"], ctx)).originRecheck).toBe("unavailable");
+});
+
+test("#323 item 4: the re-check preview never creates capture storage; a home without capture is unavailable, not expired", async () => {
+  const f = fixture(), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
+  cleanup.push(() => { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; });
+  const project = (await import("../src/memory/project.ts")).memoryProjectKey(f.root);
+  const id = f.candidates.put({ project, kind: "memory", text: "no capture yet" } as CandidateInput, "public", { session: SESSION });
+  const before = (await import("node:fs")).readdirSync(f.base, { recursive: true }).map(String).sort();
+  expect(JSON.parse(await runCli(["review", "decide", id, "accept", "--json"], { cwd: f.root, env: {}, stdinTTY: false, stdoutTTY: false })).originRecheck).toBe("unavailable");
+  const after = (await import("node:fs")).readdirSync(f.base, { recursive: true }).map(String).sort().filter(name => !name.startsWith("candidates.db"));
+  expect(after.filter(name => name.includes("capture"))).toEqual(before.filter(name => name.includes("capture")));
 });
 
 test("#323 item 1: the model consolidation producer keeps the supplied run origin", async () => {
