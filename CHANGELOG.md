@@ -2,6 +2,13 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.27.1
+
+### Added
+
+- Let agent-marked sessions use the existing screened amem operations with their preview and confirmation steps, including history reads and sync-placement migration. Add `amem review decide` for non-interactive candidate review and `amem formats raise` for an explicit, inventory-checked format-floor change. Refs #431, #432.
+- Export `withCliAttribution`, `cliAttribution`, `noteDisplayActor` and `CliAttribution` from the package root for hosts that run supported CLI operations on an agent's behalf. The scope attributes only its documented call sites and does not authenticate or bypass policy. Refs #436.
+
 ## 0.27.0
 
 - Fold current curated search hits from the same task into the best-ranked result, with a folded count; `--ungrouped`, MCP `ungrouped` and `groupTasks: false` expose individual hits. SessionStart curated notes use the same task grouping; the advisory stale hint now marks missing paths or notes whose every checkable path changed. Refs #423, #427.
