@@ -4,7 +4,7 @@ import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
 import { recallViewIsLive } from "./recall.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { realPath } from "./platform.ts";
-import type { CandidateOrigin } from "./candidate-origin.ts";
+import { validOrigin, type CandidateOrigin } from "./candidate-origin.ts";
 import { proposeModelConsolidations, type ModelConsolidationOptions, type ModelConsolidationReport } from "./consolidation-model.ts";
 import { recordCandidates, type RecordCandidateCounts, type RecordCandidateWindow } from "./record-candidates.ts";
 
@@ -56,7 +56,10 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
   check();
   // #323 AC3: the full host policy screens the run origin, then the synchronous snapshot again after the check fence; a declined
   // origin is recorded as none and the run goes on. The policy version is fenced by check() before every put below.
-  let runOrigin = options.origin && await policy.screen({ project, origin: options.origin }) ? options.origin : undefined;
+  let originSnapshot: CandidateOrigin | undefined;
+  try { originSnapshot = validOrigin(memoryPolicySnapshot(options.origin)); } catch { originSnapshot = undefined; }
+  if (originSnapshot) Object.freeze(originSnapshot);
+  let runOrigin = originSnapshot && await policy.screen({ project, origin: originSnapshot }) ? originSnapshot : undefined;
   check();
   if (runOrigin && !policy.screenStandalone({ project, origin: runOrigin })) runOrigin = undefined;
   const raw = store.withDeferredPromotions(() => store.list({ project, limit: 257 })), rows: View[] = [];
@@ -94,7 +97,7 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
       check();
       const id = candidateInputId(input), known = candidates.get(id, project);
       if (known && known.status !== "pending" || candidates.reviewedConsolidation(id, project)) { report.alreadyReviewed++; continue; }
-      candidates.put(input, "public", runOrigin);
+      candidates.put(input, "public", runOrigin && policy.screenStandalone({ project, origin: runOrigin }) ? runOrigin : undefined);
       report.candidates.push({ id, action: input.action, sources: input.targets.map(target => `mem:${target.id}`) });
     }
     // #368: the same one-at-a-time discipline for Record rows. A group key already in the queue is not proposed again, so a
@@ -112,7 +115,7 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
         check(); if (!await policy.screen(proposal.input)) { counts.refused++; continue; }
         check();
         // #323: the proposer's origin only. The Record's own capture sessions stay in its bound sources; none is promoted to origin.
-        candidates.put(proposal.input, "public", runOrigin);
+        candidates.put(proposal.input, "public", runOrigin && policy.screenStandalone({ project, origin: runOrigin }) ? runOrigin : undefined);
         counts.queued++;
         report.candidates.push({ id: candidateInputId(proposal.input), action: `record:${proposal.input.kind === "fail" ? "fail" : proposal.input.noteKind}`,
           sources: (proposal.input.record?.sources ?? []).map(source => `capture:${source.session}@${source.at}`) });

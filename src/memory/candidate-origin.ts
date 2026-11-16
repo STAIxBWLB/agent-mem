@@ -19,19 +19,19 @@ const SESSION = /^[a-f0-9]{16}$/, ID = /^[A-Za-z0-9._:@-]{1,120}$/;
 /** Ids only: a field that is not a bounded id is refused, so no text, path or secret can enter `origin`. */
 export function validOrigin(value: unknown): CandidateOrigin | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== "object" || Array.isArray(value)) throw new Error("invalid candidate origin");
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("candidate origin must be an object; supply session, peer, at or turn ids");
   const keys = Object.keys(value), raw = value as Record<string, unknown>;
-  if (keys.some(key => !["session", "peer", "at", "turn"].includes(key))) throw new Error("invalid candidate origin field");
+  if (keys.some(key => !["session", "peer", "at", "turn"].includes(key))) throw new Error("candidate origin has an unknown field; use only session, peer, at and turn");
   const out: CandidateOrigin = {};
-  if (raw.session !== undefined) { if (typeof raw.session !== "string" || !SESSION.test(raw.session)) throw new Error("candidate origin session must be a 16-hex capture session key"); out.session = raw.session; }
-  if (raw.peer !== undefined) { if (typeof raw.peer !== "string" || !ID.test(raw.peer)) throw new Error("candidate origin peer must be an id"); out.peer = raw.peer; }
-  if (raw.turn !== undefined) { if (typeof raw.turn !== "string" || !ID.test(raw.turn)) throw new Error("candidate origin turn must be an id"); out.turn = raw.turn; }
+  if (raw.session !== undefined) { if (typeof raw.session !== "string" || !SESSION.test(raw.session)) throw new Error("candidate origin session must be a 16-character lowercase hex capture session key; pass the capture session key"); out.session = raw.session; }
+  if (raw.peer !== undefined) { if (typeof raw.peer !== "string" || !ID.test(raw.peer)) throw new Error("candidate origin peer must be 1 to 120 characters from A-Z, a-z, 0-9, dot, underscore, colon, at sign or hyphen; pass a peer id"); out.peer = raw.peer; }
+  if (raw.turn !== undefined) { if (typeof raw.turn !== "string" || !ID.test(raw.turn)) throw new Error("candidate origin turn must be 1 to 120 characters from A-Z, a-z, 0-9, dot, underscore, colon, at sign or hyphen; pass a turn id"); out.turn = raw.turn; }
   if (raw.at !== undefined) {
-    if (typeof raw.at !== "string" || !Number.isFinite(Date.parse(raw.at)) || new Date(raw.at).toISOString() !== raw.at) throw new Error("candidate origin time must be canonical UTC");
+    if (typeof raw.at !== "string" || !Number.isFinite(Date.parse(raw.at)) || new Date(raw.at).toISOString() !== raw.at) throw new Error("candidate origin time must be canonical UTC; pass an ISO timestamp with milliseconds and Z");
     out.at = raw.at;
   }
   // AC3: the unchanged secret screen applies to the ids too; an id shaped like a token is refused, never stored.
-  if (Object.values(out).some(value => looksSecret(value))) throw new Error("candidate origin refused by the secret screen");
+  if (Object.values(out).some(value => looksSecret(value))) throw new Error("candidate origin refused by the secret screen; remove the secret-like id and pass a safe session or peer id");
   return Object.keys(out).length ? out : undefined;
 }
 

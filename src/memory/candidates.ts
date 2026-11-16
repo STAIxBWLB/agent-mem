@@ -177,7 +177,7 @@ type CandidateRow = { id: string; payload: string; at: number; status: Candidate
 /** #323: NULL (a pre-0.28 row, or a column an older writer never filled) is unknown; `{}` is a recorded empty origin. */
 function decodeOrigin(raw: string | null | undefined): { origin?: CandidateOrigin; originKnown: boolean } {
   if (raw === null || raw === undefined) return { originKnown: false };
-  let parsed: unknown; try { parsed = JSON.parse(raw); } catch { throw new Error("candidate origin unreadable"); }
+  let parsed: unknown; try { parsed = JSON.parse(raw); } catch { throw new Error("candidate origin unreadable; inspect or restore the candidate database before retrying"); }
   const origin = validOrigin(parsed);
   return origin ? { origin, originKnown: true } : { originKnown: true };
 }
@@ -321,7 +321,7 @@ export class CandidateStore {
     publicOnly(verdict); validate(input);
     const origin = validOrigin(rawOrigin), payload = canonical(input), id = candidateInputId(input);
     // AC3: the caller's configured privacy screen sees the origin ids before they are stored; a refused origin refuses the proposal.
-    if (origin && screen && screen(origin) !== true) throw new Error("candidate origin refused by the configured privacy policy");
+    if (origin && screen && screen(origin) !== true) throw new Error("candidate origin refused by the configured privacy policy; remove the declined id or review the current policy");
     // Prune, count, insert and prune again are ONE immediate transaction: concurrent proposers (several agents) cannot all pass the count and then let the cap evict an unseen candidate.
     return this.db.transaction((): string => {
       this.prune();

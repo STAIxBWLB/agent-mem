@@ -169,6 +169,18 @@ test("#323 item 4: review decide shows the re-check state from retained capture"
   const hidden = f.candidates.put({ project, kind: "memory", text: "withheld origin" } as CandidateInput, "public", { session: "aaaaaaaaaaaaaaaa" });
   (await import("node:fs")).writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["WITHHELD_MARKER"] }), { mode: 0o600 });
   expect(JSON.parse(await runCli(["review", "decide", hidden, "accept", "--json"], ctx)).originRecheck).toBe("unavailable");
+  // In the same policy and shard, an absent session is indistinguishable from a policy-withheld session.
+  expect(JSON.parse(await runCli(["review", "decide", gone, "accept", "--json"], ctx)).originRecheck).toBe("unavailable");
+});
+
+test("origin session lookup bounds work and does not claim expiry outside its window", () => {
+  const f = fixture(), writer = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.root });
+  cleanup.push(() => writer.close());
+  for (let index = 0; index < 140; index++) writer.append({ project: f.project, agent: "codex", event: "PostToolUse", excerpt: `fixture row ${index}` });
+  const reader = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.root, readOnly: true, recentReadRows: true, maxReadRows: 128 });
+  cleanup.push(() => reader.close()); let screened = 0;
+  expect(reader.sessionState(SESSION, () => { screened++; return true; })).toBe("unavailable");
+  expect(screened).toBeLessThanOrEqual(128);
 });
 
 test("#323 item 4: the re-check preview never creates capture storage; a home without capture is unavailable, not expired", async () => {
@@ -190,4 +202,16 @@ test("#323 item 1: the model consolidation producer keeps the supplied run origi
   const report = await proposeModelConsolidations(f.store, f.candidates, [view], { enabled: true, run: async () => ({ text: "a summary" }) }, guard);
   expect(report.ids).toHaveLength(1);
   expect(f.candidates.get(report.ids[0]!, f.project)!.origin).toEqual({ peer: "codex", session: SESSION });
+});
+
+test("model consolidation keeps a detached screened origin across the model callback", async () => {
+  const f = fixture();
+  const id = f.store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "model origin source", about: [] });
+  const origin = { peer: "safe-peer" };
+  const policy = createStandalonePolicy({ piiPatterns: ["blocked-peer"] });
+  const report = await proposeModelConsolidations(f.store, f.candidates, [f.store.get(id)!],
+    { enabled: true, run: async () => { origin.peer = "blocked-peer"; return { text: "screened model result" }; } },
+    { project: f.project, actor: "agent", check() {}, policy, origin });
+  expect(report.ids).toHaveLength(1);
+  expect(f.candidates.get(report.ids[0]!, f.project)!.origin?.peer).toBe("safe-peer");
 });

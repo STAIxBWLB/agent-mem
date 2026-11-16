@@ -723,7 +723,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         try {
           const policy = policyOf();
           return originRecheck(candidate.origin, candidate.originKnown, session => {
-            const opened = capture ??= new CaptureStore({ memoryDir: memoryHome(), project, cwd: policyCwd, readOnly: true });
+            const opened = capture ??= new CaptureStore({ memoryDir: memoryHome(), project, cwd: policyCwd, readOnly: true, recentReadRows: true, maxReadRows: 128 });
             return opened.sessionState(session, row => policy.screenStandalone(row));
           });
         } catch { return "unavailable" as const; } finally { capture?.close(); }
@@ -1103,7 +1103,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome() });
     try {
       const shown = await memory.tools.amem_show({ id: parsed.positionals[0]! }) as { capture?: import("./memory/capture.ts").CaptureRow } | null;
-      const row = shown?.capture; if (!row) throw new Error(`no capture row ${parsed.positionals[0]} in this project (capture is machine-local and expires)`);
+      const row = shown?.capture; if (!row) throw new Error(`no capture row ${parsed.positionals[0]} in this project (capture is machine-local and expires; inspect the current project timeline and retention)`);
       return options["--json"] === true ? JSON.stringify(row, null, 2)
         : [`capture:${row.id}  ${row.event}${row.tool ? ` ${row.tool}` : ""}, ${row.at}, agent ${row.agent}, session ${row.session ?? "unavailable"}${row.subagent ? ", subagent" : ""}`,
           ...(row.paths.length ? [`paths: ${row.paths.join(", ")}`] : []), "", terminalSafe(row.excerpt)].join("\n");
