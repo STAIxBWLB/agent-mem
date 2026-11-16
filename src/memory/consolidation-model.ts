@@ -1,6 +1,7 @@
 import { types } from "node:util";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore } from "./candidates.ts";
 import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
+import { validOrigin, type CandidateOrigin } from "./candidate-origin.ts";
 import { realPath } from "./platform.ts";
 import { recallViewIsLive } from "./recall.ts";
 import type { MemoryStore, View } from "./store.ts";
@@ -11,7 +12,7 @@ export interface ModelConsolidationOptions {
   enabled: true;
   run: (input: ModelConsolidationInput, signal: AbortSignal) => Promise<{ text: string } | null>;
 }
-export interface ModelConsolidationGuard { project: string; actor: "person" | "agent"; check(): void; policy: StandalonePolicy }
+export interface ModelConsolidationGuard { project: string; actor: "person" | "agent"; check(): void; policy: StandalonePolicy; /** #323: the run origin, kept on each model candidate. */ origin?: import("./candidate-origin.ts").CandidateOrigin }
 export interface ModelConsolidationReport {
   state: "disabled" | "known" | "unknown"; ids: string[]; calls: number; nonAnswers: number; rejected: number; oversized: number;
   limited: boolean; timedOut: boolean; truncated: boolean;
@@ -35,6 +36,9 @@ export async function proposeModelConsolidations(store: MemoryStore, candidates:
   if (model === undefined) return report;
   if (guard.actor !== "person" && guard.actor !== "agent") throw Error("model consolidation requires a person or an agent-marked session");
   try {
+    let originSnapshot: CandidateOrigin | undefined;
+    try { originSnapshot = validOrigin(memoryPolicySnapshot(guard.origin)); } catch { originSnapshot = undefined; }
+    if (originSnapshot) Object.freeze(originSnapshot);
     if (!model || model.enabled !== true || typeof model.run !== "function" || !guard.project.trim() || guard.project.length > 400) throw Error("model consolidation unavailable");
     guard.check();
     if (realPath(candidates.dir) !== realPath(store.profile.home)) throw Error("model consolidation home mismatch");
@@ -88,9 +92,11 @@ export async function proposeModelConsolidations(store: MemoryStore, candidates:
       if (text.length > 3000) { report.oversized++; continue; }
       const candidate: Extract<CandidateInput, { kind: "model-answer" }> = { project, kind: "model-answer", marker: "model-answer", targets: batch.map(row => ({ id: row.id, revision: row.revision })), text };
       guard.check();
+      // #323 AC3: the run origin goes through the same full host screen as the candidate, with it; a declined origin is dropped.
+      const origin = originSnapshot && await guard.policy.screen({ project, candidate, origin: originSnapshot }) && guard.policy.screenStandalone({ project, candidate, origin: originSnapshot }) ? originSnapshot : undefined;
       const permitted = await guard.policy.screen({ project, output: value, candidate }); check(batch);
       if (!permitted) { report.rejected++; continue; }
-      report.ids.push(candidates.put(candidate, "public"));
+      report.ids.push(candidates.put(candidate, "public", origin && guard.policy.screenStandalone({ project, candidate, origin }) ? origin : undefined));
     }
     return report;
   } catch { report.state = "unknown"; report.rejected++; return report; }

@@ -32,6 +32,17 @@ test("private source rows never reach candidates and late policy changes refuse 
   await expect(f.run({ policyVersion: () => version, policy: () => createStandalonePolicy({ host: { screen: async () => { version = "new"; return true; } } }) })).rejects.toThrow("context changed");
   expect(f.candidates.list({ project: f.project })).toEqual([]);
 });
+test("consolidation keeps the screened origin snapshot when its caller changes the original during an await", async () => {
+  const f = fixture(); f.note("bounded writer lease avoids transaction contention"); f.note("bounded writer lease avoids transaction contention");
+  const origin = { peer: "safe-peer" }; let changed = false;
+  const policy = () => createStandalonePolicy({ piiPatterns: ["blocked-peer"], host: { screen: async value => {
+    if (!changed && value && typeof value === "object" && (value as { kind?: string }).kind === "consolidation") { origin.peer = "blocked-peer"; changed = true; }
+    return true;
+  } } });
+  const result = await f.run({ origin, policy });
+  expect(changed).toBe(true); expect(result.candidates.length).toBeGreaterThan(0);
+  expect(f.candidates.get(result.candidates[0]!.id, f.project)?.origin?.peer).toBe("safe-peer");
+});
 test("host admission refuses before work; agent consolidation follows the same private-source screen", async () => {
   const f = fixture(); f.note("bounded writer lease avoids transaction contention"); f.note("bounded writer lease avoids transaction contention"); let calls = 0;
   const policy = () => { calls++; return createStandalonePolicy(); };

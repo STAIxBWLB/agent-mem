@@ -2,6 +2,14 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.28.0 (unreleased)
+
+### Added
+
+- Record a candidate's origin (capture session key, proposing peer, time, optional turn id) as ids beside the candidate, show it in `review list`, `review decide`, `review walk` and the console Review panel, carry every supplied field into the accepted note as `session:`/`peer:`/`origin-at:`/`turn:` edges, report a re-check of an expired origin session as `origin expired` in `review decide`, and print a capture row's session and time with `amem show capture:<id>` (#323).
+
+- Compatibility with N-1 (0.27.1), candidate storage: `candidates.db` gains one nullable `origin` column, added in place; candidate ids, payloads and the candidate hash are unchanged. A 0.27.1 reader ignores the column, and rows it writes have no origin, which 0.28.0 reads as unknown. Accepted notes keep the existing `NoteEntry` shape; origin is up to four extra `about` nodes.
+
 ## 0.27.1
 
 ### Added
