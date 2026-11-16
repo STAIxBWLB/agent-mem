@@ -5,7 +5,8 @@ import { canonicalJSON, hashJSON } from "./generation.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_MAX_OBJECTS, PLACEMENT_JOURNAL_MAX_RECORDS,
   SyncPlacementJournalError, validatePlacementRecord, type PlacementRecord } from "./sync-placement-journal-format.ts";
 
-// The 256 existing 64 KiB journal objects bound all records below 16 MiB; the rest is envelope metadata.
+// ponytail: 20 MiB holds the records under the existing 256-object/64 KiB journal ceiling plus metadata;
+// replace this in-memory envelope with a bounded streaming manifest before increasing the journal ceiling.
 export const PLACEMENT_BATCH_INTENT_MAX_BYTES = 20 * 1024 * 1024;
 export interface PlacementBatchChunk { name: string; prefixBytes: number; prefixHash: string; first: number; count: number; suffixHash: string }
 export interface PlacementBatchIntent {
