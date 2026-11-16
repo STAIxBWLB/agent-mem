@@ -25,7 +25,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readF
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureSessionKey } from "./memory/capture-input.ts";
-import { originLine } from "./memory/candidate-origin.ts";
+import { originLine, originRecheck } from "./memory/candidate-origin.ts";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
@@ -34,7 +34,7 @@ import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-ov
 import { openCuratedForRead } from "./memory/curated-read.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
-import { readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
+import { CaptureStore, readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
 import { COMMANDS, commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
@@ -716,6 +716,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (input.kind === "consolidation") return `${input.action}. Sources: ${input.targets.map(target => `mem:${target.id}`).join(", ")}. ${input.text}`;
         return input.kind === "memory" ? `${input.title ? `${input.title}: ` : ""}${input.text}` : input.kind === "fail" ? `fail. Approach: ${input.approach} Symptom: ${input.symptom} Cause: ${input.cause} Retry when: ${input.retryWhen}`
           : input.kind === "correction" ? `correction. ${input.proposedText} Reason: ${input.reason}` : `decay. ${input.reason}`; };
+      // #323 item 4: can the origin still be re-checked against capture? An expired session is reported as such, never as a failed check.
+      const recheckOf = (candidate: import("./memory/candidates.ts").Candidate) => {
+        let capture: import("./memory/capture.ts").CaptureStore | undefined;
+        try { return originRecheck(candidate.origin, candidate.originKnown, session => { const opened = capture ??= new CaptureStore({ memoryDir: memoryHome(), project, cwd: policyCwd }); return opened.hasSession(session); }); }
+        catch { return "unavailable" as const; } finally { capture?.close(); }
+      };
       if (sub === "decide") {
         // #431 AC5: what `review walk` gives a person, one candidate at a time and without a terminal. The preview prints the
         // candidate and its overlaps and stamps it shown (the caller read it); --confirm then applies exactly the named decision.
@@ -729,12 +735,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (options["--confirm"] !== true) {
           const shown = terminalSafe(body(candidate)), overlaps = await overlapsFor(candidate);
           const preview = { candidateId: candidate.id, kind: candidate.input.kind, createdAt: candidate.createdAt, decision, body: shown,
-            origin: candidate.originKnown ? candidate.origin ?? null : "unknown",
+            origin: candidate.originKnown ? candidate.origin ?? null : "unknown", originRecheck: recheckOf(candidate),
             overlaps: overlaps.map(overlap => ({ id: overlap.id, score: overlap.score, title: overlap.title ?? null })), next: `amem review decide ${candidate.id} ${decision} --confirm` };
           administrative(preview);
           markShown(realPath(candidates.dir), [project, ...aliases], Date.now(), [candidate.id]);
           return options["--json"] ? JSON.stringify(preview, null, 2)
-            : [`${candidate.id}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${shown}`, `  ${originLine(candidate.origin, candidate.originKnown)}`, ...preview.overlaps.map(overlap => `  overlap mem:${overlap.id} (${overlap.score.toFixed(3)}): ${terminalSafe(overlap.title ?? "untitled")}`),
+            : [`${candidate.id}  ${candidate.input.kind}  ${candidate.createdAt.slice(0, 10)}`, `  ${shown}`, `  ${originLine(candidate.origin, candidate.originKnown)} (recheck: ${preview.originRecheck})`, ...preview.overlaps.map(overlap => `  overlap mem:${overlap.id} (${overlap.score.toFixed(3)}): ${terminalSafe(overlap.title ?? "untitled")}`),
               `preview only: run ${preview.next} to ${decision} it`].join("\n");
         }
         if (decision === "defer") return options["--json"] ? JSON.stringify({ candidateId: candidate.id, status: "pending", decision }, null, 2) : `deferred candidate ${candidate.id}; it stays pending`;

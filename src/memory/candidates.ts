@@ -9,9 +9,7 @@ import { cliAttribution } from "./cli-attribution.ts";
 import { memoryHome } from "./home.ts";
 import { realPath } from "./platform.ts";
 import { stripPrivateDeep } from "./private-spans.ts";
-import { validOrigin, type CandidateOrigin } from "./candidate-origin.ts";
-/** #323: origin kept on acceptance as graph edges (ids only), so a note can be traced back to its session. */
-export const originNodes = (origin: CandidateOrigin | undefined): string[] => [...(origin?.session ? [`session:${origin.session}`] : []), ...(origin?.peer ? [`peer:${origin.peer}`] : [])];
+import { originNodes, validOrigin, type CandidateOrigin } from "./candidate-origin.ts";
 const hasColumn = (db: Database, name: string): boolean => (db.query("PRAGMA table_info(candidates)").all() as { name: string }[]).some(column => column.name === name);
 import { MemoryStore, type GoalView, type NoteInput, type View } from "./store.ts";
 
@@ -317,11 +315,13 @@ export class CandidateStore {
   private decode(row: CandidateRow): Candidate | undefined {
     return decodeCandidate(row, () => { this.skippedUnknownKinds++; });
   }
-  put(rawInput: CandidateInput, verdict: CandidateVerdict, rawOrigin?: CandidateOrigin): string {
+  put(rawInput: CandidateInput, verdict: CandidateVerdict, rawOrigin?: CandidateOrigin, screen?: (origin: CandidateOrigin) => boolean): string {
     // `<private>` spans are never stored: dropped before the input is validated, hashed (so the id) or written.
     const input = stripPrivateDeep(rawInput);
     publicOnly(verdict); validate(input);
     const origin = validOrigin(rawOrigin), payload = canonical(input), id = candidateInputId(input);
+    // AC3: the caller's configured privacy screen sees the origin ids before they are stored; a refused origin refuses the proposal.
+    if (origin && screen && screen(origin) !== true) throw new Error("candidate origin refused by the configured privacy policy");
     // Prune, count, insert and prune again are ONE immediate transaction: concurrent proposers (several agents) cannot all pass the count and then let the cap evict an unseen candidate.
     return this.db.transaction((): string => {
       this.prune();
@@ -561,6 +561,8 @@ export class CandidateStore {
       resolve();
       const replay = this.beginAcceptance(candidate.id, context.project); if (replay) return { candidateId: candidate.id, noteId: replay, alreadyAccepted: true };
       // A thrown append remains accepting: its authored-row outcome needs person-audited recovery.
+      // #323: a promotion keeps its canonical identity (the id is the source note's own fields), so its origin stays on the candidate row
+      // (`amem review list --status all`), not on the promoted note: an extra edge would fork that id across machines.
       const noteId = context.store.promote(target.id, context.actor, context.project);
       if (noteId === undefined) {
         this.db.query("UPDATE candidates SET status = 'pending' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'accepting'").run(candidate.id, this.scope(context.project));

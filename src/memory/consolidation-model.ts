@@ -11,7 +11,7 @@ export interface ModelConsolidationOptions {
   enabled: true;
   run: (input: ModelConsolidationInput, signal: AbortSignal) => Promise<{ text: string } | null>;
 }
-export interface ModelConsolidationGuard { project: string; actor: "person" | "agent"; check(): void; policy: StandalonePolicy }
+export interface ModelConsolidationGuard { project: string; actor: "person" | "agent"; check(): void; policy: StandalonePolicy; /** #323: the run origin, kept on each model candidate. */ origin?: import("./candidate-origin.ts").CandidateOrigin }
 export interface ModelConsolidationReport {
   state: "disabled" | "known" | "unknown"; ids: string[]; calls: number; nonAnswers: number; rejected: number; oversized: number;
   limited: boolean; timedOut: boolean; truncated: boolean;
@@ -90,7 +90,7 @@ export async function proposeModelConsolidations(store: MemoryStore, candidates:
       guard.check();
       const permitted = await guard.policy.screen({ project, output: value, candidate }); check(batch);
       if (!permitted) { report.rejected++; continue; }
-      report.ids.push(candidates.put(candidate, "public"));
+      report.ids.push(candidates.put(candidate, "public", guard.origin && guard.policy.screenStandalone(guard.origin) ? guard.origin : undefined));
     }
     return report;
   } catch { report.state = "unknown"; report.rejected++; return report; }

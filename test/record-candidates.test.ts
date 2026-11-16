@@ -132,7 +132,8 @@ test("accepting a fix and a fail Record candidate writes the decided kind and a 
   expect(body.kind).toBe("fail");
   const labels = ["Approach: ", "Symptom: writer starved under load", "Cause: ", "Evidence: src/capture.ts", "Retry when: retry after the queue drains"];
   expect(labels.every(label => body.text.includes(`${label}\n`) || body.text.endsWith(label))).toBe(true);
-  expect(body.about.filter(node => !node.startsWith("session:"))).toEqual(["path:src/capture.ts"]); expect(body.about.some(node => /^session:[a-f0-9]{16}$/.test(node))).toBe(true); // #323
+  // #323: a Record candidate's capture sessions stay in its bound sources; none is inferred into origin, so the note gains no session edge.
+  expect(body.about).toEqual(["path:src/capture.ts"]);
 });
 
 test("acceptance refuses with a named next step when the quoted row changed or was pruned", async () => {

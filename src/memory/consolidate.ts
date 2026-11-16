@@ -45,6 +45,8 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
   if (options.allowed?.() === false) throw Error("consolidation unavailable");
   if (realPath(candidates.dir) !== realPath(store.profile.home)) throw Error("consolidation requires its own candidate home");
   const project = options.project, version = options.policyVersion(), policy = options.policy();
+  // #323 AC3: the configured screen sees the run origin before any candidate stores it; a declined origin is recorded as none.
+  const runOrigin = options.origin && policy.screenStandalone(options.origin) ? options.origin : undefined;
   if (!project.trim() || typeof version !== "string") throw Error("consolidation context unavailable");
   const sourceCurrent = store.beginRecallRead();
   const check = () => {
@@ -89,7 +91,7 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
       check();
       const id = candidateInputId(input), known = candidates.get(id, project);
       if (known && known.status !== "pending" || candidates.reviewedConsolidation(id, project)) { report.alreadyReviewed++; continue; }
-      candidates.put(input, "public", options.origin);
+      candidates.put(input, "public", runOrigin);
       report.candidates.push({ id, action: input.action, sources: input.targets.map(target => `mem:${target.id}`) });
     }
     // #368: the same one-at-a-time discipline for Record rows. A group key already in the queue is not proposed again, so a
@@ -106,16 +108,15 @@ export async function proposeConsolidation(store: MemoryStore, candidates: Candi
         check(); if (!await policy.screen(proposal.source)) { counts.refused++; continue; }
         check(); if (!await policy.screen(proposal.input)) { counts.refused++; continue; }
         check();
-        // A Record candidate's session is the one its bound source rows name (a fact of the proposal, not a capture inference).
-        const session = proposal.input.record?.sources[0]?.session;
-        candidates.put(proposal.input, "public", { ...options.origin, ...(session ? { session } : {}) });
+        // #323: the proposer's origin only. The Record's own capture sessions stay in its bound sources; none is promoted to origin.
+        candidates.put(proposal.input, "public", runOrigin);
         counts.queued++;
         report.candidates.push({ id: candidateInputId(proposal.input), action: `record:${proposal.input.kind === "fail" ? "fail" : proposal.input.noteKind}`,
           sources: (proposal.input.record?.sources ?? []).map(source => `capture:${source.session}@${source.at}`) });
       }
       report.records = counts;
     }
-    if (options.model !== undefined) report.model = await proposeModelConsolidations(store, candidates, synced, options.model, { project, actor: options.actor, check, policy });
+    if (options.model !== undefined) report.model = await proposeModelConsolidations(store, candidates, synced, options.model, { project, actor: options.actor, check, policy, ...(runOrigin ? { origin: runOrigin } : {}) });
   } catch (error) { throw new ConsolidationProposalError(report.candidates.map(row => row.id), error instanceof ConsolidationReviewLimit ? error : undefined); }
   return report;
 }

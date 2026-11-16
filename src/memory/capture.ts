@@ -737,6 +737,15 @@ export class CaptureStore {
    * window holds only the newest 32, so proving a candidate with that window would read every older row as pruned. These are
    * point lookups on the `at` index with an explicit per-turn cap: no scan, no window, and no index or spool work.
    */
+  /** #323 item 4: whether any retained row of this project carries `session` (one indexed point query, no body read). */
+  hasSession(session: string): boolean {
+    this.checkReadBinding();
+    if (typeof session !== "string" || !SESSION_KEY.test(session)) throw new Error("invalid session key");
+    const columns = new Set((this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(column => column.name));
+    if (!columns.has("session")) return false;
+    return this.db.query("SELECT 1 FROM rows WHERE project = ? AND session = ? LIMIT 1").get(this.key, session) !== null;
+  }
+
   readRecordTurns(turns: readonly { session: string; at: string }[]): CaptureRow[] {
     this.checkReadBinding();
     if (!Array.isArray(turns) || turns.length < 1 || turns.length > 8 || turns.some(turn => !turn

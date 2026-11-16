@@ -4,7 +4,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CandidateStore, withPendingCandidates, type CandidateInput } from "../src/memory/candidates.ts";
-import { originLine, validOrigin } from "../src/memory/candidate-origin.ts";
+import { originLine, originNodes, originRecheck, validOrigin } from "../src/memory/candidate-origin.ts";
+import { createStandalonePolicy } from "../src/memory/policy.ts";
+import { proposeModelConsolidations } from "../src/memory/consolidation-model.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { realPath } from "../src/memory/platform.ts";
@@ -41,11 +43,15 @@ test("#323 AC1: full, partial and absent origin are stored as ids beside the row
   expect(withPendingCandidates(f.base, reader => reader.list([f.project])).find(row => row.id === full)?.origin?.peer).toBe("codex");
 });
 
-test("#323 AC1: acceptance carries origin into the accepted note as session and peer graph edges; no origin adds none", () => {
+test("#323 AC1: acceptance keeps every supplied origin field (session, peer, at, turn) as id edges; no origin adds none", () => {
   const f = fixture();
-  const withOrigin = f.accept(f.put("accepted with origin", { session: SESSION, peer: "codex", at: AT }));
+  const withOrigin = f.accept(f.put("accepted with origin", { session: SESSION, peer: "codex", at: AT, turn: "turn-7" }));
   const without = f.accept(f.put("accepted without origin"));
-  expect(f.store.get(withOrigin.noteId, f.project)!.about).toEqual(expect.arrayContaining([`session:${SESSION}`, "peer:codex"]));
+  expect(f.store.get(withOrigin.noteId, f.project)!.about).toEqual(expect.arrayContaining([`session:${SESSION}`, "peer:codex", `origin-at:${AT}`, "turn:turn-7"]));
+  expect(originNodes({ session: SESSION, peer: "codex", at: AT, turn: "turn-7" })).toHaveLength(4);
+  // Each accepting kind that writes a new note carries it: a fail and a correction too.
+  const fail = f.candidates.put({ project: f.project, kind: "fail", approach: "a", symptom: "s", cause: "c", evidenceRefs: ["test:origin"], retryWhen: "r" } as CandidateInput, "public", { peer: "kimi", turn: "t-1" });
+  expect(f.store.get(f.accept(fail).noteId, f.project)!.about).toEqual(expect.arrayContaining(["peer:kimi", "turn:t-1"]));
   expect(f.store.get(without.noteId, f.project)!.about.some(node => node.startsWith("session:") || node.startsWith("peer:"))).toBe(false);
 });
 
@@ -76,8 +82,13 @@ test("#323: an older database without the origin column gains it in place; its r
 test("#323 AC3: origin takes ids only; text, paths, secrets and unknown fields are refused", () => {
   for (const bad of [{ session: "not hex" }, { session: "/home/me/notes.md" }, { peer: "a peer with spaces" }, { peer: "sk-live sec ret" }, { turn: "../x/y z" },
     { at: "yesterday" }, { at: "2026-11-16" }, { text: "free text" }, { path: "src/a.ts" }, "string", [SESSION]]) expect(() => validOrigin(bad), JSON.stringify(bad)).toThrow();
+  // The unchanged secret screen applies to the ids: an id-shaped token is refused.
+  expect(() => validOrigin({ peer: "ghp_" + "a".repeat(36) })).toThrow("secret screen");
   const f = fixture();
   expect(() => f.put("refused origin", { session: "/etc/passwd" } as never)).toThrow();
+  // A library caller's configured privacy screen sees the ids before persistence; a declined origin refuses the write.
+  const policy = createStandalonePolicy({ piiPatterns: ["blocked-peer"] });
+  expect(() => f.candidates.put({ project: f.project, kind: "memory", text: "screened origin" } as CandidateInput, "public", { peer: "blocked-peer" }, origin => policy.screenStandalone(origin))).toThrow("configured privacy policy");
   expect(f.candidates.list({ project: f.project, status: "all" })).toHaveLength(0);
 });
 
@@ -91,6 +102,10 @@ test("#323: MCP proposals record the host-supplied origin with its time; an inva
   supplied = { session: "/a/path" };
   const second = (await mcp.tools.amem_remember({ text: "remembered with a bad session" }) as { id: string }).id;
   expect(f.candidates.get(second, f.project)!.origin).toBeUndefined();
+  // A configured pattern that matches an origin id drops the origin; the proposal itself still stands.
+  const screened = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project, policy: { piiPatterns: ["blocked-peer"] }, origin: () => ({ peer: "blocked-peer" }) }); cleanup.push(() => screened.close());
+  const third = (await screened.tools.amem_remember({ text: "remembered by a screened peer" }) as { id: string }).id;
+  expect(f.candidates.get(third, f.project)!.origin).toBeUndefined();
 });
 
 test("#323 AC2: review list, review decide and review walk show the origin, or unavailable", async () => {
@@ -119,4 +134,36 @@ test("#323 item 3: amem show capture:<id> prints a capture row's session and row
   const shown = await runCli(["show", `capture:${id}`], { cwd: f.root, env: {}, stdinTTY: false });
   const row = JSON.parse(await runCli(["show", `capture:${id}`, "--json"], { cwd: f.root, env: {}, stdinTTY: false }));
   expect(row.session).toMatch(/^[a-f0-9]{16}$/); expect(shown).toContain(`session ${row.session}`); expect(row.session).toBe("0011223344556677"); expect(shown).toContain(row.at); expect(shown).toContain("PostToolUse");
+});
+
+test("#323 item 4: a re-check reports an expired origin distinctly, never as a failed check", () => {
+  expect(originRecheck({ session: SESSION }, true, () => true)).toBe("available");
+  expect(originRecheck({ session: SESSION }, true, () => false)).toBe("origin expired");
+  expect(originRecheck({ session: SESSION }, true, () => { throw new Error("capture unreadable"); })).toBe("origin expired");
+  expect(originRecheck({ peer: "codex" }, true, () => true)).toBe("unavailable");
+  expect(originRecheck(undefined, false, () => true)).toBe("unknown");
+});
+
+test("#323 item 4: review decide shows the re-check state from retained capture", async () => {
+  const f = fixture(), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
+  cleanup.push(() => { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; });
+  const project = (await import("../src/memory/project.ts")).memoryProjectKey(f.root);
+  const capture = new CaptureStore({ memoryDir: f.base, project, cwd: f.root }); cleanup.push(() => capture.close());
+  capture.append({ project, agent: "codex", event: "PostToolUse", excerpt: "retained turn", session: SESSION });
+  const kept = f.candidates.put({ project, kind: "memory", text: "kept origin" } as CandidateInput, "public", { session: SESSION });
+  const gone = f.candidates.put({ project, kind: "memory", text: "expired origin" } as CandidateInput, "public", { session: "ffffffffffffffff" });
+  const ctx = { cwd: f.root, env: {}, stdinTTY: false, stdoutTTY: false };
+  expect(JSON.parse(await runCli(["review", "decide", kept, "accept", "--json"], ctx)).originRecheck).toBe("available");
+  expect(JSON.parse(await runCli(["review", "decide", gone, "accept", "--json"], ctx)).originRecheck).toBe("origin expired");
+  expect(await runCli(["review", "decide", gone, "accept"], ctx)).toContain("(recheck: origin expired)");
+});
+
+test("#323 item 1: the model consolidation producer keeps the supplied run origin", async () => {
+  const f = fixture();
+  const note = f.store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "public model source", about: ["path:public.ts"] });
+  const view = f.store.get(note)!;
+  const guard = { project: f.project, actor: "agent" as const, check() {}, policy: createStandalonePolicy(), origin: { peer: "codex", session: SESSION } };
+  const report = await proposeModelConsolidations(f.store, f.candidates, [view], { enabled: true, run: async () => ({ text: "a summary" }) }, guard);
+  expect(report.ids).toHaveLength(1);
+  expect(f.candidates.get(report.ids[0]!, f.project)!.origin).toEqual({ peer: "codex", session: SESSION });
 });

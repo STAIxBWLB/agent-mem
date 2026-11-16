@@ -172,6 +172,8 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       // Ids only and bounded (validOrigin); an invalid host value records no origin rather than refusing the proposal.
       let origin: CandidateOrigin | undefined;
       try { origin = validOrigin(supplied ? { ...supplied, at: new Date(store.readNow()).toISOString() } : undefined); } catch { origin = undefined; }
+      // AC3: the configured screen sees the ids first; a host origin it declines is dropped (recorded as none), the proposal stands.
+      if (origin && !currentPolicy().screenStandalone(origin)) origin = undefined;
       return { id: candidates.put(input, "public", origin), ...(overlaps === undefined ? {} : { overlaps }) };
     };
     const tools: McpHandlers = {
