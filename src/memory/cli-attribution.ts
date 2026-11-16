@@ -7,10 +7,13 @@ const scope = new AsyncLocalStorage<Readonly<CliAttribution>>();
 /** Preserve library defaults outside an ordinary CLI invocation, including concurrent calls. */
 export function cliAttribution(): Readonly<CliAttribution> | undefined { return scope.getStore(); }
 /**
- * Run `work` with `identity` as the attribution of every memory write it makes (root API, #431 / agent-hub#1522). Writes inside the scope
- * record `identity.peer` as the note's peer and `identity.actor` as each operation's actor; outside it they keep the library default (the
- * person). Attribution only: it never authenticates, grants access or bypasses a policy screen. The exact operations that read the scope
- * are listed in docs/contracts.md (Attribution scope). It refuses before running `work` when it has no agent identity (no usable peer).
+ * Run `work` with `identity` in the attribution scope (root API, #431 / agent-hub#1522). Only library code that reads the scope is
+ * attributed: `rawMemoryCommand` promote, demote, forget, supersede, confirm and reject, every `rawGoalCommand` write and the
+ * `MemoryStore.dedupe` replacement record `identity.actor` as the operation actor (default `user`); notes written by `CandidateStore.accept`
+ * record `identity.peer` as their peer (default: the accept call's actor). Other writes, including a direct `MemoryStore.note`, are not
+ * attributed and keep what their caller passes. An agent scope also refuses withheld targets in those commands and screens
+ * `assertCliPolicy` values with `identity.policy`. Attribution only: it never authenticates, grants access or bypasses a screen.
+ * docs/contracts.md (Attribution scope) is the full list. It refuses before running `work` when it has no agent identity (no usable peer).
  */
 export function withCliAttribution<T>(identity: CliAttribution, work: () => T): T {
   if (!identity || (identity.actor !== "person" && identity.actor !== "agent")) throw new Error("memory attribution needs actor person or agent");
