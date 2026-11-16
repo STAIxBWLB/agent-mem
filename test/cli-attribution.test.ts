@@ -65,7 +65,16 @@ test("#270: the root API attributes a write inside the scope to the agent and it
 
 test("#270: a scope without an agent identity refuses before running its work", () => {
   let ran = 0;
-  for (const identity of [{ actor: "agent", peer: "" }, { actor: "agent", peer: "  " }, { actor: "agent", peer: "a\nb" }, { actor: "robot", peer: "codex" }, { actor: "agent" }] as unknown as api.CliAttribution[])
-    expect(() => api.withCliAttribution(identity, () => { ran++; })).toThrow(/needs actor person or agent|no agent identity; nothing was run\. Pass the session's peer id/);
+  for (const [identity, reason] of [
+    [{ actor: "agent", peer: "" }, "missing or blank"],
+    [{ actor: "agent", peer: "  " }, "missing or blank"],
+    [{ actor: "agent", peer: "a\nb" }, "contains a control character"],
+    [{ actor: "agent", peer: "x".repeat(121) }, "exceeds 120 characters"],
+    [{ actor: "agent" }, "missing or blank"],
+  ] as [unknown, string][]) {
+    expect(() => api.withCliAttribution(identity as api.CliAttribution, () => { ran++; })).toThrow(reason);
+    expect(() => api.withCliAttribution(identity as api.CliAttribution, () => { ran++; })).toThrow("Fix or unset AGENTHUB_PEER_ID");
+  }
+  expect(() => api.withCliAttribution({ actor: "robot", peer: "codex" } as unknown as api.CliAttribution, () => { ran++; })).toThrow("needs actor person or agent");
   expect(ran).toBe(0); expect(api.cliAttribution()).toBeUndefined();
 });

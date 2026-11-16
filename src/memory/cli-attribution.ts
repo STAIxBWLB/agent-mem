@@ -17,7 +17,10 @@ export function cliAttribution(): Readonly<CliAttribution> | undefined { return 
  */
 export function withCliAttribution<T>(identity: CliAttribution, work: () => T): T {
   if (!identity || (identity.actor !== "person" && identity.actor !== "agent")) throw new Error("memory attribution needs actor person or agent");
-  if (typeof identity.peer !== "string" || !identity.peer.trim() || identity.peer.length > 120 || /[\p{Cc}]/u.test(identity.peer)) throw new Error("memory attribution has no agent identity; nothing was run. Pass the session's peer id (1 to 120 characters, no control characters), for example the agent-hub peer name");
+  const remedy = "Fix or unset AGENTHUB_PEER_ID, or pass a nonblank session peer id of at most 120 characters without control characters";
+  if (typeof identity.peer !== "string" || !identity.peer.trim()) throw new Error(`memory attribution peer is missing or blank; nothing was run. ${remedy}`);
+  if (identity.peer.length > 120) throw new Error(`memory attribution peer exceeds 120 characters; nothing was run. ${remedy}`);
+  if (/[\p{Cc}]/u.test(identity.peer)) throw new Error(`memory attribution peer contains a control character; nothing was run. ${remedy}`);
   return scope.run(Object.freeze({ ...identity, peer: identity.actor === "agent" && identity.peer === "person" ? "agent" : identity.peer }), work);
 }
 

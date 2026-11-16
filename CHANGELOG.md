@@ -7,6 +7,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ### Added
 
 - Let agent-marked sessions use the existing screened amem operations with their preview and confirmation steps, including history reads and sync-placement migration. Add `amem review decide` for non-interactive candidate review and `amem formats raise` for an explicit, inventory-checked format-floor change. Refs #431, #432.
+- Refuse malformed `AGENTHUB_PEER_ID` values containing only whitespace, control characters, or more than 120 characters before running non-capture CLI commands; the error names the failed rule and how to fix or unset the marker. Refs #436.
 - Export `withCliAttribution`, `cliAttribution`, `noteDisplayActor` and `CliAttribution` from the package root for hosts that run supported CLI operations on an agent's behalf. The scope attributes only its documented call sites and does not authenticate or bypass policy. Refs #436.
 
 ## 0.27.0
