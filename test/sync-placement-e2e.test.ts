@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyPrune, inspectSyncPlacement, planPrune, syncMemory, type SyncPlacementInspection } from "../src/index.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
@@ -30,6 +30,27 @@ async function publish(f: PlacementInspectionFixture) {
   matchPlan(before, added[0]!);
   return before;
 }
+
+test("#420 AC4: placement sync uses a listed local bare remote and refuses it when unlisted", async () => {
+  const prior = process.env.AMEM_HOME;
+  const f = await createPlacementInspectionFixture(); homes.push(f);
+  try {
+    process.env.AMEM_HOME = f.home;
+    const { visibility: _injectedVisibility, ...options } = f.opts();
+    const before = inspectionGit(f.remote, "rev-list", "--all");
+    const refused = await syncMemory(f.store, options);
+    expect(refused.ok).toBe(false);
+    expect(refused.placementPublication?.refusal?.category).toBe("remote");
+    expect(inspectionGit(f.remote, "rev-list", "--all")).toEqual(before);
+    writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["NEVER_PUBLIC_"], privateRemotes: [f.remote] }), { mode: 0o600 });
+    const result = await syncMemory(f.store, options);
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(f.reachableIds()).toContain(f.ids.project!);
+    expect(f.reachableIds()).not.toContain(f.ids.declined!);
+  } finally {
+    if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior;
+  }
+}, 120_000);
 
 // Several real local-Git publication/import/rebuild cycles run serially: hosted macOS takes 50-52 s and has exceeded 60 s
 // on the release runner (#295), so this test-local allowance keeps 2x headroom; the global --timeout is unchanged.

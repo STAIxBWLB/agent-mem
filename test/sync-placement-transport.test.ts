@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, closeSync, existsSync, fsyncSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { inflateSync, deflateSync } from "node:zlib";
@@ -14,6 +14,10 @@ import { planPlacementJournal, preparePlacementJournal, readPlacementProjection,
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { ensurePlacementFence } from "../src/memory/sync-placement-journal-storage.ts";
 import * as journalStorage from "../src/memory/sync-placement-journal-storage.ts";
+import * as formats from "../src/memory/formats.ts";
+import * as formatsRaise from "../src/memory/formats-raise.ts";
+import * as effectiveWriters from "../src/memory/sync-placement-effective-writers.ts";
+import { runCli } from "../src/cli.ts";
 import * as publicationStorage from "../src/memory/sync-placement-publication-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
 import { applyPrune, planPrune, validatePrunePlan, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
@@ -536,6 +540,172 @@ function retainedPublication(f: Awaited<ReturnType<typeof fixture>>) {
   return publicationStorage.readPlacementPublication(f.home, f.epochHash, root.seal);
 }
 
+test("v2 publication batch hides a torn chunk and resumes the exact records once", async () => {
+  const remote = bare(), f = await fixture({ seed(store) {
+    const result: Record<string, string> = {};
+    for (let index = 0; index < 180; index++) result[String(index)] = store.note(note(`batch fixture ${index}`));
+    result.private = store.note(note("NEVER_PUBLIC_BATCH")); return result;
+  } });
+  const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true);
+  const realAppend = journalStorage.appendPlacementEvents; let fired = false, frozen: unknown[] = [];
+  const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
+    realAppend(home, epochHash, events, head, { ...options, phase(stage) {
+      options.phase?.(stage);
+      if (fired || stage !== "chunk-written") return;
+      const dir = join(home, "sync-placement", "epochs", epochHash);
+      const batch = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { records: unknown[]; chunks: { name: string; prefixBytes: number }[] };
+      frozen = batch.records;
+      const file = join(dir, batch.chunks[0]!.name), complete = readFileSync(file), prefix = batch.chunks[0]!.prefixBytes;
+      persistCrashPrefix(file, complete.subarray(0, prefix + Math.floor((complete.length - prefix) / 2)));
+      fired = true; throw Error("synthetic interrupted batch");
+    } }));
+  try {
+    const first = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(fired).toBe(true); expect(first.ok).toBe(false); expect(refs(remote)).toEqual([]);
+    const pending = journalStorage.readPlacementJournal(f.home, f.epochHash);
+    expect(pending.pending).toBe(true); expect(pending.pendingBatch?.count).toBeGreaterThan(1);
+    expect(pending.sequence).toBe(0); expect(pending.records).toEqual([]);
+    pending.pendingBatch!.count = 0;
+    expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pendingBatch?.count).toBeGreaterThan(1);
+    fault.mockRestore();
+    const resumed = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
+    const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
+    expect(done.pending).toBe(false); expect(new Set(done.records.map(record => record.requestId)).size).toBe(done.records.length);
+    expect(done.records.slice(0, frozen.length)).toEqual(frozen);
+    expect(verifiedPublicRows(remote).has(f.ids["0"]!)).toBe(true);
+    assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_BATCH"]);
+  } finally { fault.mockRestore(); floor.mockRestore(); }
+}, 120_000);
+
+for (const interruptedPhase of ["intent-written", "intent-fsync", "chunk-fsync", "intent-cleared"] as const)
+  test(`v2 publication resumes after ${interruptedPhase} without duplicate records`, async () => {
+    const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("batch phase allowed")), denied: store.note(note("NEVER_PUBLIC_BATCH_PHASE")) }) });
+    const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true);
+    const realAppend = journalStorage.appendPlacementEvents; let fired = false;
+    const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
+      realAppend(home, epochHash, events, head, { ...options, phase(stage) {
+        options.phase?.(stage); if (fired || stage !== interruptedPhase) return;
+        if (stage === "intent-written") {
+          const file = join(home, "sync-placement", "epochs", epochHash, "append-intent.json"), full = readFileSync(file);
+          persistCrashPrefix(file, full.subarray(0, Math.floor(full.length / 2)));
+        }
+        fired = true; throw Error("synthetic interrupted batch phase");
+      } }));
+    try {
+      const interrupted = await syncPlacementMemory(f.store, f.opts(remote));
+      expect(fired).toBe(true); expect(interrupted.ok).toBe(false); expect(refs(remote)).toEqual([]);
+      fault.mockRestore();
+      const result = await syncPlacementMemory(f.store, f.opts(remote)); expect(result.ok, JSON.stringify(result)).toBe(true);
+      const read = journalStorage.readPlacementJournal(f.home, f.epochHash);
+      expect(read.pending).toBe(false); expect(new Set(read.records.map(record => record.requestId)).size).toBe(read.records.length);
+      expect(verifiedPublicRows(remote).has(f.ids.allowed!)).toBe(true); assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_BATCH_PHASE"]);
+    } finally { fault.mockRestore(); floor.mockRestore(); }
+  }, 120_000);
+
+test("v2 batch refuses a changed partial record without publishing or repairing it", async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("batch tamper allowed")) }) });
+  const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true), realAppend = journalStorage.appendPlacementEvents;
+  let file = "", fired = false;
+  const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
+    realAppend(home, epochHash, events, head, { ...options, phase(stage) {
+      options.phase?.(stage); if (fired || stage !== "chunk-written") return;
+      const dir = join(home, "sync-placement", "epochs", epochHash);
+      const batch = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { chunks: { name: string; prefixBytes: number }[] };
+      file = join(dir, batch.chunks[0]!.name); const full = readFileSync(file), prefix = batch.chunks[0]!.prefixBytes;
+      const partial = Buffer.from(full.subarray(0, prefix + 16)); partial[partial.length - 1] = partial[partial.length - 1]! ^ 1;
+      persistCrashPrefix(file, partial); fired = true; throw Error("synthetic corrupt batch prefix");
+    } }));
+  try {
+    expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false); expect(fired).toBe(true);
+    const before = readFileSync(file); fault.mockRestore();
+    expect(() => journalStorage.readPlacementJournal(f.home, f.epochHash)).toThrow();
+    expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false);
+    expect(readFileSync(file)).toEqual(before); expect(refs(remote)).toEqual([]);
+  } finally { fault.mockRestore(); floor.mockRestore(); }
+}, 120_000);
+
+test("v2 batch resumes when a later journal chunk ends inside a record", async () => {
+  const remote = bare(), f = await fixture({ seed(store) {
+    const ids: Record<string, string> = {};
+    for (let index = 0; index < 220; index++) ids[String(index)] = store.note(note(`multi-chunk batch ${index}`));
+    return ids;
+  } });
+  const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true), realAppend = journalStorage.appendPlacementEvents;
+  let writes = 0, fired = false;
+  const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
+    realAppend(home, epochHash, events, head, { ...options, phase(stage) {
+      options.phase?.(stage); if (fired || stage !== "chunk-written" || ++writes !== 2) return;
+      const dir = join(home, "sync-placement", "epochs", epochHash);
+      const batch = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { chunks: { name: string }[] };
+      expect(batch.chunks.length).toBeGreaterThan(1);
+      const file = join(dir, batch.chunks[1]!.name), complete = readFileSync(file);
+      persistCrashPrefix(file, complete.subarray(0, Math.floor(complete.length / 2)));
+      fired = true; throw Error("synthetic second-chunk interruption");
+    } }));
+  try {
+    expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false); expect(fired).toBe(true);
+    const pending = journalStorage.readPlacementJournal(f.home, f.epochHash);
+    expect(pending.pending).toBe(true); expect(pending.sequence).toBe(0); expect(refs(remote)).toEqual([]);
+    fault.mockRestore();
+    const result = await syncPlacementMemory(f.store, f.opts(remote)); expect(result.ok, JSON.stringify(result)).toBe(true);
+    const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
+    expect(done.pending).toBe(false); expect(new Set(done.records.map(record => record.requestId)).size).toBe(done.records.length);
+  } finally { fault.mockRestore(); floor.mockRestore(); }
+}, 120_000);
+
+test("a policy revision change cannot publish an interrupted v2 batch", async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("batch policy fence")) }) });
+  const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true), realAppend = journalStorage.appendPlacementEvents;
+  let fired = false;
+  const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
+    realAppend(home, epochHash, events, head, { ...options, phase(stage) {
+      options.phase?.(stage); if (fired || stage !== "chunk-written") return;
+      fired = true; throw Error("synthetic policy-bound batch interruption");
+    } }));
+  try {
+    expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false); expect(fired).toBe(true);
+    expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pending).toBe(true);
+    fault.mockRestore(); f.changePolicyEpoch();
+    expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false);
+    expect(refs(remote)).toEqual([]);
+    expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pending).toBe(true);
+  } finally { fault.mockRestore(); floor.mockRestore(); }
+}, 120_000);
+
+test("0.27.1 reader refuses an explicitly raised v2 sync floor before publication", async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("old reader floor fixture")) }) });
+  const root = temp(), runtime = join(root, "old-runtime"); mkdirSync(runtime);
+  // Frozen, released 0.27.1 source: CI fetches this commit explicitly, with no dependency on the current implementation.
+  const archive = Bun.spawnSync(["git", "archive", "190fa46b3ad74207bd1b07e00be38f75dcb476f4"], { stdout: "pipe", stderr: "pipe" });
+  expect(archive.exitCode, archive.stderr.toString()).toBe(0);
+  const extracted = Bun.spawnSync(["tar", "-x", "-C", runtime], { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" });
+  expect(extracted.exitCode, extracted.stderr.toString()).toBe(0);
+  const priorHome = process.env.AMEM_HOME, version = spyOn(formatsRaise, "installVersion").mockReturnValue("0.28.0"),
+    writers = spyOn(effectiveWriters, "readEffectiveSyncPlacementWriterRoots").mockReturnValue([]);
+  try {
+    process.env.AMEM_HOME = f.home;
+    await runCli(["formats", "raise", "sync", "0.28.0", "--confirm"], { cwd: root, env: {}, processTable: () => "" });
+  } finally { writers.mockRestore(); version.mockRestore(); if (priorHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = priorHome; }
+  const script = `import { openShardStore, syncMemory } from ${JSON.stringify(join(runtime, "src", "index.ts"))};
+    const store = openShardStore({ memoryDir: ${JSON.stringify(f.home)}, project: ${JSON.stringify(PROJECT)}, deferPromotions: true });
+    try { await syncMemory(store, { remote: ${JSON.stringify(remote)} }); process.exitCode = 2; }
+    catch (error) { if (error?.code !== "format_floor") { console.error(error); process.exitCode = 3; } }
+    finally { store.close(); }`;
+  const result = Bun.spawnSync([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe", env: { ...process.env, AMEM_HOME: f.home } });
+  expect(result.exitCode, result.stderr.toString()).toBe(0); expect(refs(remote)).toEqual([]);
+}, 120_000);
+
+test("without a 0.28.0 sync floor placement retains the v1 append path", async () => {
+  const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("unraised floor fixture")) }) });
+  const batched = spyOn(journalStorage, "appendPlacementEvents"), single = spyOn(journalStorage, "appendPlacementEvent");
+  try {
+    expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(true);
+    expect(single.mock.calls.length).toBeGreaterThan(0); expect(batched.mock.calls.length).toBe(0);
+    expect(verifiedPublicRows(remote).has(f.ids.allowed!)).toBe(true);
+  } finally { batched.mockRestore(); single.mockRestore(); }
+}, 120_000);
+
 for (const kind of ["hold", "publication-ambiguous", "publication-committed"] as const)
   test(`ordinary coordinator resumes a torn SECOND ${kind} journal append after an already durable prefix`, async () => {
     const remote = bare(), f = await fixture({ seed(store) {
@@ -730,17 +900,20 @@ test("#419: an expected materialization bound keeps phase, kind, limit and obser
 }, 120_000);
 
 // The reported home was 5,154 rows/about 12 MB; the size envelope is what #419 fixes, so 760 rows of 3-byte text cross the old bound (#420 measures row scaling).
-test("#419: first sync of a selected project above 8 MiB (about 8.9 MB) publishes every permitted row", async () => {
+for (const batch of [false, true]) test(`#419: first sync above 8 MiB publishes every permitted row (${batch ? "v2 batch" : "v1"})`, async () => {
   const remote = bare(), body = "가".repeat(3900);
   const f = await fixture({ seed: store => { const ids: string[] = []; for (let index = 0; index < 760; index++) ids.push(store.note(note(`${index % 25 === 0 ? "NEVER_PUBLIC_" : "large"} ${index} ${body}`))); return { first: ids[1]! }; } });
   const sourceBytes = [...f.capture().rows.values()].reduce((sum, row) => sum + Buffer.byteLength(canonicalJSON(row.row)), 0);
   expect(sourceBytes).toBeGreaterThan(8 * 1024 * 1024);
-  const result = await syncPlacementMemory(f.store, f.opts(remote), undefined, error => console.error("large first-sync diagnostic", error), frozen);
-  expect(result, result.error).toMatchObject({ ok: true, placementPublication: { outcome: "committed" } });
-  expect(result.placementPublication!.withheld).toBeGreaterThanOrEqual(760 / 25);
-  expect(verifiedPublicRows(remote).size).toBe(result.placementPublication!.exported);
-  expect(result.placementPublication!.exported + result.placementPublication!.withheld).toBe(760);
-  assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_"]);
+  const floor = batch ? spyOn(formats, "formatFloorAtLeast").mockReturnValue(true) : undefined;
+  try {
+    const result = await syncPlacementMemory(f.store, f.opts(remote), undefined, error => console.error("large first-sync diagnostic", error), frozen);
+    expect(result, result.error).toMatchObject({ ok: true, placementPublication: { outcome: "committed" } });
+    expect(result.placementPublication!.withheld).toBeGreaterThanOrEqual(760 / 25);
+    expect(verifiedPublicRows(remote).size).toBe(result.placementPublication!.exported);
+    expect(result.placementPublication!.exported + result.placementPublication!.withheld).toBe(760);
+    assertNeverPublished(f.home, remote, ["NEVER_PUBLIC_"]);
+  } finally { floor?.mockRestore(); }
 }, 600_000);
 
 // #426: a refusal before any attempt names its category and phase, records the category, and never leaks the remote, paths or rows.
