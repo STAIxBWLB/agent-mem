@@ -237,7 +237,7 @@ function snapshot(p: Paths): Snapshot {
   if (inventory(p).token !== before.token) fail("changed");
   if (prefix) journalPrefix = prefix;
   if (tail) journalTail = tail;
-  const result: Snapshot = { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1 + before.renewalObjects, pending: !!pending || !!batch || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { pendingRecordSequence: pending.record.sequence, pendingRecord: validatePlacementRecord(pending.record) } : {}), ...(pending ? { intent: pending } : {}), ...(batch ? { batchIntent: batch, pendingBatch: { attemptHash: batch.attemptHash, count: batch.records.length } } : {}) };
+  const result: Snapshot = { epoch, activation: plan, records, projection, headHash: projection.headHash, sequence: projection.sequence, objects: before.files.size + 1 + before.renewalObjects, pending: !!pending || !!batch || intentPending || fencePending, chunks, intentPending, fencePending, ...(pending ? { pendingRecordSequence: pending.record.sequence, pendingRecord: validatePlacementRecord(pending.record) } : {}), ...(pending ? { intent: pending } : {}), ...(batch ? { batchIntent: batch, pendingBatch: { attemptHash: batch.attemptHash, count: batch.records.length }, pendingRecordSequence: batch.records[0]!.sequence, pendingRecord: validatePlacementRecord(batch.records[0]!) } : {}) };
   journalSnapshot = { token: canonicalJSON([p.dir, before.token]), value: detachSnapshot(result) };
   return result;
 }

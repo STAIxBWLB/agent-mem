@@ -674,6 +674,26 @@ test("a policy revision change cannot publish an interrupted v2 batch", async ()
   } finally { fault.mockRestore(); floor.mockRestore(); }
 }, 120_000);
 
+test("v2 batch preserves the retained unknown outcome when the requested remote changes", async () => {
+  const originalRemote = bare(), otherRemote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("batch unknown-outcome fixture")) }) });
+  const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true), realAppend = journalStorage.appendPlacementEvents;
+  let fired = false;
+  const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
+    realAppend(home, epochHash, events, head, { ...options, phase(stage) {
+      options.phase?.(stage); if (fired || stage !== "chunk-written") return;
+      fired = true; throw Error("synthetic interruption before publication");
+    } }));
+  try {
+    expect((await syncPlacementMemory(f.store, f.opts(originalRemote))).ok).toBe(false); expect(fired).toBe(true);
+    expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pendingBatch).toBeDefined();
+    fault.mockRestore();
+    const result = await syncPlacementMemory(f.store, f.opts(otherRemote));
+    expect(result).toMatchObject({ ok: false, placementPublication: { outcome: "unknown" } });
+    expect(refs(originalRemote)).toEqual([]); expect(refs(otherRemote)).toEqual([]);
+    expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pending).toBe(false);
+  } finally { fault.mockRestore(); floor.mockRestore(); }
+}, 120_000);
+
 test("0.27.1 reader refuses an explicitly raised v2 sync floor before publication", async () => {
   const remote = bare(), f = await fixture({ seed: store => ({ allowed: store.note(note("old reader floor fixture")) }) });
   const root = temp(), runtime = join(root, "old-runtime"); mkdirSync(runtime);
