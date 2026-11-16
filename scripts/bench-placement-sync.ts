@@ -2,7 +2,7 @@
  * #417 AC1/AC3, #418 AC6: synthetic first placement sync. Counts complete writer attestations and policy
  * evaluations and records wall/CPU time; no real memory records, no network (a local bare remote).
  *
- *   bun scripts/bench-placement-sync.ts --rows 1000 --roots 4 [--row-bytes 300] [--progress]
+ *   bun scripts/bench-placement-sync.ts --rows 1000 --roots 4 [--row-bytes 300] [--progress] [--batch-floor]
  *
  * Each attestation measures --roots synthetic copies of this package's runtime with the production
  * measureSyncPlacementWriters, so the per-attestation cost is real install I/O. Run it on dgx02, not the Mac.
@@ -24,6 +24,7 @@ import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-pl
 import { measureSyncPlacementWriters } from "../src/memory/sync-placement-writers.ts";
 import { syncPlacementMemory } from "../src/memory/sync-placement-transport.ts";
 import type { SyncOptions } from "../src/memory/sync.ts";
+import { runCli } from "../src/cli.ts";
 
 const arg = (name: string, fallback: number) => { const at = process.argv.indexOf(name); return at < 0 ? fallback : Number(process.argv[at + 1]); };
 const rows = arg("--rows", 1000), roots = arg("--roots", 4), rowBytes = arg("--row-bytes", 300), withProgress = process.argv.includes("--progress");
@@ -46,6 +47,12 @@ try {
     original.note({ op: "note", project: PROJECT, scope: index % 50 === 1 ? "shared" : "project", tier: index % 7 === 5 ? "short" : "long", kind: "finding", peer: "person", source: "person", text, about: [] });
   }
   original.close();
+  // Fixture-only opt-in uses the same explicit floor command, against this disposable home and an empty process table.
+  if (process.argv.includes("--batch-floor")) {
+    const priorHome = process.env.AMEM_HOME; process.env.AMEM_HOME = home;
+    try { await runCli(["formats", "raise", "sync", "0.28.0", "--confirm"], { processTable: () => "", cwd: base, env: {} }); }
+    finally { if (priorHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = priorHome; }
+  }
   if (!(await migrateShards({ memoryDir: home, generation: "b".repeat(32), mode: "apply", authorizedPerson: true, tty: true })).active) throw Error("shard migration unavailable");
   await activatePublicPruneView({ memoryDir: home, mode: "apply", authorizedPerson: true, tty: true });
   writeFileSync(join(home, "amem.config.json"), json({ piiPatterns: ["NEVER_PUBLIC_"] }), { mode: 0o600 });

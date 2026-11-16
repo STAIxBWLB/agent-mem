@@ -19,7 +19,8 @@ import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
-import { readPlacementJournal, appendPlacementEvent, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
 import { ShardHistoryAuditor, type ShardHistory } from "./shard-sync-history.ts";
@@ -355,6 +356,15 @@ class PlacementTransport {
     if(consumed<0||consumed>root.reservedRecords)refuse();
     for(let index=0;index<Math.min(consumed,records.length);index++)
       if(canonicalJSON(read.records[root.journal.sequence+index])!==canonicalJSON(records[index]))refuse();
+    if(read.pendingBatch){
+      const index=read.sequence-root.journal.sequence, end=index+read.pendingBatch.count;
+      if(read.pendingBatch.attemptHash!==root.seal || end>count || end>events.length)refuse();
+      appendPlacementEvents(this.home,this.epochHash,events.slice(index,end),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);
+    }else if(read.pending&&!read.pendingRecord&&formatFloorAtLeast(this.home,"sync","0.28.0")){
+      const index=read.sequence-root.journal.sequence;
+      try { appendPlacementEvents(this.home,this.epochHash,events.slice(index,count),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash); }
+      catch(error){ if(!(error instanceof SyncPlacementJournalError)||error.code!=="conflict")throw error; }
+    }
     if(read.pending){
       const sequence=read.pendingRecordSequence??read.sequence+1, index=sequence-root.journal.sequence-1;
       const record=records[index];
@@ -362,7 +372,11 @@ class PlacementTransport {
       appendPlacementEvent(this.home,this.epochHash,events[index]!,record.previousHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);
     }
     this.progress?.advance(Math.max(0,Math.min(count,read.sequence-root.journal.sequence)));
-    for(let index=read.sequence-root.journal.sequence;index<count;index++){
+    const next=read.sequence-root.journal.sequence;
+    if(next<count&&formatFloorAtLeast(this.home,"sync","0.28.0")){
+      appendPlacementEvents(this.home,this.epochHash,events.slice(next,count),read.headHash,this.storage(factual));this.progress?.advance(count-next);return;
+    }
+    for(let index=next;index<count;index++){
       const record=records[index];if(!record)refuse();appendPlacementEvent(this.home,this.epochHash,events[index]!,record.previousHash,this.storage(factual));this.progress?.advance();
     }
   }
@@ -403,7 +417,7 @@ class PlacementTransport {
     const before=readPlacementJournal(this.home,this.epochHash);
     if(before.pending){
       const old=await this.frozenOld(read.bundle),schedule=this.events(read.bundle,projection,old);
-      const sequence=before.pendingRecordSequence??before.sequence+1;
+      const sequence=before.pendingBatch ? before.sequence+before.pendingBatch.count : before.pendingRecordSequence??before.sequence+1;
       if(!before.pendingRecord&&schedule.events[sequence-root.journal.sequence-1]?.kind!=="hold")refuse();
       this.appendThrough(read.bundle,schedule.events,Math.max(holds.length,sequence-root.journal.sequence),true);
     }else this.appendThrough(read.bundle,holds,holds.length,true);
