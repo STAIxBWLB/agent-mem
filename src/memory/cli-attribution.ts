@@ -6,7 +6,20 @@ const scope = new AsyncLocalStorage<Readonly<CliAttribution>>();
 
 /** Preserve library defaults outside an ordinary CLI invocation, including concurrent calls. */
 export function cliAttribution(): Readonly<CliAttribution> | undefined { return scope.getStore(); }
-export function withCliAttribution<T>(identity: CliAttribution, work: () => T): T { return scope.run(Object.freeze({ ...identity, peer: identity.actor === "agent" && identity.peer === "person" ? "agent" : identity.peer }), work); }
+/**
+ * Run `work` with `identity` in the attribution scope (root API, #431 / agent-hub#1522). Only library code that reads the scope is
+ * attributed: `rawMemoryCommand` promote, demote, forget, supersede, confirm and reject, every `rawGoalCommand` write and the
+ * `MemoryStore.dedupe` replacement record `identity.actor` as the operation actor (default `user`); notes written by `CandidateStore.accept`
+ * record `identity.peer` as their peer (default: the accept call's actor). Other writes, including a direct `MemoryStore.note`, are not
+ * attributed and keep what their caller passes. An agent scope also refuses withheld targets in those commands and screens
+ * `assertCliPolicy` values with `identity.policy`. Attribution only: it never authenticates, grants access or bypasses a screen.
+ * docs/contracts.md (Attribution scope) is the full list. It refuses before running `work` when it has no agent identity (no usable peer).
+ */
+export function withCliAttribution<T>(identity: CliAttribution, work: () => T): T {
+  if (!identity || (identity.actor !== "person" && identity.actor !== "agent")) throw new Error("memory attribution needs actor person or agent");
+  if (typeof identity.peer !== "string" || !identity.peer.trim() || identity.peer.length > 120 || /[\p{Cc}]/u.test(identity.peer)) throw new Error("memory attribution has no agent identity; nothing was run. Pass the session's peer id (1 to 120 characters, no control characters), for example the agent-hub peer name");
+  return scope.run(Object.freeze({ ...identity, peer: identity.actor === "agent" && identity.peer === "person" ? "agent" : identity.peer }), work);
+}
 
 /** Display metadata derived from the existing peer field; never a claim of authentication. */
 export const noteDisplayActor = (peer: string): "person" | "agent" => peer === "person" ? "person" : "agent";
