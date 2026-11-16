@@ -20,6 +20,7 @@ import * as effectiveWriters from "../src/memory/sync-placement-effective-writer
 import { runCli } from "../src/cli.ts";
 import * as publicationStorage from "../src/memory/sync-placement-publication-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
+import type { PlacementRecord } from "../src/memory/sync-placement-journal-format.ts";
 import { applyPrune, planPrune, validatePrunePlan, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
 import type { PublicPruneWitnessV1 } from "../src/memory/public-prune-witness.ts";
@@ -547,13 +548,13 @@ test("v2 publication batch hides a torn chunk and resumes the exact records once
     result.private = store.note(note("NEVER_PUBLIC_BATCH")); return result;
   } });
   const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true);
-  const realAppend = journalStorage.appendPlacementEvents; let fired = false, frozen: unknown[] = [];
+  const realAppend = journalStorage.appendPlacementEvents; let fired = false, frozen: PlacementRecord[] = [];
   const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
     realAppend(home, epochHash, events, head, { ...options, phase(stage) {
       options.phase?.(stage);
       if (fired || stage !== "chunk-written") return;
       const dir = join(home, "sync-placement", "epochs", epochHash);
-      const batch = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { records: unknown[]; chunks: { name: string; prefixBytes: number }[] };
+      const batch = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { records: PlacementRecord[]; chunks: { name: string; prefixBytes: number }[] };
       frozen = batch.records;
       const file = join(dir, batch.chunks[0]!.name), complete = readFileSync(file), prefix = batch.chunks[0]!.prefixBytes;
       persistCrashPrefix(file, complete.subarray(0, prefix + Math.floor((complete.length - prefix) / 2)));
