@@ -737,6 +737,31 @@ export class CaptureStore {
    * window holds only the newest 32, so proving a candidate with that window would read every older row as pruned. These are
    * point lookups on the `at` index with an explicit per-turn cap: no scan, no window, and no index or spool work.
    */
+  /**
+   * #323 item 4: check at most 128 newest rows plus a sentinel, with no unbounded session scan. Any withheld row makes an absent
+   * session inconclusive, so the result cannot distinguish a hidden session from an absent one. Only a complete screened window
+   * can establish absence. This port requires a read-only store and never creates or migrates capture storage.
+   */
+  sessionState(session: string, visible: (row: CaptureRow) => boolean): "present" | "absent" | "unavailable" | "unsupported" {
+    this.checkReadBinding();
+    if (!this.readOnly) throw new Error("session recheck requires a read-only capture store; open CaptureStore with readOnly: true");
+    if (typeof session !== "string" || !SESSION_KEY.test(session)) throw new Error("invalid session key; use a 16-character lowercase hex capture session key");
+    const columns = new Set((this.db.query("PRAGMA table_info(rows)").all() as { name: string }[]).map(column => column.name));
+    if (!columns.has("session")) return "unsupported";
+    // INTEGER PRIMARY KEY order stops after the fixed sentinel; never filter by session before the bound.
+    const rows = this.db.query("SELECT * FROM rows ORDER BY id DESC LIMIT 129").all() as RawRow[];
+    let withheld = false, present = false;
+    try {
+      for (const raw of rows.slice(0, 128)) {
+        const row = toRow(raw), permitted = visible(row) === true;
+        if (!permitted) withheld = true;
+        else if (row.project === this.key && row.session === session) present = true;
+      }
+    } catch { return "unavailable"; }
+    if (present) return "present";
+    return withheld || rows.length > 128 || this.recentReadTruncated ? "unavailable" : "absent";
+  }
+
   readRecordTurns(turns: readonly { session: string; at: string }[]): CaptureRow[] {
     this.checkReadBinding();
     if (!Array.isArray(turns) || turns.length < 1 || turns.length > 8 || turns.some(turn => !turn

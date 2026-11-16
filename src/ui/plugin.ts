@@ -205,6 +205,8 @@ export const plugin = {
           const targets = targetsOf(input).map(t => { const v = store?.get(t.id, project); return v ? { id: v.id, at: v.at, kind: v.kind, title: v.title, text: v.text } : { id: t.id }; });
           return {
             id: c.id, kind: input.kind, createdAt: c.createdAt, text: candidateText(input),
+            // #323: ids only; "unknown" for a row written before origin was recorded, null when the proposer supplied none.
+            origin: c.originKnown ? c.origin ?? null : "unknown",
             noteKind: "noteKind" in input ? input.noteKind ?? null : null,
             diff: input.kind === "correction" ? { now: (targets[0] as { text?: string } | undefined)?.text ?? null, proposed: input.proposedText, reason: input.reason } : null,
             evidence: input.kind === "fail" ? input.evidenceRefs : [],

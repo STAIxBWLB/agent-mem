@@ -9,6 +9,8 @@ import { cliAttribution } from "./cli-attribution.ts";
 import { memoryHome } from "./home.ts";
 import { realPath } from "./platform.ts";
 import { stripPrivateDeep } from "./private-spans.ts";
+import { originNodes, validOrigin, type CandidateOrigin } from "./candidate-origin.ts";
+const hasColumn = (db: Database, name: string): boolean => (db.query("PRAGMA table_info(candidates)").all() as { name: string }[]).some(column => column.name === name);
 import { MemoryStore, type GoalView, type NoteInput, type View } from "./store.ts";
 
 export const CANDIDATE_DB_BUSY_TIMEOUT_MS = 3000;
@@ -46,7 +48,11 @@ export type CandidateInput = { project: string } & (
   | { kind: "model-answer"; marker: "model-answer"; targets: CandidateTarget[]; text: string }
 );
 export type CandidateStatus = "pending" | "accepting" | "accepted" | "rejected";
-export interface Candidate { id: string; createdAt: string; status: CandidateStatus; input: CandidateInput; acceptedNoteId: string | null }
+export interface Candidate { id: string; createdAt: string; status: CandidateStatus; input: CandidateInput; acceptedNoteId: string | null;
+  /** #323: ids the proposing host supplied; absent when it supplied none. */
+  origin?: CandidateOrigin;
+  /** #323: false for a row written before origin was recorded (pre-0.28 writer): its origin is unknown, not absent. */
+  originKnown: boolean }
 export interface ConsolidationReview { status: Exclude<CandidateStatus, "pending">; acceptedNoteId: string | null }
 const KINDS: readonly string[] = ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] satisfies CandidateInput["kind"][];
 export interface CandidateFilter { project: string; status?: CandidateStatus | "all"; kind?: CandidateInput["kind"]; limit?: number }
@@ -167,14 +173,21 @@ function retryLocked(work: () => void): void {
   }
 }
 
-type CandidateRow = { id: string; payload: string; at: number; status: CandidateStatus; note_id: string | null };
+type CandidateRow = { id: string; payload: string; at: number; status: CandidateStatus; note_id: string | null; origin?: string | null };
+/** #323: NULL (a pre-0.28 row, or a column an older writer never filled) is unknown; `{}` is a recorded empty origin. */
+function decodeOrigin(raw: string | null | undefined): { origin?: CandidateOrigin; originKnown: boolean } {
+  if (raw === null || raw === undefined) return { originKnown: false };
+  let parsed: unknown; try { parsed = JSON.parse(raw); } catch { throw new Error("candidate origin unreadable; inspect or restore the candidate database before retrying"); }
+  const origin = validOrigin(parsed);
+  return origin ? { origin, originKnown: true } : { originKnown: true };
+}
 /** Canonical persisted decoding shared by the writer and its read-only inbox port. */
 function decodeCandidate(row: CandidateRow, unknownKind: () => void): Candidate | undefined {
   const input = JSON.parse(row.payload) as CandidateInput;
   if (input && typeof input === "object" && !KINDS.includes(input.kind)) { unknownKind(); return undefined; }
   validate(input);
   if (hash({ schema: "agent-mem.candidate/v1", input }) !== row.id) throw new Error("candidate content hash mismatch");
-  return { id: row.id, createdAt: new Date(row.at).toISOString(), status: row.status, input, acceptedNoteId: row.note_id };
+  return { id: row.id, createdAt: new Date(row.at).toISOString(), status: row.status, input, acceptedNoteId: row.note_id, ...decodeOrigin(row.origin) };
 }
 const CANDIDATE_EXPIRED_SQL = "at <= ? AND (status IN ('accepted', 'rejected') OR (shown_at IS NOT NULL AND shown_at <= ?))";
 const CANDIDATE_PRIORITY_SQL = "CASE WHEN status IN ('pending', 'accepting') AND shown_at IS NULL THEN 2 WHEN status IN ('pending', 'accepting') THEN 1 ELSE 0 END DESC, at DESC";
@@ -194,8 +207,8 @@ export function withPendingCandidates<T>(memoryDir: string, run: (reader: Pendin
   if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("pending candidates unavailable");
   const db = new Database(file, { readonly: true }); let closed = false;
   try {
-    const shown = hasShownColumn(db), now = Date.now();
-    const live = (scope: boolean) => `WITH raw AS (SELECT rowid AS candidate_rowid, id, project, kind, payload, at, status, note_id, ${shown ? "shown_at" : "NULL AS shown_at"} FROM candidates${scope ? " WHERE project IN (SELECT value FROM json_each(?))" : ""}),
+    const shown = hasShownColumn(db), origins = hasColumn(db, "origin"), now = Date.now();
+    const live = (scope: boolean) => `WITH raw AS (SELECT rowid AS candidate_rowid, id, project, kind, payload, at, status, note_id, ${shown ? "shown_at" : "NULL AS shown_at"}, ${origins ? "origin" : "NULL AS origin"} FROM candidates${scope ? " WHERE project IN (SELECT value FROM json_each(?))" : ""}),
       live AS (SELECT * FROM raw WHERE NOT (${CANDIDATE_EXPIRED_SQL})),
       retained AS (SELECT *, row_number() OVER (PARTITION BY project ORDER BY ${CANDIDATE_PRIORITY_SQL}, candidate_rowid DESC) AS retention_rank FROM live)`;
     const assertOpen = () => { if (closed) throw new Error("pending candidate reader is closed"); };
@@ -265,6 +278,8 @@ export class CandidateStore {
     // F7 / AC4: when a candidate was first shown to the person. In place and nullable: an older database gains it here, and a reader without it treats every row as unshown.
     // Several processes open this store at once (every `amem mcp` builds it at startup), so the check and the ALTER are one immediate transaction: the loser waits, then sees the column.
     if (!hasShownColumn(this.db)) this.db.transaction(() => { if (!hasShownColumn(this.db)) this.db.run("ALTER TABLE candidates ADD COLUMN shown_at INTEGER"); }).immediate();
+    // #323: the origin ids, in place and nullable like shown_at. Outside the hashed payload, so ids are unchanged and an older reader never sees it.
+    if (!hasColumn(this.db, "origin")) this.db.transaction(() => { if (!hasColumn(this.db, "origin")) this.db.run("ALTER TABLE candidates ADD COLUMN origin TEXT"); }).immediate();
     this.db.run("CREATE TABLE IF NOT EXISTS consolidation_reviews (id TEXT PRIMARY KEY, project TEXT NOT NULL, status TEXT NOT NULL, note_id TEXT)");
     this.db.run("CREATE TABLE IF NOT EXISTS counters (id TEXT PRIMARY KEY, project TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL, rendered INTEGER, delivered INTEGER, cited INTEGER)");
     this.prune();
@@ -300,11 +315,13 @@ export class CandidateStore {
   private decode(row: CandidateRow): Candidate | undefined {
     return decodeCandidate(row, () => { this.skippedUnknownKinds++; });
   }
-  put(rawInput: CandidateInput, verdict: CandidateVerdict): string {
+  put(rawInput: CandidateInput, verdict: CandidateVerdict, rawOrigin?: CandidateOrigin, screen?: (origin: CandidateOrigin) => boolean): string {
     // `<private>` spans are never stored: dropped before the input is validated, hashed (so the id) or written.
     const input = stripPrivateDeep(rawInput);
     publicOnly(verdict); validate(input);
-    const payload = canonical(input), id = candidateInputId(input);
+    const origin = validOrigin(rawOrigin), payload = canonical(input), id = candidateInputId(input);
+    // AC3: the caller's configured privacy screen sees the origin ids before they are stored; a refused origin refuses the proposal.
+    if (origin && screen && screen(origin) !== true) throw new Error("candidate origin refused by the configured privacy policy; remove the declined id or review the current policy");
     // Prune, count, insert and prune again are ONE immediate transaction: concurrent proposers (several agents) cannot all pass the count and then let the cap evict an unseen candidate.
     return this.db.transaction((): string => {
       this.prune();
@@ -321,7 +338,8 @@ export class CandidateStore {
         // Upgrade with an explicit person-audited receipt archive before increasing this bounded sidecar capacity.
         if (allocated.n >= CONSOLIDATION_REVIEW_LIMIT) throw new ConsolidationReviewLimit(input.project, allocated.n);
       }
-      this.db.query("INSERT OR IGNORE INTO candidates (id, project, kind, payload, at, status) VALUES (?, ?, ?, ?, ?, 'pending')").run(id, input.project, input.kind, payload, this.now());
+      // A re-proposal of the same content keeps its first origin: the id is content-addressed, and the first proposer is the one to re-check.
+      this.db.query("INSERT OR IGNORE INTO candidates (id, project, kind, payload, at, status, origin) VALUES (?, ?, ?, ?, ?, 'pending', ?)").run(id, input.project, input.kind, payload, this.now(), JSON.stringify(origin ?? {}));
       this.prune();
       return id;
     }).immediate();
@@ -449,7 +467,7 @@ export class CandidateStore {
         tier: data.kind === "correction" && target!.local ? "short" : "long",
         kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" || target?.kind === "preference" ? target.kind : "decision"), peer: attributionPeer(context.actor), source: "person",
         // A Record candidate carries the edges its anchors name, so the accepted note stays findable by path and symbol.
-        about: [...new Set([...(target?.about ?? []), ...(data.kind === "memory" || data.kind === "fail" ? data.about ?? [] : [])])],
+        about: [...new Set([...(target?.about ?? []), ...(data.kind === "memory" || data.kind === "fail" ? data.about ?? [] : []), ...originNodes(candidate.origin)])],
         text: data.kind === "correction" ? acceptedCorrectionText(data, id) : `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
       if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
       if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");
@@ -499,7 +517,7 @@ export class CandidateStore {
         return current;
       };
       const sources = check(), first = sources[0]!;
-      const note: NoteInput = { op: "note", project: context.project, scope: first.scope, tier: "long", kind: data.noteKind, peer: attributionPeer(context.actor), source: "person", about: [...data.about],
+      const note: NoteInput = { op: "note", project: context.project, scope: first.scope, tier: "long", kind: data.noteKind, peer: attributionPeer(context.actor), source: "person", about: [...new Set([...data.about, ...originNodes(candidate.origin)])],
         text: `${ACCEPTED_CONSOLIDATION_PREFIX}${candidate.id}\nAction: ${data.action}\nSources: ${data.targets.map(target => `mem:${target.id}`).join(", ")}\n\n${data.text}` };
       if (note.text.length > 4000) throw Error("accepted consolidation exceeds the v1 note limit");
       for (const source of sources) if (context.policy(structuredClone(candidate), structuredClone(source), structuredClone(note)) !== true) throw Error("consolidation refused by current host policy");
@@ -543,6 +561,8 @@ export class CandidateStore {
       resolve();
       const replay = this.beginAcceptance(candidate.id, context.project); if (replay) return { candidateId: candidate.id, noteId: replay, alreadyAccepted: true };
       // A thrown append remains accepting: its authored-row outcome needs person-audited recovery.
+      // #323: a promotion keeps its canonical identity (the id is the source note's own fields), so its origin stays on the candidate row
+      // (`amem review list --status all`), not on the promoted note: an extra edge would fork that id across machines.
       const noteId = context.store.promote(target.id, context.actor, context.project);
       if (noteId === undefined) {
         this.db.query("UPDATE candidates SET status = 'pending' WHERE id = ? AND project IN (SELECT value FROM json_each(?)) AND status = 'accepting'").run(candidate.id, this.scope(context.project));

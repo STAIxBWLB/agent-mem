@@ -2,7 +2,13 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## 0.28.0
+## 0.28.0 (unreleased)
+
+### Added
+
+- Record a candidate's origin (capture session key, proposing peer, time, optional turn id) as ids beside the candidate, show it in `review list`, `review decide`, `review walk` and the console Review panel, carry every supplied field into the accepted note as `session:`/`peer:`/`origin-at:`/`turn:` edges, report a re-check of an expired origin session as `origin expired` in `review decide`, and print a capture row's session and time with `amem show capture:<id>` (#323).
+
+- Compatibility with N-1 (0.27.1), candidate storage: `candidates.db` gains one nullable `origin` column, added in place; candidate ids, payloads and the candidate hash are unchanged. A 0.27.1 reader ignores the column, and rows it writes have no origin, which 0.28.0 reads as unknown. Accepted notes keep the existing `NoteEntry` shape; origin is up to four extra `about` nodes.
 
 - Batch each placement publication step under a bounded durable append intent, preserving the original record lines and exact-prefix crash recovery. Without an explicitly raised floor, sync keeps the v1 append path. On one synthetic first-sync workload with four measured writer roots and 300-byte row bodies, 1,000 rows (595,414 source bytes) took 140,317 ms before and 16,870 ms after; 5,154 rows (3,068,724 source bytes) took 2,110,800 ms before and 294,149 ms after. The batch run used an isolated package identifying as 0.28.0 and an explicitly raised fixture floor. Refs #420.
 - Compatibility with N-1 (0.27.1), sync and placement wire: remote rows, objects and existing journal record lines stay unchanged. The v2 private append intent is used only after the `sync` or `home` format floor is explicitly raised to 0.28.0; 0.27.1 then refuses sync before effects. With no raised floor, the v1 path remains usable. No floor is raised implicitly.
