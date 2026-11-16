@@ -9,12 +9,12 @@ export function cliAttribution(): Readonly<CliAttribution> | undefined { return 
 /**
  * Run `work` with `identity` as the attribution of every memory write it makes (root API, #431 / agent-hub#1522). Writes inside the scope
  * record `identity.peer` as the note's peer and `identity.actor` as each operation's actor; outside it they keep the library default (the
- * person). Attribution only: it never authenticates, grants access or bypasses a policy screen. An agent scope applies the given `policy`
- * to each target it reads or changes, and refuses before running `work` when it has no agent identity (no peer).
+ * person). Attribution only: it never authenticates, grants access or bypasses a policy screen. The exact operations that read the scope
+ * are listed in docs/contracts.md (Attribution scope). It refuses before running `work` when it has no agent identity (no usable peer).
  */
 export function withCliAttribution<T>(identity: CliAttribution, work: () => T): T {
   if (!identity || (identity.actor !== "person" && identity.actor !== "agent")) throw new Error("memory attribution needs actor person or agent");
-  if (typeof identity.peer !== "string" || !identity.peer.trim() || identity.peer.length > 120 || /[\p{Cc}]/u.test(identity.peer)) throw new Error("memory attribution has no agent identity; nothing was run");
+  if (typeof identity.peer !== "string" || !identity.peer.trim() || identity.peer.length > 120 || /[\p{Cc}]/u.test(identity.peer)) throw new Error("memory attribution has no agent identity; nothing was run. Pass the session's peer id (1 to 120 characters, no control characters), for example the agent-hub peer name");
   return scope.run(Object.freeze({ ...identity, peer: identity.actor === "agent" && identity.peer === "person" ? "agent" : identity.peer }), work);
 }
 

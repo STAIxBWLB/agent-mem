@@ -52,6 +52,9 @@ test("#270: the root API attributes a write inside the scope to the agent and it
     expect(store.get(inside.noteId, project)).toMatchObject({ peer: "codex", source: "person" });
     expect(store.get(outside.noteId, project)).toMatchObject({ peer: "person", source: "person" });
     expect(api.noteDisplayActor("codex")).toBe("agent"); expect(api.noteDisplayActor("person")).toBe("person");
+    // Documented boundary: a direct MemoryStore.note is not attributed; it keeps the peer its caller passes, inside the scope too.
+    const direct = api.withCliAttribution({ actor: "agent", peer: "codex", policy: () => policy }, () => store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "legacy", source: "person", text: "direct store note", about: [] }));
+    expect(store.get(direct, project)?.peer).toBe("legacy");
     // An agent-scoped forget records actor agent in the operation log; an unscoped one keeps the library default.
     const options = { store, open: () => store, readable: (rows: api.View[]) => rows, importPolicy: () => () => false, project };
     await api.withCliAttribution({ actor: "agent", peer: "codex", policy: () => policy }, () => api.rawMemoryCommand(["forget", inside.noteId], base, options));
@@ -63,6 +66,6 @@ test("#270: the root API attributes a write inside the scope to the agent and it
 test("#270: a scope without an agent identity refuses before running its work", () => {
   let ran = 0;
   for (const identity of [{ actor: "agent", peer: "" }, { actor: "agent", peer: "  " }, { actor: "agent", peer: "a\nb" }, { actor: "robot", peer: "codex" }, { actor: "agent" }] as unknown as api.CliAttribution[])
-    expect(() => api.withCliAttribution(identity, () => { ran++; })).toThrow();
+    expect(() => api.withCliAttribution(identity, () => { ran++; })).toThrow(/needs actor person or agent|no agent identity; nothing was run\. Pass the session's peer id/);
   expect(ran).toBe(0); expect(api.cliAttribution()).toBeUndefined();
 });
