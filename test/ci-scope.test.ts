@@ -44,21 +44,6 @@ describe('aggregate', () => {
     ]) expect(aggregate(bad, 'ubuntu-latest').length).toBeGreaterThan(0);
     expect(aggregate(needs('true', 'success'), 'windows-latest').length).toBeGreaterThan(0);
   });
-  test('full-run measurement failure warns, while cancellation, missing and skipped results remain errors', () => {
-    for (const [os, testName, measureName] of [['ubuntu-latest', 'test', 'measure'], ['macos-latest', 'test-macos', 'measure-macos']] as const) {
-      const warnings: string[] = [];
-      const full = { decision: { result: 'success', outputs: { run_full: 'true', macos_deferred: 'false' } },
-        [testName]: { result: 'success' }, [measureName]: { result: 'failure' } };
-      expect(aggregate(full, os, warning => warnings.push(warning))).toEqual([]);
-      expect(warnings).toEqual([`::warning title=Advisory measurement::${measureName} failed; inspect its job results for reference.`]);
-      for (const bad of ['cancelled', 'skipped', undefined]) {
-        const jobs = { ...full, [measureName]: bad === undefined ? undefined : { result: bad } };
-        expect(aggregate(jobs, os, () => {}).some(error => error.includes(`${measureName} result=${bad ?? 'missing'}`))).toBe(true);
-      }
-      expect(aggregate({ ...full, [testName]: { result: 'failure' } }, os, () => {}).length).toBeGreaterThan(0);
-      expect(aggregate({ ...full, decision: { result: 'success', outputs: { run_full: 'false', macos_deferred: 'false' } }, [testName]: { result: 'skipped' } }, os, () => {}).length).toBeGreaterThan(0);
-    }
-  });
 });
 
 // #402 AC3: draft, ready and unknown-draft inputs; a deferred plan never aggregates to success.
@@ -186,12 +171,12 @@ test('aggregate rejects every result combination except the two planned matrices
         test: { result: testResult }, measure: { result: measureResult },
         'test-macos': { result: testResult }, 'measure-macos': { result: measureResult } };
       const expected = decisionResult === 'success' && (
-        runFull === 'true' && testResult === 'success' && (measureResult === 'success' || measureResult === 'failure')
+        runFull === 'true' && testResult === 'success' && measureResult === 'success'
         || runFull === 'false' && testResult === 'skipped' && measureResult === 'skipped');
-      for (const os of ['ubuntu-latest', 'macos-latest']) expect(aggregate(needs, os, () => {}).length === 0).toBe(expected);
+      for (const os of ['ubuntu-latest', 'macos-latest']) expect(aggregate(needs, os).length === 0).toBe(expected);
       const deferred = { ...needs, decision: { result: decisionResult, outputs: { run_full: runFull, macos_deferred: 'true' } } };
-      expect(aggregate(deferred, 'macos-latest', () => {}).length).toBeGreaterThan(0);
-      expect(aggregate(deferred, 'ubuntu-latest', () => {}).length === 0).toBe(expected);
+      expect(aggregate(deferred, 'macos-latest').length).toBeGreaterThan(0);
+      expect(aggregate(deferred, 'ubuntu-latest').length === 0).toBe(expected);
     }
   }
   expect(aggregate({ decision: { result: 'success', outputs: { run_full: 'true', macos_deferred: 'false' } },
@@ -230,29 +215,12 @@ test('real aggregate CLI fails missing decision and malformed needs and succeeds
   }
 });
 
-test('real aggregate CLI reports advisory measure failures without hiding cancelled jobs', () => {
-  const script = new URL('../scripts/ci-scope.ts', import.meta.url).pathname;
-  for (const [os, testName, measureName] of [['ubuntu-latest', 'test', 'measure'], ['macos-latest', 'test-macos', 'measure-macos']] as const) {
-    const jobs = { decision: { result: 'success', outputs: { run_full: 'true', macos_deferred: 'false' } },
-      [testName]: { result: 'success' }, [measureName]: { result: 'failure' } };
-    const run = (value: unknown) => Bun.spawnSync([process.execPath, script, 'aggregate'], {
-      env: { ...process.env, CI_NEEDS: JSON.stringify(value), CI_OS: os }, stdout: 'pipe', stderr: 'pipe',
-    });
-    const advisory = run(jobs);
-    expect(advisory.exitCode).toBe(0);
-    expect(advisory.stderr.toString()).toContain(`::warning title=Advisory measurement::${measureName} failed`);
-    const cancelled = run({ ...jobs, [measureName]: { result: 'cancelled' } });
-    expect(cancelled.exitCode).toBe(1);
-    expect(cancelled.stderr.toString()).toContain(`${measureName} result=cancelled`);
-  }
-});
-
 test('workflow retains required names, conservative job conditions and install-free light checks', async () => {
   const workflow = Bun.YAML.parse(await Bun.file(new URL('../.github/workflows/check.yml', import.meta.url)).text()) as {
     on: Record<string, unknown>; jobs: Record<string, { name?: string; needs?: string | string[]; if?: string;
       'runs-on': string; 'timeout-minutes': number; strategy?: { matrix: { os: string[] } };
       permissions?: Record<string, string>; steps: { id?: string; uses?: string; name?: string; run?: string; if?: string;
-        with?: Record<string, unknown>; env?: Record<string, string> }[] }>;
+        with?: Record<string, unknown>; env?: Record<string, string>; 'continue-on-error'?: boolean }[] }>;
   };
   expect(JSON.stringify(workflow.on)).not.toMatch(/"paths(?:-ignore)?":/);
   expect(Object.keys(workflow.on)).toEqual(['push', 'pull_request', 'workflow_dispatch']);
@@ -281,6 +249,18 @@ test('workflow retains required names, conservative job conditions and install-f
   expect(measureMac.strategy!.matrix.os).toEqual(['macos-latest']);
   expect(testsMac.steps).toEqual(tests!.steps);
   expect(measureMac.steps).toEqual(measure!.steps);
+  const advisory = ['measure-hooks-budget.ts', 'measure-hook-baseline.ts', 'measure-transcript-budget.ts',
+    'measure-hook-stages.ts', 'measure-budget.ts', 'measure-mcp-budget.ts', 'measure-shard-ac8.ts'];
+  for (const name of advisory) {
+    const step = measure!.steps.find(item => item.run?.includes(name));
+    expect(step?.['continue-on-error']).toBe(true);
+  }
+  for (const command of ['bun x tsc --noEmit', 'bun scripts/check-boundary.ts', 'bun scripts/readme-facts.ts',
+    'bun scripts/check-docs.ts', 'npm pack --dry-run', 'bun scripts/smoke-installed-package.ts', 'test/previous-release.test.ts']) {
+    const step = measure!.steps.find(item => item.run?.includes(command));
+    expect(step).toBeDefined();
+    expect(step?.['continue-on-error']).not.toBe(true);
+  }
   expect(decision!.steps.find(step => step.id === 'draft')?.run).toBe('bun scripts/ci-scope.ts draft "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"');
   expect(check!.name).toBeUndefined();
   expect(check!.strategy!.matrix.os).toEqual(['ubuntu-latest', 'macos-latest']);

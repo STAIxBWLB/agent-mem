@@ -43,7 +43,7 @@ export const MACOS_DEFERRED_ERROR = '::error title=macOS deferred::draft PR; mac
 
 type Job = { result?: unknown; outputs?: Record<string, unknown> };
 // `os` selects which jobs back the required check name: Ubuntu reads test/measure, macOS reads test-macos/measure-macos.
-export function aggregate(needs: unknown, os: string, warn: (message: string) => void = console.warn): string[] {
+export function aggregate(needs: unknown, os: string): string[] {
   const jobs = record(needs);
   const decision = record(jobs?.decision) as Job | undefined;
   const macos = os === 'macos-latest';
@@ -70,10 +70,6 @@ export function aggregate(needs: unknown, os: string, warn: (message: string) =>
   }
   for (const [name, job] of [[macos ? 'test-macos' : 'test', test], [macos ? 'measure-macos' : 'measure', measure]] as const) {
     const expected = runFull === 'true' ? 'success' : runFull === 'false' ? 'skipped' : undefined;
-    if (runFull === 'true' && (name === 'measure' || name === 'measure-macos') && job?.result === 'failure') {
-      warn(`::warning title=Advisory measurement::${name} failed; inspect its job results for reference.`);
-      continue;
-    }
     if (job?.result !== expected) errors.push(`${describe(name, job)}; inspect that job and rerun.`);
   }
   return errors;
