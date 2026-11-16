@@ -220,7 +220,7 @@ test('workflow retains required names, conservative job conditions and install-f
     on: Record<string, unknown>; jobs: Record<string, { name?: string; needs?: string | string[]; if?: string;
       'runs-on': string; 'timeout-minutes': number; strategy?: { matrix: { os: string[] } };
       permissions?: Record<string, string>; steps: { id?: string; uses?: string; name?: string; run?: string; if?: string;
-        with?: Record<string, unknown>; env?: Record<string, string> }[] }>;
+        with?: Record<string, unknown>; env?: Record<string, string>; 'continue-on-error'?: boolean }[] }>;
   };
   expect(JSON.stringify(workflow.on)).not.toMatch(/"paths(?:-ignore)?":/);
   expect(Object.keys(workflow.on)).toEqual(['push', 'pull_request', 'workflow_dispatch']);
@@ -249,6 +249,18 @@ test('workflow retains required names, conservative job conditions and install-f
   expect(measureMac.strategy!.matrix.os).toEqual(['macos-latest']);
   expect(testsMac.steps).toEqual(tests!.steps);
   expect(measureMac.steps).toEqual(measure!.steps);
+  const advisory = ['measure-hooks-budget.ts', 'measure-hook-baseline.ts', 'measure-transcript-budget.ts',
+    'measure-hook-stages.ts', 'measure-budget.ts', 'measure-mcp-budget.ts', 'measure-shard-ac8.ts'];
+  for (const name of advisory) {
+    const step = measure!.steps.find(item => item.run?.includes(name));
+    expect(step?.['continue-on-error']).toBe(true);
+  }
+  for (const command of ['bun x tsc --noEmit', 'bun scripts/check-boundary.ts', 'bun scripts/readme-facts.ts',
+    'bun scripts/check-docs.ts', 'npm pack --dry-run', 'bun scripts/smoke-installed-package.ts', 'test/previous-release.test.ts']) {
+    const step = measure!.steps.find(item => item.run?.includes(command));
+    expect(step).toBeDefined();
+    expect(step?.['continue-on-error']).not.toBe(true);
+  }
   expect(decision!.steps.find(step => step.id === 'draft')?.run).toBe('bun scripts/ci-scope.ts draft "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"');
   expect(check!.name).toBeUndefined();
   expect(check!.strategy!.matrix.os).toEqual(['ubuntu-latest', 'macos-latest']);
