@@ -668,9 +668,11 @@ test("a policy revision change cannot publish an interrupted v2 batch", async ()
     expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false); expect(fired).toBe(true);
     expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pending).toBe(true);
     fault.mockRestore(); f.changePolicyEpoch();
-    expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false);
+    const result = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(result).toMatchObject({ ok: false, placementPublication: { outcome: "unknown" } });
     expect(refs(remote)).toEqual([]);
-    expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pending).toBe(true);
+    expect(journalStorage.readPlacementJournal(f.home, f.epochHash).pending).toBe(false);
+    expect(retainedPublication(f).phase).toBe("completed");
   } finally { fault.mockRestore(); floor.mockRestore(); }
 }, 120_000);
 
