@@ -4,7 +4,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## 0.28.0
 
-- Batch each placement publication step under a bounded durable append intent, preserving the original record lines and exact-prefix crash recovery. Without an explicitly raised floor, sync keeps the v1 append path. On one synthetic first-sync workload with four measured writer roots and 300-byte row bodies, 1,000 rows (595,414 source bytes) took 140,317 ms before and 27,418 ms after; 5,154 rows (3,068,724 source bytes) took 2,110,800 ms before and 352,709 ms after. The batch run used an isolated package identifying as 0.28.0 and an explicitly raised fixture floor. Refs #420.
+- Batch each placement publication step under a bounded durable append intent, preserving the original record lines and exact-prefix crash recovery. Without an explicitly raised floor, sync keeps the v1 append path. On one synthetic first-sync workload with four measured writer roots and 300-byte row bodies, 1,000 rows (595,414 source bytes) took 140,317 ms before and 16,870 ms after; 5,154 rows (3,068,724 source bytes) took 2,110,800 ms before and 294,149 ms after. The batch run used an isolated package identifying as 0.28.0 and an explicitly raised fixture floor. Refs #420.
 - Compatibility with N-1 (0.27.1), sync and placement wire: remote rows, objects and existing journal record lines stay unchanged. The v2 private append intent is used only after the `sync` or `home` format floor is explicitly raised to 0.28.0; 0.27.1 then refuses sync before effects. With no raised floor, the v1 path remains usable. No floor is raised implicitly.
 
 ## 0.27.1
