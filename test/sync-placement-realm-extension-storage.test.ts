@@ -45,11 +45,25 @@ test("#448: extension journal anchors cannot rewind or change at the same sequen
   }
 });
 
-test("#448: extension history fails closed on duplicate, torn, foreign and unsafe evidence", async () => {
+test("#448: extension history fails closed on duplicate, foreign and unsafe evidence", async () => {
   const { f, binding, make, file } = await fixture(), first = make(hex("1"));
   const initial = binding.initialProjectHashes[0]!, collision = initial.slice(0, 16) + (initial.slice(16) === "f".repeat(48) ? "e" : "f").repeat(48);
-  const cases = [text(first).slice(0, -1), text(first) + text(make(hex("1"), 2, first.seal)), text(make(initial)), text(make(collision)), text({ ...first, homeHash: hex("9") })];
+  const cases = [text(first) + text(make(hex("1"), 2, first.seal)), text(make(initial)), text(make(collision)), text({ ...first, homeHash: hex("9") })];
   for (const value of cases) { writeFileSync(file, value, { mode: 0o600 }); expect(() => readRealmExtensionHistory(f.home, binding)).toThrow(); }
   writeFileSync(file, text(first), { mode: 0o600 }); chmodSync(file, 0o644); expect(() => readRealmExtensionHistory(f.home, binding)).toThrow();
   rmSync(file); symlinkSync(join(f.home, "profile.json"), file); expect(() => readRealmExtensionHistory(f.home, binding)).toThrow();
+});
+
+test("#448: an interrupted final append is reported torn instead of closing the chain to existing realms", async () => {
+  const { f, binding, make, file } = await fixture(), first = make(hex("1")), second = make(hex("2"), 2, first.seal);
+  const alone = text(second).slice(0, -12);                                     // no complete line at all: nothing is applied
+  writeFileSync(file, alone, { mode: 0o600 });
+  const empty = readRealmExtensionHistory(f.home, binding);
+  expect(empty.records).toEqual([]); expect(empty.torn).toEqual(Buffer.from(alone));
+  const tail = text(second).slice(0, -14);                                      // one complete record, then a torn second
+  writeFileSync(file, text(first) + tail, { mode: 0o600 });
+  const history = readRealmExtensionHistory(f.home, binding);
+  expect(history.records).toEqual([first]); expect(history.headHash).toBe(first.seal);
+  expect(history.torn).toEqual(Buffer.from(tail));
+  history.assertCurrent();
 });
