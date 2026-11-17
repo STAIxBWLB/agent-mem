@@ -12,8 +12,9 @@ test("#448: a realm refusal names its scope, key hash, origin and the admission 
   expect(error.message).toContain("amem migrate --sync-placement --admit <project> --dry-run, then --apply");
 });
 
-test("#448: the user realm refuses without a key hash and admits without a project", () => {
+test("#448: the user realm refuses without a key hash and names activation, not an admission it cannot have", () => {
   const error = new PlacementRealmRefusal("user", undefined, "local binding");
   expect(error.message).toContain("scope=user"); expect(error.message).not.toContain("keyHash=");
-  expect(error.message).toContain("amem migrate --sync-placement --admit --user --dry-run, then --apply");
+  expect(error.message).toContain("the user realm is fixed at activation; review it with amem migrate --sync-placement --dry-run");
+  expect(error.message).not.toContain("--admit");
 });

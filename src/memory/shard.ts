@@ -156,8 +156,10 @@ export function readShardedSelection(memoryDir: string): ShardedSelection {
 /** Bounded identifiers only, safe to surface without exposing a project key or row. */
 export class PlacementRealmRefusal extends Error {
   constructor(readonly scope: "user" | "project", readonly keyHash: string | undefined, readonly origin: "cwd binding" | "remote" | "local binding") {
-    const admit = scope === "user" ? "amem migrate --sync-placement --admit --user" : "amem migrate --sync-placement --admit <project>";
-    super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; admit it with ${admit} --dry-run, then --apply`);
+    // A same-epoch extension record describes a project realm only, so the user realm is fixed by activation and has no admission command.
+    const next = scope === "user" ? "the user realm is fixed at activation; review it with amem migrate --sync-placement --dry-run"
+      : "admit it with amem migrate --sync-placement --admit <project> --dry-run, then --apply";
+    super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; ${next}`);
   }
 }
 
