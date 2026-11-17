@@ -430,18 +430,33 @@ export class MemoryStore {
     };
   }
 
+  // ponytail: retain at most 4096 relation rows per store; above that, invalidate home-wide. Upgrade to a bounded indexed relation lookup if this ceiling becomes common.
+  private curatedRelations: Set<string> | null | undefined;
   private hasCuratedRelation(id: string): boolean {
-    // A stale or busy derived index cannot prove the absence of a cross-project relation.
     try {
-      if (this.stale || (!this.generationIndex && this.shape() !== this.seen) || (this.generationIndex && !this.profile.sharded)) return true;
-      return !!this.db.query("SELECT 1 FROM entries WHERE supersedes=? OR promoted_from=? LIMIT 1").get(id, id)
-        || !!this.db.query("SELECT 1 FROM ops WHERE op='supersede' AND (target=? OR by=?) LIMIT 1").get(id, id);
-    } catch { return true; }
+      if (this.stale || (!this.generationIndex && this.shape() !== this.seen)) { this.curatedRelations = undefined; return true; }
+      if (this.generationIndex) {
+        if (!this.profile.sharded) return true; // This handle cannot prove the full multi-project generation frontier is current.
+        return !!this.db.query("SELECT 1 FROM entries WHERE supersedes=? OR promoted_from=? LIMIT 1").get(id, id)
+          || !!this.db.query("SELECT 1 FROM ops WHERE op='supersede' AND (target=? OR by=?) LIMIT 1").get(id, id);
+      }
+      if (this.curatedRelations === null) return true;
+      if (!this.curatedRelations) {
+        const notes = this.db.query("SELECT id, supersedes, promoted_from FROM entries WHERE supersedes IS NOT NULL OR promoted_from IS NOT NULL LIMIT 4097").all() as { id: string; supersedes: string | null; promoted_from: string | null }[];
+        const ops = this.db.query("SELECT target, by FROM ops WHERE op='supersede' LIMIT 4097").all() as { target: string; by: string | null }[];
+        if (notes.length + ops.length > 4096) { this.curatedRelations = null; return true; }
+        const ids = new Set<string>();
+        for (const row of notes) for (const value of [row.id, row.supersedes, row.promoted_from]) if (value) ids.add(value);
+        for (const row of ops) for (const value of [row.target, row.by]) if (value) ids.add(value);
+        this.curatedRelations = ids;
+      }
+      return this.curatedRelations.has(id);
+    } catch { this.curatedRelations = undefined; return true; }
   }
 
-  /** Relations can hide or revive a note in another project. Sharded stores cannot inspect sibling shards here. */
+  /** Relations can hide or revive a note in another project. Unresolved or already-related targets fall back to home-wide. */
   private curatedChangeLocal(project: string, targets: readonly string[]): boolean {
-    if (!targets.length || this.generationIndex || this.profile.sharded) return false;
+    if (!targets.length || this.generationIndex && !this.profile.sharded) return false;
     try {
       for (const id of targets) {
         const row = this.db.query("SELECT project, scope, kind, supersedes, promoted_from FROM entries WHERE id=?").get(id) as
@@ -451,6 +466,12 @@ export class MemoryStore {
       }
       return true;
     } catch { return false; }
+  }
+
+  private rememberCuratedRelation(id: string, targets: readonly string[]): void {
+    if (!targets.length || !this.curatedRelations) return;
+    this.curatedRelations.add(id); for (const target of targets) this.curatedRelations.add(target);
+    if (this.curatedRelations.size > 8192) this.curatedRelations = null;
   }
 
   /** #424: `local` means the change is visible only in `project`'s prebuilt brief; otherwise every project's cache is invalidated. */
@@ -675,10 +696,15 @@ export class MemoryStore {
       if (body.op !== "goal" && body.op !== "goal_state" && body.op !== "goal_link") {
         let localChange = false;
         if (body.op === "note") {
-          localChange = !!owner && curatedLocal(owner) && !("supersedes" in body && body.supersedes)
-            && !("promotedFrom" in body && body.promotedFrom) && !this.hasCuratedRelation(id);
-        } else if (body.op !== "settle" && body.op !== "supersede" && owner && affected && "target" in body && typeof body.target === "string") {
-          localChange = this.curatedChangeLocal(affected, [body.target]);
+          const references = ["supersedes" in body ? body.supersedes : undefined, "promotedFrom" in body ? body.promotedFrom : undefined]
+            .filter((value): value is string => typeof value === "string" && value.length > 0);
+          localChange = !!owner && !!affected && curatedLocal(owner) && !this.hasCuratedRelation(id)
+            && (!references.length || this.curatedChangeLocal(affected, references));
+          this.rememberCuratedRelation(id, references);
+        } else if (body.op !== "settle" && owner && affected && "target" in body && typeof body.target === "string") {
+          const targets = [body.target, ...(body.op === "supersede" && "by" in body && typeof body.by === "string" ? [body.by] : [])];
+          localChange = this.curatedChangeLocal(affected, targets);
+          if (body.op === "supersede") this.rememberCuratedRelation(body.target, targets.slice(1));
         }
         this.markCuratedChange(affected, localChange);
       }
@@ -730,7 +756,10 @@ export class MemoryStore {
       if (known) return { id: known.id, added: false };
       // The second own-segment writer after `appendBody`; an import of a row already present above refuses nothing because it writes nothing.
       this.assertPreferenceWritable(body);
-      this.markCuratedChange(n.project, curatedLocal(n) && !n.supersedes && !n.promotedFrom && !this.hasCuratedRelation(id));
+      const references = [n.supersedes, n.promotedFrom].filter((value): value is string => !!value);
+      const localChange = curatedLocal(n) && !this.hasCuratedRelation(id) && (!references.length || this.curatedChangeLocal(n.project, references));
+      this.rememberCuratedRelation(id, references);
+      this.markCuratedChange(n.project, localChange);
       appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       return { id, added: true };
     });

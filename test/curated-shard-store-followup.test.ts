@@ -135,3 +135,13 @@ test("#424 sharded: a project-realm write keeps the other project's prebuilt cur
   a.note(note(A, "user realm change reaches every brief", true));
   expect(cache(B)).toBeUndefined();
 });
+
+test("#424 sharded: a same-project promotion keeps the other project's curated cache", async () => {
+  const dir = home(); legacy(dir); await migrate(dir);
+  const { readBriefCache } = await import("../src/brief-cache.ts"), { captureShardDir } = await import("../src/memory/shard.ts"), { machineId } = await import("../src/memory/store.ts");
+  const base = join(dir, "memory"), cache = (key: string) => readBriefCache({ directory: captureShardDir(base, key, machineId(base).id), project: key, section: "curated" });
+  const a = project(dir, A), b = project(dir, B);
+  const source = a.note({ ...note(A, "same project short"), tier: "short" });
+  a.prepareCuratedBriefs([A]); b.prepareCuratedBriefs([B]); expect(cache(B)).toBeDefined();
+  expect(a.promote(source, "fixture", A)).toBeDefined(); expect(cache(B)).toBeDefined();
+});

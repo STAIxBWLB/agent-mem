@@ -181,3 +181,16 @@ test("#424: a changed segment frontier cannot prove safe project-only invalidati
     f.store.note(note(other, "stale index frontier")); expect(f.cache()).toBeUndefined();
   } finally { writer?.close(); f.store.close(); }
 });
+
+test("#424: a same-project promotion keeps the peer project's cache", () => {
+  const f = fixture(), other = "curated-write-promotion-peer";
+  const add = (project: string, text: string, tier: "short" | "long") => f.store.note({ op: "note", project, scope: "project", tier,
+    kind: "decision", peer: "fixture", source: "person", text, about: [] });
+  const peer = () => readBriefCache({ directory: captureShardDir(f.base, other, machineId(f.base).id), project: other, section: "curated" });
+  try {
+    const source = add(f.project, "same project short", "short"); add(other, "peer stays cached", "long");
+    f.store.prepareCuratedBriefs([f.project, other]); expect(peer()).toBeDefined();
+    expect(f.store.promote(source, "fixture", f.project)).toBeDefined();
+    expect(peer()?.rows.map(row => (row.data as { text: string }).text)).toEqual(["peer stays cached"]);
+  } finally { f.store.close(); }
+});
