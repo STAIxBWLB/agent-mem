@@ -12,9 +12,9 @@ import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
 import { machineId } from "./machine.ts";
 import type { WorkBrief, WorkBriefBinding, WorkSegment } from "../brief-work.ts";
-import { WORK_BRIEF_VIEWS, readWorkBrief, workLogSegments, workPolicyRevision, writeWorkBrief } from "../brief-work.ts";
+import { WORK_BRIEF_BYTES, WORK_BRIEF_VIEWS, pruneWorkBriefs, readWorkBrief, reserveWorkBriefSlot, workLogSegments, workPolicyRevision, writeWorkBrief } from "../brief-work.ts";
 import { configuredPolicyOptions } from "./config.ts";
-import { createStandalonePolicy } from "./policy.ts";
+import { createStandalonePolicy, type StandalonePolicyOptions } from "./policy.ts";
 
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
 /** The size of this store's own log segment at one point in time. */
@@ -147,12 +147,13 @@ export class WorkListStore {
   private readonly busyTimeoutMs: number;
   private readonly readers = new Set<() => void>();
   private closed = false;
-  /** A composed set that passed the snapshot's bound is not retried by this process: see `publish`. */
-  private briefFits = true;
+  // ponytail: retry after a possible shrink, at most every 128 writes, or after 1024 writes; a size-aware index could refine this.
+  private readonly briefRetryWrites = new Map<string, { remaining: number; shrinkCooldown: number }>();
+  private readonly briefPolicyOptions: (() => StandalonePolicyOptions) | undefined;
   /** #27: the work logs of keys aliased to this project that already have one; read beside this log through their own snapshot cursors, never written. */
   private readonly aliased: WorkListStore[] = [];
 
-  constructor(options: { base: string; project: string; policy: WorkListPolicy; now?: () => number; aliases?: readonly string[]; exact?: boolean; timeRemaining?: () => number; busyTimeoutMs?: number }) {
+  constructor(options: { base: string; project: string; policy: WorkListPolicy; briefPolicyOptions?: () => StandalonePolicyOptions; now?: () => number; aliases?: readonly string[]; exact?: boolean; timeRemaining?: () => number; busyTimeoutMs?: number }) {
     if (!bounded(options.project, 1000) || typeof options.policy !== "function") throw new Error("invalid work-list input");
     this.timeRemaining = options.timeRemaining;
     this.busyTimeoutMs = options.busyTimeoutMs ?? 3000;
@@ -173,7 +174,7 @@ export class WorkListStore {
     if (lstatSync(this.dir).isSymbolicLink() || lstatSync(join(this.dir, "log")).isSymbolicLink()) throw new Error("work log directory is invalid");
     this.checkBudget();
     this.machine = machineId(base).id;
-    this.policy = options.policy; this.now = options.now ?? Date.now;
+    this.policy = options.policy; this.briefPolicyOptions = options.briefPolicyOptions; this.now = options.now ?? Date.now;
     for (const name of ["mutation-lock.db", "index.db", "index.db-wal", "index.db-shm"]) regular(join(this.dir, name));
     let openedMutation: Database | undefined, openedDb: Database | undefined;
     try {
@@ -427,39 +428,62 @@ export class WorkListStore {
    * The file always records the frontier its rows were read at, so a row another writer appended in between can only make
    * the snapshot stale, never make it claim content it does not hold.
    */
-  async publishBrief(row?: Pick<WorkRow, "list" | "fields">, frame?: WriteFrame): Promise<void> {
+  async publishBrief(row?: WorkRow, frame?: WriteFrame): Promise<void> {
     try {
-      if (!this.briefFits) return;   // the composed views passed the file's bound once; a later write in this process retries
-      const options = configuredPolicyOptions(this.base), standalone = createStandalonePolicy(options);
-      const segments = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
-      if (!segments) return;
-      const binding = { base: this.base, project: this.project, machine: this.machine }, policy = workPolicyRevision(options);
-      if (row && frame?.prior && frame.ordered && standalone.screenStandalone(row)) {
-        const cached = readWorkBrief(binding);
-        // A fold is exact only when the cached file is one frame of this log: the pre-append frontier, this store's own
-        // append, and nothing else moved. A dropped list may hide the row's own list, so a truncated file is not folded
-        // into unless the list is already kept whole.
-        const holds = !cached?.truncated || cached.rows.some(item => item.source.list === row.list);
-        if (cached && holds && cached.policy === policy
-          && JSON.stringify(cached.segments) === JSON.stringify(this.frontier(segments, frame.prior))
-          && JSON.stringify(segments) === JSON.stringify(this.frontier(segments, frame.appended))) {
-          const rows = applyWorkRow(cached.rows, row);
-          if (rows.length <= WORK_BRIEF_VIEWS && this.publish(binding, { ...cached, segments, rows })) return;
-        }
+      const home = configuredPolicyOptions(this.base);
+      await this.publishPolicyBrief(home, undefined, row, frame);
+      if (this.briefPolicyOptions) {
+        const effective = this.briefPolicyOptions();
+        const revision = workPolicyRevision(effective);
+        if (revision !== workPolicyRevision(home)) await this.publishPolicyBrief(effective, revision, row, frame);
       }
-      const before = segments;
-      const views = await this.read(undefined, true, input => standalone.screenStandalone(input));
-      const rest = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
-      if (!rest || JSON.stringify(before) !== JSON.stringify(rest)) return;   // the log moved under the replay: leave the old file stale
-      this.publish(binding, { schema: "agent-mem.brief-work/v1", project: this.project, segments: before, policy,
-        rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source })), truncated: views.length > WORK_BRIEF_VIEWS });
     } catch { /* A later write retries. */ }
   }
 
-  /** The bound is the file's, so a composed set past it is never written: the section stays unavailable, never a subset. */
-  private publish(binding: WorkBriefBinding, brief: WorkBrief): boolean {
-    const written = writeWorkBrief(binding, brief);
-    if (!written) this.briefFits = false;
+  private async publishPolicyBrief(options: StandalonePolicyOptions, revision: string | undefined, row?: WorkRow, frame?: WriteFrame): Promise<void> {
+    const key = revision ?? "home", retry = this.briefRetryWrites.get(key);
+    const shrink = !!row && Object.values(row.fields).some(value => value === null);
+    const shrinkRetry = !!retry && shrink && retry.shrinkCooldown <= 0;
+    if (retry && retry.remaining > 1 && !shrinkRetry) {
+      this.briefRetryWrites.set(key, { remaining: retry.remaining - 1, shrinkCooldown: Math.max(0, retry.shrinkCooldown - 1) });
+      return;
+    }
+    this.briefRetryWrites.delete(key);
+    const standalone = createStandalonePolicy({ denyPaths: options.denyPaths, piiPatterns: options.piiPatterns });
+    const segments = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
+    if (!segments) return;
+    const binding = { base: this.base, project: this.project, machine: this.machine, ...(revision ? { revision } : {}) };
+    const policy = workPolicyRevision(options);
+    if (row && frame?.prior && frame.ordered) {
+      const cached = readWorkBrief(binding), allowed = await this.permitted(row, input => standalone.screenStandalone(input));
+      const holds = !allowed || !cached?.truncated || cached.rows.some(item => item.source.list === row.list);
+      if (cached && holds && cached.policy === policy
+        && JSON.stringify(cached.segments) === JSON.stringify(this.frontier(segments, frame.prior))
+        && JSON.stringify(segments) === JSON.stringify(this.frontier(segments, frame.appended))) {
+        const rows = allowed ? applyWorkRow(cached.rows, row) : cached.rows;
+        if (rows.length <= WORK_BRIEF_VIEWS) { this.publish(binding, { ...cached, segments, rows }, key, shrinkRetry); return; }
+      }
+    }
+    const views = await this.read(undefined, true, input => standalone.screenStandalone(input));
+    const rest = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
+    if (!rest || JSON.stringify(segments) !== JSON.stringify(rest)) return;
+    if (revision && (!this.briefPolicyOptions || workPolicyRevision(this.briefPolicyOptions()) !== revision)) return;
+    this.publish(binding, { schema: "agent-mem.brief-work/v1", project: this.project, segments, policy,
+      rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source })), truncated: views.length > WORK_BRIEF_VIEWS }, key, shrinkRetry);
+  }
+
+  /** Publication and revision eviction share the work mutation lock. */
+  private publish(binding: WorkBriefBinding, brief: WorkBrief, key: string, shrinkRetry: boolean): boolean {
+    const written = this.locked(() => {
+      if (binding.revision && Buffer.byteLength(JSON.stringify(brief) + "\n") <= WORK_BRIEF_BYTES) reserveWorkBriefSlot(binding);
+      const ok = writeWorkBrief(binding, brief);
+      if (ok && binding.revision) pruneWorkBriefs(binding);
+      return ok;
+    });
+    if (!written) {
+      this.briefRetryWrites.set(key, { remaining: 1024, shrinkCooldown: shrinkRetry ? 128 : 0 });
+      if (this.briefRetryWrites.size > 5) this.briefRetryWrites.delete(this.briefRetryWrites.keys().next().value!);
+    }
     return written;
   }
 

@@ -286,12 +286,18 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           if (floor) { coverage.work = "unavailable"; reasons.work = `${floor}; use amem_work_state_read`; return; }
           let machine: string | undefined;
           try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no snapshot */ }
+          const effective = configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy);
+          if (effective.host) { coverage.work = "unavailable"; reasons.work = "work cache stale (host callback); use amem_work_state_read"; return; }
+          const revision = workPolicyRevision(effective), homeRevision = workPolicyRevision(configuredPolicyOptions(base));
           const segments = workLogSegments(base, project, aliases);
-          const snapshot = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine) && segments ? readWorkBrief({ base, project, machine }) : undefined;
+          const snapshot = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine) && segments ? readWorkBrief({ base, project, machine, ...(revision !== homeRevision ? { revision } : {}) }) : undefined;
           if (!snapshot) { coverage.work = "unavailable"; reasons.work = "work cache missing; use amem_work_state_read"; return; }
           if (!segments || JSON.stringify(snapshot.segments) !== JSON.stringify(segments)
-            || snapshot.policy !== workPolicyRevision(configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy))) {
+            || snapshot.policy !== revision) {
             coverage.work = "unavailable"; reasons.work = "work cache stale; use amem_work_state_read"; return;
+          }
+          if (revision !== homeRevision && snapshot.truncated) {
+            coverage.work = "unavailable"; reasons.work = "work cache stale (incomplete); use amem_work_state_read"; return;
           }
           let shown = 0;
           for (const row of snapshot.rows) {
