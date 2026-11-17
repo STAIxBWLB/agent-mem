@@ -1,6 +1,6 @@
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
-import { assertPlacementRuntime, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
+import { assertPlacementRuntime, doctorScratchBinding, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -167,7 +167,7 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
   assertPlacementRuntime(memoryDir);
   const selector = readProfileJSON(join(memoryDir, "profile.json")) as {schema?:unknown} | undefined;
   if (selector?.schema === "agent-mem.profile/v3") {
-    const active = readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
+    const active = doctorScratchBinding(memoryDir) ?? readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
     const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
     if (!active || !active.activation.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
       throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin);
