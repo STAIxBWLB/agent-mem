@@ -7,6 +7,7 @@ import { CURATED_CACHE_MIN_READER, readCuratedBriefCache, readPreferenceBriefCac
 import { PREFERENCE_SLOT, SESSION_PREFERENCE_SHARE } from "./memory/preference-brief.ts";
 import { curatedProfileBinding } from "./memory/curated-cache-state.ts";
 import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
+import { readWorkBrief, workLogSegments, workPolicyRevision } from "./brief-work.ts";
 import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
@@ -276,6 +277,32 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         const measured = options.measureOnly;
         if (measured && !measured.workBase) { coverage.work = "unavailable"; return; }
         if (measured && ![project, ...aliases].some(key => lstatSync(join(shardDir(measured.workBase!, key), "work", "log"), { throwIfNoEntry: false }))) return;   // no work log: the real brief shows an empty list
+        // #455: the native brief reads the derived machine-local snapshot only; a stale, foreign or unreadable file is
+        // unavailable with today's instruction, never older content. Every kept row is screened again at read.
+        if (options.nativeSession && !measured) {
+          let floor: string | undefined;
+          try { assertFormatFloor(base, "work-lists"); }
+          catch (error) { floor = error instanceof FormatFloorError && error.code === "format_floor" ? "floor: upgrade amem" : "floor: amem doctor"; }
+          if (floor) { coverage.work = "unavailable"; reasons.work = `${floor}; use amem_work_state_read`; return; }
+          let machine: string | undefined;
+          try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no snapshot */ }
+          const segments = workLogSegments(base, project, aliases);
+          const snapshot = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine) && segments ? readWorkBrief({ base, project, machine }) : undefined;
+          if (!snapshot) { coverage.work = "unavailable"; reasons.work = "work cache missing; use amem_work_state_read"; return; }
+          if (!segments || JSON.stringify(snapshot.segments) !== JSON.stringify(segments)
+            || snapshot.policy !== workPolicyRevision(configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy))) {
+            coverage.work = "unavailable"; reasons.work = "work cache stale; use amem_work_state_read"; return;
+          }
+          let shown = 0;
+          for (const row of snapshot.rows) {
+            const view = row.source;
+            if (view.closed || !await screen(view)) continue;
+            if (shown++ >= SECTION_RECORDS) { coverage.work = "partial"; break; }
+            await add("work", workDisplay(view), false);
+          }
+          if (snapshot.truncated) coverage.work = "partial";
+          return;
+        }
         const work = new WorkListStore({ base: measured?.workBase ?? base, project, aliases, policy: screen, ...(options.nativeSession ? { busyTimeoutMs: 0, timeRemaining: options.timeRemaining } : {}) }); closers.push(() => work.close());
         // Complete operation rows AND the composed view are screened before closed-item filtering or display caps.
         const views = await work.read(undefined, true); guard();
