@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { writeFileSync } from "node:fs";
-import { canonicalJSON } from "../src/memory/generation.ts";
+import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
 import { writerInventoryGenesis } from "../src/memory/sync-placement-writer-revision-format.ts";
@@ -43,14 +43,19 @@ test("#448: effective inventory rejects a forged writer prefix or missing journa
 
 test("#448: an attributed interrupted admission keeps the activation realms in force", async () => {
   const { f, active, body, file } = await fixture(), project = "/scratch/admitted-project", key = sha(project);
-  const partial = canonicalJSON(createRealmExtension(body)).slice(0, -12);
+  const record = createRealmExtension({ ...body, realm: { ...body.realm, keyHash: key } });
+  const partial = canonicalJSON(record).slice(0, -12);
   writeFileSync(file, partial, { mode: 0o600 });
   expect(() => readEffectiveRealmInventory(f.home, active)).toThrow();
-  writeFileSync(join(f.home, `placement-realm-intent-${key}.json`), canonicalJSON(createRealmIntent({ schema: REALM_INTENT_SCHEMA, home: f.home, project,
+  const intent = createRealmIntent({ schema: REALM_INTENT_SCHEMA, home: f.home, project,
     keyHash: key, machine: "0".repeat(16), epochHash: f.epochHash, activationHash: active.activation.seal, homeHash: active.epoch.homeHash, generation: f.generation,
     sequence: 1, previousHash: realmExtensionGenesis(f.epochHash, active.activation.seal), previousLogBytes: 0, previousLogHash: sha(""),
     mode: "new", descriptorHash: null, sourceHash: null, aliasesHash: body.aliasesHash, policyHash: body.policyHash, writerHash: body.writerHash,
-    journal: { sequence: 0, headHash: f.epochHash } })) + "\n", { mode: 0o600 });
+    journal: { sequence: 0, headHash: f.epochHash } });
+  writeFileSync(join(f.home, `placement-realm-intent-${key}.json`), canonicalJSON(intent) + "\n", { mode: 0o600 });
+  expect(() => readEffectiveRealmInventory(f.home, active)).toThrow(); // intent alone cannot attribute the tail
+  const proof = { schema: "agent-mem.sync-placement-realm-proof/v1", intent: intent.seal, record };
+  writeFileSync(join(f.home, `placement-realm-proof-${intent.seal}.json`), canonicalJSON({ ...proof, seal: hashJSON(proof) }) + "\n", { mode: 0o600 });
   const effective = readEffectiveRealmInventory(f.home, active);
   expect(effective.realms).toEqual(active.activation.realms); effective.assertCurrent();
 });
