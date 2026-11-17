@@ -194,3 +194,22 @@ test("#424: a same-project promotion keeps the peer project's cache", () => {
     expect(peer()?.rows.map(row => (row.data as { text: string }).text)).toEqual(["peer stays cached"]);
   } finally { f.store.close(); }
 });
+
+for (const refresh of ["read", "rebuild"] as const) test(`#424: external replacement remains known after ${refresh}`, () => {
+  const f = fixture(), other = "curated-write-external-replacement";
+  const note = (project: string, text: string, supersedes?: string) => ({ op: "note" as const, project, scope: "project" as const,
+    tier: "long" as const, kind: "decision" as const, peer: "fixture", source: "person" as const, text, about: [], ...(supersedes ? { supersedes } : {}) });
+  const peer = () => readBriefCache({ directory: captureShardDir(f.base, other, machineId(f.base).id), project: other, section: "curated" });
+  let writer: MemoryStore | undefined;
+  try {
+    const first = f.store.note(note(f.project, "external relation target"));
+    f.store.note(note(other, "peer baseline")); f.store.prepareCuratedBriefs([f.project, other]);
+    writer = new MemoryStore({ home: f.home, deferPromotions: true });
+    writer.note(note(other, "external replacement", first)); writer.prepareCuratedBriefs([other]);
+    expect(peer()).toBeDefined();
+    if (refresh === "read") f.store.readPage({ project: f.project, limit: 32 }); else f.store.rebuild();
+    expect(peer()).toBeDefined();
+    expect(f.store.forget(first, "fixture", f.project)).toBeDefined();
+    expect(peer()).toBeUndefined();
+  } finally { writer?.close(); f.store.close(); }
+});

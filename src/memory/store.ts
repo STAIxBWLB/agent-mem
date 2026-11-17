@@ -432,6 +432,7 @@ export class MemoryStore {
 
   // ponytail: retain at most 4096 relation rows per store; above that, invalidate home-wide. Upgrade to a bounded indexed relation lookup if this ceiling becomes common.
   private curatedRelations: Set<string> | null | undefined;
+  private curatedRelationsVersion: number | undefined;
   private hasCuratedRelation(id: string): boolean {
     try {
       if (this.stale || (!this.generationIndex && this.shape() !== this.seen)) { this.curatedRelations = undefined; return true; }
@@ -440,10 +441,14 @@ export class MemoryStore {
         return !!this.db.query("SELECT 1 FROM entries WHERE supersedes=? OR promoted_from=? LIMIT 1").get(id, id)
           || !!this.db.query("SELECT 1 FROM ops WHERE op='supersede' AND (target=? OR by=?) LIMIT 1").get(id, id);
       }
+      const version = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version;
+      if (this.curatedRelationsVersion !== version) { this.curatedRelations = undefined; this.curatedRelationsVersion = undefined; }
       if (this.curatedRelations === null) return true;
       if (!this.curatedRelations) {
         const notes = this.db.query("SELECT id, supersedes, promoted_from FROM entries WHERE supersedes IS NOT NULL OR promoted_from IS NOT NULL LIMIT 4097").all() as { id: string; supersedes: string | null; promoted_from: string | null }[];
         const ops = this.db.query("SELECT target, by FROM ops WHERE op='supersede' LIMIT 4097").all() as { target: string; by: string | null }[];
+        if ((this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version !== version) return true;
+        this.curatedRelationsVersion = version;
         if (notes.length + ops.length > 4096) { this.curatedRelations = null; return true; }
         const ids = new Set<string>();
         for (const row of notes) for (const value of [row.id, row.supersedes, row.promoted_from]) if (value) ids.add(value);
@@ -700,11 +705,9 @@ export class MemoryStore {
             .filter((value): value is string => typeof value === "string" && value.length > 0);
           localChange = !!owner && !!affected && curatedLocal(owner) && !this.hasCuratedRelation(id)
             && (!references.length || this.curatedChangeLocal(affected, references));
-          this.rememberCuratedRelation(id, references);
         } else if (body.op !== "settle" && owner && affected && "target" in body && typeof body.target === "string") {
           const targets = [body.target, ...(body.op === "supersede" && "by" in body && typeof body.by === "string" ? [body.by] : [])];
           localChange = this.curatedChangeLocal(affected, targets);
-          if (body.op === "supersede") this.rememberCuratedRelation(body.target, targets.slice(1));
         }
         this.markCuratedChange(affected, localChange);
       }
@@ -758,7 +761,6 @@ export class MemoryStore {
       this.assertPreferenceWritable(body);
       const references = [n.supersedes, n.promotedFrom].filter((value): value is string => !!value);
       const localChange = curatedLocal(n) && !this.hasCuratedRelation(id) && (!references.length || this.curatedChangeLocal(n.project, references));
-      this.rememberCuratedRelation(id, references);
       this.markCuratedChange(n.project, localChange);
       appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       return { id, added: true };
@@ -992,6 +994,7 @@ export class MemoryStore {
 
   /** Drop the index and read every segment again: the same rows as the incremental index. */
   rebuild(): void {
+    this.curatedRelations = undefined; this.curatedRelationsVersion = undefined;
     this.searchIndex.reset();
     if (this.generationIndex) { this.generationIndex.rebuild(); return; }
     // One transaction: no reader sees the index empty, and no other process commits an offset in between.
@@ -1026,6 +1029,7 @@ export class MemoryStore {
       const inserted = this.db.query(`INSERT OR IGNORE INTO entries (id, at, machine, project, scope, tier, kind, peer, title, text, task, about, supersedes, promoted_from, source, expires)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.tier === "long" ? "long" : "short",
         e.kind, e.peer, e.title ?? null, e.text, e.task ?? null, JSON.stringify(e.about.map(String)), e.supersedes ?? null, e.promotedFrom ?? null, e.source ?? "hub", typeof e.expires === "string" ? e.expires : null).changes;
+      this.rememberCuratedRelation(id, [e.supersedes, e.promotedFrom].filter((value): value is string => !!value));
       // The FTS copy follows the committed row. `changes` is only a hint here (bun:sqlite misreports it for ignored
       // inserts inside a transaction): addCurated is idempotent by entry id, and a missed hint becomes a count drift
       // the next search resyncs.
@@ -1040,6 +1044,7 @@ export class MemoryStore {
       const dated = !["demote", "settle", "lease", "lease_force"].includes(e.op) || (typeof e.by === "string" && !Number.isNaN(Date.parse(e.by)));
       if (!str(e.target, 400) || !opt(e.by) || !opt(e.actor) || !dated) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
       this.db.query("INSERT OR IGNORE INTO ops (id, op, at, machine, target, by, actor) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, e.op, e.at, e.machine, e.target, e.by ?? null, e.actor ?? "");
+      if (e.op === "supersede" && e.by) this.rememberCuratedRelation(e.target, [e.by]);
     }
   }
 
