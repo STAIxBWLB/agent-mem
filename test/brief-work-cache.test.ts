@@ -209,6 +209,25 @@ test("a repository policy that narrows the read is never screened only as a comp
   } finally { h.store.close(); }
 });
 
+test("snapshot selection binds the same policy as the brief screen when config changes", async () => {
+  const h = home("policy-change-during-brief");
+  try {
+    await h.store.write("queue", { task: "harmless-note", status: "doing" }, { source: "import", id: "restricted-origin" });
+    mkdirSync(join(h.root, ".git"), { recursive: true });
+    mkdirSync(join(h.root, ".amem"), { recursive: true });
+    const config = join(h.root, ".amem", "config");
+    writeFileSync(config, JSON.stringify({ piiPatterns: ["restricted-origin"] }));
+    let changed = false;
+    const result = await sessionStartBrief({ ...h.options, timeRemaining: () => {
+      if (!changed) { changed = true; writeFileSync(config, "{}"); }
+      return 2000;
+    } });
+    expect(changed).toBe(true);
+    expect(result.coverage.work).toBe("unavailable");
+    expect(result.context).not.toContain("harmless-note");
+  } finally { h.store.close(); }
+});
+
 test("policy-scoped snapshots reproduce live operation screening including source ids", async () => {
   const h = home("scoped-policy");
   mkdirSync(join(h.root, ".git"), { recursive: true });

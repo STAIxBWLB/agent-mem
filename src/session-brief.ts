@@ -102,7 +102,8 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const requested = options.project ?? memoryProjectKey(cwd, { repositoryIsolation: true }), project = resolveAlias(base, requested);
     // #15 T5: a project the person archived or forgot yields no brief at all, before any lease, store or screen is opened.
     if (projectState(base, project) !== "active") return result;
-    const policy = createStandalonePolicy(configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy)), release = options.measureOnly ? Object.assign(() => {}, { verify: () => {} }) : registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
+    const effectivePolicy = configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy);
+    const policy = createStandalonePolicy(effectivePolicy), release = options.measureOnly ? Object.assign(() => {}, { verify: () => {} }) : registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
     closers.push(release);
     const selection = readSelector(base).revision;
     const sharded = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
@@ -286,7 +287,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           if (floor) { coverage.work = "unavailable"; reasons.work = `${floor}; use amem_work_state_read`; return; }
           let machine: string | undefined;
           try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no snapshot */ }
-          const effective = configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy);
+          const effective = effectivePolicy;
           if (effective.host) { coverage.work = "unavailable"; reasons.work = "work cache stale (host callback); use amem_work_state_read"; return; }
           const revision = workPolicyRevision(effective), homeRevision = workPolicyRevision(configuredPolicyOptions(base));
           const segments = workLogSegments(base, project, aliases);
