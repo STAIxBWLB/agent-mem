@@ -77,6 +77,17 @@ try {
   const afterView = readPublicPruneViewForActivation(f.home, bound.profile.pruneInputSetHash, f.generation);
   expect(afterView.realms[`project:${newProject}`]).toEqual(beforeView.realms[`project:${newProject}`]);
   expect(readPlacementJournal(f.home, f.epochHash).records.some(row => row.key.realm.scope === "project" && row.key.realm.keyHash === keyHash)).toBe(false);
+
+  // The same old writer must also leave an interrupted, generation-less staging
+  // directory alone. The directory is an isolated fixture, not a real home.
+  rmSync(join(shardDir(f.home, newProject), "generation.json"));
+  const stagedBefore = inspectionFilesystemSnapshot(shardDir(f.home, newProject));
+  const stagedRun = Bun.spawnSync([process.execPath, "--smol", "-e", source], { env: { PATH: process.env.PATH ?? "", HOME: f.root, AMEM_HOME: f.home, TMPDIR: f.root }, stdout: "pipe", stderr: "pipe", timeout: 120_000 });
+  expect(stagedRun.exitCode, stagedRun.stderr.toString()).toBe(0);
+  expect(JSON.parse(stagedRun.stdout.toString()).ok).toBe(true);
+  expect(inspectionFilesystemSnapshot(shardDir(f.home, newProject))).toEqual(stagedBefore);
+  expect(inspectionGit(f.remote, "rev-parse", realmRef)).toBe(remoteBefore);
+  expect(readPlacementJournal(f.home, f.epochHash).records.some(row => row.key.realm.scope === "project" && row.key.realm.keyHash === keyHash)).toBe(false);
 }, 180_000);
 
 
