@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Keep doctor curated checks available on an activated sync placement using a private scratch snapshot after checking the real home. Refs #453.
+
 ## 0.28.2
 
 ### Fixed
