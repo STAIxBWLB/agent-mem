@@ -89,3 +89,18 @@ test("N-1: the 0.28.2 status reader reads a 0.29.0 inventory sidecar without a s
   expect(report.operations[0]).toMatchObject({ operationId: "3".repeat(16), state: "running" });
   expect(old.renderSyncStatus(report)).toContain(`${"3".repeat(16)} writer verification`);
 });
+
+
+test("#450: deferred failure retains category until all inventory outcomes are recorded", () => {
+  const dir = home(), progress = new SyncProgress({ sink: syncProgressSidecar(dir), intervalMs: 0 });
+  progress.deferFinish(true);
+  progress.finish("failed", "unavailable", "remote");
+  expect(progress.snapshot().state).toBe("running");
+  progress.inventory({ publications: 2, completed: 1, realms: 3, outcomes: [
+    { realm: "user", outcome: "committed" }, { realm: "a".repeat(16), outcome: "failed" }, { realm: "b".repeat(16), outcome: "not-run" },
+  ] });
+  progress.deferFinish(false);
+  expect(readSyncStatus(dir).operations[0]).toMatchObject({ state: "failed", cause: "unavailable", category: "remote", inventory: { completed: 1, outcomes: [
+    { realm: "user", outcome: "committed" }, { realm: "a".repeat(16), outcome: "failed" }, { realm: "b".repeat(16), outcome: "not-run" },
+  ] } });
+});

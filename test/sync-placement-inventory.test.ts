@@ -83,9 +83,10 @@ test("#450 the inventory runs in sorted two-realm publications, user first, inde
 
 test("#450 AC3: a crash inside the second publication stops before the third, reports published vs not-run, and a rerun resumes the retained publication first", async () => {
   const f = await inventoryFixture(4), remote = bare();
+  const progress = new SyncProgress({ sink: syncProgressSidecar(f.home), intervalMs: 0 });
   let publication = 0;
   const open = (realm: Parameters<Parameters<typeof syncPlacementInventory>[2]["open"]>[0]) => openShardStore({ memoryDir: f.home, deferPromotions: true, ...(realm.scope === "user" ? { user: true } : { project: realm.key }) });
-  const crashed = await syncPlacementInventory(f.home, f.opts(remote), { open, close: store => store.close(), publish: (primary, targets, options) => {
+  const crashed = await syncPlacementInventory(f.home, { ...f.opts(remote), progress }, { open, close: store => store.close(), publish: (primary, targets, options) => {
     publication++;
     return syncPlacementMemory(primary, options, (at: PlacementSyncPhase) => { if (publication === 2 && at === "cas-returned") throw Error("synthetic second-publication crash"); }, undefined, undefined, targets);
   } });
@@ -95,6 +96,9 @@ test("#450 AC3: a crash inside the second publication stops before the third, re
   expect(outcomes.slice(0, 2)).toEqual(["committed", "committed"]);
   expect(outcomes.slice(2, 4).every(outcome => outcome === "unknown" || outcome === "failed")).toBe(true);
   expect(outcomes[4]).toBe("not-run");
+  const status = readSyncStatus(f.home).operations[0]!;
+  expect(status).toMatchObject({ state: "failed", cause: "unknown-outcome", inventory: { publications: 3, completed: 1, realms: 5 } });
+  expect(status.inventory!.outcomes).toEqual(crashed.placementRealms!.map(item => ({ realm: item.realm === "user" ? "user" : item.realm.slice(0, 16), outcome: item.outcome })));
   expect(publication).toBe(2);
   const retained = f.plans();
   const resumed = await syncMemory(f.entry(), f.opts(remote));
@@ -135,4 +139,23 @@ test("#450: an inventory realm without a local curated shard is a named not-loca
   expect(refs(remote)).not.toContain(`refs/heads/amem/p/${shardKeyHash(gone)}`);
   const text = renderSyncStatus(readSyncStatus(f.home));
   expect(text).toContain(`${digest(gone).slice(0, 16)}=not-local`); expect(text).not.toContain(gone);
+}, 240_000);
+
+test("#450: cancellation between publications records remaining realms before the terminal status", async () => {
+  const f = await inventoryFixture(4), remote = bare(), controller = new AbortController();
+  const progress = new SyncProgress({ sink: syncProgressSidecar(f.home), intervalMs: 0 });
+  const open = (realm: Parameters<Parameters<typeof syncPlacementInventory>[2]["open"]>[0]) => openShardStore({ memoryDir: f.home, deferPromotions: true, ...(realm.scope === "user" ? { user: true } : { project: realm.key }) });
+  let publications = 0;
+  const result = await syncPlacementInventory(f.home, { ...f.opts(remote), progress, signal: controller.signal }, {
+    open, close: store => store.close(), publish: async (primary, targets, options) => {
+      const published = await syncPlacementMemory(primary, options, undefined, undefined, undefined, targets);
+      if (++publications === 1) controller.abort();
+      return published;
+    },
+  });
+  expect(result.ok).toBe(false); expect(publications).toBe(1);
+  expect(result.placementRealms.map(item => item.outcome)).toEqual(["committed", "committed", "not-run", "not-run", "not-run"]);
+  const status = readSyncStatus(f.home).operations[0]!;
+  expect(status).toMatchObject({ state: "cancelled", cause: "cancelled", inventory: { publications: 3, completed: 1, realms: 5 } });
+  expect(status.inventory!.outcomes!.map(item => item.outcome)).toEqual(result.placementRealms.map(item => item.outcome));
 }, 240_000);

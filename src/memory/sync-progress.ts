@@ -60,7 +60,8 @@ export class SyncProgress {
   private unit?: SyncProgressUnit; private completed?: number; private total?: number; private outcome?: SyncProgressCounts;
   private state: SyncProgressState = "running"; private cause?: SyncProgressCause; private category?: PlacementRefusalCategory; private work: number; private aliveAt: number;
   private readonly proofs = { complete: 0, fence: 0 };
-  private inventoryCounts?: SyncProgressInventory; private successDeferred = false;
+  private inventoryCounts?: SyncProgressInventory; private finishDeferred = false;
+  private pendingTerminal?: { state: "failed" | "cancelled"; cause?: SyncProgressCause; category?: PlacementRefusalCategory };
   constructor(options: SyncProgressOptions) {
     this.sink = options.sink; this.intervalMs = Math.max(0, options.intervalMs ?? SYNC_PROGRESS_INTERVAL_MS);
     this.now = options.now ?? Date.now; this.mono = options.mono ?? (() => performance.now());
@@ -100,11 +101,22 @@ export class SyncProgress {
       ...(outcomes.length ? { outcomes: outcomes.slice(0, MAX_REALM_OUTCOMES).map(item => ({ ...item })) } : {}), ...(outcomes.length > MAX_REALM_OUTCOMES || value.truncated ? { truncated: true } : {}) };
     this.work = this.aliveAt = this.now(); this.emit(true);
   }
-  /** #450: while deferred, a publication's own success is not the run's success; a failure or cancellation still ends the run. */
-  deferFinish(deferred: boolean): void { this.successDeferred = deferred; }
+  /** #450: an inventory driver records all realm outcomes before the first terminal state is emitted. */
+  deferFinish(deferred: boolean): void {
+    this.finishDeferred = deferred;
+    if (!deferred && this.pendingTerminal) {
+      const pending = this.pendingTerminal; this.pendingTerminal = undefined;
+      this.finish(pending.state, pending.cause, pending.category);
+    }
+  }
   /** Terminal state. Success is reported only by the caller that holds the real sync receipt. */
   finish(state: Exclude<SyncProgressState, "running" | "interrupted">, cause?: SyncProgressCause, category?: PlacementRefusalCategory): void {
-    if (this.state !== "running" || state === "succeeded" && this.successDeferred) return; this.state = state; this.cause = state === "succeeded" ? undefined : cause;
+    if (this.state !== "running") return;
+    if (this.finishDeferred) {
+      if (state !== "succeeded" && !this.pendingTerminal) this.pendingTerminal = { state, cause, category };
+      return;
+    }
+    this.state = state; this.cause = state === "succeeded" ? undefined : cause;
     this.category = state === "failed" && category && (PLACEMENT_REFUSAL_CATEGORIES as readonly string[]).includes(category) ? category : undefined; this.aliveAt = this.now();
     if (state === "succeeded") this.work = this.aliveAt; this.emit(true);
   }

@@ -122,7 +122,8 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
   }
   if (stopped) report(completed);
   progress?.deferFinish(false);
-  if (!stopped) progress?.finish("succeeded");
+  if (stopped) progress?.finish(opts.signal?.aborted ? "cancelled" : "failed", opts.signal?.aborted ? "cancelled" : "unavailable");
+  else progress?.finish("succeeded");
   const totals = sum(results), last = stopped ?? results.at(-1);
   const base: SyncResult = last ? { ...last } : { ok: true, pushed: false, entries: 0 };
   return { ...base, ok: !stopped, pushed: totals.pushed, entries: totals.entries,
