@@ -20,13 +20,13 @@ const cli=fileURLToPath(new URL("../src/cli.ts",import.meta.url));
 // #345: 60 s exceeds twice the observed 28.554 s hosted-macOS full sync.
 // This functional e2e keeps 30 s child cleanup headroom; the product default stays 30 s.
 const CADENCE_E2E_DEADLINE_MS=60_000, CADENCE_E2E_TIMEOUT_MS=240_000;
-function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false,syncDeadlineMs?:number){
+function run(f:ReturnType<typeof hookFixture>,args:string[],agent=false,syncDeadlineMs?:number,cwd=f.cwd){
   const env={...f.env};delete env.CLAUDECODE;if(agent)env.AGENTHUB_PEER_ID="codex";
   const diagnostic=diagnosticRoots.has(f.root), started=performance.now();
   const load=diagnostic?`${cadenceDiagnosticPrelude(f.env.HOME!)}const {runCli}=await import(${JSON.stringify(cli)});`:`import {runCli} from ${JSON.stringify(cli)};`;
   const report=diagnostic?`finally{const p=globalThis.__cadenceProbe;p.mark("cli-finished",{stops:p.signals.map(s=>({deadlineMs:s.deadlineMs,cause:s.cause()??null,aborted:s.signal.aborted}))});}`:"";
-  const source=`${load}try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env${syncDeadlineMs===undefined?"":`,syncDeadlineMs:${syncDeadlineMs}`}});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}${report}`;
-  const result=Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:syncDeadlineMs===undefined?60_000:syncDeadlineMs+30_000});
+  const source=`${load}try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(cwd)},env:process.env${syncDeadlineMs===undefined?"":`,syncDeadlineMs:${syncDeadlineMs}`}});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}${report}`;
+  const result=Bun.spawnSync([process.execPath,"-e",source],{cwd,env,stdout:"pipe",stderr:"pipe",timeout:syncDeadlineMs===undefined?60_000:syncDeadlineMs+30_000});
   if(diagnostic)cadenceCalls.push(collectCadenceCallDiagnostic({call:cadenceCalls.length+1,command:args[0]??"unknown",ifDue:args.includes("--if-due"),force:args.includes("--force"),elapsedMs:performance.now()-started,exitCode:result.exitCode,signalCode:result.signalCode,stdout:result.stdout.toString(),stderr:result.stderr.toString()}));
   return result;
 }
@@ -155,3 +155,22 @@ test("missing migration prerequisites name their exact next command and never mi
   before=inspectionFilesystemSnapshot(f.base);result=run(f,["migrate","--sync-placement","--dry-run","--json"]);
   expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("amem migrate --public-prune-view --dry-run");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
 });
+
+
+test("#449: unlisted cwd syncs only user and leaves its project shard unopened", async () => {
+  const f=await placementActivationFixture(); cleanup.push(f.close);
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  const {url}=localCliRemote(f), cwd=join(f.root,"outside"); mkdirSync(cwd);
+  const {memoryProjectKey}=await import("../src/memory/project.ts"), {shardDir, assertCuratedShardPaths}=await import("../src/memory/shard.ts");
+  const {CaptureStore}=await import("../src/memory/capture.ts"), {createHash}=await import("node:crypto");
+  const project=memoryProjectKey(cwd), capture=new CaptureStore({memoryDir:f.base,project}); capture.close();
+  const hash=createHash("sha256").update(project).digest("hex");
+  for (const origin of ["cwd binding", "remote"] as const) {
+    expect(() => assertCuratedShardPaths(f.base,{project},origin)).toThrow(`scope=project keyHash=${hash}; origin=${origin}`);
+  }
+  const result=run(f,["sync","--remote",url,"--json"],false,undefined,cwd), receipt=success(result);
+  expect(receipt.ok).toBe(true); expect(receipt.skippedCwdProject).toBe("cwd project is not in the activated inventory and was skipped");
+  expect(existsSync(shardDir(f.base,project))).toBe(true);
+  expect(existsSync(join(shardDir(f.base,project),"generation.json"))).toBe(false);
+  const listed=success(run(f,["sync","--json"])); expect(listed.ok).toBe(true); expect(listed.skippedCwdProject).toBeUndefined();
+},120_000);
