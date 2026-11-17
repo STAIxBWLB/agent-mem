@@ -114,8 +114,8 @@ export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: Real
   assertMutationHandle(proof.mutation, home); proof.assertCurrent();
   const staged = `${file}.pending`, beforeStage = lstatSync(staged, { bigint: true, throwIfNoEntry: false });
   if (beforeStage) {
-    if (!candidate) fail();
-    const inspected = readStage(home, intent, candidate); if (!inspected || stamp(inspected) !== stamp(beforeStage)) fail();
+    const selected = candidate ?? fail();
+    const inspected = readStage(home, intent, selected); if (!inspected || stamp(inspected) !== stamp(beforeStage)) fail();
     proof.assertCurrent(); assertMutationHandle(proof.mutation, home);
     if (stamp(lstatSync(staged, { bigint: true })) !== stamp(beforeStage)) fail();
     unlinkSync(staged); fsyncDirectory(home); proof.assertCurrent();
