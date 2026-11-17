@@ -152,11 +152,39 @@ test("a publish overlapping another same-machine writer never records a frontier
     await h.store.write("queue", { task: "zero", status: "done" });                              // a published file this write can fold onto
     const publish = h.store.publishBrief.bind(h.store);
     other.publishBrief = async () => { /* the second writer appends and then exits before publishing */ };
-    h.store.publishBrief = async (row, prior, appended) => { await other.write("queue", { task: "second", status: "doing" }); await publish(row, prior, appended); };
+    h.store.publishBrief = async (row, frame) => { await other.write("queue", { task: "second", status: "doing" }); await publish(row, frame); };
     await h.store.write("queue", { task: "first", status: "doing" });
     const result = await sessionStartBrief(h.options);
     if (result.coverage.work !== "complete") { expect(result.context).toContain("work: work cache"); return; }
     expect(result.context).toContain("first");
     expect(result.context).toContain("second");   // the recorded frontier covers both rows or the file is stale, never one claim for two rows
   } finally { other.close(); h.store.close(); }
+});
+
+test("a repository policy that narrows the read is never screened only as a composed view", async () => {
+  const h = home("repo-policy");
+  try {
+    // The pattern matches only the row's `source.id`, which a composed view does not carry: the live read refuses the row.
+    await h.store.write("queue", { task: "harmless-note", status: "doing" }, { machine: "source-machine", source: "import", id: "restricted-origin" });
+    mkdirSync(join(h.root, ".git"), { recursive: true });
+    mkdirSync(join(h.root, ".amem"), { recursive: true });
+    writeFileSync(join(h.root, ".amem", "config"), JSON.stringify({ piiPatterns: ["restricted-origin"] }));
+    const native = await sessionStartBrief(h.options), live = await sessionStartBrief(h.live);
+    expect(live.context).not.toContain("harmless-note");                                          // the live read withholds it
+    expect(native.coverage.work).toBe("unavailable");
+    expect(native.context).not.toContain("harmless-note");
+  } finally { h.store.close(); }
+});
+
+test("an import that sorts before existing operations replays instead of folding last", async () => {
+  const h = home("out-of-order");
+  try {
+    await h.store.write("queue", { task: "work", status: "doing" }, { machine: "source-machine", source: "import", id: "newer", at: 300 });
+    await h.store.write("queue", { task: "work", status: "done" }, { machine: "source-machine", source: "import", id: "older", at: 100 });
+    const native = await sessionStartBrief(h.options), live = await sessionStartBrief(h.live);
+    const section = (context: string) => context.split("\n").find(line => line.includes('"section":"work"'));
+    expect(live.context).toContain("doing");                                                      // replay order lets the newer row win
+    expect(native.coverage.work).toBe("complete");
+    expect(section(native.context)).toBe(section(live.context));
+  } finally { h.store.close(); }
 });

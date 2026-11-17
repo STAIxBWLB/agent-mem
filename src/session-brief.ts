@@ -290,7 +290,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           const snapshot = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine) && segments ? readWorkBrief({ base, project, machine }) : undefined;
           if (!snapshot) { coverage.work = "unavailable"; reasons.work = "work cache missing; use amem_work_state_read"; return; }
           if (!segments || JSON.stringify(snapshot.segments) !== JSON.stringify(segments)
-            || snapshot.policy !== workPolicyRevision(configuredPolicyOptions(base))) {
+            || snapshot.policy !== workPolicyRevision(configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy))) {
             coverage.work = "unavailable"; reasons.work = "work cache stale; use amem_work_state_read"; return;
           }
           let shown = 0;

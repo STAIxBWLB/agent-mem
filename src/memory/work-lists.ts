@@ -19,6 +19,8 @@ import { createStandalonePolicy } from "./policy.ts";
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
 /** The size of this store's own log segment at one point in time. */
 type SegmentSize = { bytes: number; mtimeMs: number };
+/** What one append changed: the frontier before and after it, and whether it is the last row the replay would apply. */
+type WriteFrame = { prior?: SegmentSize; appended: SegmentSize; ordered: boolean };
 export type WorkListFields = Record<string, string | number | boolean | null>;
 export type WorkListPolicy = (row: unknown) => boolean | Promise<boolean>;
 export interface WorkListSource { source: string; id: string; machine?: string; at?: number }
@@ -384,7 +386,7 @@ export class WorkListStore {
     if (Buffer.byteLength(canonicalJSON(row)) > ROW_BYTES) return invalid();
     if (!await this.permitted(row)) throw new Error("work-list privacy policy refused the write");
     const log = join(this.dir, "log", `${this.machine}.jsonl`);
-    let prior: SegmentSize | undefined, appended: SegmentSize | undefined;
+    let frame: WriteFrame | undefined;
     const stored = this.locked(() => {
       this.refresh();
       const key = receipt(row);
@@ -399,15 +401,24 @@ export class WorkListStore {
       // No metadata changes after screening: the derived index records same-machine append order.
       regular(log);
       const before = lstatSync(log, { throwIfNoEntry: false });
-      prior = before ? { bytes: before.size, mtimeMs: before.mtimeMs } : undefined;
+      const prior = before ? { bytes: before.size, mtimeMs: before.mtimeMs } : undefined;
       appendFileSync(log, canonicalJSON(row) + "\n", { mode: 0o600 });
       const after = lstatSync(log);   // the frontier this append alone reached, read under the same lock
-      appended = { bytes: after.size, mtimeMs: after.mtimeMs };
       this.refresh();
+      frame = { prior, appended: { bytes: after.size, mtimeMs: after.mtimeMs }, ordered: this.ordered(row, after.size) };
       return { id: row.id, already: false };
     });
-    if (!stored.already) await this.publishBrief(row, prior, appended);
+    if (!stored.already) await this.publishBrief(row, frame);
     return stored;
+  }
+
+  /** The one write a fold may apply last: an imported row carrying a historical `at` sorts before rows already reduced. */
+  private ordered(row: WorkRow, position: number): boolean {
+    const order = replayKey(row, position);
+    return [this, ...this.aliased].every(store => {
+      const latest = store.db.query("SELECT max(replay) AS replay FROM work_ops").get() as { replay: string | null } | null;
+      return !latest?.replay || order >= latest.replay;
+    });
   }
 
   /**
@@ -416,22 +427,22 @@ export class WorkListStore {
    * The file always records the frontier its rows were read at, so a row another writer appended in between can only make
    * the snapshot stale, never make it claim content it does not hold.
    */
-  async publishBrief(row?: Pick<WorkRow, "list" | "fields">, prior?: SegmentSize, appended?: SegmentSize): Promise<void> {
+  async publishBrief(row?: Pick<WorkRow, "list" | "fields">, frame?: WriteFrame): Promise<void> {
     try {
       if (!this.briefFits) return;   // the composed views passed the file's bound once; a later write in this process retries
       const options = configuredPolicyOptions(this.base), standalone = createStandalonePolicy(options);
       const segments = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
       if (!segments) return;
       const binding = { base: this.base, project: this.project, machine: this.machine }, policy = workPolicyRevision(options);
-      if (row && prior && appended && standalone.screenStandalone(row)) {
+      if (row && frame?.prior && frame.ordered && standalone.screenStandalone(row)) {
         const cached = readWorkBrief(binding);
         // A fold is exact only when the cached file is one frame of this log: the pre-append frontier, this store's own
         // append, and nothing else moved. A dropped list may hide the row's own list, so a truncated file is not folded
         // into unless the list is already kept whole.
         const holds = !cached?.truncated || cached.rows.some(item => item.source.list === row.list);
         if (cached && holds && cached.policy === policy
-          && JSON.stringify(cached.segments) === JSON.stringify(this.frontier(segments, prior))
-          && JSON.stringify(segments) === JSON.stringify(this.frontier(segments, appended))) {
+          && JSON.stringify(cached.segments) === JSON.stringify(this.frontier(segments, frame.prior))
+          && JSON.stringify(segments) === JSON.stringify(this.frontier(segments, frame.appended))) {
           const rows = applyWorkRow(cached.rows, row);
           if (rows.length <= WORK_BRIEF_VIEWS && this.publish(binding, { ...cached, segments, rows })) return;
         }
