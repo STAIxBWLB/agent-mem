@@ -13,7 +13,7 @@ import { planPlacementJournal, preparePlacementJournal, type PlacementJournalPor
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { ensurePlacementFence } from "../src/memory/sync-placement-journal-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
-import { shardKeyHash } from "../src/memory/shard.ts";
+import { shardDir, shardKeyHash } from "../src/memory/shard.ts";
 import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
 import { placementInventory, placementInventoryBatches, syncPlacementInventory } from "../src/memory/sync-placement-inventory.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
@@ -119,4 +119,20 @@ test("#450 AC2: per-realm outcomes reach `sync --status` through the sidecar, co
   const text = renderSyncStatus(readSyncStatus(f.home));
   expect(text).toContain("publications 2/2 over 4 realms");
   for (const project of f.projects) expect(text).not.toContain(project);
+}, 240_000);
+
+test("#450: an inventory realm without a local curated shard is a named not-local outcome and is never opened", async () => {
+  const f = await inventoryFixture(3), gone = f.projects[1]!, remote = bare();
+  // Synthetic: this machine never received the shard (temp fixture only).
+  rmSync(join(shardDir(f.home, gone), "generation.json"));
+  const inventory = placementInventory(f.home);
+  expect(inventory.missing).toEqual([digest(gone)]);
+  expect(inventory.local.map(realm => realm.scope === "user" ? "user" : realm.keyHash)).not.toContain(digest(gone));
+  const progress = new SyncProgress({ sink: syncProgressSidecar(f.home), intervalMs: 0 });
+  const result = await syncMemory(f.entry(), { ...f.opts(remote), progress });
+  expect(result.ok).toBe(true);
+  expect(result.placementRealms).toContainEqual({ realm: digest(gone), outcome: "not-local" });
+  expect(refs(remote)).not.toContain(`refs/heads/amem/p/${shardKeyHash(gone)}`);
+  const text = renderSyncStatus(readSyncStatus(f.home));
+  expect(text).toContain(`${digest(gone).slice(0, 16)}=not-local`); expect(text).not.toContain(gone);
 }, 240_000);
