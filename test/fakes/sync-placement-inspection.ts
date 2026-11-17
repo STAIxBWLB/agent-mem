@@ -74,6 +74,7 @@ export function inspectionFilesystemSnapshot(root: string): Record<string, unkno
 export interface InspectionFixtureOptions {
   project?: string; generation?: string; patterns?: string[];
   seed?(store: MemoryStore, project: string): Record<string, string>;
+  beforeMigrate?(home: string): Promise<void>;
   /** Test-only observation of the prepared v2 home before fixture marker installation. */
   prepared?(home: string, result: { activated: false; epochHash: string }): void;
 }
@@ -91,6 +92,7 @@ export async function createPlacementInspectionFixture(options: InspectionFixtur
         declined: original.note(inspectionNote("NEVER_PUBLIC_INSPECTION", project)),
       };
     } finally { original.close(); }
+    await options.beforeMigrate?.(home);
     const generation = options.generation ?? randomBytes(16).toString("hex");
     const migrated = await migrateShards({ memoryDir: home, generation, mode: "apply", authorizedPerson: true, tty: true });
     if (!migrated.active) throw Error("isolated fixture migration did not activate");
