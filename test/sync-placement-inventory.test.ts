@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
-import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
+import { canonicalJSON, generationDescriptor, hashJSON, writeProfileJSON } from "../src/memory/generation.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { captureSyncPlacementContext } from "../src/memory/sync-placement-capture.ts";
@@ -13,7 +13,11 @@ import { planPlacementJournal, preparePlacementJournal, type PlacementJournalPor
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { ensurePlacementFence } from "../src/memory/sync-placement-journal-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
-import { shardDir, shardKeyHash } from "../src/memory/shard.ts";
+import { ensureShardDescriptor, shardDir, shardKeyHash } from "../src/memory/shard.ts";
+import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
+import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
+import { createRealmExtension, realmExtensionGenesis, REALM_EXTENSION_SCHEMA } from "../src/memory/sync-placement-realm-extension-format.ts";
+import { writerInventoryGenesis } from "../src/memory/sync-placement-writer-revision-format.ts";
 import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
 import { placementInventory, placementInventoryBatches, syncPlacementInventory } from "../src/memory/sync-placement-inventory.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
@@ -60,6 +64,16 @@ export async function inventoryFixture(count: number) {
 const expectedRefs = (projects: readonly string[]) => ["refs/heads/amem/u", ...projects.map(project => `refs/heads/amem/p/${shardKeyHash(project)}`)].sort();
 /** Every realm order after the user realm is by full key hash. */
 const expectedOrder = (projects: readonly string[]) => ["user", ...projects.map(digest).sort()];
+
+/** A curated realm this machine already holds, written the way a migration leaves it (temp fixture only). */
+function installSyntheticRealm(home: string, generation: string, project: string): void {
+  const dir = shardDir(home, project); ensureShardDescriptor(home, project);
+  for (const folder of ["log", "local", "legacy/log", "legacy/local", "legacy-main/log", "legacy-main/local"]) mkdirSync(join(dir, folder), { recursive: true, mode: 0o700 });
+  const machine = JSON.parse(readFileSync(join(home, "machine.json"), "utf8")), descriptor = generationDescriptor(generation), sources: unknown[] = [];
+  for (const [name, value] of [["generation.json", descriptor], ["machine.json", machine], ["legacy/machine.json", machine], ["legacy-main/machine.json", machine],
+    ["migration-sources.json", { schema: "agent-mem.migration-sources/v1", sources }], ["generation-seal.json", { schema: "agent-mem.generation-seal/v1", generation,
+      descriptorHash: hashJSON(descriptor), sourceDigest: hashJSON({ sources, legacyCommit: undefined }) }]] as const) writeProfileJSON(join(dir, name), value);
+}
 
 test("#450 the inventory runs in sorted two-realm publications, user first, independent of the entry store", async () => {
   const f = await inventoryFixture(4), { local } = placementInventory(f.home);
@@ -158,4 +172,29 @@ test("#450: cancellation between publications records remaining realms before th
   const status = readSyncStatus(f.home).operations[0]!;
   expect(status).toMatchObject({ state: "cancelled", cause: "cancelled", inventory: { publications: 3, completed: 1, realms: 5 } });
   expect(status.inventory!.outcomes!.map(item => item.outcome)).toEqual(result.placementRealms.map(item => item.outcome));
+}, 240_000);
+
+test("#448 AC3: a realm admitted after activation joins the inventory, is openable and is published with the rest", async () => {
+  const f = await inventoryFixture(2), markers = readPlacementRuntimeMarkers(f.home), active = readActivePlacementBinding(f.home, markers.profile, markers.shards)!;
+  const admitted = "example.test/placement/admitted-after-activation", keyHash = digest(admitted), generation = active.epoch.generation;
+  writeFileSync(join(f.home, "placement-realm-extensions.jsonl"), json(createRealmExtension({ schema: REALM_EXTENSION_SCHEMA, epochHash: f.epochHash,
+    activationHash: active.activation.seal, homeHash: active.epoch.homeHash, generation, sequence: 1, previousHash: realmExtensionGenesis(f.epochHash, active.activation.seal),
+    realm: { scope: "project", keyHash, bindingHash: digest("binding") }, sourceHash: digest("source"), aliasesHash: digest("aliases"), policyHash: digest("policy"),
+    writerHash: writerInventoryGenesis(f.epochHash, active.activation.seal), journal: { sequence: 0, headHash: f.epochHash } })), { mode: 0o600 });
+  // Until its curated shard exists the admitted realm is named, never opened, created or published.
+  const staged = placementInventory(f.home);
+  expect(staged.missing).toEqual([keyHash]); expect(staged.local.some(realm => realm.scope === "project" && realm.keyHash === keyHash)).toBe(false);
+  installSyntheticRealm(f.home, generation, admitted);
+  const after = placementInventory(f.home), order = expectedOrder([...f.projects, admitted]);
+  expect(after.missing).toEqual([]); expect(after.local.map(realm => realm.scope === "user" ? "user" : realm.keyHash)).toEqual(order);
+  // The curated shard path check must now let a write into the admitted realm; before the extension it refused it.
+  const realm = openShardStore({ memoryDir: f.home, project: admitted, deferPromotions: true });
+  try { realm.note(note("admitted after activation", admitted)); } finally { realm.close(); }
+  const remote = bare(), result = await syncMemory(f.entry(), f.opts(remote));
+  expect(result.ok).toBe(true);
+  expect(result.placementRealms).toContainEqual({ realm: keyHash, outcome: "committed", publication: Math.floor(order.indexOf(keyHash) / 2) + 1 });
+  expect(refs(remote)).toEqual(expectedRefs([...f.projects, admitted]));
+  // The activation metadata that admitted it is never rewritten by publication.
+  const bound = readActivePlacementBinding(f.home, readPlacementRuntimeMarkers(f.home).profile, readPlacementRuntimeMarkers(f.home).shards)!;
+  expect(bound.activation.seal).toBe(active.activation.seal); expect(bound.activation.realms).toEqual(active.activation.realms);
 }, 240_000);

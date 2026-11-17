@@ -1,4 +1,5 @@
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 import { assertPlacementRuntime, doctorScratchBinding, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
@@ -172,7 +173,9 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
   if (selector?.schema === "agent-mem.profile/v3") {
     const active = doctorScratchBinding(memoryDir) ?? readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
     const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
-    if (!active || !active.activation.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
+    // An appended same-epoch extension is part of the inventory a curated write may open (#448); a realm it does not name stays refused.
+    const realms = active ? readEffectiveRealmInventory(memoryDir, active).realms : undefined;
+    if (!realms?.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
       throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin);
   }
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
