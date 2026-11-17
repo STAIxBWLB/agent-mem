@@ -35,8 +35,9 @@ export const bareRemote = () => { const dir = temp(); git(dir, "init", "--bare",
 let generations = 900;
 
 /** One activated home with the user realm and `count` project realms, prepared through the real APIs (like the transport fixture). */
-export async function inventoryFixture(count: number) {
-  const root = temp(), home = join(root, "memory"), projects = Array.from({ length: count }, (_, index) => `example.test/placement/inventory-${String(index).padStart(2, "0")}`);
+export async function inventoryFixture(count: number, names?: readonly string[]) {
+  const root = temp(), home = join(root, "memory"),
+    projects = names ? [...names] : Array.from({ length: count }, (_, index) => `example.test/placement/inventory-${String(index).padStart(2, "0")}`);
   const seed = new MemoryStore({ memoryDir: home, deferPromotions: true });
   try {
     seed.note(note("inventory shared fact", projects[0]!, "shared"));

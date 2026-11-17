@@ -122,6 +122,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--public-prune-view": flag("Enable the forward-only v2 public prune view on an active split"),
     "--sync-placement": flag("Person-only forward-only placement activation on this memory home; no automatic migration or renewal"),
     "--abandon": flag("Person-only: discard an interrupted sync-placement attempt only before either v3 marker is installed"),
+    "--admit": text("Admit one curated project realm that appeared after activation into the same epoch; previews without --apply"),
+    "--confirm": flag("Confirm the previewed realm admission abandonment"),
     "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
   } },
   status: { description: "Report shard migration and pending old-layout appends", options: json },
