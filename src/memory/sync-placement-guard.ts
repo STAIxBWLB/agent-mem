@@ -1,4 +1,9 @@
-import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { canonicalJSON } from "./generation.ts";
+import { realPath } from "./platform.ts";
 import { types } from "node:util";
 /** Closed activation metadata admits v3 readers; publication still requires full journal/source/policy proof. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
@@ -8,6 +13,39 @@ import { legacyShardMarkerShape } from "./shard.ts";
 import { PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 import { PLACEMENT_ACTIVATION_INTENT } from "./sync-placement-activation-path.ts";
 import { profileLockRefusal, rememberProfileLockError } from "./profile-lock-diagnostic.ts";
+
+// The capability can only name the fresh scratch home made below, never a caller-supplied directory.
+const doctorContext = new AsyncLocalStorage<{ home: string; dev: bigint; ino: bigint; realHome: string; binding?: ActivePlacementBinding }>();
+export async function withDoctorPlacementScratch<T>(realHome: string, adopt: (dir: string) => void, run: (scratch: string) => Promise<T>): Promise<T> {
+  const scratch = mkdtempSync(join(tmpdir(), `amem-doctor-${process.pid}-`));
+  try {
+    adopt(scratch);
+    const directory = join(scratch, "home"); mkdirSync(directory, { mode: 0o700 });
+    const home = realPath(directory);
+    const stat = lstatSync(home, { bigint: true });
+    let binding: ActivePlacementBinding | undefined;
+    try {
+      if (!placementRuntimeRefusal(realHome)) {
+        const markers = readPlacementRuntimeMarkers(realHome);
+        if (schema(markers.profile) === PLACEMENT_PROFILE_SCHEMA) binding = readActivePlacementBinding(realHome, markers.profile, markers.shards);
+      }
+    } catch { /* A changed real binding leaves scratch unadmitted; doctor reports its real-home refusal. */ }
+    return await doctorContext.run({ home, dev: stat.dev, ino: stat.ino, realHome, binding }, () => run(scratch));
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+}
+/** A scratch binding is valid only while the original v3 home and both copied markers still match. */
+export function doctorScratchBinding(home: string): ActivePlacementBinding | undefined {
+  const context = doctorContext.getStore();
+  if (!context?.binding) return undefined;
+  try {
+    if (realPath(home) !== context.home) return undefined;
+    const stat = lstatSync(home, { bigint: true });
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== context.dev || stat.ino !== context.ino) return undefined;
+    const real = readPlacementRuntimeMarkers(context.realHome), copy = readPlacementRuntimeMarkers(home);
+    if (placementRuntimeRefusal(context.realHome) || canonicalJSON(real) !== canonicalJSON(copy)) return undefined;
+    return readActivePlacementBinding(context.realHome, real.profile, real.shards);
+  } catch { return undefined; }
+}
 
 export const PLACEMENT_STAGE1_REFUSAL = "sync placement v3 requires matching durable activation metadata; keep the current compatible profile active until person-authorized activation is complete";
 export const PLACEMENT_MARKER_REFUSAL = "sync placement metadata is invalid or unsupported; person inspection and a compatible reader are required before continuing";
@@ -66,6 +104,7 @@ export function placementMarkerRefusal(profile: unknown, shards: unknown): strin
 /** Selector preflight only recognizes v3. Legacy malformed/split metadata must retain its existing reader/recovery path. */
 // This narrow probe is not a data/transport gate; effects must still use the full runtime guard.
 export function placementSelectorRefusal(home: string): string | undefined {
+  if (doctorScratchBinding(home)) return undefined;
   const refusal=selectorRefusal(home);return refusal?profileLockRefusal(home)??refusal:undefined;
 }
 function selectorRefusal(home:string):string|undefined {
@@ -92,6 +131,7 @@ function placementFencePresent(home: string): boolean {
 /** Bounded activation/view metadata only; no data/index open, cache mutation, lock or child/network call.
  * The v3 publication coordinator separately proves the complete journal, selected sources and policy. */
 export function placementRuntimeRefusal(home: string, bound?: Pick<BoundProfile,"kind"|"sharded"|"generation"|"publicationFormat"|"placementHead">): string | undefined {
+  if (doctorScratchBinding(home)) return undefined;
   try { const fenced = placementFencePresent(home), pending = placementActivationPending(home), markers = readPlacementRuntimeMarkers(home);
     const refusal = placementMarkerRefusal(markers.profile, markers.shards);
     if (refusal === PLACEMENT_STAGE1_REFUSAL) {

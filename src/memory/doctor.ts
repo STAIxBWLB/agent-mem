@@ -1,3 +1,4 @@
+import { placementRuntimeRefusal, withDoctorPlacementScratch } from "./sync-placement-guard.ts";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { indexFileName } from "./index-file.ts";
 import { assertFormatFloor } from "./formats.ts";
@@ -141,7 +142,7 @@ function copyCurated(options: Pick<DoctorOptions, "home" | "project" | "aliases"
     observedCopy(join(home, name), join(scratch, name), budget);
   }
   const selected = readSelector(home).selector;
-  if (selected?.schema === "agent-mem.profile/v2") {
+  if (selected?.schema === "agent-mem.profile/v2" || selected?.schema === "agent-mem.profile/v3") {
     const name = `${selected.pruneInputSetHash}.json`, source = join(home, "public-prune-input-sets", name), stat = lstatSync(source);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) throw new Error("the committed public prune view is not a plain file");
     const directory = join(scratch, "public-prune-input-sets"); mkdirSync(directory, { mode: 0o700 });
@@ -252,7 +253,9 @@ function duplicatesAndStale(options: DoctorOptions, rows: View[], store: MemoryS
 
 /** The incremental index, as a reader would refresh it from the snapshot of the live one, against a full rebuild of the same logs. Both live in the scratch copy. */
 function indexSection(store: MemoryStore, layout: Layout, snapshotted: boolean): Section {
-  if (layout !== "shared-v1") return skipped("a curated split or generation home builds and seals its index when it is created; amem rebuild repeats it");
+  if (layout !== "shared-v1") return skipped(store.profile.publicationFormat === "agent-mem.sync-placement/v1"
+    ? "the live placement index cannot be compared without rebuilding it on open; run amem rebuild to rebuild the index"
+    : "a curated split or generation home builds and seals its index when it is created; amem rebuild repeats it");
   try {
     store.list({ limit: 1 });                         // brings the snapshot level with the logs, as the next reader would
     const incremental = store.dump(); store.rebuild();
@@ -464,21 +467,21 @@ export const DOCTOR_GIT_TIMEOUT_MS = 5_000;
 export function doctorReport(options: DoctorOptions): Promise<DoctorReport> {
   // Doctor reads every surface below, live or through a scratch copy: a floor on any of them refuses the whole report before anything is read (#199 AC5).
   for (const surface of ["curated", "capture", "candidates", "work-lists", "hook-spool"] as const) assertFormatFloor(options.home, surface);
-  return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, () => runDoctor(options));
+  return withGitTimeout(DOCTOR_GIT_TIMEOUT_MS, async () => {
+    const guard = guardScratch();
+    try { return await withDoctorPlacementScratch(options.home, guard.adopt, scratch => runDoctor(options, scratch)); }
+    finally { guard.release(); }
+  });
 }
-async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
-  let scratch: string | undefined, unguard: (() => void) | undefined;
+async function runDoctor(options: DoctorOptions, scratch: string): Promise<DoctorReport> {
   let duplicates: Section, stale: Section, index: Section;
   let curated: MemoryStore | undefined, workBase: string | undefined, copyFailed: string | undefined;
   try {
     let layout: Layout | undefined;
     try { layout = layoutOf(options.home); } catch (error) { throw new Error(`the memory profile cannot be read: ${message(error)}`); }
+    const refusal = placementRuntimeRefusal(options.home);
+    if (refusal) throw Error(refusal);
     sweepStaleScratch();
-    // The guard is installed BEFORE the directory exists and told its name afterwards: a signal in the few microseconds between `mkdtemp` and a guard installed after it would
-    // meet no handler, take the default action and strand the directory (measured: 4 of 60 runs when a signal lands the instant it appears).
-    const guard = guardScratch(); unguard = guard.release;
-    scratch = mkdtempSync(join(tmpdir(), `amem-doctor-${process.pid}-`));      // a scratch directory, never inside the home: a home nobody used stays absent
-    guard.adopt(scratch);
     options.afterScratch?.(scratch);
     const budget = { bytes: 0 };
     try {
@@ -487,7 +490,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       if (!curatedPresent(options.home, options.project, layout)) {
         duplicates = stale = index = skipped("no curated notes for this project yet");
       } else {
-        const home = join(scratch, "home"); mkdirSync(home, { mode: 0o700 });
+        const home = join(scratch, "home");
         copyCurated(options, layout, home, budget);
         const snapshotted = layout === "shared-v1" && snapshotIndex(options.home, join(home, indexFileName(false)));
         curated = options.openCurated(home);
@@ -518,7 +521,7 @@ async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     await tick();
     sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), spool: spoolSection(options), setup, ...maskedSection(curated) };
     await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
-  } finally { try { curated?.close(); } finally { try { if (scratch) rmSync(scratch, { recursive: true, force: true }); } finally { unguard?.(); } } }
+  } finally { curated?.close(); }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
 }
 

@@ -7,7 +7,7 @@ import { publicPruneGraph } from "./fixtures/public-prune-graph.ts";
 import { indexFileName } from "../src/memory/index-file.ts";
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
@@ -601,3 +601,87 @@ test("#217: doctor preflights the hook-spool floor before inventory", async () =
   await expect(doctor(r)).rejects.toThrow("hook-spool format floor");
   expect(exact(r)).toEqual(before);
 });
+
+test("#453: doctor checks a valid placement home through a private snapshot without changing it", async () => {
+  const r = rig();
+  const { createPlacementInspectionFixture } = await import("./fakes/sync-placement-inspection.ts");
+  const f = await createPlacementInspectionFixture({ project: r.project }); cleanup.push(f.close);
+  const before = tree(f.home), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
+  try {
+    const report = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false }));
+    for (const name of ["duplicates", "stale", "brief"]) expect(["ok", "attention"], `${name}: ${JSON.stringify(report.sections[name])}`).toContain(report.sections[name].status);
+    expect(report.sections.index).toMatchObject({ status: "skipped", reason: expect.stringContaining("amem rebuild") });
+    expect(tree(f.home)).toEqual(before);
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}, 120_000);
+
+test("#453: doctor does not report a divergent live placement index as healthy", async () => {
+  const r = rig();
+  const { createPlacementInspectionFixture } = await import("./fakes/sync-placement-inspection.ts");
+  const { shardDir } = await import("../src/memory/shard.ts");
+  const { Database } = await import("bun:sqlite");
+  const f = await createPlacementInspectionFixture({ project: r.project }); cleanup.push(f.close);
+  const db = new Database(join(shardDir(f.home, r.project), indexFileName(true)));
+  try { expect(db.run("DELETE FROM entries WHERE rowid = (SELECT MIN(rowid) FROM entries)").changes).toBe(1); }
+  finally { db.close(); }
+  const before = tree(f.home), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
+  try {
+    const report = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false }));
+    expect(report.sections.index).toMatchObject({ status: "skipped", reason: expect.stringContaining("amem rebuild") });
+    expect(tree(f.home)).toEqual(before);
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}, 120_000);
+
+test("#453: doctor reports the real placement guard refusal for broken activation", async () => {
+  const r = rig();
+  const { createPlacementInspectionFixture } = await import("./fakes/sync-placement-inspection.ts");
+  const { placementRuntimeRefusal } = await import("../src/memory/sync-placement-guard.ts");
+  const f = await createPlacementInspectionFixture({ project: r.project }); cleanup.push(f.close);
+  rmSync(join(f.home, "sync-placement", "active.json"));
+  const refusal = placementRuntimeRefusal(f.home); expect(refusal).toBeDefined();
+  const before = tree(f.home), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
+  try {
+    const report = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false }));
+    for (const name of ["duplicates", "stale", "brief", "index"]) expect(report.sections[name]).toMatchObject({ status: "unavailable", reason: expect.stringContaining(refusal!) });
+    expect(tree(f.home)).toEqual(before);
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}, 120_000);
+
+test("#453: scratch admission is absent from public entries and only doctor imports its creator", async () => {
+  for (const entry of [await import("../src/index.ts"), await import("../src/memory/platform.ts"), await import("../src/ui/plugin.ts")]) {
+    expect(Object.hasOwn(entry, "withDoctorPlacementScratch")).toBe(false);
+    expect(Object.hasOwn(entry, "doctorScratchBinding")).toBe(false);
+  }
+  const root = join(import.meta.dir, "../src"), users: string[] = [];
+  const walk = (dir: string): void => {
+    for (const item of readdirSync(dir, { withFileTypes: true })) {
+      const file = join(dir, item.name);
+      if (item.isDirectory()) walk(file);
+      else if (item.name.endsWith(".ts") && item.name !== "sync-placement-guard.ts"
+        && readFileSync(file, "utf8").includes("withDoctorPlacementScratch")) users.push(file);
+    }
+  };
+  walk(root); expect(users).toEqual([join(root, "memory/doctor.ts")]);
+});
+
+
+test("#453: admission rejects an unrelated directory and a replaced scratch inode", async () => {
+  const r = rig();
+  const { createPlacementInspectionFixture } = await import("./fakes/sync-placement-inspection.ts");
+  const { withDoctorPlacementScratch, doctorScratchBinding, placementRuntimeRefusal } = await import("../src/memory/sync-placement-guard.ts");
+  const f = await createPlacementInspectionFixture({ project: r.project }); cleanup.push(f.close);
+  const other = join(r.root, "other"); mkdirSync(other, { mode: 0o700 });
+  for (const name of ["profile.json", "shards.json"]) copyFileSync(join(f.home, name), join(other, name));
+  await withDoctorPlacementScratch(f.home, () => {}, async scratch => {
+    const home = join(scratch, "home");
+    for (const name of ["profile.json", "shards.json"]) copyFileSync(join(f.home, name), join(home, name));
+    expect(doctorScratchBinding(home)).toBeDefined();
+    expect(doctorScratchBinding(other)).toBeUndefined();
+    expect(placementRuntimeRefusal(other)).toBeDefined();
+    renameSync(home, join(scratch, "original")); mkdirSync(home, { mode: 0o700 });
+    for (const name of ["profile.json", "shards.json"]) copyFileSync(join(f.home, name), join(home, name));
+    expect(doctorScratchBinding(home)).toBeUndefined();
+    expect(placementRuntimeRefusal(home)).toBeDefined();
+  });
+  expect(doctorScratchBinding(other)).toBeUndefined();
+}, 120_000);
