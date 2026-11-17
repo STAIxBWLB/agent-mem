@@ -156,7 +156,8 @@ export function readShardedSelection(memoryDir: string): ShardedSelection {
 /** Bounded identifiers only, safe to surface without exposing a project key or row. */
 export class PlacementRealmRefusal extends Error {
   constructor(readonly scope: "user" | "project", readonly keyHash: string | undefined, readonly origin: "cwd binding" | "remote" | "local binding") {
-    super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; review its activation before opening it`);
+    const admit = scope === "user" ? "amem migrate --sync-placement --admit --user" : "amem migrate --sync-placement --admit <project>";
+    super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; admit it with ${admit} --dry-run, then --apply`);
   }
 }
 
