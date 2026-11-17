@@ -124,3 +124,60 @@ test("alias binding drift after cache view open leaves the invalidated cache mis
     f.store.close();
   }
 });
+
+test("#424: cross-project replacement and forgetting it invalidate the predecessor's cache", () => {
+  const f = fixture(), other = "curated-write-replacement";
+  const note = (project: string, text: string, supersedes?: string) => ({ op: "note" as const, project, scope: "project" as const,
+    tier: "long" as const, kind: "decision" as const, peer: "fixture", source: "person" as const, text, about: [], ...(supersedes ? { supersedes } : {}) });
+  try {
+    const first = f.store.note(note(f.project, "old project decision"));
+    f.store.note(note(other, "other project baseline"));
+    f.store.prepareCuratedBriefs([f.project, other]); expect(f.cache()?.rows).toHaveLength(1);
+    const replacement = f.store.note(note(other, "cross-project replacement", first));
+    expect(f.store.readPage({ project: f.project, limit: 32 }).rows).toHaveLength(0);
+    expect(f.cache()).toBeUndefined();
+    f.store.prepareCuratedBriefs([f.project]); expect(f.cache()?.rows).toHaveLength(0);
+    expect(f.store.forget(replacement, "fixture", other)).toBeDefined();
+    expect(f.store.readPage({ project: f.project, limit: 32 }).rows.map(row => row.id)).toContain(first);
+    expect(f.cache()).toBeUndefined();
+  } finally { f.store.close(); }
+});
+
+test("#424: importing a cross-project replacement invalidates the original project's cache", () => {
+  const f = fixture(), other = "curated-write-import";
+  const note = (project: string, text: string, supersedes?: string) => ({ op: "note" as const, project, scope: "project" as const,
+    tier: "long" as const, kind: "decision" as const, peer: "fixture", source: "person" as const, text, about: [], ...(supersedes ? { supersedes } : {}) });
+  try {
+    const first = f.store.note(note(f.project, "original decision"));
+    f.store.prepareCuratedBriefs([f.project]); expect(f.cache()?.rows).toHaveLength(1);
+    f.store.importNote(note(other, "imported replacement", first), "2026-11-10T00:00:00.000Z");
+    expect(f.cache()).toBeUndefined();
+  } finally { f.store.close(); }
+});
+
+test("#424: cross-project supersede ops invalidate both the original and replacement caches", () => {
+  const f = fixture(), other = "curated-write-op-peer";
+  const add = (project: string, text: string) => f.store.note({ op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text, about: [] });
+  try {
+    const first = add(f.project, "op original"), replacement = add(other, "op replacement");
+    f.store.prepareCuratedBriefs([f.project, other]); expect(f.cache()?.rows).toHaveLength(1);
+    expect(f.store.supersede(first, replacement, "fixture")).toBe(true);
+    expect(f.cache()?.rows ?? []).toHaveLength(0); expect(f.store.readPage({ project: f.project, limit: 32 }).rows).toHaveLength(0);
+    f.store.prepareCuratedBriefs([f.project]); expect(f.cache()?.rows).toHaveLength(0);
+    expect(f.store.forget(replacement, "fixture", other)).toBeDefined();
+    expect(f.cache()).toBeUndefined(); expect(f.store.readPage({ project: f.project, limit: 32 }).rows.map(row => row.id)).toContain(first);
+  } finally { f.store.close(); }
+});
+
+test("#424: a changed segment frontier cannot prove safe project-only invalidation", () => {
+  const f = fixture(), other = "curated-write-external";
+  let writer: MemoryStore | undefined;
+  const note = (project: string, text: string) => ({ op: "note" as const, project, scope: "project" as const, tier: "long" as const,
+    kind: "decision" as const, peer: "fixture", source: "person" as const, text, about: [] });
+  try {
+    f.store.note(note(f.project, "cached predecessor")); f.store.prepareCuratedBriefs([f.project]); expect(f.cache()).toBeDefined();
+    writer = new MemoryStore({ home: f.home, deferPromotions: true });
+    writer.note(note(other, "different writer")); expect(f.cache()).toBeDefined();
+    f.store.note(note(other, "stale index frontier")); expect(f.cache()).toBeUndefined();
+  } finally { writer?.close(); f.store.close(); }
+});
