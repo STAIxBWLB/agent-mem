@@ -76,3 +76,16 @@ test("#426: a failed operation records its refusal category in the sidecar and a
   writeFileSync(file, JSON.stringify({ ...saved, category: "\u001b[31m/etc/passwd" }), { mode: 0o600 });
   expect(readSyncStatus(dir, now()).operations).toHaveLength(0);
 });
+
+test("N-1: the 0.28.2 status reader reads a 0.29.0 inventory sidecar without a strict-schema refusal", async () => {
+  // Fixture is the verbatim v0.28.2 reader (`git show v0.28.2:src/memory/sync-progress.ts` and its two imports).
+  const old = await import("./fixtures/sync-progress-0.28.2/sync-progress.ts");
+  const dir = home(), progress = new SyncProgress({ sink: syncProgressSidecar(dir, { pid: process.pid }), intervalMs: 0, operationId: "3".repeat(16) });
+  progress.inventory({ publications: 2, completed: 1, realms: 3, outcomes: [{ realm: "user", outcome: "committed" }, { realm: "a".repeat(16), outcome: "not-local" }] });
+  const current = readSyncStatus(dir, Date.now(), () => "live");
+  expect(current.operations[0]?.inventory?.outcomes).toContainEqual({ realm: "a".repeat(16), outcome: "not-local" });
+  const report = old.readSyncStatus(dir, Date.now(), () => "live");
+  expect(report.malformed).toBe(0); expect(report.operations).toHaveLength(1);
+  expect(report.operations[0]).toMatchObject({ operationId: "3".repeat(16), state: "running" });
+  expect(old.renderSyncStatus(report)).toContain(`${"3".repeat(16)} writer verification`);
+});
