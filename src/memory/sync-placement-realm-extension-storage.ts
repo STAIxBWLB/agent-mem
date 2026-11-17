@@ -48,14 +48,18 @@ function readHistory(homeInput: string, binding: RealmExtensionBinding): RealmEx
   checks();
   const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); if (!text.endsWith("\n")) return fail();
   const lines = text.slice(0, -1).split("\n"); if (!lines.length || lines.length > REALM_EXTENSION_LIMIT) return fail();
-  const records: RealmExtension[] = [], seen = new Set(binding.initialProjectHashes); let head = genesis, journalSequence = 0, journalHead = binding.epochHash;
+  const records: RealmExtension[] = [], seen = new Set(binding.initialProjectHashes), prefixes = new Set(binding.initialProjectHashes.map(hash => hash.slice(0, 16)));
+  if (prefixes.size !== binding.initialProjectHashes.length) return fail();
+  let head = genesis, journalSequence = 0, journalHead = binding.epochHash;
   for (const [index, line] of lines.entries()) {
     const record = validateRealmExtension(JSON.parse(line));
     if (canonicalJSON(record) !== line || record.sequence !== index + 1 || record.previousHash !== head
       || record.epochHash !== binding.epochHash || record.activationHash !== binding.activationHash || record.homeHash !== binding.homeHash
-      || record.generation !== binding.generation || seen.has(record.realm.keyHash)
+      || record.generation !== binding.generation || seen.has(record.realm.keyHash) || prefixes.has(record.realm.keyHash.slice(0, 16))
       || record.journal.sequence < journalSequence || record.journal.sequence === journalSequence && record.journal.headHash !== journalHead) return fail();
-    seen.add(record.realm.keyHash); head = record.seal; journalSequence = record.journal.sequence; journalHead = record.journal.headHash; records.push(record);
+    seen.add(record.realm.keyHash); prefixes.add(record.realm.keyHash.slice(0, 16)); head = record.seal;
+    journalSequence = record.journal.sequence; journalHead = record.journal.headHash;
+    Object.freeze(record.realm); Object.freeze(record.journal); records.push(Object.freeze(record));
   }
-  checks(); return { records, headHash: head, assertCurrent: checks };
+  checks(); return { records: Object.freeze(records), headHash: head, assertCurrent: checks };
 }

@@ -47,7 +47,8 @@ test("#448: extension journal anchors cannot rewind or change at the same sequen
 
 test("#448: extension history fails closed on duplicate, torn, foreign and unsafe evidence", async () => {
   const { f, binding, make, file } = await fixture(), first = make(hex("1"));
-  const cases = [text(first).slice(0, -1), text(first) + text(make(hex("1"), 2, first.seal)), text(make(binding.initialProjectHashes[0]!)), text({ ...first, homeHash: hex("9") })];
+  const initial = binding.initialProjectHashes[0]!, collision = initial.slice(0, 16) + (initial.slice(16) === "f".repeat(48) ? "e" : "f").repeat(48);
+  const cases = [text(first).slice(0, -1), text(first) + text(make(hex("1"), 2, first.seal)), text(make(initial)), text(make(collision)), text({ ...first, homeHash: hex("9") })];
   for (const value of cases) { writeFileSync(file, value, { mode: 0o600 }); expect(() => readRealmExtensionHistory(f.home, binding)).toThrow(); }
   writeFileSync(file, text(first), { mode: 0o600 }); chmodSync(file, 0o644); expect(() => readRealmExtensionHistory(f.home, binding)).toThrow();
   rmSync(file); symlinkSync(join(f.home, "profile.json"), file); expect(() => readRealmExtensionHistory(f.home, binding)).toThrow();

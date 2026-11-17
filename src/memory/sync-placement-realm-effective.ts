@@ -33,6 +33,8 @@ export function readEffectiveRealmInventory(home: string, active: ActivePlacemen
     const realms = [...active.activation.realms, ...extensions.records.map(record => record.realm)];
     if (realms.length > 256) return fail();
     realms.sort((a, b) => a.scope === "user" ? b.scope === "user" ? 0 : -1 : b.scope === "user" ? 1 : a.keyHash.localeCompare(b.keyHash));
+    for (const realm of realms) Object.freeze(realm);
+    Object.freeze(realms);
     const snapshot = canonicalJSON(realms);
     const assertCurrent = () => {
       try {
