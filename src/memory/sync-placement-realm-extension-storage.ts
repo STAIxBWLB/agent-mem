@@ -9,7 +9,7 @@ import { REALM_EXTENSION_LIMIT, REALM_EXTENSION_LOG_MAX_BYTES, RealmExtensionFor
 
 export const REALM_EXTENSION_LOG = "placement-realm-extensions.jsonl";
 export interface RealmExtensionBinding { epochHash: string; activationHash: string; homeHash: string; generation: string; initialProjectHashes: readonly string[] }
-export interface RealmExtensionHistory { records: readonly RealmExtension[]; headHash: string; torn: Buffer; assertCurrent(): void }
+export interface RealmExtensionHistory { records: readonly RealmExtension[]; headHash: string; torn: Buffer; logBytes: Buffer; assertCurrent(): void }
 /** A tail is attributed to the position it would occupy, so only evidence for that exact append can vouch for it. */
 export interface RealmTornEvidence { prefix: Buffer; tail: Buffer; sequence: number; headHash: string }
 export interface RealmExtensionOptions { attributeTorn?: (evidence: RealmTornEvidence) => boolean }
@@ -37,7 +37,7 @@ function readHistory(homeInput: string, binding: RealmExtensionBinding, options:
     if (!now) return fail(); owned(now, false); if (stamp(now) !== stamp(before)) fail();
   } catch { fail(); } };
   const genesis = realmExtensionGenesis(binding.epochHash, binding.activationHash);
-  if (!before) return { records: [], headHash: genesis, torn: Buffer.alloc(0), assertCurrent: checks };
+  if (!before) return { records: [], headHash: genesis, torn: Buffer.alloc(0), logBytes: Buffer.alloc(0), assertCurrent: checks };
   owned(before, false); if (before.size <= 0n || before.size > BigInt(REALM_EXTENSION_LOG_MAX_BYTES)) return fail();
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let bytes: Buffer;
@@ -67,5 +67,5 @@ function readHistory(homeInput: string, binding: RealmExtensionBinding, options:
   }
   const prefix = Buffer.from(bytes.subarray(0, cut + 1));
   if (torn.length && !options.attributeTorn?.({ prefix, tail: torn, sequence: records.length + 1, headHash: head })) return fail();
-  checks(); return { records: Object.freeze(records), headHash: head, torn, assertCurrent: checks };
+  checks(); return { records: Object.freeze(records), headHash: head, torn, logBytes: prefix, assertCurrent: checks };
 }
