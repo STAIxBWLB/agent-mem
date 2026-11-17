@@ -68,8 +68,8 @@ export function classifyPlacementError(error: unknown): PlacementRefusalCategory
 function directory(file: string): void { const s = lstatSync(file); if (!s.isDirectory() || s.isSymbolicLink() || s.uid !== process.getuid?.() || (s.mode & 0o077) !== 0) refuse(); }
 function emptyHistory(): ShardHistory { return { rows: new Map(), files: new Map(), origins: new Map(), manifests: new Map(), version: "v3" }; }
 /** Internal phase observer is a fault seam, not part of SyncOptions or the package barrel. */
-export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions = {}, phase?: Phase, testOnlyError?: (error:unknown)=>void, testOnlyClock?: () => number): Promise<SyncResult> {
-  return new PlacementTransport(store, opts, phase, testOnlyError, testOnlyClock).run();
+export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions = {}, phase?: Phase, testOnlyError?: (error:unknown)=>void, testOnlyClock?: () => number, targets?: readonly MemoryStore[]): Promise<SyncResult> {
+  return new PlacementTransport(store, opts, phase, testOnlyError, testOnlyClock, targets).run();
 }
 class PlacementTransport {
   readonly store: MemoryStore; readonly opts: SyncOptions; readonly phase?: Phase; readonly testOnlyError?: (error:unknown)=>void; readonly home: string; readonly root: string; readonly cache: string;
@@ -80,7 +80,8 @@ class PlacementTransport {
   evaluator?: ReturnType<typeof outboundPolicyEvaluator>; applications?: ShardSyncApplications; current?: Materialized; recovered = false;
   writerInventory?:EffectiveSyncPlacementWriters;
   readonly clock: () => number; readonly progress?: SyncProgress; provedAt?: number; bound?: PlacementSyncBound; capturedPolicyVersion?: string;
-  constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase, testOnlyError?: (error:unknown)=>void, clock: () => number = () => performance.now()) { this.clock=clock; this.progress=opts.progress; this.testOnlyError=testOnlyError; this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
+  readonly selected?: readonly MemoryStore[];
+  constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase, testOnlyError?: (error:unknown)=>void, clock: () => number = () => performance.now(), selected?: readonly MemoryStore[]) { this.selected=selected; this.clock=clock; this.progress=opts.progress; this.testOnlyError=testOnlyError; this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
   attest(): void {
     if (!this.opts.placementAttestation || this.opts.screen && !this.opts.policyVersion) refuse("policy");
     const value = memoryPolicySnapshot(this.opts.placementAttestation());
@@ -153,9 +154,11 @@ class PlacementTransport {
     const markers = readPlacementRuntimeMarkers(this.home), active = readActivePlacementBinding(this.home, markers.profile, markers.shards);
     if (!active || this.store.profile.publicationFormat !== PLACEMENT_FORMAT || this.store.profile.placementHead !== active.profile.placementHead) refuse("epoch");
     this.epochHash = active.profile.placementHead; this.machineId = active.shards.machine.id; this.revision = readSelector(this.home).revision; this.journal = readPlacementJournal(this.home, this.epochHash); this.writerInventory=readEffectiveSyncPlacementWriters(this.home);this.attest();
-    const opened = this.store.openedSyncTargets();
+    // #450: an inventory driver passes at most two explicitly opened realms (one unchanged publication plan); otherwise the store's own pair.
+    const opened = this.selected ?? this.store.openedSyncTargets();
     if (!opened.length || opened.length > 2 || !opened.includes(this.store) || opened.some(item => item.profile.home !== this.home || !item.profile.sharded || !item.profile.generation
-      || !item.profile.shardUser && item.profile.shardKey !== this.store.profile.shardKey)) refuse("source-selection");
+      || item.profile.generation !== this.store.profile.generation
+      || !this.selected && !item.profile.shardUser && item.profile.shardKey !== this.store.profile.shardKey)) refuse("source-selection");
     for (const item of opened) {
       const realm = item.profile.shardUser ? { scope: "user" as const } : { scope: "project" as const, key: item.profile.shardKey! };
       const target = { store: item, realm, generation: item.profile.generation!, rows: new Map(), fetched: new Set(), sources: [], pending: [], origins: new Map(), holds: [], manifests: new Map(), eligible: new Set(), registered: [], objects: [], localPrunes: new Map() } as unknown as Target;
@@ -178,7 +181,9 @@ class PlacementTransport {
       const handle = acquireMutation(dir); if (!handle) refuse("lock"); this.releases.push(handle); if (dir === this.home) this.homeMutation = handle;
       for (const target of this.targets) if (target.store.dir === dir) target.mutation = handle;
     }
-    this.releaseCurated = this.store.beginCuratedCacheUpdate();
+    // #450: each explicitly selected realm tracks and republishes its own curated cache.
+    const curated = (this.selected ?? [this.store]).map(item => item.beginCuratedCacheUpdate());
+    this.releaseCurated = () => { for (const release of curated.reverse()) release(); };
     this.journal = readPlacementJournal(this.home, this.epochHash); this.revision = readSelector(this.home).revision; this.attest();
     if (!existing) await this.required(["init", "--bare", "--template=", "--object-format=sha1", "-q", this.cache]);
     if (!await this.independent()) refuse();

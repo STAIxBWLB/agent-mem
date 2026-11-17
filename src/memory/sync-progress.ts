@@ -23,6 +23,13 @@ export type SyncProgressUnit = typeof UNITS[number];
 export type SyncProgressState = typeof STATES[number];
 export type SyncProgressCause = typeof CAUSES[number];
 export interface SyncProgressCounts { permitted: number; local: number; declined: number; held: number }
+export interface SyncProgressInventory { publications: number; completed: number; realms: number;
+  /** Per-realm outcomes in run order: `user` or the 16-hex shard key hash, never a name. At most 32; `truncated` marks more. */
+  outcomes?: { realm: string; outcome: SyncRealmOutcome }[]; truncated?: boolean }
+export const SYNC_REALM_OUTCOMES = ["committed", "not-needed", "unknown", "failed", "not-run", "not-local", "inactive"] as const;
+export type SyncRealmOutcome = typeof SYNC_REALM_OUTCOMES[number];
+const MAX_REALM_OUTCOMES = 32;
+const realmLabel = (value: unknown): value is string => typeof value === "string" && (value === "user" || /^[a-f0-9]{16}$/.test(value));
 export interface SyncProgressSnapshot {
   schema: typeof SYNC_PROGRESS_SCHEMA; operationId: string; state: SyncProgressState; phase: SyncProgressPhase;
   /** How many times this operation entered this phase; completed counts are monotonic within one phase attempt. */
@@ -35,6 +42,8 @@ export interface SyncProgressSnapshot {
   proofs: { complete: number; fence: number };
   /** Advances only when a unit of work or a phase completes; `lastAliveUnixMs` is any checkpoint the process reached. */
   lastWorkProgressUnixMs: number; lastAliveUnixMs: number;
+  /** #450: a whole-inventory run of sequential publications; counts only, never a realm name or key. */
+  inventory?: SyncProgressInventory;
   cause?: SyncProgressCause;
   /** #426: for a failed placement sync, the fixed category of the check that refused (allowlisted, no text). */
   category?: PlacementRefusalCategory;
@@ -51,6 +60,8 @@ export class SyncProgress {
   private unit?: SyncProgressUnit; private completed?: number; private total?: number; private outcome?: SyncProgressCounts;
   private state: SyncProgressState = "running"; private cause?: SyncProgressCause; private category?: PlacementRefusalCategory; private work: number; private aliveAt: number;
   private readonly proofs = { complete: 0, fence: 0 };
+  private inventoryCounts?: SyncProgressInventory; private finishDeferred = false;
+  private pendingTerminal?: { state: "failed" | "cancelled"; cause?: SyncProgressCause; category?: PlacementRefusalCategory };
   constructor(options: SyncProgressOptions) {
     this.sink = options.sink; this.intervalMs = Math.max(0, options.intervalMs ?? SYNC_PROGRESS_INTERVAL_MS);
     this.now = options.now ?? Date.now; this.mono = options.mono ?? (() => performance.now());
@@ -63,7 +74,7 @@ export class SyncProgress {
       startedUnixMs: this.started, elapsedMs: Math.round(mono - this.startedMono), phaseElapsedMs: Math.round(mono - this.phaseMono),
       ...(this.unit ? { unit: this.unit, completed: this.completed ?? 0, ...(this.total !== undefined ? { total: this.total } : {}) } : {}),
       ...(this.outcome ? { counts: { ...this.outcome } } : {}), proofs: { ...this.proofs },
-      lastWorkProgressUnixMs: this.work, lastAliveUnixMs: this.aliveAt, ...(this.cause ? { cause: this.cause } : {}), ...(this.category ? { category: this.category } : {}) };
+      lastWorkProgressUnixMs: this.work, lastAliveUnixMs: this.aliveAt, ...(this.inventoryCounts ? { inventory: { ...this.inventoryCounts } } : {}), ...(this.cause ? { cause: this.cause } : {}), ...(this.category ? { category: this.category } : {}) };
   }
   private emit(force: boolean): void {
     if (!this.sink) return; const mono = this.mono();
@@ -82,9 +93,30 @@ export class SyncProgress {
   alive(): void { if (this.state !== "running") return; this.aliveAt = this.now(); this.emit(false); }
   proof(complete: boolean): void { this.proofs[complete ? "complete" : "fence"]++; this.alive(); }
   counts(counts: SyncProgressCounts): void { this.outcome = { ...counts }; }
+  /** #450: whole-inventory position. A completed publication is work progress for the run. */
+  inventory(value: SyncProgressInventory): void {
+    if (this.state !== "running" || ![value.publications, value.completed, value.realms].every(n => Number.isSafeInteger(n) && n >= 0) || value.completed > value.publications) return;
+    const outcomes = value.outcomes?.filter(item => realmLabel(item.realm) && (SYNC_REALM_OUTCOMES as readonly string[]).includes(item.outcome)) ?? [];
+    this.inventoryCounts = { publications: value.publications, completed: value.completed, realms: value.realms,
+      ...(outcomes.length ? { outcomes: outcomes.slice(0, MAX_REALM_OUTCOMES).map(item => ({ ...item })) } : {}), ...(outcomes.length > MAX_REALM_OUTCOMES || value.truncated ? { truncated: true } : {}) };
+    this.work = this.aliveAt = this.now(); this.emit(true);
+  }
+  /** #450: an inventory driver records all realm outcomes before the first terminal state is emitted. */
+  deferFinish(deferred: boolean): void {
+    this.finishDeferred = deferred;
+    if (!deferred && this.pendingTerminal) {
+      const pending = this.pendingTerminal; this.pendingTerminal = undefined;
+      this.finish(pending.state, pending.cause, pending.category);
+    }
+  }
   /** Terminal state. Success is reported only by the caller that holds the real sync receipt. */
   finish(state: Exclude<SyncProgressState, "running" | "interrupted">, cause?: SyncProgressCause, category?: PlacementRefusalCategory): void {
-    if (this.state !== "running") return; this.state = state; this.cause = state === "succeeded" ? undefined : cause;
+    if (this.state !== "running") return;
+    if (this.finishDeferred) {
+      if (state !== "succeeded" && !this.pendingTerminal) this.pendingTerminal = { state, cause, category };
+      return;
+    }
+    this.state = state; this.cause = state === "succeeded" ? undefined : cause;
     this.category = state === "failed" && category && (PLACEMENT_REFUSAL_CATEGORIES as readonly string[]).includes(category) ? category : undefined; this.aliveAt = this.now();
     if (state === "succeeded") this.work = this.aliveAt; this.emit(true);
   }
@@ -96,8 +128,10 @@ export function renderSyncProgress(snapshot: SyncProgressSnapshot, now = Date.no
   const phase = snapshot.phase.replaceAll("-", " "), units = snapshot.unit ? `: ${snapshot.completed ?? 0}${snapshot.total !== undefined ? `/${snapshot.total}` : ""} ${snapshot.unit}` : "";
   const counts = snapshot.counts ? `; permitted ${snapshot.counts.permitted}, local ${snapshot.counts.local}, declined ${snapshot.counts.declined}, held ${snapshot.counts.held}` : "";
   const attempt = snapshot.attempt > 1 ? `; attempt ${snapshot.attempt}` : "";
-  if (snapshot.state !== "running") return `amem sync: ${snapshot.state}${snapshot.cause ? ` (${snapshot.cause}${snapshot.category ? `, ${snapshot.category}` : ""})` : ""} in ${phase}${units}${counts}; elapsed ${seconds(snapshot.elapsedMs)}`;
-  return `amem sync: ${phase}${units}${attempt}${counts}; elapsed ${seconds(snapshot.elapsedMs)}; last work progress ${seconds(now - snapshot.lastWorkProgressUnixMs)} ago`;
+  const realmText = snapshot.inventory?.outcomes?.length ? `; realms ${snapshot.inventory.outcomes.map(item => `${item.realm}=${item.outcome}`).join(" ")}${snapshot.inventory.truncated ? " ..." : ""}` : "";
+  const inventory = snapshot.inventory ? `; publications ${snapshot.inventory.completed}/${snapshot.inventory.publications} over ${snapshot.inventory.realms} realms${realmText}` : "";
+  if (snapshot.state !== "running") return `amem sync: ${snapshot.state}${snapshot.cause ? ` (${snapshot.cause}${snapshot.category ? `, ${snapshot.category}` : ""})` : ""} in ${phase}${units}${counts}${inventory}; elapsed ${seconds(snapshot.elapsedMs)}`;
+  return `amem sync: ${phase}${units}${attempt}${counts}${inventory}; elapsed ${seconds(snapshot.elapsedMs)}; last work progress ${seconds(now - snapshot.lastWorkProgressUnixMs)} ago`;
 }
 
 interface Owner { pid: number; signature?: string }
@@ -125,19 +159,26 @@ const count = (value: unknown): value is number => typeof value === "number" && 
 /** Allowlisted enumerations and non-negative integers only: a tampered sidecar cannot inject text into a terminal. */
 function validate(value: unknown, operationId: string): { snapshot: SyncProgressSnapshot; owner: Owner } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const v = value as Record<string, unknown>, owner = v.owner as Record<string, unknown> | undefined, proofs = v.proofs as Record<string, unknown> | undefined, counts = v.counts as Record<string, unknown> | undefined;
+  const v = value as Record<string, unknown>, owner = v.owner as Record<string, unknown> | undefined, proofs = v.proofs as Record<string, unknown> | undefined, counts = v.counts as Record<string, unknown> | undefined, inventory = v.inventory as Record<string, unknown> | undefined;
   if (v.schema !== SYNC_PROGRESS_SCHEMA || v.operationId !== operationId || !(STATES as readonly unknown[]).includes(v.state) || !(PHASES as readonly unknown[]).includes(v.phase)
     || ![v.attempt, v.startedUnixMs, v.elapsedMs, v.phaseElapsedMs, v.lastWorkProgressUnixMs, v.lastAliveUnixMs].every(count)
     || !proofs || !count(proofs.complete) || !count(proofs.fence) || !owner || !count(owner.pid) || owner.signature !== undefined && (typeof owner.signature !== "string" || owner.signature.length > 256)
     || v.unit !== undefined && (!(UNITS as readonly unknown[]).includes(v.unit) || !count(v.completed)) || v.total !== undefined && !count(v.total)
     || v.cause !== undefined && !(CAUSES as readonly unknown[]).includes(v.cause)
     || v.category !== undefined && !(PLACEMENT_REFUSAL_CATEGORIES as readonly unknown[]).includes(v.category)
-    || counts !== undefined && ![counts.permitted, counts.local, counts.declined, counts.held].every(count)) return undefined;
+    || counts !== undefined && ![counts.permitted, counts.local, counts.declined, counts.held].every(count)
+    || inventory !== undefined && (!inventory || typeof inventory !== "object" || ![inventory.publications, inventory.completed, inventory.realms].every(count) || (inventory.completed as number) > (inventory.publications as number)
+      || inventory.truncated !== undefined && inventory.truncated !== true
+      || inventory.outcomes !== undefined && (!Array.isArray(inventory.outcomes) || inventory.outcomes.length > MAX_REALM_OUTCOMES
+        || inventory.outcomes.some((item: unknown) => !item || typeof item !== "object" || !realmLabel((item as { realm?: unknown }).realm) || !(SYNC_REALM_OUTCOMES as readonly unknown[]).includes((item as { outcome?: unknown }).outcome))))) return undefined;
   const snapshot: SyncProgressSnapshot = { schema: SYNC_PROGRESS_SCHEMA, operationId, state: v.state as SyncProgressState, phase: v.phase as SyncProgressPhase, attempt: v.attempt as number,
     startedUnixMs: v.startedUnixMs as number, elapsedMs: v.elapsedMs as number, phaseElapsedMs: v.phaseElapsedMs as number,
     ...(v.unit !== undefined ? { unit: v.unit as SyncProgressUnit, completed: v.completed as number, ...(v.total !== undefined ? { total: v.total as number } : {}) } : {}),
     ...(counts ? { counts: { permitted: counts.permitted as number, local: counts.local as number, declined: counts.declined as number, held: counts.held as number } } : {}),
     proofs: { complete: proofs.complete as number, fence: proofs.fence as number }, lastWorkProgressUnixMs: v.lastWorkProgressUnixMs as number, lastAliveUnixMs: v.lastAliveUnixMs as number,
+    ...(inventory ? { inventory: { publications: inventory.publications as number, completed: inventory.completed as number, realms: inventory.realms as number,
+      ...(Array.isArray(inventory.outcomes) ? { outcomes: (inventory.outcomes as { realm: string; outcome: SyncRealmOutcome }[]).map(item => ({ realm: item.realm, outcome: item.outcome })) } : {}),
+      ...(inventory.truncated === true ? { truncated: true } : {}) } } : {}),
     ...(v.cause !== undefined ? { cause: v.cause as SyncProgressCause } : {}), ...(v.category !== undefined ? { category: v.category as PlacementRefusalCategory } : {}) };
   return { snapshot, owner: { pid: owner.pid as number, ...(typeof owner.signature === "string" ? { signature: owner.signature } : {}) } };
 }

@@ -215,13 +215,15 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         if (rest.length) fail(`usage: ${names.memory} sync [--remote <private git url>]`);
         const r = await syncMemory(store, { ...opts.sync, ...(remote ? { remote } : {}) });
         if (json) return JSON.stringify(r, null, 2);
-        if (!r.ok) fail(`${names.memory} sync: ${r.error}`);
         const placement = r.placementPublication, placementText = placement ? `; placement ${placement.outcome}, ${placement.exported} exported, ${placement.withheld} withheld this attempt` : "";
+        // #450: one line per activated realm (`user` or a key hash; never a project name).
+        const realmLines = r.placementRealms?.length ? `\n${r.placementRealms.map(item => `realm ${item.realm === "user" ? "user" : item.realm.slice(0, 16)}: ${item.outcome}${item.publication ? ` (publication ${item.publication})` : ""}`).join("\n")}` : "";
+        if (!r.ok) fail(`${names.memory} sync: ${r.error}${realmLines}`);
         if (r.pruneApplication) {
           const a = r.pruneApplication;
-          return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries transported; ${a.proofComplete} prune proofs complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native prunes applied, ${a.held} held${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}`;
+          return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries transported; ${a.proofComplete} prune proofs complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native prunes applied, ${a.held} held${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${realmLines}`;
         }
-        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}`;
+        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${realmLines}`;
       }
       case "dedupe": {
         const apply = rest.includes("--apply");

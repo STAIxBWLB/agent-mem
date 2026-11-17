@@ -23,6 +23,8 @@ import type { PlacementRefusalCategory } from "./sync-placement-refusal.ts";
  */
 export type Visibility = "public" | "private" | "unknown";
 export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
+  /** #450: per-realm outcomes of a whole-inventory placement sync, in run order (`user` or the full realm key hash). */
+  placementRealms?: { realm: string; outcome: "committed" | "not-needed" | "unknown" | "failed" | "not-run" | "not-local" | "inactive"; publication?: number }[];
   placementPublication?: { attemptHash?: string; outcome: "committed" | "unknown" | "not-needed"; withheld: number; exported: number;
     lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCheckSource?: "live" | "durable-intent"; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean;
     /** #419: an expected size refusal before any publication attempt; numbers only. */
@@ -267,7 +269,18 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
   assertFormatFloor(store.profile.home, "sync");
   const placementRefusal = placementRuntimeRefusal(store.profile.home, store.profile);
   if (placementRefusal) return { ok: false, pushed: false, entries: 0, error: placementRefusal };
-  if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") return (await import("./sync-placement-transport.ts")).syncPlacementMemory(store, opts);
+  if (store.profile.publicationFormat === "agent-mem.sync-placement/v1") {
+    // #450: the whole activated inventory, independent of the binding that opened `store`.
+    const [{ syncPlacementInventory }, { syncPlacementMemory }, { openShardStore }] = await Promise.all([import("./sync-placement-inventory.ts"), import("./sync-placement-transport.ts"), import("./store.ts")]);
+    const home = store.profile.home, held = store.openedSyncTargets(), opened = new Set<MemoryStore>();
+    // A realm the caller already holds is reused (no second lease or fence file); others are opened and closed per publication.
+    const reuse = (realm: { scope: "user" } | { scope: "project"; key: string }) => held.find(item => realm.scope === "user" ? item.profile.shardUser : !item.profile.shardUser && item.profile.shardKey === realm.key);
+    return syncPlacementInventory(home, opts, {
+      open: realm => reuse(realm) ?? (() => { const fresh = openShardStore({ memoryDir: home, deferPromotions: true, ...(realm.scope === "user" ? { user: true } : { project: realm.key }) }); opened.add(fresh); return fresh; })(),
+      close: item => { if (opened.delete(item)) item.close(); },
+      publish: (primary, targets, options) => syncPlacementMemory(primary, options, undefined, undefined, undefined, targets),
+    });
+  }
   if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };
   if (!opts.remote) {
     try {

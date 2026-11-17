@@ -226,12 +226,12 @@ test("a journal published flag without independently retained publication proof 
   expect(result.rows.find(row => row.id === source.key.id)?.exposure).toEqual({ certainty: "unknown" }); expect(result.counts.verifiedPublished).toBe(0);
 });
 
-test("a borrowed user target inspects and publishes only that selected realm", async () => {
+test("a borrowed user target inspects only that selected realm; sync from it covers the activated inventory (#450)", async () => {
   const f = await fixture(), user = f.store.openedSyncTargets().find(target => target.profile.shardUser)!;
   const before = f.snapshot(), report = await inspectSyncPlacement(user, f.opts());
   expect(f.snapshot()).toEqual(before); expect(report.complete).toBe(true); if (!report.complete) throw Error("user-only inspection incomplete");
   expect(report.rows.map(row => row.id)).toEqual([f.ids.user!]); expect(report.rows.every(row => row.realm.scope === "user")).toBe(true);
-  expect((await syncMemory(user, f.opts())).ok).toBe(true); expect(f.reachableIds()).toEqual([f.ids.user!]);
+  expect((await syncMemory(user, f.opts())).ok).toBe(true); expect(f.reachableIds()).toEqual([f.ids.project!, f.ids.user!].sort());
   // The user target is borrowed; only the owning fixture closes its handles.
 }, 20_000);
 

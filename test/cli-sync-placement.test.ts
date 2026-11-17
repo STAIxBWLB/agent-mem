@@ -157,7 +157,7 @@ test("missing migration prerequisites name their exact next command and never mi
 });
 
 
-test("#449: unlisted cwd syncs only user and leaves its project shard unopened", async () => {
+test("#449/#450: an unlisted cwd selects no realm; placement sync covers the activated inventory and leaves the cwd shard unopened", async () => {
   const f=await placementActivationFixture(); cleanup.push(f.close);
   expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
   const {url}=localCliRemote(f), cwd=join(f.root,"outside"); mkdirSync(cwd);
@@ -169,8 +169,12 @@ test("#449: unlisted cwd syncs only user and leaves its project shard unopened",
     expect(() => assertCuratedShardPaths(f.base,{project},origin)).toThrow(`scope=project keyHash=${hash}; origin=${origin}`);
   }
   const result=run(f,["sync","--remote",url,"--json"],false,undefined,cwd), receipt=success(result);
-  expect(receipt.ok).toBe(true); expect(receipt.skippedCwdProject).toBe("cwd project is not in the activated inventory and was skipped");
+  expect(receipt.ok).toBe(true); expect(receipt.skippedCwdProject).toBeUndefined();
+  // The activated inventory (user plus the fixture's project) is published regardless of the cwd.
+  const realms=(receipt.placementRealms as {realm:string;outcome:string}[]).map(item=>item.realm);
+  expect(realms[0]).toBe("user"); expect(realms).toContain(createHash("sha256").update(f.project).digest("hex"));
+  expect(realms).not.toContain(hash);
   expect(existsSync(shardDir(f.base,project))).toBe(true);
   expect(existsSync(join(shardDir(f.base,project),"generation.json"))).toBe(false);
-  const listed=success(run(f,["sync","--json"])); expect(listed.ok).toBe(true); expect(listed.skippedCwdProject).toBeUndefined();
+  const listed=success(run(f,["sync","--json"])); expect(listed.ok).toBe(true);
 },120_000);
