@@ -4,6 +4,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+### Added
+
+- Measure a 5,154-row first placement sync with the explicitly enabled v2 batch path in advisory Ubuntu and macOS CI jobs. Refs #420.
+
 ### Fixed
 
 - On an activated sync placement, let doctor check duplicates, stale references and brief coverage after validating the real home. The index check is skipped with an amem rebuild instruction because opening a placement index rebuilds it. Refs #453.
