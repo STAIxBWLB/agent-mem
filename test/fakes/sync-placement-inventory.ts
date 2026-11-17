@@ -8,6 +8,7 @@ import { expect } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { MemoryStore, openShardStore, type NoteInput } from "../../src/memory/store.ts";
 import { memoryGitSync, realPath } from "../../src/memory/platform.ts";
@@ -20,6 +21,8 @@ import { acquireMutation } from "../../src/memory/mutation.ts";
 import { ensurePlacementFence } from "../../src/memory/sync-placement-journal-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../../src/memory/sync-placement-format.ts";
 import { ensureShardDescriptor, shardDir, shardKeyHash } from "../../src/memory/shard.ts";
+import { activateSyncPlacement } from "../../src/memory/sync-placement-activation.ts";
+import { createPlacementAttestation } from "../../src/sync-placement-writer-context.ts";
 import type { SyncOptions } from "../../src/memory/sync.ts";
 
 const cleanup: (() => void)[] = [];
@@ -35,7 +38,7 @@ export const bareRemote = () => { const dir = temp(); git(dir, "init", "--bare",
 let generations = 900;
 
 /** One activated home with the user realm and `count` project realms, prepared through the real APIs (like the transport fixture). */
-export async function inventoryFixture(count: number, names?: readonly string[]) {
+export async function inventoryFixture(count: number, names?: readonly string[], realWriters = false) {
   const root = temp(), home = join(root, "memory"),
     projects = names ? [...names] : Array.from({ length: count }, (_, index) => `example.test/placement/inventory-${String(index).padStart(2, "0")}`);
   const seed = new MemoryStore({ memoryDir: home, deferPromotions: true });
@@ -47,6 +50,22 @@ export async function inventoryFixture(count: number, names?: readonly string[])
   expect(await migrateShards({ memoryDir: home, generation, mode: "apply", authorizedPerson: true, tty: true })).toMatchObject({ active: true });
   await activatePublicPruneView({ memoryDir: home, mode: "apply", authorizedPerson: true, tty: true });
   writeFileSync(join(home, "amem.config.json"), json({ piiPatterns: ["NEVER_PUBLIC_"] }), { mode: 0o600 });
+  if (realWriters) {
+    // This isolated fixture acts as the person and creates real writer evidence; it never modifies the running install.
+    writeFileSync(join(home, "formats.json"), json([{ surface: "home", minReader: "0.21.0", since: "2026-11-06" }]), { mode: 0o600 });
+    const ownRoot = fileURLToPath(new URL("../..", import.meta.url)), extraWriterRoot = join(root, "extra-writer");
+    for (const dir of [extraWriterRoot, join(extraWriterRoot, "src"), join(extraWriterRoot, "bin")]) mkdirSync(dir, { mode: 0o755 });
+    writeFileSync(join(extraWriterRoot, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.22.0" }), { mode: 0o644 });
+    writeFileSync(join(extraWriterRoot, "src", "index.ts"), "// isolated measured writer\n", { mode: 0o644 });
+    writeFileSync(join(extraWriterRoot, "bin", "amem.js"), "// isolated measured writer\n", { mode: 0o755 });
+    const activated = await activateSyncPlacement({ memoryDir: home, mode: "apply", writerRoots: [ownRoot, extraWriterRoot], ownRoot, authorize: () => true });
+    if (!activated.active || !("epochHash" in activated) || typeof activated.epochHash !== "string") throw Error("fixture activation unavailable");
+    const epochHash = activated.epochHash, attest = createPlacementAttestation(home);
+    const opts = (remote: string): SyncOptions => ({ remote, visibility: async () => "private", placementAttestation: attest, policyVersion: () => "initial" });
+    const plans = () => readdirSync(join(home, "sync-placement", "epochs", epochHash)).filter(name => /^publication-[a-f0-9]{64}-root\.json$/.test(name)).sort();
+    const entry = () => { const store = openShardStore({ memoryDir: home, user: true, deferPromotions: true }); cleanup.push(() => store.close()); return store; };
+    return { root, home, projects, epochHash, opts, plans, entry, close: closeInventoryFixtures, extraWriterRoot };
+  }
   const port: PlacementJournalPort = { attest: () => ({ writers: [{ writerId: "1".repeat(64), version: "0.22.0", pin: "2".repeat(64), publicationFormat: PLACEMENT_FORMAT, compatible: true }], legacySyncQuiesced: true }),
     policyVersion: () => "initial", authorize: () => true };
   const preview = planPlacementJournal(home, port), { epochHash } = preparePlacementJournal(home, preview, port);
@@ -58,7 +77,7 @@ export async function inventoryFixture(count: number, names?: readonly string[])
   const opts = (remote: string): SyncOptions => ({ remote, visibility: async () => "private", placementAttestation: port.attest, policyVersion: port.policyVersion });
   const plans = () => readdirSync(join(home, "sync-placement", "epochs", epochHash)).filter(name => /^publication-[a-f0-9]{64}-root\.json$/.test(name)).sort();
   const entry = () => { const store = openShardStore({ memoryDir: home, user: true, deferPromotions: true }); cleanup.push(() => store.close()); return store; };
-  return { root, home, projects, epochHash, opts, plans, entry, close: closeInventoryFixtures };
+  return { root, home, projects, epochHash, opts, plans, entry, close: closeInventoryFixtures, extraWriterRoot: undefined };
 }
 export const expectedRefs = (projects: readonly string[]) => ["refs/heads/amem/u", ...projects.map(project => `refs/heads/amem/p/${shardKeyHash(project)}`)].sort();
 /** Every realm order after the user realm is by full key hash. */

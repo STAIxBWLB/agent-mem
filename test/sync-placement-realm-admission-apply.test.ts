@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
 import type { SyncOptions } from "../src/memory/sync.ts";
@@ -8,6 +8,7 @@ import { PlacementRealmRefusal, shardDir, shardKeyHash } from "../src/memory/sha
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
 import { readEffectiveRealmInventory } from "../src/memory/sync-placement-realm-effective.ts";
+import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
 import { REALM_EXTENSION_LOG, readRealmExtensionHistory } from "../src/memory/sync-placement-realm-extension-storage.ts";
 import { applyRealmAdmission, planRealmAbandon, previewRealmAdmission } from "../src/memory/sync-placement-realm-admission.ts";
 import { REALM_INTENT_PREFIX } from "../src/memory/sync-placement-realm-pending.ts";
@@ -28,6 +29,81 @@ const bindingOf = (home: string) => {
     generation: active.epoch.generation, initialProjectHashes: active.activation.realms.flatMap(realm => realm.scope === "project" ? [realm.keyHash] : []) } };
 };
 const realmsOf = (home: string) => readEffectiveRealmInventory(home, bindingOf(home).active).realms;
+
+test("#448: a retained writer inventory without current install evidence cannot authorize admission", async () => {
+  const f = await inventoryFixture(1), realm = "example.test/placement/no-current-writer-proof";
+  writeFileSync(join(f.home, "formats.json"), JSON.stringify([{ surface: "home", minReader: "0.21.0", since: "2026-11-06" }]) + "\n", { mode: 0o600 });
+  expect(readEffectiveSyncPlacementWriters(f.home).roots).toBeUndefined();
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).rejects.toThrow();
+  expect(existsSync(join(f.home, REALM_EXTENSION_LOG))).toBe(false);
+  expect(intents(f.home)).toEqual([]);
+  expect(existsSync(join(shardDir(f.home, realm), "generation.json"))).toBe(false);
+}, 240_000);
+
+test("#448: a writer install changed after preview refuses before admission effects", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/writer-drift";
+  expect(previewRealmAdmission(f.home, realm)).toMatchObject({ state: "not-local" });
+  appendFileSync(join(f.extraWriterRoot!, "src", "index.ts"), "// changed after preview\n");
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).rejects.toThrow();
+  expect(existsSync(join(f.home, REALM_EXTENSION_LOG))).toBe(false);
+  expect(intents(f.home)).toEqual([]);
+  expect(existsSync(join(shardDir(f.home, realm), "generation.json"))).toBe(false);
+}, 240_000);
+
+test("#448: writer drift after intent refuses before curated metadata or append", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/writer-drift-after-intent";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-intent") appendFileSync(join(f.extraWriterRoot!, "src", "index.ts"), "// changed after intent\n");
+  } })).rejects.toThrow();
+  expect(existsSync(join(f.home, REALM_EXTENSION_LOG))).toBe(false);
+  expect(intents(f.home)).toHaveLength(1);
+  expect(existsSync(join(shardDir(f.home, realm), "generation.json"))).toBe(false);
+}, 240_000);
+
+test("#448: a policy change after intent refuses before appending an admission", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/policy-drift";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-intent") writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["DIFFERENT_POLICY_"] }) + "\n", { mode: 0o600 });
+  } })).rejects.toThrow();
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
+  expect(intents(f.home)).toHaveLength(1);
+}, 240_000);
+test("#448: resume uses the frozen proof after interruption before append", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-resume";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-proof") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  expect(intents(f.home)).toHaveLength(1);
+  expect(readdirSync(f.home).filter(name => /^placement-realm-proof-.*\.json$/.test(name))).toHaveLength(1);
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "resume" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(1);
+  expect(intents(f.home)).toHaveLength(0);
+}, 240_000);
+
+test("#448: resume refuses changed policy after a proof was retained", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-policy-drift";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-proof") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["DIFFERENT_POLICY_"] }) + "\n", { mode: 0o600 });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "resume" })).rejects.toThrow();
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
+  expect(intents(f.home)).toHaveLength(1);
+}, 240_000);
+
+test("#448: a changed proof before append cannot authorize a record", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-tamper";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-proof") {
+      const name = readdirSync(f.home).find(item => /^placement-realm-proof-.*\.json$/.test(item))!;
+      writeFileSync(join(f.home, name), "{}\n", { mode: 0o600 });
+    }
+  } })).rejects.toThrow();
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
+  expect(intents(f.home)).toHaveLength(1);
+}, 240_000);
+
 /** The exact shape a kill between the append and the intent cleanup leaves: the frozen intent back and only a prefix of its record. */
 function rewind(path: string, home: string, saved: { name: string; bytes: Buffer }, prefixBytes: number): void {
   const log = join(home, REALM_EXTENSION_LOG), bytes = readFileSync(log);
@@ -36,7 +112,7 @@ function rewind(path: string, home: string, saved: { name: string; bytes: Buffer
 }
 
 test("#448 AC2: one apply appends the reviewed record for a curated realm and never repeats it", async () => {
-  const f = await inventoryFixture(1), admitted = "example.test/placement/admitted-by-command";
+  const f = await inventoryFixture(1, undefined, true), admitted = "example.test/placement/admitted-by-command";
   installSyntheticRealm(f.home, bindingOf(f.home).active.epoch.generation, admitted);
   const planned = previewRealmAdmission(f.home, admitted);
   expect(planned).toMatchObject({ state: "admissible", next: { mode: "existing", sequence: 1, previousLogBytes: 0 } });
@@ -60,7 +136,7 @@ test("#448 AC2: one apply appends the reviewed record for a curated realm and ne
 }, 240_000);
 
 test("#448 AC2: apply writes the realm's empty curated metadata, generation.json last, then admits it", async () => {
-  const f = await inventoryFixture(1), fresh = "example.test/placement/arrived-after-activation", dir = shardDir(f.home, fresh);
+  const f = await inventoryFixture(1, undefined, true), fresh = "example.test/placement/arrived-after-activation", dir = shardDir(f.home, fresh);
   expect(previewRealmAdmission(f.home, fresh)).toMatchObject({ state: "not-local", next: { mode: "new", sequence: 1 } });
   expect(existsSync(join(dir, "generation.json"))).toBe(false);
   const result = await applyRealmAdmission(f.home, fresh, { mode: "apply" });
@@ -75,7 +151,7 @@ test("#448 AC2: apply writes the realm's empty curated metadata, generation.json
 }, 240_000);
 
 test("#448 AC2: an interrupted append resumes from its frozen prefix, and a committed one resumes as cleanup only", async () => {
-  const f = await inventoryFixture(1), realm = "example.test/placement/interrupted";
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/interrupted";
   installSyntheticRealm(f.home, bindingOf(f.home).active.epoch.generation, realm);
   let saved: { name: string; bytes: Buffer } | undefined;
   await applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
@@ -101,7 +177,7 @@ test("#448 AC2: an interrupted append resumes from its frozen prefix, and a comm
 }, 240_000);
 
 test("#448 AC2: a person abandon previews, then removes only the retained intent and its incomplete bytes", async () => {
-  const f = await inventoryFixture(1), realm = "example.test/placement/abandoned";
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/abandoned";
   installSyntheticRealm(f.home, bindingOf(f.home).active.epoch.generation, realm);
   let saved: { name: string; bytes: Buffer } | undefined;
   await applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
@@ -132,25 +208,25 @@ test("#448 AC2: a person abandon previews, then removes only the retained intent
 
 test("#448 AC3: a realm outside B's inventory is refused and unpublished until B admits it, while A keeps publishing it", async () => {
   const shared = "example.test/placement/ac3-shared", onlyA = "example.test/placement/ac3-only-a";
-  const a = await inventoryFixture(2, [shared, onlyA]), b = await inventoryFixture(1, [shared]);
-  const source = bareRemote(), syncA = syncing(a.home), syncB = syncing(b.home), synced = await syncA(a.opts(source));
+  const a = await inventoryFixture(2, [shared, onlyA], true), b = await inventoryFixture(1, [shared], true);
+  const remote = bareRemote(), syncA = syncing(a.home), syncB = syncing(b.home), synced = await syncA(a.opts(remote));
   expect(synced.ok).toBe(true);
-  expect(refsOf(source)).toEqual(expectedRefs([shared, onlyA]));
-  // One remote carries A's realm history; B points at that same remote.
-  const remote = bareRemote(), ref = `refs/heads/amem/p/${shardKeyHash(onlyA)}`;
-  git(source, "push", remote, ref);
+  expect(refsOf(remote)).toEqual(expectedRefs([shared, onlyA]));
+  // Both homes use the same remote, including the user and shared project refs.
+  const ref = `refs/heads/amem/p/${shardKeyHash(onlyA)}`;
   const published = git(remote, "rev-parse", ref);
   installSyntheticRealm(b.home, bindingOf(b.home).active.epoch.generation, onlyA);
   const before = refsOf(remote), localState = () => ({
     extension: existsSync(join(b.home, REALM_EXTENSION_LOG)), intents: intents(b.home),
     activation: bindingOf(b.home).active.activation.seal, realms: realmsOf(b.home).map(realm => realm.scope === "user" ? "user" : realm.keyHash),
   });
+
   const local = localState();
   // B's ordinary sync covers its own two realms and never opens, publishes or removes the third.
   const first = await syncB(b.opts(remote));
   expect(first.ok).toBe(true);
   expect(first.placementRealms!.map(item => item.realm)).not.toContain(digest(onlyA));
-  expect(refsOf(remote)).toEqual([...before, "refs/heads/amem/u", `refs/heads/amem/p/${shardKeyHash(shared)}`].sort());
+  expect(refsOf(remote)).toEqual(before);
   expect(git(remote, "rev-parse", ref)).toBe(published);
   expect(localState()).toEqual(local);
   // An explicit open or curated write of that realm refuses before any effect and names the admission command.
@@ -169,5 +245,5 @@ test("#448 AC3: a realm outside B's inventory is refused and unpublished until B
   expect(refsOf(remote)).toContain(ref);
   // B has no rows for that realm, so A's published history is left untouched rather than rewritten.
   expect(git(remote, "rev-parse", ref)).toBe(published);
-  expect((await syncA(a.opts(source))).ok).toBe(true);
+  expect((await syncA(a.opts(remote))).ok).toBe(true);
 }, 240_000);

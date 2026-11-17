@@ -2,13 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmodSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON } from "../src/memory/generation.ts";
+import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
 import { attributeTornRealmAppend } from "../src/memory/sync-placement-realm-attribution.ts";
 import { createRealmExtension, realmExtensionGenesis, REALM_EXTENSION_SCHEMA } from "../src/memory/sync-placement-realm-extension-format.ts";
 import { readRealmExtensionHistory, REALM_EXTENSION_LOG, type RealmExtensionBinding, type RealmExtensionOptions } from "../src/memory/sync-placement-realm-extension-storage.ts";
-import { createRealmIntent, REALM_INTENT_SCHEMA, type RealmIntentBody } from "../src/memory/sync-placement-realm-intent-format.ts";
+import { createRealmIntent, REALM_INTENT_SCHEMA, type RealmIntent, type RealmIntentBody } from "../src/memory/sync-placement-realm-intent-format.ts";
+import type { RealmExtension } from "../src/memory/sync-placement-realm-extension-format.ts";
 import { REALM_INTENT_PREFIX } from "../src/memory/sync-placement-realm-pending.ts";
 import { createPlacementInspectionFixture, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
 
@@ -32,9 +33,14 @@ async function fixture() {
     sequence: 1, previousHash: realmExtensionGenesis(binding.epochHash, binding.activationHash), previousLogBytes: 0, previousLogHash: sha(""),
     mode: "new", descriptorHash: null, sourceHash: null, aliasesHash: hex("c"), policyHash: hex("d"), writerHash: hex("e"),
     journal: { sequence: 0, headHash: binding.epochHash }, ...overrides });
-  const pending = (body: RealmIntentBody) => {
+  const pending = (body: RealmIntent, record?: RealmExtension) => {
     const path = join(f.home, `${REALM_INTENT_PREFIX}${keyHash}.json`);
-    writeFileSync(path, canonicalJSON(body) + "\n", { mode: 0o600 }); return path;
+    writeFileSync(path, canonicalJSON(body) + "\n", { mode: 0o600 });
+    if (record) {
+      const proof = { schema: "agent-mem.sync-placement-realm-proof/v1", intent: body.seal, record };
+      writeFileSync(join(f.home, `placement-realm-proof-${body.seal}.json`), canonicalJSON({ ...proof, seal: hashJSON(proof) }) + "\n", { mode: 0o600 });
+    }
+    return path;
   };
   const options: RealmExtensionOptions = { attributeTorn: evidence => attributeTornRealmAppend(f.home, binding, evidence) };
   return { f, binding, make, intent, pending, options, file: join(f.home, REALM_EXTENSION_LOG) };
@@ -78,14 +84,31 @@ test("#448: an unattributed tail closes the chain instead of granting partial tr
   expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
 });
 
-test("#448: a matching pending intent keeps the completed prefix readable", async () => {
+test("#448: a matching pending intent and proof keep the completed prefix readable", async () => {
   const { f, binding, make, file, intent, pending, options } = await fixture();
-  const first = make(hex("1")), second = make(hex("2"), 2, first.seal), tail = text(second).slice(0, -14);
-  pending(intent({ sequence: 2, previousHash: first.seal, previousLogBytes: Buffer.byteLength(text(first)), previousLogHash: sha(text(first)) }));
+  const first = make(hex("1")), second = make(keyHash, 2, first.seal), tail = text(second).slice(0, -14);
+  pending(intent({ sequence: 2, previousHash: first.seal, previousLogBytes: Buffer.byteLength(text(first)), previousLogHash: sha(text(first)) }), second);
   writeFileSync(file, text(first) + tail, { mode: 0o600 });
   const history = readRealmExtensionHistory(f.home, binding, options);
   expect(history.records).toEqual([first]); expect(history.headHash).toBe(first.seal); expect(history.torn).toEqual(Buffer.from(tail));
   history.assertCurrent();
+});
+
+test("#448: an intent cannot attribute an altered or different-realm tail", async () => {
+  const { f, binding, make, file, intent, pending, options } = await fixture();
+  const first = make(hex("1")), second = make(keyHash, 2, first.seal);
+  const frozen = intent({ sequence: 2, previousHash: first.seal, previousLogBytes: Buffer.byteLength(text(first)), previousLogHash: sha(text(first)) });
+  pending(frozen);
+  writeFileSync(file, text(first) + text(second).slice(0, -14), { mode: 0o600 });
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow(); // intent alone is not a proof
+  pending(frozen, second);
+  const other = make(hex("2"), 2, first.seal);
+  writeFileSync(file, text(first) + text(other).slice(0, -14), { mode: 0o600 });
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
+  const { seal: _seal, ...body } = second;
+  const altered = createRealmExtension({ ...body, sourceHash: hex("f") });
+  writeFileSync(file, text(first) + text(altered).slice(0, -14), { mode: 0o600 });
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
 });
 
 test("#448: a truncated record is not attributed by an intent for another position", async () => {

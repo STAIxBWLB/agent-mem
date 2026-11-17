@@ -14,6 +14,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { hashJSON, readProfileJSON } from "./generation.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { realPath } from "./platform.ts";
@@ -29,8 +30,11 @@ import { readRealmExtensionHistory, type RealmExtensionBinding, type RealmExtens
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { createRealmIntent, REALM_INTENT_SCHEMA, type RealmIntent } from "./sync-placement-realm-intent-format.ts";
 import { clearRealmIntent, readRealmIntent, writeRealmIntent } from "./sync-placement-realm-intent-storage.ts";
+import { clearRealmProof, readRealmProof, writeRealmProof } from "./sync-placement-realm-proof.ts";
+import { attributeTornRealmAppend } from "./sync-placement-realm-attribution.ts";
 import { appendRealmExtension, discardRealmExtensionTail, ensureCuratedRealmMetadata } from "./sync-placement-realm-admission-storage.ts";
 import { readWriterHistory } from "./sync-placement-writer-history.ts";
+import { activePlacementWriterContext } from "../sync-placement-writer-context.ts";
 import { writerInventoryGenesis } from "./sync-placement-writer-revision-format.ts";
 import type { SyncPlacementRealmBinding } from "./sync-placement-plan.ts";
 
@@ -51,7 +55,7 @@ export interface RealmAdmissionNext {
 export interface RealmAdmissionPreview { realm: string; state: RealmAdmissionState; next?: RealmAdmissionNext }
 export interface RealmAbandonPlan { realm: string; state: "abandonable" | "committed" | "none" | "unavailable"; sequence?: number; discards?: number; nextStep?: string }
 export type RealmAdmissionMode = "apply" | "resume" | "abandon";
-export type RealmAdmissionStage = "after-intent" | "after-metadata" | "after-append";
+export type RealmAdmissionStage = "after-intent" | "after-metadata" | "after-proof" | "after-append";
 export interface RealmAdmissionOptions {
   mode: RealmAdmissionMode; confirm?: boolean;
   /** Internal fault seam between durable steps; the CLI never supplies it. */
@@ -148,10 +152,13 @@ export function planRealmAbandon(homeInput: string, project: string): RealmAband
   try {
     const home = realPath(homeInput), binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
     if (!intent) return { realm, state: "none", nextStep: "no admission intent is retained for this realm" };
+    readRealmProof(home, intent); // A malformed retained proof is not a clean abandon preview.
     const history = readRealmExtensionHistory(home, binding, { attributeTorn: () => true });
     if (history.records.length + 1 > intent.sequence) return { realm, state: "committed", sequence: intent.sequence, nextStep: "amem migrate --sync-placement --admit <project> --resume" };
     if (history.records.length + 1 < intent.sequence || history.headHash !== intent.previousHash
       || history.logBytes.length !== intent.previousLogBytes || digest(history.logBytes) !== intent.previousLogHash)
+      return { realm, state: "unavailable", sequence: intent.sequence };
+    if (history.torn.length && !attributeTornRealmAppend(home, binding, { prefix: history.logBytes, tail: history.torn, sequence: intent.sequence, headHash: history.headHash }))
       return { realm, state: "unavailable", sequence: intent.sequence };
     return { realm, state: "abandonable", sequence: intent.sequence, discards: history.torn.length };
   } catch (error) { return rethrow(error); }
@@ -209,6 +216,7 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
         if (!intent) throw Error("No admission intent is retained for this realm; run amem migrate --sync-placement --admit <project> --dry-run.");
         const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
         const { discarded } = discardRealmExtensionTail(home, binding, intent, proof);
+        clearRealmProof(home, intent, proof);
         clearRealmIntent(home, intent, proof);
         return { mode: "abandon" as const, state: "abandoned" as const, realm, sequence: intent.sequence, discarded,
           nextStep: `amem migrate --sync-placement --admit ${project} --dry-run` };
@@ -228,16 +236,32 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
       const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
       let intent = readRealmIntent(home, realm);
       if (intent && options.mode === "apply") fail("pending");
+      if (intent) {
+        assertAnchors(home, binding, intent);
+        const committed = installedSeal(home, binding, intent);
+        if (committed !== undefined) {
+          const evidence = readRealmProof(home, intent);
+          if (!evidence || evidence.seal !== committed) fail("committed");
+          clearRealmIntent(home, intent, proof);
+          return { mode: options.mode, state: "admitted" as const, realm, sequence: intent.sequence, headHash: committed, created: false };
+        }
+      }
+      // Stored writer hashes are history, not current install evidence. Re-measure the existing active writer inventory under the fences.
+      const writer = activePlacementWriterContext(home, fileURLToPath(new URL("../..", import.meta.url)));
+      const current = () => { check(); writer.attest(); check(); };
+      current();
       if (!intent) {
         // Apply re-reads every fact it acts on under this fence; the earlier report only named the state.
         const fixed = inspectRealmAdmission(home, project, owner);
         if (fixed.state === "already-admitted") return { mode: options.mode, state: "already-admitted" as const, realm };
         if (!fixed.next) fail("metadata");
         intent = intentFor(home, project, fixed.next, binding);
-        writeRealmIntent(home, intent, proof);
+        writeRealmIntent(home, intent, { mutation, assertCurrent: current });
         await options.checkpoint?.("after-intent");
-      } else assertAnchors(home, binding, intent);
-      const frozen = intent, created = ensureCuratedRealmMetadata(home, project, binding.generation, machineIdentity(home)).created;
+      }
+      const frozen = intent;
+      current();
+      const created = ensureCuratedRealmMetadata(home, project, binding.generation, machineIdentity(home)).created;
       await options.checkpoint?.("after-metadata");
       const source = previewOwnedSyncPlacementSources(home, owner);
       const captured = source.base.realms.find(item => item.scope === "project" && item.keyHash === realm);
@@ -246,15 +270,17 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
       const descriptor = readShardDescriptor(home, realm.slice(0, 16));
       if (frozen.descriptorHash !== null && (!descriptor || hashJSON(descriptor) !== frozen.descriptorHash)) fail("changed");
       if (frozen.mode === "existing" && source.base.sourceHash !== frozen.sourceHash) fail("changed");
+      if (source.base.aliasesHash !== frozen.aliasesHash || source.base.policyHash !== frozen.policyHash) fail("changed");
       const record = recordFor(frozen, captured.bindingHash, source.base.sourceHash);
-      const installed = installedSeal(home, binding, frozen);
-      if (installed !== undefined) {
-        if (installed !== record.seal) fail("committed");
-        clearRealmIntent(home, frozen, proof);
-        return { mode: options.mode, state: "admitted" as const, realm, sequence: frozen.sequence, headHash: installed, created };
-      }
-      source.assertSourcesUnchanged();
-      appendRealmExtension(home, binding, frozen, record, proof);
+      const sourceProof = { mutation, assertCurrent: () => { current(); source.assertSourcesUnchanged(); current(); } };
+      writeRealmProof(home, frozen, record, sourceProof);
+      await options.checkpoint?.("after-proof");
+      const durableProof = { mutation, assertCurrent: () => {
+        sourceProof.assertCurrent();
+        if (readRealmProof(home, frozen)?.seal !== record.seal) fail("changed");
+        sourceProof.assertCurrent();
+      } };
+      appendRealmExtension(home, binding, frozen, record, durableProof);
       await options.checkpoint?.("after-append");
       clearRealmIntent(home, frozen, proof);
       return { mode: options.mode, state: "admitted" as const, realm, sequence: frozen.sequence, headHash: record.seal, created };
