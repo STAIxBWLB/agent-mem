@@ -17,6 +17,8 @@ import { configuredPolicyOptions } from "./config.ts";
 import { createStandalonePolicy } from "./policy.ts";
 
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
+/** Items one published view keeps; the brief displays only the first two, in sorted order. */
+const BRIEF_ITEMS = 32;
 export type WorkListFields = Record<string, string | number | boolean | null>;
 export type WorkListPolicy = (row: unknown) => boolean | Promise<boolean>;
 export interface WorkListSource { source: string; id: string; machine?: string; at?: number }
@@ -125,6 +127,7 @@ function applyWorkRow(rows: WorkBrief["rows"], row: { list: string; fields: Work
   }
   for (const [key, value] of Object.entries(row.fields)) if (key !== "task") { if (value === null) delete target[key]; else target[key] = value; }
   view.closed = view.fields.status === "done";
+  if (view.items.length > BRIEF_ITEMS) view.items.length = BRIEF_ITEMS;
   rows.sort((a, b) => a.source.list.localeCompare(b.source.list));
   return rows;
 }
@@ -424,7 +427,8 @@ export class WorkListStore {
       }
       const views = await this.read(undefined, true, input => standalone.screenStandalone(input));
       writeWorkBrief(binding, { schema: "agent-mem.brief-work/v1", project: this.project, segments, policy,
-        rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source })), truncated: views.length > WORK_BRIEF_VIEWS });
+        rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source: { ...source, items: source.items.slice(0, BRIEF_ITEMS) } })),
+        truncated: views.length > WORK_BRIEF_VIEWS });
     } catch { /* A later write retries. */ }
   }
 

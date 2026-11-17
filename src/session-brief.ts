@@ -293,11 +293,11 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
             || snapshot.policy !== workPolicyRevision(configuredPolicyOptions(base))) {
             coverage.work = "unavailable"; reasons.work = "work cache stale; use amem_work_state_read"; return;
           }
-          let selected = 0;
+          let shown = 0;
           for (const row of snapshot.rows) {
             const view = row.source;
             if (view.closed || !await screen(view)) continue;
-            if (selected++ >= SECTION_RECORDS) { coverage.work = "partial"; break; }
+            if (shown++ >= SECTION_RECORDS) { coverage.work = "partial"; break; }
             await add("work", workDisplay(view), false);
           }
           if (snapshot.truncated) coverage.work = "partial";
