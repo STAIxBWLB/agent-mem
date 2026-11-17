@@ -29,6 +29,7 @@ export function briefObservation(context: string): BriefObservation | undefined 
   const reasons = [
     ["deadline exhausted", "deadline"], ["lock busy", "lock"], ["read unavailable", "read_error"], ["generation refresh deferred", "floor"], ["curated refresh deferred", "floor"],
     ["curated floor below ", "floor"], ["curated cache missing", "cache_missing"], ["curated cache stale", "cache_stale"],
+    ["work cache missing", "cache_missing"], ["work cache stale", "cache_stale"],
     ["capture cache missing", "cache_missing"], ["capture history deferred", "history_deferred"], ["floor: upgrade amem", "floor_upgrade"],
     ["floor: amem doctor", "floor_invalid"], ["repo policy unreadable", "policy_unreadable"], ["repo log is not a plain file", "invalid_log"],
   ] as const;

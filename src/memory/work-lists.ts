@@ -11,6 +11,10 @@ import { looksSecret } from "./screen.ts";
 import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
 import { machineId } from "./machine.ts";
+import type { WorkBrief, WorkSegment } from "../brief-work.ts";
+import { WORK_BRIEF_VIEWS, readWorkBrief, workLogSegments, workPolicyRevision, writeWorkBrief } from "../brief-work.ts";
+import { configuredPolicyOptions } from "./config.ts";
+import { createStandalonePolicy } from "./policy.ts";
 
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
 export type WorkListFields = Record<string, string | number | boolean | null>;
@@ -108,10 +112,28 @@ function scan(path: string, consume?: (text: string, end: number) => void, prefi
   } finally { closeSync(fd); }
 }
 
+/** The same fold `read()` performs, applied to one appended row; lists and items stay in the store's sorted order. */
+function applyWorkRow(rows: WorkBrief["rows"], row: { list: string; fields: WorkListFields }): WorkBrief["rows"] {
+  let view = rows.find(candidate => candidate.source.list === row.list)?.source;
+  if (!view) { view = { list: row.list, fields: {}, items: [], closed: false }; rows.push({ source: view }); }
+  const task = row.fields.task;
+  let target: WorkListFields = view.fields;
+  if (typeof task === "string") {
+    const found = view.items.find(item => item.task === task);
+    if (found) target = found.fields;
+    else { const fields: WorkListFields = {}; view.items.push({ task, fields }); view.items.sort((a, b) => a.task.localeCompare(b.task)); target = fields; }
+  }
+  for (const [key, value] of Object.entries(row.fields)) if (key !== "task") { if (value === null) delete target[key]; else target[key] = value; }
+  view.closed = view.fields.status === "done";
+  rows.sort((a, b) => a.source.list.localeCompare(b.source.list));
+  return rows;
+}
+
 /** Project-scoped append truth; the index and writer lock are independent of generations and capture eviction. */
 export class WorkListStore {
   readonly dir: string;
   readonly project: string;
+  private readonly base: string;
   private readonly db: Database;
   private readonly mutation: Database;
   private readonly machine: string;
@@ -132,6 +154,7 @@ export class WorkListStore {
       || !Number.isSafeInteger(this.busyTimeoutMs) || this.busyTimeoutMs < 0 || this.busyTimeoutMs > 3000) throw new Error("invalid work-list budget");
     this.checkBudget();
     const base = canonicalPath(options.base);
+    this.base = base;
     assertFormatFloor(base, "work-lists");
     this.project = options.exact === true ? options.project : resolveAlias(base, options.project);
     regular(join(base, "projects"), true); regular(shardDir(base, this.project), true);
@@ -256,12 +279,12 @@ export class WorkListStore {
     }).immediate();
   }
   rebuild(): void { this.locked(() => this.refresh(true)); }
-  private async permitted(row: WorkRow): Promise<boolean> {
+  private async permitted(row: WorkRow, policy: WorkListPolicy = this.policy): Promise<boolean> {
     this.checkBudget();
     if (looksSecret(canonicalJSON(row))) return false;
     const copy = structuredClone(row); Object.freeze(copy.fields); if (copy.source) Object.freeze(copy.source); Object.freeze(copy);
     let allowed = false;
-    try { allowed = await this.policy(copy) === true; } catch { /* Refusal remains a refusal. */ }
+    try { allowed = await policy(copy) === true; } catch { /* Refusal remains a refusal. */ }
     this.checkBudget();
     return allowed;
   }
@@ -356,7 +379,9 @@ export class WorkListStore {
     const row: WorkRow = { ...body, id: hashJSON(body) };
     if (Buffer.byteLength(canonicalJSON(row)) > ROW_BYTES) return invalid();
     if (!await this.permitted(row)) throw new Error("work-list privacy policy refused the write");
-    return this.locked(() => {
+    const log = join(this.dir, "log", `${this.machine}.jsonl`);
+    let prior: { bytes: number; mtimeMs: number } | undefined;
+    const stored = this.locked(() => {
       this.refresh();
       const key = receipt(row);
       if (key) {
@@ -368,14 +393,50 @@ export class WorkListStore {
         }
       }
       // No metadata changes after screening: the derived index records same-machine append order.
-      regular(join(this.dir, "log", `${this.machine}.jsonl`));
-      appendFileSync(join(this.dir, "log", `${this.machine}.jsonl`), canonicalJSON(row) + "\n", { mode: 0o600 });
+      regular(log);
+      const before = lstatSync(log, { throwIfNoEntry: false });
+      prior = before ? { bytes: before.size, mtimeMs: before.mtimeMs } : undefined;
+      appendFileSync(log, canonicalJSON(row) + "\n", { mode: 0o600 });
       this.refresh();
       return { id: row.id, already: false };
     });
+    if (!stored.already) await this.publishBrief(row, prior);
+    return stored;
   }
 
-  async read(rawList?: string, includeClosed = false): Promise<WorkListView[]> {
+  /**
+   * Off-hook derived publication for the session-start work section. The common case folds the row just appended into the
+   * cached views (a few hundred microseconds); a rebuild reads the whole log and is kept for a foreign or first frontier.
+   * A failure never loses the committed row and leaves the brief unavailable, never stale.
+   */
+  async publishBrief(row?: Pick<WorkRow, "list" | "fields">, prior?: { bytes: number; mtimeMs: number }): Promise<void> {
+    try {
+      const options = configuredPolicyOptions(this.base), standalone = createStandalonePolicy(options);
+      const segments = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
+      if (!segments) return;
+      const binding = { base: this.base, project: this.project, machine: this.machine }, policy = workPolicyRevision(options);
+      if (row && prior && standalone.screenStandalone(row)) {
+        const cached = readWorkBrief(binding);
+        if (cached && cached.policy === policy && JSON.stringify(cached.segments) === JSON.stringify(this.priorSegments(segments, prior))) {
+          const rows = applyWorkRow(cached.rows, row);
+          if (rows.length <= WORK_BRIEF_VIEWS && writeWorkBrief(binding, { ...cached, segments, rows })) return;
+        }
+      }
+      const views = await this.read(undefined, true, input => standalone.screenStandalone(input));
+      writeWorkBrief(binding, { schema: "agent-mem.brief-work/v1", project: this.project, segments, policy,
+        rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source })), truncated: views.length > WORK_BRIEF_VIEWS });
+    } catch { /* A later write retries. */ }
+  }
+
+  /** The frontier the store held just before its own append: the cached snapshot matches it only when nothing else moved. */
+  private priorSegments(segments: WorkSegment[], prior: { bytes: number; mtimeMs: number }): WorkSegment[] {
+    const file = `${this.machine}.jsonl`;
+    return segments.flatMap(segment => segment.key !== this.project || segment.file !== file ? [segment]
+      : [{ ...segment, bytes: prior.bytes, mtimeMs: prior.mtimeMs }]);
+  }
+
+  /** `policy` screens this read instead of the store's own: the off-hook snapshot uses the standalone policy, never an interactive host prompt. */
+  async read(rawList?: string, includeClosed = false, policy?: WorkListPolicy): Promise<WorkListView[]> {
     this.checkBudget();
     if (rawList !== undefined && !bounded(rawList, 300) || typeof includeClosed !== "boolean") return invalid();
     const list = rawList === undefined ? undefined : stripPrivateSpans(rawList).trim();   // the same name a write stored
@@ -387,7 +448,7 @@ export class WorkListStore {
     try {
       for (const { row } of rows) {
         this.checkBudget();
-        const allowed = await this.permitted(row);
+        const allowed = await this.permitted(row, policy);
         if (this.closed) throw new Error("work-list store is closed");
         if (!allowed) continue;
         if (list !== undefined && row.list !== list) continue;

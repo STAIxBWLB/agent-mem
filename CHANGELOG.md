@@ -7,6 +7,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ### Added
 
 - Measure a 5,154-row first placement sync with the explicitly enabled v2 batch path in advisory Ubuntu and macOS CI jobs. Refs #420.
+- Prepare the session-start work section off the hook: a work write publishes a derived, machine-local `brief-work.json` bound to the work log's segment frontier and the home policy revision, and the native brief reads that file only instead of replaying the project's work log inside its 10 ms work slice. A stale, foreign or unreadable snapshot shows the work section `unavailable` with `use amem_work_state_read`, never older rows, and every kept view is screened again at read under the current repository and host policy. An ordinary write folds its own row into the published views; only a first or foreign frontier replays the log. Refs #455.
 
 ### Fixed
 

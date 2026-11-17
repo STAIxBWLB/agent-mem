@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { briefFailureReason, briefObservation } from "../src/memory/metrics.ts";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { workBriefFile } from "../src/brief-work.ts";
+import { machineId } from "../src/memory/machine.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 import { runHook } from "../src/hooks.ts";
@@ -41,23 +43,24 @@ test("SessionStart persists fixed coverage without recording the work body", asy
   } finally { f.close(); }
 });
 
-test("work read failures expose their actual fixed reason and a recovery tool", async () => {
+test("the native work section is served from the snapshot and reports a fixed label when it is missing", async () => {
   const f = hookFixture(), original = WorkListStore.prototype.read;
   try {
     await f.seed();
-    for (const [error, label, metric] of [
-      [new Error("work-list read deadline"), "deadline exhausted", "deadline"],
-      [Object.assign(new Error("private lock"), { code: "SQLITE_BUSY" }), "lock busy", "lock"],
-      [new Error("private read failure"), "read unavailable", "read_error"],
-    ] as const) {
-      WorkListStore.prototype.read = async () => { throw error; };
-      const result = await runHook("SessionStart", {}, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
-      const context = result.output!.hookSpecificOutput.additionalContext;
-      expect(context).toContain(`work: ${label}; use amem_work_state_read`);
-      const samples = readFileSync(join(f.base, "metrics.jsonl"), "utf8").trim().split("\n");
-      expect(JSON.parse(samples.at(-1)!).brief.workReason).toBe(metric);
-      expect(context).not.toContain("private");
-    }
+    // #455: the hook no longer opens the work store, so a failing read cannot change the section.
+    WorkListStore.prototype.read = async () => { throw new Error("private read failure"); };
+    const served = await runHook("SessionStart", {}, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
+    const context = served.output!.hookSpecificOutput.additionalContext;
+    expect(context).toContain('"section":"work"');
+    expect(context).not.toContain("private");
+    WorkListStore.prototype.read = original;
+    rmSync(workBriefFile({ base: f.base, project: f.project, machine: machineId(f.base).id }));
+    const result = await runHook("SessionStart", {}, { cwd: f.cwd, base: f.base }, { deadlineMs: 2000 });
+    const missing = result.output!.hookSpecificOutput.additionalContext;
+    expect(missing).toContain("work: work cache missing; use amem_work_state_read");
+    const samples = readFileSync(join(f.base, "metrics.jsonl"), "utf8").trim().split("\n");
+    expect(JSON.parse(samples.at(-1)!).brief.workReason).toBe("cache_missing");
+    expect(missing).not.toContain("private");
   } finally { WorkListStore.prototype.read = original; f.close(); }
 });
 
