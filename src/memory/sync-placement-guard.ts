@@ -24,10 +24,12 @@ export async function withDoctorPlacementScratch<T>(realHome: string, adopt: (di
     const home = realPath(directory);
     const stat = lstatSync(home, { bigint: true });
     let binding: ActivePlacementBinding | undefined;
-    if (!placementRuntimeRefusal(realHome)) {
-      const markers = readPlacementRuntimeMarkers(realHome);
-      if (schema(markers.profile) === PLACEMENT_PROFILE_SCHEMA) binding = readActivePlacementBinding(realHome, markers.profile, markers.shards);
-    }
+    try {
+      if (!placementRuntimeRefusal(realHome)) {
+        const markers = readPlacementRuntimeMarkers(realHome);
+        if (schema(markers.profile) === PLACEMENT_PROFILE_SCHEMA) binding = readActivePlacementBinding(realHome, markers.profile, markers.shards);
+      }
+    } catch { /* A changed real binding leaves scratch unadmitted; doctor reports its real-home refusal. */ }
     return await doctorContext.run({ home, dev: stat.dev, ino: stat.ino, realHome, binding }, () => run(scratch));
   } finally { rmSync(scratch, { recursive: true, force: true }); }
 }
