@@ -33,6 +33,18 @@ test("#448: extension chain verifies original binding, sequence and unchanged by
   writeFileSync(file, text(first), { mode: 0o600 }); expect(() => history.assertCurrent()).toThrow();
 });
 
+test("#448: extension journal anchors cannot rewind or change at the same sequence", async () => {
+  const { f, binding, make, file } = await fixture(), base = make(hex("1"));
+  const { seal: _firstSeal, ...firstBody } = base;
+  const first = createRealmExtension({ ...firstBody, journal: { sequence: 1, headHash: hex("5") } });
+  const { seal: _secondSeal, ...secondBody } = make(hex("2"), 2, first.seal);
+  for (const journal of [{ sequence: 0, headHash: binding.epochHash }, { sequence: 1, headHash: hex("6") }]) {
+    const second = createRealmExtension({ ...secondBody, journal });
+    writeFileSync(file, text(first) + text(second), { mode: 0o600 });
+    expect(() => readRealmExtensionHistory(f.home, binding)).toThrow();
+  }
+});
+
 test("#448: extension history fails closed on duplicate, torn, foreign and unsafe evidence", async () => {
   const { f, binding, make, file } = await fixture(), first = make(hex("1"));
   const cases = [text(first).slice(0, -1), text(first) + text(make(hex("1"), 2, first.seal)), text(make(binding.initialProjectHashes[0]!)), text({ ...first, homeHash: hex("9") })];

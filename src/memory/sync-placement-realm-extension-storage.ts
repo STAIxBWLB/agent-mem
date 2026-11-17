@@ -48,13 +48,14 @@ function readHistory(homeInput: string, binding: RealmExtensionBinding): RealmEx
   checks();
   const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); if (!text.endsWith("\n")) return fail();
   const lines = text.slice(0, -1).split("\n"); if (!lines.length || lines.length > REALM_EXTENSION_LIMIT) return fail();
-  const records: RealmExtension[] = [], seen = new Set(binding.initialProjectHashes); let head = genesis;
+  const records: RealmExtension[] = [], seen = new Set(binding.initialProjectHashes); let head = genesis, journalSequence = 0, journalHead = binding.epochHash;
   for (const [index, line] of lines.entries()) {
     const record = validateRealmExtension(JSON.parse(line));
     if (canonicalJSON(record) !== line || record.sequence !== index + 1 || record.previousHash !== head
       || record.epochHash !== binding.epochHash || record.activationHash !== binding.activationHash || record.homeHash !== binding.homeHash
-      || record.generation !== binding.generation || seen.has(record.realm.keyHash)) return fail();
-    seen.add(record.realm.keyHash); head = record.seal; records.push(record);
+      || record.generation !== binding.generation || seen.has(record.realm.keyHash)
+      || record.journal.sequence < journalSequence || record.journal.sequence === journalSequence && record.journal.headHash !== journalHead) return fail();
+    seen.add(record.realm.keyHash); head = record.seal; journalSequence = record.journal.sequence; journalHead = record.journal.headHash; records.push(record);
   }
   checks(); return { records, headHash: head, assertCurrent: checks };
 }

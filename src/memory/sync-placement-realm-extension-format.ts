@@ -56,7 +56,8 @@ function checked(input: unknown, sealed: boolean): RealmExtension {
     realm: { scope: "project", keyHash: hex(realm.keyHash), bindingHash: hex(realm.bindingHash) },
     sourceHash: hex(row.sourceHash), aliasesHash: hex(row.aliasesHash), policyHash: hex(row.policyHash), writerHash: hex(row.writerHash),
     journal: { sequence: integer(journal.sequence, 0, 20_000), headHash: hex(journal.headHash) } };
-  if (body.sequence === 1 && body.previousHash !== realmExtensionGenesis(body.epochHash, body.activationHash)) return fail();
+  if (body.sequence === 1 && body.previousHash !== realmExtensionGenesis(body.epochHash, body.activationHash)
+    || body.journal.sequence === 0 && body.journal.headHash !== body.epochHash) return fail();
   const result = { ...body, seal: hashJSON(body) };
   if (sealed && hex(row.seal) !== result.seal || Buffer.byteLength(canonicalJSON(result) + "\n") > RECORD_MAX_BYTES) return fail();
   return result;

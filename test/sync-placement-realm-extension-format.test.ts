@@ -12,7 +12,7 @@ test("#448: extension seals bind one realm, epoch, source, policy, writers and j
   const record = createRealmExtension(body()); expect(validateRealmExtension(record)).toEqual(record);
   expect(JSON.stringify(record)).not.toContain("project-name");
   for (const changed of [{ ...record, homeHash: hex("9") }, { ...record, extra: true }, { ...record, realm: { ...record.realm, key: "project-name" } },
-    { ...record, sequence: REALM_EXTENSION_LIMIT + 1 }, { ...record, previousHash: hex("0") }]) expect(() => validateRealmExtension(changed)).toThrow();
+    { ...record, sequence: REALM_EXTENSION_LIMIT + 1 }, { ...record, previousHash: hex("0") }, { ...record, journal: { sequence: 0, headHash: hex("9") } }]) expect(() => validateRealmExtension(changed)).toThrow();
 });
 
 test("#448: extension validation never invokes a getter or accepts proxy metadata", () => {
