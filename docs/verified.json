@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "d3d8fdaf6f2b27028fb3d9928c13169bef33914b",
+      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "d3d8fdaf6f2b27028fb3d9928c13169bef33914b",
+      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
       "paths": [
         "package.json",
         "bin/",
@@ -30,7 +30,7 @@
       ]
     },
     "docs/purge.md": {
-      "verifiedAgainst": "edd89ca0ceab574c166c525df6a0dfc9ab5d5c04",
+      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
       "paths": [
         "src/memory/forget-nearby.ts",
         "src/memory/commands.ts",
@@ -48,7 +48,7 @@
       ]
     },
     "docs/curated-shard-migration.md": {
-      "verifiedAgainst": "edd89ca0ceab574c166c525df6a0dfc9ab5d5c04",
+      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
       "paths": [
         "src/memory/shard-migration.ts",
         "src/memory/migrate.ts",
