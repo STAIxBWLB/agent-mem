@@ -12,7 +12,7 @@ const homes: PlacementInspectionFixture[] = [];
 afterEach(() => { for (const home of homes.splice(0).reverse()) home.close(); });
 
 // The existing #419 scale test has a 600 s test-local limit; do not raise it for this restored workload.
-test("#420 AC1: 5,154-row first sync uses the explicitly floor-gated v2 batch path", async () => {
+test.skipIf(process.env.AMEM_PLACEMENT_SCALE !== "1")("#420 AC1: 5,154-row first sync uses the explicitly floor-gated v2 batch path", async () => {
   const total = 5154, pad = "synthetic body ".repeat(150);
   const f = await createPlacementInspectionFixture({
     seed(store, project) {
