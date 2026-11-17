@@ -75,7 +75,7 @@ test("review acceptance invalidates inside its outer writer fence and publishes 
   } finally { f.store.close(); }
 });
 
-test("a project mutation rebuilds only its touched cache after home-wide invalidation", () => {
+test("#424: a project mutation rebuilds its own cache and keeps every other project's prebuilt brief", () => {
   const f = fixture(), other = "curated-write-quiet-peer";
   const add = (project: string, text: string) => f.store.note({ op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "fixture", source: "person", text, about: [] });
   const peerCache = () => readBriefCache({ directory: captureShardDir(f.base, other, machineId(f.base).id), project: other, section: "curated" });
@@ -88,6 +88,9 @@ test("a project mutation rebuilds only its touched cache after home-wide invalid
     const projectRows = f.cache()?.rows.map(row => (row.data as { text: string }).text) ?? [];
     expect(projectRows).toHaveLength(2);
     expect(projectRows).toEqual(expect.arrayContaining(["project P baseline", "project P changed"]));
+    expect(peerCache()?.rows.map(row => (row.data as { text: string }).text)).toEqual(["project Q baseline"]);
+    // A shared row can reach every project's preference slot, so it still invalidates home-wide.
+    f.store.note({ op: "note", project: f.project, scope: "shared", tier: "long", kind: "decision", peer: "fixture", source: "person", text: "shared change", about: [] });
     expect(peerCache()).toBeUndefined();
   } finally { f.store.close(); }
 });

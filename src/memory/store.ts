@@ -214,6 +214,8 @@ interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundPr
 // Defer publication until the outermost source fence in this process has released.
 const curatedDepth = new Map<string, number>();
 const curatedPending = new Map<string, Map<MemoryStore, Set<string>>>();
+/** #424: a project-scope, non-preference row appears only in its own project's prebuilt curated brief (the preference slot also reads shared rows). */
+const curatedLocal = (row: { scope?: string; kind?: string }): boolean => row.scope === "project" && row.kind !== "preference";
 let publishingCurated = false;
 
 export class MemoryStore {
@@ -305,8 +307,9 @@ export class MemoryStore {
       try { chmodSync(indexFile, 0o600); } catch { /* best effort */ }
       if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
         apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work), beforeCuratedWrite: targets => {
-          invalidateCuratedCaches(this.profile.home);
-          const rows = this.db.query("SELECT DISTINCT project FROM entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(targets)) as { project: string }[];
+          const rows = this.db.query("SELECT project, scope, kind FROM entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(targets)) as { project: string; scope: string; kind: string }[];
+          // #424: only the touched projects' prebuilt briefs; a shared or preference row (or an unknown target) can reach every project's slot.
+          invalidateCuratedCaches(this.profile.home, rows.length === targets.length && rows.every(row => curatedLocal(row)) ? rows.map(row => row.project) : undefined);
           this.queueCuratedProjects(rows.map(row => row.project));
         },
         ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
@@ -427,9 +430,10 @@ export class MemoryStore {
     };
   }
 
-  private markCuratedChange(project?: string): void {
+  /** #424: `local` means the change is visible only in `project`'s prebuilt brief; otherwise every project's cache is invalidated. */
+  private markCuratedChange(project?: string, local = false): void {
     if (this.bootstrapOnly) return;
-    invalidateCuratedCaches(this.profile.home);
+    invalidateCuratedCaches(this.profile.home, project && local ? [project] : undefined);
     this.queueCuratedProjects(project ? [project] : []);
   }
 
@@ -643,8 +647,9 @@ export class MemoryStore {
     return this.withMutation(() => {
       this.generationIndex?.assertAppendable(local, this.machine.id);
       const id = entryId(body);
-      const affected = "project" in body ? String(body.project) : "target" in body && typeof body.target === "string" ? (this.db.query("SELECT project FROM entries WHERE id=? OR task=?").get(body.target, body.target) as { project: string } | null)?.project : undefined;
-      if (body.op !== "goal" && body.op !== "goal_state" && body.op !== "goal_link") this.markCuratedChange(affected);
+      const owner = "project" in body ? body as { project: string; scope?: string; kind?: string } : "target" in body && typeof body.target === "string" ? this.db.query("SELECT project, scope, kind FROM entries WHERE id=? OR task=?").get(body.target, body.target) as { project: string; scope: string; kind: string } | null : undefined;
+      const affected = owner ? String(owner.project) : undefined;
+      if (body.op !== "goal" && body.op !== "goal_state" && body.op !== "goal_link") this.markCuratedChange(affected, !!owner && curatedLocal(owner));
       appendFileSync(join(this.dir, local ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       // The line is durable even if indexing fails; the next refresh catches up from the authoritative log.
       try { this.refresh(); } catch (e) { this.stale = true; this.log(`hub memory index not updated yet: ${(e as Error).message}`); }
@@ -693,7 +698,7 @@ export class MemoryStore {
       if (known) return { id: known.id, added: false };
       // The second own-segment writer after `appendBody`; an import of a row already present above refuses nothing because it writes nothing.
       this.assertPreferenceWritable(body);
-      this.markCuratedChange(n.project);
+      this.markCuratedChange(n.project, curatedLocal(n));
       appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       return { id, added: true };
     });
