@@ -122,6 +122,25 @@ jobs:
           fi
       - run: bun scripts/check-docs.ts
       - run: npm pack --dry-run
+      # #420 AC1: advisory only; the ordinary test shards skip this 5,154-row workload.
+      - name: Placement 5154-row batch measurement
+        if: always() && !cancelled()
+        continue-on-error: true
+        env:
+          AMEM_PLACEMENT_SCALE: "1"
+        run: |
+          set -o pipefail
+          SECONDS=0
+          placement_status=0
+          bun test test/sync-placement-batch-scale.test.ts 2>&1 | tee placement-batch-scale.log || placement_status=$?
+          {
+            echo '## Placement 5154-row batch measurement'
+            echo "Fixture elapsed: ${SECONDS}s; exit: ${placement_status}"
+            echo '```'
+            cat placement-batch-scale.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$placement_status"
       - name: Console inbox small fixture (timing report-only)
         run: |
           set -o pipefail
