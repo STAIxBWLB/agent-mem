@@ -1,7 +1,7 @@
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
-import { assertPlacementRuntime, doctorScratchBinding, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
+import { assertPlacementRuntime, doctorScratchBinding, doctorScratchInventory, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -170,13 +170,17 @@ export class PlacementRealmRefusal extends Error {
 export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }, origin: "cwd binding" | "remote" | "local binding" = "local binding"): void {
   assertPlacementRuntime(memoryDir);
   const selector = readProfileJSON(join(memoryDir, "profile.json")) as {schema?:unknown} | undefined;
+  let recheckInventory: (() => void) | undefined;
   if (selector?.schema === "agent-mem.profile/v3") {
-    const active = doctorScratchBinding(memoryDir) ?? readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
+    const scratch = doctorScratchBinding(memoryDir);
+    const active = scratch ?? readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
     const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
     // An appended same-epoch extension is part of the inventory a curated write may open (#448); a realm it does not name stays refused.
-    const realms = active ? readEffectiveRealmInventory(memoryDir, active).realms : undefined;
-    if (!realms?.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
+    const inventory = scratch ? doctorScratchInventory(memoryDir) : active ? readEffectiveRealmInventory(memoryDir, active) : undefined;
+    if (!inventory?.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
       throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin);
+    inventory.assertCurrent();
+    recheckInventory = inventory.assertCurrent;
   }
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
   const check = (path: string, directory: boolean) => {
@@ -190,6 +194,7 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
   for (const folder of ["log", "local", "legacy", "legacy/log", "legacy/local", "legacy-main", "legacy-main/log", "legacy-main/local"]) check(join(dir, folder), true);
   for (const name of ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "legacy/machine.json", "legacy-main/machine.json", "prune-translations.jsonl"]) check(join(dir, name), false);
   for (const database of new Set(["index.db", "index-v2.db", indexFileName(false), indexFileName(true), "search.db", "mutation-lock.db"])) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
+  recheckInventory?.();
 }
 
 /** Open one already-sealed shard without consulting the legacy home or the catalog. */

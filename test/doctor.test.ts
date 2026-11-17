@@ -615,6 +615,21 @@ test("#453: doctor checks a valid placement home through a private snapshot with
   } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }, 120_000);
 
+test("#448: doctor checks an admitted realm through its private snapshot without changing the live home", async () => {
+  const r = rig();
+  const { inventoryFixture, closeInventoryFixtures } = await import("./fakes/sync-placement-inventory.ts");
+  const { applyRealmAdmission } = await import("../src/memory/sync-placement-realm-admission.ts");
+  const f = await inventoryFixture(1, ["example.test/doctor/initial"], true); cleanup.push(closeInventoryFixtures);
+  expect(await applyRealmAdmission(f.home, r.project, { mode: "apply" })).toMatchObject({ state: "admitted" });
+  const before = tree(f.home), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
+  try {
+    const report = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false }));
+    for (const name of ["duplicates", "stale", "brief"]) expect(["ok", "attention", "skipped"], `${name}: ${JSON.stringify(report.sections[name])}`).toContain(report.sections[name].status);
+    expect(report.sections.index).toMatchObject({ status: "skipped", reason: expect.stringContaining("amem rebuild") });
+    expect(tree(f.home)).toEqual(before);
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}, 120_000);
+
 test("#453: doctor does not report a divergent live placement index as healthy", async () => {
   const r = rig();
   const { createPlacementInspectionFixture } = await import("./fakes/sync-placement-inspection.ts");
@@ -651,6 +666,7 @@ test("#453: scratch admission is absent from public entries and only doctor impo
   for (const entry of [await import("../src/index.ts"), await import("../src/memory/platform.ts"), await import("../src/ui/plugin.ts")]) {
     expect(Object.hasOwn(entry, "withDoctorPlacementScratch")).toBe(false);
     expect(Object.hasOwn(entry, "doctorScratchBinding")).toBe(false);
+    expect(Object.hasOwn(entry, "doctorScratchInventory")).toBe(false);
   }
   const root = join(import.meta.dir, "../src"), users: string[] = [];
   const walk = (dir: string): void => {
@@ -668,7 +684,7 @@ test("#453: scratch admission is absent from public entries and only doctor impo
 test("#453: admission rejects an unrelated directory and a replaced scratch inode", async () => {
   const r = rig();
   const { createPlacementInspectionFixture } = await import("./fakes/sync-placement-inspection.ts");
-  const { withDoctorPlacementScratch, doctorScratchBinding, placementRuntimeRefusal } = await import("../src/memory/sync-placement-guard.ts");
+  const { withDoctorPlacementScratch, doctorScratchBinding, doctorScratchInventory, placementRuntimeRefusal } = await import("../src/memory/sync-placement-guard.ts");
   const f = await createPlacementInspectionFixture({ project: r.project }); cleanup.push(f.close);
   const other = join(r.root, "other"); mkdirSync(other, { mode: 0o700 });
   for (const name of ["profile.json", "shards.json"]) copyFileSync(join(f.home, name), join(other, name));
@@ -676,11 +692,14 @@ test("#453: admission rejects an unrelated directory and a replaced scratch inod
     const home = join(scratch, "home");
     for (const name of ["profile.json", "shards.json"]) copyFileSync(join(f.home, name), join(home, name));
     expect(doctorScratchBinding(home)).toBeDefined();
+    expect(doctorScratchInventory(home)).toBeDefined();
     expect(doctorScratchBinding(other)).toBeUndefined();
+    expect(doctorScratchInventory(other)).toBeUndefined();
     expect(placementRuntimeRefusal(other)).toBeDefined();
     renameSync(home, join(scratch, "original")); mkdirSync(home, { mode: 0o700 });
     for (const name of ["profile.json", "shards.json"]) copyFileSync(join(f.home, name), join(home, name));
     expect(doctorScratchBinding(home)).toBeUndefined();
+    expect(doctorScratchInventory(home)).toBeUndefined();
     expect(placementRuntimeRefusal(home)).toBeDefined();
   });
   expect(doctorScratchBinding(other)).toBeUndefined();
