@@ -6,7 +6,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
-- Skip a cwd project outside the activated placement inventory while syncing the user realm. Refs #449.
+- Under an active sync placement, `amem sync` from a directory whose project is outside the activated inventory no longer fails: it skips that project, syncs the user realm and says so. A realm refused as outside the inventory now names its scope, key hash and origin (cwd binding or remote). Refs #449.
 
 ## 0.28.1
 
