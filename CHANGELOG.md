@@ -8,6 +8,13 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - Measure a 5,154-row first placement sync with the explicitly enabled v2 batch path in advisory Ubuntu and macOS CI jobs. Refs #420.
 
+### Changed
+
+- Under an active sync placement, one `amem sync` now covers every realm in the activated inventory regardless of the working directory, as sequential publications of at most two realms (user realm first, then project realms by key hash). Atomicity and crash recovery stay per publication: a failed publication stops the run, the output and `amem sync --status` name each realm's outcome by `user` or key hash, and a rerun resumes the retained publication first. The 0.28.2 skip notice for an unlisted cwd no longer applies to placement sync. Refs #450.
+- Compatibility with N-1 (0.28.2), sync wire and remote refs: unchanged; each publication writes the same refs, descriptors and packs as before.
+- Compatibility with N-1 (0.28.2), placement journal and publication plans: unchanged formats; every retained plan still has at most two targets, so a 0.28.2 reader resumes or inspects it. No floor is raised.
+- Compatibility with N-1 (0.28.2), sync status sidecar: snapshots may carry an additive `inventory` object; 0.28.2 `sync --status` ignores it (tested against the verbatim 0.28.2 reader).
+
 ### Fixed
 
 - On an activated sync placement, let doctor check duplicates, stale references and brief coverage after validating the real home. The index check is skipped with an amem rebuild instruction because opening a placement index rebuilds it. Refs #453.

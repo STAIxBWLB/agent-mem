@@ -17,9 +17,9 @@ Bun.plugin({name:"cadence-test-observation",setup(build){
  });
  build.onLoad({filter:/[/]sync-placement-transport[.]ts$/},({path})=>{
   let source=cadenceReadSource(path,"utf8");
-  const anchor='  return new PlacementTransport(store, opts, phase, testOnlyError, testOnlyClock).run();';
+  const anchor='  return new PlacementTransport(store, opts, phase, testOnlyError, testOnlyClock, targets).run();';
   if(source.split(anchor).length!==2)throw Error("cadence diagnostic transport anchor changed; update test/fakes/cadence-diagnostic.ts against sync-placement-transport.ts before probing");
-  source=source.replace(anchor,'  globalThis.__cadenceProbe.mark("transport-enter"); const cadenceObservedPhase=async(name)=>{globalThis.__cadenceProbe.mark("transport:"+name);await phase?.(name);}; return new PlacementTransport(store, opts, cadenceObservedPhase, testOnlyError, testOnlyClock).run();');
+  source=source.replace(anchor,'  globalThis.__cadenceProbe.mark("transport-enter"); const cadenceObservedPhase=async(name)=>{globalThis.__cadenceProbe.mark("transport:"+name);await phase?.(name);}; return new PlacementTransport(store, opts, cadenceObservedPhase, testOnlyError, testOnlyClock, targets).run();');
   return{contents:source,loader:"ts"};
  });
  build.onLoad({filter:/[/]cli[.]ts$/},({path})=>{

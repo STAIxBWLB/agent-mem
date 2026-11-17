@@ -5,7 +5,7 @@ import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
 import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
 import { AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
 import { proposeConsolidation } from "./memory/consolidate.ts";
@@ -33,7 +33,7 @@ import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
 import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-overlaps.ts";
 import { openCuratedForRead } from "./memory/curated-read.ts";
-import { aliasedKeys, appendAlias, appendUnalias, assertCuratedShardPaths, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
 import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
 import { CaptureStore, readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
@@ -1208,7 +1208,6 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   let output: string;
   let placementWriters: import("./sync-placement-writer-context.ts").PlacementWriterContext | undefined;
   let progress: import("./memory/sync-progress.ts").SyncProgress | undefined;
-  let skippedCwdProject = false;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
     if (sub === "sync" && (readPlacementRuntimeMarkers(syncHome).profile as { publicationFormat?:string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
@@ -1216,19 +1215,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       progress = await placementProgress(syncHome, typeof options["--progress"] === "string" ? options["--progress"] as string : "auto", context);
       placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));
       const markers = readPlacementRuntimeMarkers(syncHome);
-      const active = readActivePlacementBinding(syncHome, markers.profile, markers.shards);
-      if (!active) throw Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
-      skippedCwdProject = !active.activation.realms.some(realm => realm.scope === "project" && realm.keyHash === createHash("sha256").update(boundProject()).digest("hex"));
+      if (!readActivePlacementBinding(syncHome, markers.profile, markers.shards)) throw Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
     }
-    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open: skippedCwdProject ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : sub === "sync" && placementWriters ? () => { assertCuratedShardPaths(syncHome, { project: boundProject() }, "cwd binding"); return open(); } : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },
       // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.
       forgetNearby: note => forgetNearby({ base: memoryHome(), project: note.project, text: note.text, title: note.title, screen: value => configured.screenStandalone(value) }) }));
-    if (skippedCwdProject) {
-      const notice = "cwd project is not in the activated inventory and was skipped";
-      output = options["--json"] ? JSON.stringify({ ...JSON.parse(output), skippedCwdProject: notice }, null, 2) : `${output}\n${notice}`;
-    }
   } catch (error) {
     if (sub === "sync") progress?.finish(stop?.cause() ? "cancelled" : "failed", stop?.cause() ? "cancelled" : "unavailable");
     if (sub === "sync") stampSync((error as Error).message, stop?.cause());
