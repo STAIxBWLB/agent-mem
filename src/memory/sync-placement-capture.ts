@@ -307,7 +307,6 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, markers,
     directories: directories.sort(), prefixes, rows, specialRows, sourceRowsByRealm };
 }
-/** Read-only preview shares the source collector, without fabricating a quiescence attestation. */
 /** The homeHash a retained epoch (or an in-flight activation) already committed to, so a reboot-renumbered device keeps binding (#444). */
 function pinnedHomeHash(home: string, activeHead: string | undefined, activating: boolean): string | undefined {
   try {
@@ -316,6 +315,7 @@ function pinnedHomeHash(home: string, activeHead: string | undefined, activating
   } catch { /* unreadable metadata stays refused by the binding checks */ }
   return undefined;
 }
+/** Read-only preview shares the source collector, without fabricating a quiescence attestation. */
 export function previewSyncPlacementSources(home: string): PlacementSourcePreview {
   return previewSources(home);
 }
