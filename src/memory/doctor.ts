@@ -253,7 +253,9 @@ function duplicatesAndStale(options: DoctorOptions, rows: View[], store: MemoryS
 
 /** The incremental index, as a reader would refresh it from the snapshot of the live one, against a full rebuild of the same logs. Both live in the scratch copy. */
 function indexSection(store: MemoryStore, layout: Layout, snapshotted: boolean): Section {
-  if (layout !== "shared-v1" && store.profile.publicationFormat !== "agent-mem.sync-placement/v1") return skipped("a curated split or generation home builds and seals its index when it is created; amem rebuild repeats it");
+  if (layout !== "shared-v1") return skipped(store.profile.publicationFormat === "agent-mem.sync-placement/v1"
+    ? "the live placement index cannot be compared without rebuilding it on open; run amem rebuild to rebuild the index"
+    : "a curated split or generation home builds and seals its index when it is created; amem rebuild repeats it");
   try {
     store.list({ limit: 1 });                         // brings the snapshot level with the logs, as the next reader would
     const incremental = store.dump(); store.rebuild();

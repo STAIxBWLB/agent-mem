@@ -609,7 +609,25 @@ test("#453: doctor checks a valid placement home through a private snapshot with
   const before = tree(f.home), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
   try {
     const report = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false }));
-    for (const name of ["duplicates", "stale", "brief", "index"]) expect(["ok", "attention"], `${name}: ${JSON.stringify(report.sections[name])}`).toContain(report.sections[name].status);
+    for (const name of ["duplicates", "stale", "brief"]) expect(["ok", "attention"], `${name}: ${JSON.stringify(report.sections[name])}`).toContain(report.sections[name].status);
+    expect(report.sections.index).toMatchObject({ status: "skipped", reason: expect.stringContaining("amem rebuild") });
+    expect(tree(f.home)).toEqual(before);
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}, 120_000);
+
+test("#453: doctor does not report a divergent live placement index as healthy", async () => {
+  const r = rig();
+  const { createPlacementInspectionFixture } = await import("./fakes/sync-placement-inspection.ts");
+  const { shardDir } = await import("../src/memory/shard.ts");
+  const { Database } = await import("bun:sqlite");
+  const f = await createPlacementInspectionFixture({ project: r.project }); cleanup.push(f.close);
+  const db = new Database(join(shardDir(f.home, r.project), indexFileName(true)));
+  try { expect(db.run("DELETE FROM entries WHERE rowid = (SELECT MIN(rowid) FROM entries)").changes).toBe(1); }
+  finally { db.close(); }
+  const before = tree(f.home), saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
+  try {
+    const report = JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false }));
+    expect(report.sections.index).toMatchObject({ status: "skipped", reason: expect.stringContaining("amem rebuild") });
     expect(tree(f.home)).toEqual(before);
   } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }, 120_000);
