@@ -36,6 +36,16 @@ async function fixture(rows = ROWS) {
   return { root, base, project, machine, log, options, file: workBriefFile({ base, project, machine }) };
 }
 
+/** A home with one live store, plus the native and library brief options over it. */
+function home(project: string) {
+  const root = mkdtempSync(join(tmpdir(), "amem-brief-work-home-")); roots.push(root);
+  const base = join(root, "memory"), machine = machineId(base).id;
+  const store = new WorkListStore({ base, project, policy: () => true });
+  const options = { cwd: root, base, project, nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 2000 };
+  const live = { cwd: root, base, project, timeRemaining: () => 2000 };
+  return { root, base, project, machine, store, options, live };
+}
+
 test("the incremental fold matches a full rebuild of the same log", async () => {
   const root = mkdtempSync(join(tmpdir(), "amem-brief-work-fold-")); roots.push(root);
   const base = join(root, "memory"), project = "fold-project", machine = machineId(base).id;
@@ -105,4 +115,48 @@ for (const mode of ["missing", "public", "oversize", "symlink", "malformed", "fo
   expect(result.context).toContain("work: work cache missing");
   expect(readdirSync(directory).sort()).toEqual(listing);
   if (bytes) expect(readFileSync(file)).toEqual(bytes);
+});
+
+test("a list whose done items sort first still shows its open item", async () => {
+  const h = home("done-first");
+  try {
+    for (let i = 1; i <= 40; i++) await h.store.write("queue", { task: `task-${String(i).padStart(2, "0")}`, status: "done" });
+    await h.store.write("queue", { task: "task-41", status: "doing" });
+    const native = await sessionStartBrief(h.options), live = await sessionStartBrief(h.live);
+    const view = readWorkBrief({ base: h.base, project: h.project, machine: h.machine })!.rows[0]!.source;
+    expect(view.items).toHaveLength(41);                                                        // every item, so the open one cannot be cut away
+    expect(native.coverage.work).toBe("complete");
+    expect(native.context).toContain("task-41");
+    expect(native.context).not.toContain("task-01");                                            // the display still shows two open items at most
+    const section = (context: string) => context.split("\n").find(line => line.includes('"section":"work"'));
+    expect(section(native.context)).toBe(section(live.context));                                // the snapshot display is the live read's
+  } finally { h.store.close(); }
+});
+
+test("a composed set past the file bound is never published as a subset", async () => {
+  const h = home("oversize-views");
+  try {
+    for (let i = 0; i < 300; i++) await h.store.write("bulk", { task: `item-${String(i).padStart(3, "0")}`, note: "x".repeat(60) });
+    const result = await sessionStartBrief(h.options), file = workBriefFile({ base: h.base, project: h.project, machine: h.machine });
+    expect(statSync(file).size).toBeLessThanOrEqual(WORK_BRIEF_BYTES);
+    expect(result.coverage.work).toBe("unavailable");                                           // stale, not a truncated view that reads complete
+    expect(result.context).toContain("work: work cache stale");
+    expect(result.context).not.toContain("item-");
+  } finally { h.store.close(); }
+});
+
+test("a publish overlapping another same-machine writer never records a frontier ahead of its rows", async () => {
+  const h = home("interleave");
+  const other = new WorkListStore({ base: h.base, project: h.project, policy: () => true });
+  try {
+    await h.store.write("queue", { task: "zero", status: "done" });                              // a published file this write can fold onto
+    const publish = h.store.publishBrief.bind(h.store);
+    other.publishBrief = async () => { /* the second writer appends and then exits before publishing */ };
+    h.store.publishBrief = async (row, prior, appended) => { await other.write("queue", { task: "second", status: "doing" }); await publish(row, prior, appended); };
+    await h.store.write("queue", { task: "first", status: "doing" });
+    const result = await sessionStartBrief(h.options);
+    if (result.coverage.work !== "complete") { expect(result.context).toContain("work: work cache"); return; }
+    expect(result.context).toContain("first");
+    expect(result.context).toContain("second");   // the recorded frontier covers both rows or the file is stale, never one claim for two rows
+  } finally { other.close(); h.store.close(); }
 });

@@ -5,9 +5,9 @@ import type { StandalonePolicyOptions } from "./memory/policy.ts";
 import { shardDir, shardMachineDir } from "./memory/shard.ts";
 import type { WorkListFields, WorkListView } from "./memory/work-lists.ts";
 
-/** Shared bound for the derived work snapshot; it holds every current list, closed ones included. */
+/** Shared bound for the derived work snapshot; it holds every current list, closed ones included, with every item. */
 export const WORK_BRIEF_BYTES = 16 * 1024;
-const SCHEMA = "agent-mem.brief-work/v1", MAX_FIELDS = 64, MAX_ITEMS = 256;
+const SCHEMA = "agent-mem.brief-work/v1", MAX_FIELDS = 64;
 /** Lists one snapshot keeps; past this the brief reports the work section partial. */
 export const WORK_BRIEF_VIEWS = 32;
 
@@ -71,7 +71,7 @@ export function validCachedWork(source: unknown): source is WorkListView {
   if (!source || typeof source !== "object" || Array.isArray(source)) return false;
   const view = source as WorkListView;
   return text(view.list, 300) && validFields(view.fields) && typeof view.closed === "boolean"
-    && Array.isArray(view.items) && view.items.length <= MAX_ITEMS
+    && Array.isArray(view.items)
     && view.items.every(item => !!item && typeof item === "object" && text(item.task, 300) && validFields(item.fields));
 }
 const validSegments = (input: unknown): input is WorkSegment[] => Array.isArray(input) && input.length <= 64
@@ -98,7 +98,10 @@ export function readWorkBrief(binding: WorkBriefBinding): WorkBrief | undefined 
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
-/** Atomic private replacement; the caller publishes under the work store's own writer lock. */
+/**
+ * Atomic private replacement. The caller proves the frontier its rows were read at and writes nothing when the composed set
+ * passes the bound, so an over-cap set leaves the previous file (stale) rather than a subset that reads as complete.
+ */
 export function writeWorkBrief(binding: WorkBriefBinding, brief: WorkBrief): boolean {
   const body = JSON.stringify(brief) + "\n";
   if (Buffer.byteLength(body) > WORK_BRIEF_BYTES) return false;

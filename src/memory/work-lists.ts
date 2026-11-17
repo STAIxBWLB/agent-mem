@@ -11,14 +11,14 @@ import { looksSecret } from "./screen.ts";
 import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
 import { machineId } from "./machine.ts";
-import type { WorkBrief, WorkSegment } from "../brief-work.ts";
+import type { WorkBrief, WorkBriefBinding, WorkSegment } from "../brief-work.ts";
 import { WORK_BRIEF_VIEWS, readWorkBrief, workLogSegments, workPolicyRevision, writeWorkBrief } from "../brief-work.ts";
 import { configuredPolicyOptions } from "./config.ts";
 import { createStandalonePolicy } from "./policy.ts";
 
 const SCHEMA = "agent-mem.work-list/v1", ROW_BYTES = 16_384;
-/** Items one published view keeps; the brief displays only the first two, in sorted order. */
-const BRIEF_ITEMS = 32;
+/** The size of this store's own log segment at one point in time. */
+type SegmentSize = { bytes: number; mtimeMs: number };
 export type WorkListFields = Record<string, string | number | boolean | null>;
 export type WorkListPolicy = (row: unknown) => boolean | Promise<boolean>;
 export interface WorkListSource { source: string; id: string; machine?: string; at?: number }
@@ -127,7 +127,6 @@ function applyWorkRow(rows: WorkBrief["rows"], row: { list: string; fields: Work
   }
   for (const [key, value] of Object.entries(row.fields)) if (key !== "task") { if (value === null) delete target[key]; else target[key] = value; }
   view.closed = view.fields.status === "done";
-  if (view.items.length > BRIEF_ITEMS) view.items.length = BRIEF_ITEMS;
   rows.sort((a, b) => a.source.list.localeCompare(b.source.list));
   return rows;
 }
@@ -146,6 +145,8 @@ export class WorkListStore {
   private readonly busyTimeoutMs: number;
   private readonly readers = new Set<() => void>();
   private closed = false;
+  /** A composed set that passed the snapshot's bound is not retried by this process: see `publish`. */
+  private briefFits = true;
   /** #27: the work logs of keys aliased to this project that already have one; read beside this log through their own snapshot cursors, never written. */
   private readonly aliased: WorkListStore[] = [];
 
@@ -383,7 +384,7 @@ export class WorkListStore {
     if (Buffer.byteLength(canonicalJSON(row)) > ROW_BYTES) return invalid();
     if (!await this.permitted(row)) throw new Error("work-list privacy policy refused the write");
     const log = join(this.dir, "log", `${this.machine}.jsonl`);
-    let prior: { bytes: number; mtimeMs: number } | undefined;
+    let prior: SegmentSize | undefined, appended: SegmentSize | undefined;
     const stored = this.locked(() => {
       this.refresh();
       const key = receipt(row);
@@ -400,43 +401,62 @@ export class WorkListStore {
       const before = lstatSync(log, { throwIfNoEntry: false });
       prior = before ? { bytes: before.size, mtimeMs: before.mtimeMs } : undefined;
       appendFileSync(log, canonicalJSON(row) + "\n", { mode: 0o600 });
+      const after = lstatSync(log);   // the frontier this append alone reached, read under the same lock
+      appended = { bytes: after.size, mtimeMs: after.mtimeMs };
       this.refresh();
       return { id: row.id, already: false };
     });
-    if (!stored.already) await this.publishBrief(row, prior);
+    if (!stored.already) await this.publishBrief(row, prior, appended);
     return stored;
   }
 
   /**
    * Off-hook derived publication for the session-start work section. The common case folds the row just appended into the
    * cached views (a few hundred microseconds); a rebuild reads the whole log and is kept for a foreign or first frontier.
-   * A failure never loses the committed row and leaves the brief unavailable, never stale.
+   * The file always records the frontier its rows were read at, so a row another writer appended in between can only make
+   * the snapshot stale, never make it claim content it does not hold.
    */
-  async publishBrief(row?: Pick<WorkRow, "list" | "fields">, prior?: { bytes: number; mtimeMs: number }): Promise<void> {
+  async publishBrief(row?: Pick<WorkRow, "list" | "fields">, prior?: SegmentSize, appended?: SegmentSize): Promise<void> {
     try {
+      if (!this.briefFits) return;   // the composed views passed the file's bound once; a later write in this process retries
       const options = configuredPolicyOptions(this.base), standalone = createStandalonePolicy(options);
       const segments = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
       if (!segments) return;
       const binding = { base: this.base, project: this.project, machine: this.machine }, policy = workPolicyRevision(options);
-      if (row && prior && standalone.screenStandalone(row)) {
+      if (row && prior && appended && standalone.screenStandalone(row)) {
         const cached = readWorkBrief(binding);
-        if (cached && cached.policy === policy && JSON.stringify(cached.segments) === JSON.stringify(this.priorSegments(segments, prior))) {
+        // A fold is exact only when the cached file is one frame of this log: the pre-append frontier, this store's own
+        // append, and nothing else moved. A dropped list may hide the row's own list, so a truncated file is not folded
+        // into unless the list is already kept whole.
+        const holds = !cached?.truncated || cached.rows.some(item => item.source.list === row.list);
+        if (cached && holds && cached.policy === policy
+          && JSON.stringify(cached.segments) === JSON.stringify(this.frontier(segments, prior))
+          && JSON.stringify(segments) === JSON.stringify(this.frontier(segments, appended))) {
           const rows = applyWorkRow(cached.rows, row);
-          if (rows.length <= WORK_BRIEF_VIEWS && writeWorkBrief(binding, { ...cached, segments, rows })) return;
+          if (rows.length <= WORK_BRIEF_VIEWS && this.publish(binding, { ...cached, segments, rows })) return;
         }
       }
+      const before = segments;
       const views = await this.read(undefined, true, input => standalone.screenStandalone(input));
-      writeWorkBrief(binding, { schema: "agent-mem.brief-work/v1", project: this.project, segments, policy,
-        rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source: { ...source, items: source.items.slice(0, BRIEF_ITEMS) } })),
-        truncated: views.length > WORK_BRIEF_VIEWS });
+      const rest = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
+      if (!rest || JSON.stringify(before) !== JSON.stringify(rest)) return;   // the log moved under the replay: leave the old file stale
+      this.publish(binding, { schema: "agent-mem.brief-work/v1", project: this.project, segments: before, policy,
+        rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source })), truncated: views.length > WORK_BRIEF_VIEWS });
     } catch { /* A later write retries. */ }
   }
 
-  /** The frontier the store held just before its own append: the cached snapshot matches it only when nothing else moved. */
-  private priorSegments(segments: WorkSegment[], prior: { bytes: number; mtimeMs: number }): WorkSegment[] {
+  /** The bound is the file's, so a composed set past it is never written: the section stays unavailable, never a subset. */
+  private publish(binding: WorkBriefBinding, brief: WorkBrief): boolean {
+    const written = writeWorkBrief(binding, brief);
+    if (!written) this.briefFits = false;
+    return written;
+  }
+
+  /** This log's own segment rewritten to one observed size, so a cached frontier can be compared against a single write. */
+  private frontier(segments: WorkSegment[], own: SegmentSize): WorkSegment[] {
     const file = `${this.machine}.jsonl`;
-    return segments.flatMap(segment => segment.key !== this.project || segment.file !== file ? [segment]
-      : [{ ...segment, bytes: prior.bytes, mtimeMs: prior.mtimeMs }]);
+    return segments.map(segment => segment.key !== this.project || segment.file !== file ? segment
+      : { ...segment, bytes: own.bytes, mtimeMs: own.mtimeMs });
   }
 
   /** `policy` screens this read instead of the store's own: the off-hook snapshot uses the standalone policy, never an interactive host prompt. */
