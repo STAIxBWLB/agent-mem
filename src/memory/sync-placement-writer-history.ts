@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, openSync, opendirSync, readSync, unlinkSync, writeSync, type BigIntStats } from "node:fs";
 import { dirname, join } from "node:path";
 import { types } from "node:util";
-import { canonicalJSON, hashJSON } from "./generation.ts";
+import { canonicalJSON } from "./generation.ts";
+import { homeIdentityMatches } from "./home-identity.ts";
 import { realPath } from "./platform.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import {
@@ -70,7 +71,7 @@ function binding(value: WriterHistoryBinding): WriterHistoryBinding {
 interface Paths { home: string; epoch: string; intent: string; log: string; dirs: [string,BigIntStats][] }
 function paths(homeInput: string, input: WriterHistoryBinding): Paths {
   const home=realPath(homeInput), original=checkedDir(homeInput), root=checkedDir(home);
-  if(identity(original)!==identity(root)||hashJSON([home,String(root.dev),String(root.ino),String(root.uid)])!==input.homeHash)fail("changed");
+  if(identity(original)!==identity(root)||!homeIdentityMatches(input.homeHash,home,root))fail("changed");
   const dirs:[string,BigIntStats][]=[[home,root]];
   let current=home;for(const part of ["sync-placement","epochs",input.epochHash]){current=join(current,part);dirs.push([current,checkedDir(current)]);}
   return {home,epoch:current,intent:join(home,WRITER_RENEWAL_INTENT_FILE),log:join(current,WRITER_COMMIT_LOG),dirs};

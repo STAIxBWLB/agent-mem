@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { types } from "node:util";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { realPath } from "./platform.ts";
+import { homeIdentityMatches } from "./home-identity.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { validatePlacementBaseV2, validatePlacementShards, validatePlacementMarkerTransition, PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "./sync-placement-format.ts";
 import { validatePlacementPlan, type SyncPlacementActivationPlan } from "./sync-placement-plan.ts";
@@ -104,7 +105,7 @@ function root(home: string): { home: string; stat: BigIntStats; file: string } {
   if (stat.dev !== current.dev || stat.ino !== current.ino) fail("changed"); return { home: canonical, stat, file: join(canonical, PLACEMENT_ACTIVATION_INTENT_FILE) };
 }
 function bindHome(intent: PlacementActivationIntent, current: ReturnType<typeof root>): void {
-  if (intent.home !== current.home || intent.epoch.homeHash !== hashJSON([current.home, String(current.stat.dev), String(current.stat.ino), String(current.stat.uid)])) fail("changed");
+  if (intent.home !== current.home || !homeIdentityMatches(intent.epoch.homeHash, current.home, current.stat)) fail("changed");
 }
 interface Read { intent: PlacementActivationIntent; text: string; stat: BigIntStats }
 function read(current: ReturnType<typeof root>): Read | undefined {

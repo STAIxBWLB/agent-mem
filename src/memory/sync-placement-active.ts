@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Bi
 import { join } from "node:path";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { realPath } from "./platform.ts";
+import { homeIdentityHash } from "./home-identity.ts";
 import { validatePlacementProfile, validatePlacementShards, type PlacementProfile, type PlacementShards } from "./sync-placement-format.ts";
 import { validatePlacementPlan, type SyncPlacementActivationPlan } from "./sync-placement-plan.ts";
 import { placementEpochHash, validatePlacementEpoch, validatePlacementActiveFence, type PlacementEpoch } from "./sync-placement-journal-format.ts";
@@ -84,7 +85,7 @@ export function readActivePlacementBinding(homeInput: string, profileInput: unkn
   const epochFile = read(join(dir, "epoch.json")), activationFile = read(join(dir, "activation.json")), fenceFile = read(join(home, "sync-placement", "active.json"));
   if (!epochFile || !activationFile || !fenceFile) return undefined;
   const epoch = validatePlacementEpoch(epochFile.value), activation = validatePlacementPlan(activationFile.value), fence = validatePlacementActiveFence(fenceFile.value);
-  const homeHash = hashJSON([home, String(root.dev), String(root.ino), String(root.uid)]);
+  const homeHash = homeIdentityHash(home, root, epoch.homeHash);
   if (epoch.homeHash !== homeHash || epoch.generation !== profile.generation || placementEpochHash(epoch) !== profile.placementHead
     || activation.contextHash !== epoch.contextHash || activation.generation !== epoch.generation || activation.targetProfile.placementHead !== profile.placementHead
     || fence.epochHash !== profile.placementHead || fence.homeHash !== homeHash || fence.generation !== profile.generation) fail();
