@@ -11,6 +11,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ### Fixed
 
 - On an activated sync placement, let doctor check duplicates, stale references and brief coverage after validating the real home. The index check is skipped with an amem rebuild instruction because opening a placement index rebuilds it. Refs #453.
+- Keep other projects' prebuilt curated session briefs when one project's curated notes change. A project-scope, non-preference change now invalidates only that project's `brief-curated.json` and `brief-preferences.json`. A shared (user realm) or preference change still invalidates every project. Before this, most session starts reported `curated: curated cache missing`. Work-section coverage at session start remains open in #455. Refs #424.
 
 ## 0.28.2
 

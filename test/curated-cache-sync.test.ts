@@ -90,3 +90,21 @@ test("sharded sync pull publishes cache without a publicly pruned row", async ()
   expect(current.curated).toBeDefined();
   expect(current.rows.some(row => (row.source as { id: string }).id === target)).toBe(false);
 });
+
+test("#424: a generation prune of a cross-project replacement invalidates the predecessor cache", async () => {
+  const home = temp(), seed = new MemoryStore({ home, profile: "shared-v1", deferPromotions: true });
+  const memoryDir = seed.dir; seed.close();
+  await migrate({ memoryDir, generation: G, mode: "apply", authorizedPerson: true, tty: true });
+  const clock = { now: Date.parse("2030-01-01T00:00:00.000Z") };
+  const store = track(new MemoryStore({ home, profile: { generation: G }, deferPromotions: true, ttlMs: 1000, now: () => clock.now }));
+  const first = store.note(note("curated/project-a", "generation original"));
+  const replacement = store.note({ ...note("curated/project-b", "generation replacement"), supersedes: first });
+  expect(store.demote(replacement, "person", "curated/project-b")).toBeDefined();
+  clock.now += 2000;
+  store.prepareCuratedBriefs(["curated/project-a"]); expect(cache(store, "curated/project-a")).toBeDefined();
+  const auth = { project: "curated/project-b", actor: "person" as const, authorize: () => true };
+  const plan = planPrune(store.prunePort(), { cutoff: new Date(clock.now).toISOString(), targets: [replacement] }, auth);
+  expect(plan.rows).toHaveLength(1);
+  expect(applyPrune(store.prunePort(), plan, auth).completed).toContain(plan.rows[0]!.payload.id);
+  expect(cache(store, "curated/project-a")).toBeUndefined();
+});

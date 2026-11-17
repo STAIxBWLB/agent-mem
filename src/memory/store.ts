@@ -214,6 +214,8 @@ interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundPr
 // Defer publication until the outermost source fence in this process has released.
 const curatedDepth = new Map<string, number>();
 const curatedPending = new Map<string, Map<MemoryStore, Set<string>>>();
+/** #424: a project-scope, non-preference row appears only in its own project's prebuilt curated brief (the preference slot also reads shared rows). */
+const curatedLocal = (row: { scope?: string; kind?: string }): boolean => row.scope === "project" && row.kind !== "preference";
 let publishingCurated = false;
 
 export class MemoryStore {
@@ -305,8 +307,9 @@ export class MemoryStore {
       try { chmodSync(indexFile, 0o600); } catch { /* best effort */ }
       if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
         apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work), beforeCuratedWrite: targets => {
-          invalidateCuratedCaches(this.profile.home);
-          const rows = this.db.query("SELECT DISTINCT project FROM entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(targets)) as { project: string }[];
+          const rows = this.db.query("SELECT project, scope, kind FROM entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(targets)) as { project: string; scope: string; kind: string }[];
+          // #424: only the touched projects' prebuilt briefs; a shared or preference row (or an unknown target) can reach every project's slot.
+          invalidateCuratedCaches(this.profile.home, rows.length === targets.length && rows.every(row => curatedLocal(row)) && rows.every(row => this.curatedChangeLocal(row.project, targets)) ? rows.map(row => row.project) : undefined);
           this.queueCuratedProjects(rows.map(row => row.project));
         },
         ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
@@ -427,9 +430,59 @@ export class MemoryStore {
     };
   }
 
-  private markCuratedChange(project?: string): void {
+  // ponytail: retain at most 4096 relation rows per store; above that, invalidate home-wide. Upgrade to a bounded indexed relation lookup if this ceiling becomes common.
+  private curatedRelations: Set<string> | null | undefined;
+  private curatedRelationsVersion: number | undefined;
+  private hasCuratedRelation(id: string): boolean {
+    try {
+      if (this.stale || (!this.generationIndex && this.shape() !== this.seen)) { this.curatedRelations = undefined; return true; }
+      if (this.generationIndex) {
+        if (!this.profile.sharded) return true; // This handle cannot prove the full multi-project generation frontier is current.
+        return !!this.db.query("SELECT 1 FROM entries WHERE supersedes=? OR promoted_from=? LIMIT 1").get(id, id)
+          || !!this.db.query("SELECT 1 FROM ops WHERE op='supersede' AND (target=? OR by=?) LIMIT 1").get(id, id);
+      }
+      const version = (this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version;
+      if (this.curatedRelationsVersion !== version) { this.curatedRelations = undefined; this.curatedRelationsVersion = undefined; }
+      if (this.curatedRelations === null) return true;
+      if (!this.curatedRelations) {
+        const notes = this.db.query("SELECT id, supersedes, promoted_from FROM entries WHERE supersedes IS NOT NULL OR promoted_from IS NOT NULL LIMIT 4097").all() as { id: string; supersedes: string | null; promoted_from: string | null }[];
+        const ops = this.db.query("SELECT target, by FROM ops WHERE op='supersede' LIMIT 4097").all() as { target: string; by: string | null }[];
+        if ((this.db.query("PRAGMA data_version").get() as { data_version: number }).data_version !== version) return true;
+        this.curatedRelationsVersion = version;
+        if (notes.length + ops.length > 4096) { this.curatedRelations = null; return true; }
+        const ids = new Set<string>();
+        for (const row of notes) for (const value of [row.id, row.supersedes, row.promoted_from]) if (value) ids.add(value);
+        for (const row of ops) for (const value of [row.target, row.by]) if (value) ids.add(value);
+        this.curatedRelations = ids;
+      }
+      return this.curatedRelations.has(id);
+    } catch { this.curatedRelations = undefined; return true; }
+  }
+
+  /** Relations can hide or revive a note in another project. Unresolved or already-related targets fall back to home-wide. */
+  private curatedChangeLocal(project: string, targets: readonly string[]): boolean {
+    if (!targets.length || this.generationIndex && !this.profile.sharded) return false;
+    try {
+      for (const id of targets) {
+        const row = this.db.query("SELECT project, scope, kind, supersedes, promoted_from FROM entries WHERE id=?").get(id) as
+          { project: string; scope: string; kind: string; supersedes: string | null; promoted_from: string | null } | null;
+        if (!row || row.project !== project || !curatedLocal(row) || row.supersedes || row.promoted_from) return false;
+        if (this.hasCuratedRelation(id)) return false;
+      }
+      return true;
+    } catch { return false; }
+  }
+
+  private rememberCuratedRelation(id: string, targets: readonly string[]): void {
+    if (!targets.length || !this.curatedRelations) return;
+    this.curatedRelations.add(id); for (const target of targets) this.curatedRelations.add(target);
+    if (this.curatedRelations.size > 8192) this.curatedRelations = null;
+  }
+
+  /** #424: `local` means the change is visible only in `project`'s prebuilt brief; otherwise every project's cache is invalidated. */
+  private markCuratedChange(project?: string, local = false): void {
     if (this.bootstrapOnly) return;
-    invalidateCuratedCaches(this.profile.home);
+    invalidateCuratedCaches(this.profile.home, project && local ? [project] : undefined);
     this.queueCuratedProjects(project ? [project] : []);
   }
 
@@ -643,8 +696,21 @@ export class MemoryStore {
     return this.withMutation(() => {
       this.generationIndex?.assertAppendable(local, this.machine.id);
       const id = entryId(body);
-      const affected = "project" in body ? String(body.project) : "target" in body && typeof body.target === "string" ? (this.db.query("SELECT project FROM entries WHERE id=? OR task=?").get(body.target, body.target) as { project: string } | null)?.project : undefined;
-      if (body.op !== "goal" && body.op !== "goal_state" && body.op !== "goal_link") this.markCuratedChange(affected);
+      const owner = "project" in body ? body as { project: string; scope?: string; kind?: string } : "target" in body && typeof body.target === "string" ? this.db.query("SELECT project, scope, kind FROM entries WHERE id=? OR task=?").get(body.target, body.target) as { project: string; scope: string; kind: string } | null : undefined;
+      const affected = owner ? String(owner.project) : undefined;
+      if (body.op !== "goal" && body.op !== "goal_state" && body.op !== "goal_link") {
+        let localChange = false;
+        if (body.op === "note") {
+          const references = ["supersedes" in body ? body.supersedes : undefined, "promotedFrom" in body ? body.promotedFrom : undefined]
+            .filter((value): value is string => typeof value === "string" && value.length > 0);
+          localChange = !!owner && !!affected && curatedLocal(owner) && !this.hasCuratedRelation(id)
+            && (!references.length || this.curatedChangeLocal(affected, references));
+        } else if (body.op !== "settle" && owner && affected && "target" in body && typeof body.target === "string") {
+          const targets = [body.target, ...(body.op === "supersede" && "by" in body && typeof body.by === "string" ? [body.by] : [])];
+          localChange = this.curatedChangeLocal(affected, targets);
+        }
+        this.markCuratedChange(affected, localChange);
+      }
       appendFileSync(join(this.dir, local ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       // The line is durable even if indexing fails; the next refresh catches up from the authoritative log.
       try { this.refresh(); } catch (e) { this.stale = true; this.log(`hub memory index not updated yet: ${(e as Error).message}`); }
@@ -693,7 +759,9 @@ export class MemoryStore {
       if (known) return { id: known.id, added: false };
       // The second own-segment writer after `appendBody`; an import of a row already present above refuses nothing because it writes nothing.
       this.assertPreferenceWritable(body);
-      this.markCuratedChange(n.project);
+      const references = [n.supersedes, n.promotedFrom].filter((value): value is string => !!value);
+      const localChange = curatedLocal(n) && !this.hasCuratedRelation(id) && (!references.length || this.curatedChangeLocal(n.project, references));
+      this.markCuratedChange(n.project, localChange);
       appendFileSync(join(this.dir, n.tier === "short" ? "local" : "log", `${this.machine.id}.jsonl`), JSON.stringify({ ...body, id }) + "\n", { mode: 0o600 });
       return { id, added: true };
     });
@@ -926,6 +994,7 @@ export class MemoryStore {
 
   /** Drop the index and read every segment again: the same rows as the incremental index. */
   rebuild(): void {
+    this.curatedRelations = undefined; this.curatedRelationsVersion = undefined;
     this.searchIndex.reset();
     if (this.generationIndex) { this.generationIndex.rebuild(); return; }
     // One transaction: no reader sees the index empty, and no other process commits an offset in between.
@@ -960,6 +1029,7 @@ export class MemoryStore {
       const inserted = this.db.query(`INSERT OR IGNORE INTO entries (id, at, machine, project, scope, tier, kind, peer, title, text, task, about, supersedes, promoted_from, source, expires)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.tier === "long" ? "long" : "short",
         e.kind, e.peer, e.title ?? null, e.text, e.task ?? null, JSON.stringify(e.about.map(String)), e.supersedes ?? null, e.promotedFrom ?? null, e.source ?? "hub", typeof e.expires === "string" ? e.expires : null).changes;
+      this.rememberCuratedRelation(id, [e.supersedes, e.promotedFrom].filter((value): value is string => !!value));
       // The FTS copy follows the committed row. `changes` is only a hint here (bun:sqlite misreports it for ignored
       // inserts inside a transaction): addCurated is idempotent by entry id, and a missed hint becomes a count drift
       // the next search resyncs.
@@ -974,6 +1044,7 @@ export class MemoryStore {
       const dated = !["demote", "settle", "lease", "lease_force"].includes(e.op) || (typeof e.by === "string" && !Number.isNaN(Date.parse(e.by)));
       if (!str(e.target, 400) || !opt(e.by) || !opt(e.actor) || !dated) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
       this.db.query("INSERT OR IGNORE INTO ops (id, op, at, machine, target, by, actor) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, e.op, e.at, e.machine, e.target, e.by ?? null, e.actor ?? "");
+      if (e.op === "supersede" && e.by) this.rememberCuratedRelation(e.target, [e.by]);
     }
   }
 
