@@ -86,7 +86,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       return read.state === "ok" ? read.views : [];
     };
     const candidates = new CandidateStore({ memoryDir: base, ...(reconcile ? { reconcile } : {}) }); closers.push(() => candidates.close());
-    const work = new WorkListStore({ base, project, aliases, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
+    const work = new WorkListStore({ base, project, aliases, briefPolicyOptions: policyOptions, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
     const fullGuard = () => {
       if (!permitted()) unavailable();
       if (closed) unavailable(); options.assertCurrent?.();

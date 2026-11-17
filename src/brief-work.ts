@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, futimesSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { StandalonePolicyOptions } from "./memory/policy.ts";
 import { shardDir, shardMachineDir } from "./memory/shard.ts";
@@ -11,7 +11,7 @@ const SCHEMA = "agent-mem.brief-work/v1", MAX_FIELDS = 64;
 /** Lists one snapshot keeps; past this the brief reports the work section partial. */
 export const WORK_BRIEF_VIEWS = 32;
 
-export interface WorkBriefBinding { base: string; project: string; machine: string }
+export interface WorkBriefBinding { base: string; project: string; machine: string; revision?: string }
 /** One work-log segment's write frontier: a later append changes `bytes` (and `mtimeMs`), which makes a snapshot stale. */
 export interface WorkSegment { key: string; file: string; bytes: number; mtimeMs: number }
 export interface WorkBrief {
@@ -26,16 +26,43 @@ export interface WorkBrief {
   truncated: boolean;
 }
 export function workBriefFile(binding: WorkBriefBinding): string {
-  return join(shardMachineDir(binding.base, binding.project, binding.machine), "brief-work.json");
+  if (binding.revision !== undefined && !/^[a-f0-9]{64}$/.test(binding.revision)) throw new Error("invalid work policy revision");
+  return join(shardMachineDir(binding.base, binding.project, binding.machine), binding.revision ? `brief-work-${binding.revision}.json` : "brief-work.json");
 }
 
 /**
- * The standalone policy inputs that decide which work rows a brief may show. A host policy is left out on purpose: it is
- * applied to every row again at read, so it neither widens nor invalidates a machine-local snapshot.
+ * Static policy inputs only. A host callback has no stable identity and cannot be bound to a snapshot.
  */
 export function workPolicyRevision(options: StandalonePolicyOptions): string {
   return createHash("sha256").update(JSON.stringify({ schema: "agent-mem.standalone-policy/v1",
     denyPaths: [...(options.denyPaths ?? [])].sort(), piiPatterns: [...(options.piiPatterns ?? [])].sort() })).digest("hex");
+}
+
+/** Called under the work mutation lock after publishing a revision file. */
+export function pruneWorkBriefs(binding: WorkBriefBinding): void {
+  const directory = shardMachineDir(binding.base, binding.project, binding.machine);
+  const files = readdirSync(directory).filter(name => /^brief-work-[a-f0-9]{64}\.json$/.test(name))
+    .map(name => ({ name, stat: lstatSync(join(directory, name), { throwIfNoEntry: false }) }))
+    .filter(entry => entry.stat?.isFile() && !entry.stat.isSymbolicLink())
+    .sort((a, b) => b.stat!.mtimeMs - a.stat!.mtimeMs || a.name.localeCompare(b.name));
+  const current = workBriefFile(binding), latest = Math.max(Date.now(), ...files.map(entry => entry.stat!.mtimeMs + 1));
+  const fd = openSync(current, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try { futimesSync(fd, latest / 1000, latest / 1000); } finally { closeSync(fd); }
+  const currentName = `brief-work-${binding.revision}.json`;
+  files.sort((a, b) => Number(b.name === currentName) - Number(a.name === currentName) || b.stat!.mtimeMs - a.stat!.mtimeMs || a.name.localeCompare(b.name));
+  for (const entry of files.slice(4)) rmSync(join(directory, entry.name), { force: true });
+}
+
+/** Reserve a slot before replacement so a crash cannot leave a fifth revision. Caller holds the mutation lock. */
+export function reserveWorkBriefSlot(binding: WorkBriefBinding): void {
+  const directory = shardMachineDir(binding.base, binding.project, binding.machine);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const current = `brief-work-${binding.revision}.json`;
+  const files = readdirSync(directory).filter(name => /^brief-work-[a-f0-9]{64}\.json$/.test(name))
+    .map(name => ({ name, stat: lstatSync(join(directory, name)) }))
+    .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs || a.name.localeCompare(b.name));
+  const others = files.filter(entry => entry.name !== current);
+  for (const entry of others.slice(3)) rmSync(join(directory, entry.name), { force: true });
 }
 
 /**

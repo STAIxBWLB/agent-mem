@@ -2,10 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORK_BRIEF_BYTES, readWorkBrief, workBriefFile } from "../src/brief-work.ts";
+import { WORK_BRIEF_BYTES, readWorkBrief, workBriefFile, workPolicyRevision } from "../src/brief-work.ts";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
+import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { machineId } from "../src/memory/machine.ts";
 import { processSignature } from "../src/memory/platform.ts";
+import { configuredPolicyOptions } from "../src/memory/config.ts";
 import { shardDir, shardMachineDir } from "../src/memory/shard.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
@@ -145,6 +147,37 @@ test("a composed set past the file bound is never published as a subset", async 
   } finally { h.store.close(); }
 });
 
+test("an over-bound snapshot is retried after later writes shrink the set", async () => {
+  const h = home("oversize-recovery");
+  const binding = { base: h.base, project: h.project, machine: h.machine };
+  try {
+    for (let i = 0; i < 3; i++) await h.store.write("bulk", { task: `item-${i}`, note: "x".repeat(7000) });
+    const before = readWorkBrief(binding)!;
+    expect((await sessionStartBrief(h.options)).coverage.work).toBe("unavailable");
+    await h.store.write("bulk", { task: "item-0", note: null });
+    const recovered = readWorkBrief(binding)!;
+    expect(recovered.segments).not.toEqual(before.segments);
+    const native = await sessionStartBrief(h.options), live = await sessionStartBrief(h.live);
+    expect(native.coverage.work).toBe(live.coverage.work);
+    expect(native.coverage.work).not.toBe("unavailable");
+    expect(recovered.rows[0]?.source.items).toHaveLength(3);
+  } finally { h.store.close(); }
+});
+
+test("a smaller replacement without null recovers on the bounded fallback", async () => {
+  const h = home("oversize-fallback");
+  const binding = { base: h.base, project: h.project, machine: h.machine };
+  try {
+    for (let i = 0; i < 3; i++) await h.store.write("bulk", { task: `item-${i}`, note: "x".repeat(7000) });
+    const before = readWorkBrief(binding)!;
+    await h.store.write("bulk", { task: "item-0", note: "short" });
+    expect(readWorkBrief(binding)).toEqual(before);
+    for (let i = 0; i < 1023; i++) await h.store.write("bulk", { task: "item-0", status: "doing" });
+    expect(readWorkBrief(binding)!.segments).not.toEqual(before.segments);
+    expect((await sessionStartBrief(h.options)).coverage.work).not.toBe("unavailable");
+  } finally { h.store.close(); }
+});
+
 test("a publish overlapping another same-machine writer never records a frontier ahead of its rows", async () => {
   const h = home("interleave");
   const other = new WorkListStore({ base: h.base, project: h.project, policy: () => true });
@@ -174,6 +207,98 @@ test("a repository policy that narrows the read is never screened only as a comp
     expect(native.coverage.work).toBe("unavailable");
     expect(native.context).not.toContain("harmless-note");
   } finally { h.store.close(); }
+});
+
+test("snapshot selection binds the same policy as the brief screen when config changes", async () => {
+  const h = home("policy-change-during-brief");
+  try {
+    await h.store.write("queue", { task: "harmless-note", status: "doing" }, { source: "import", id: "restricted-origin" });
+    mkdirSync(join(h.root, ".git"), { recursive: true });
+    mkdirSync(join(h.root, ".amem"), { recursive: true });
+    const config = join(h.root, ".amem", "config");
+    writeFileSync(config, JSON.stringify({ piiPatterns: ["restricted-origin"] }));
+    let changed = false;
+    const result = await sessionStartBrief({ ...h.options, timeRemaining: () => {
+      if (!changed) { changed = true; writeFileSync(config, "{}"); }
+      return 2000;
+    } });
+    expect(changed).toBe(true);
+    expect(result.coverage.work).toBe("unavailable");
+    expect(result.context).not.toContain("harmless-note");
+  } finally { h.store.close(); }
+});
+
+test("policy-scoped snapshots reproduce live operation screening including source ids", async () => {
+  const h = home("scoped-policy");
+  mkdirSync(join(h.root, ".git"), { recursive: true });
+  mkdirSync(join(h.root, ".amem"), { recursive: true });
+  writeFileSync(join(h.root, ".amem", "config"), JSON.stringify({ piiPatterns: ["restricted-origin"] }));
+  const store = new WorkListStore({ base: h.base, project: h.project, policy: () => true,
+    briefPolicyOptions: () => configuredPolicyOptions(h.base, h.root) });
+  try {
+    await store.write("queue", { task: "harmless-note", status: "doing" }, { source: "import", id: "restricted-origin" });
+    await store.write("queue", { task: "public-note", status: "doing" });
+    const native = await sessionStartBrief(h.options), live = await sessionStartBrief(h.live);
+    const section = (context: string) => context.split("\n").find(line => line.includes('"section":"work"'));
+    expect(native.coverage.work).toBe(live.coverage.work);
+    expect(section(native.context)).toBe(section(live.context));
+    expect(native.context).toContain("public-note");
+    expect(native.context).not.toContain("harmless-note");
+  } finally { store.close(); h.store.close(); }
+});
+
+test("a host callback uses live work reads without consulting a snapshot", async () => {
+  const h = home("host-live-work");
+  try {
+    await h.store.write("queue", { task: "visible", status: "doing" });
+    const file = workBriefFile({ base: h.base, project: h.project, machine: h.machine });
+    writeFileSync(file, "invalid snapshot");
+    let screened = false;
+    const result = await sessionStartBrief({ ...h.options, policy: { host: { screen: async value => {
+      if (JSON.stringify(value).includes("visible")) screened = true;
+      return true;
+    } } } });
+    expect(screened).toBe(true);
+    expect(result.coverage.work).toBe("complete");
+    expect(result.context).toContain("visible");
+    expect(readFileSync(file, "utf8")).toBe("invalid snapshot");
+  } finally { h.store.close(); }
+});
+
+test("policy snapshot publication keeps the four most recently published revisions", async () => {
+  const h = home("policy-eviction");
+  let n = 0;
+  const opts = () => ({ piiPatterns: [`restricted-${n}`] });
+  const store = new WorkListStore({ base: h.base, project: h.project, policy: () => true, briefPolicyOptions: opts });
+  try {
+    const revisions: string[] = [];
+    for (n = 0; n < 5; n++) {
+      revisions.push(workPolicyRevision(opts()));
+      await store.write("queue", { task: "item", note: `version ${n}` });
+    }
+    const directory = shardMachineDir(h.base, h.project, h.machine);
+    const names = readdirSync(directory).filter(name => /^brief-work-[a-f0-9]{64}\.json$/.test(name));
+    expect(names).toHaveLength(4);
+    expect(names).not.toContain(`brief-work-${revisions[0]}.json`);
+    expect(names).toContain(`brief-work-${revisions[4]}.json`);
+    expect(readWorkBrief({ base: h.base, project: h.project, machine: h.machine })).toBeDefined();
+  } finally { store.close(); h.store.close(); }
+});
+
+test("MCP work writes publish for the repository's effective static policy", async () => {
+  const h = home("mcp-scoped-policy");
+  mkdirSync(join(h.root, ".git"), { recursive: true });
+  mkdirSync(join(h.root, ".amem"), { recursive: true });
+  writeFileSync(join(h.root, ".amem", "config"), JSON.stringify({ piiPatterns: ["restricted-origin"] }));
+  const mcp = createMemoryMcp({ base: h.base, project: h.project, cwd: h.root });
+  try {
+    await h.store.write("queue", { task: "hidden", status: "doing" }, { source: "import", id: "restricted-origin" });
+    await mcp.tools.amem_work_state_write({ list: "queue", fields: { task: "public", status: "doing" } });
+    const native = await sessionStartBrief(h.options), live = await sessionStartBrief(h.live);
+    expect(native.coverage.work).toBe(live.coverage.work);
+    expect(native.context).toContain("public");
+    expect(native.context).not.toContain("hidden");
+  } finally { mcp.close(); h.store.close(); }
 });
 
 test("an import that sorts before existing operations replays instead of folding last", async () => {
