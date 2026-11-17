@@ -108,14 +108,14 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
   for (const [index, batch] of batches.entries()) {
     if (!batch.length) continue;
     if (stopped) { for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
-    if (opts.signal?.aborted) { stopped = { ok: false, pushed: false, entries: 0, error: "stopped" }; for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
+    if (opts.signal?.aborted) { stopped = { ok: false, pushed: false, entries: 0, error: "stopped", failure: { cause: "stopped" } }; for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
     const stores: MemoryStore[] = [];
     let result: SyncResult;
     try {
       for (const realm of batch) stores.push(ports.open(realm));
       result = await ports.publish(stores[0]!, stores, opts);
     } catch (error) {
-      result = { ok: false, pushed: false, entries: 0, error: (error as Error).message };
+      result = { ok: false, pushed: false, entries: 0, error: (error as Error).message, failure: { cause: "unavailable" } };
     } finally { for (const store of stores.reverse()) try { ports.close(store); } catch { /* preserve the publication result */ } }
     results.push(result);
     const outcome: PlacementRealmOutcome = result.ok ? result.placementPublication?.outcome ?? "not-needed" : result.placementPublication?.outcome === "unknown" ? "unknown" : "failed";

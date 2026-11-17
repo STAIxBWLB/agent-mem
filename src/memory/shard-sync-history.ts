@@ -7,6 +7,7 @@ import { verifyPublicPruneWitness } from "./public-prune-witness.ts";
 import { parsePublicPruneGitTree } from "./shard-sync-graph.ts";
 import { decodeShardDescriptor, decodePlacementTransportDescriptor, decodeShardPack, decodeShardManifest, isShardManifestPath,
   shardSyncRef, SHARD_PACK_MAX_BYTES, type ShardSyncRealm, type ShardSyncRow } from "./shard-sync-format.ts";
+import { cooperativeYield } from "./sync-placement-yield.ts";
 
 export interface ShardHistoryOrigin { ref: string; commit: string; pack: string; blob: string }
 export interface ShardHistoryManifest { path: string; bytes: Buffer; value: unknown; row: PruneRow; eligible: boolean; commit: string; blob: string }
@@ -148,6 +149,7 @@ export class ShardHistoryAuditor {
       : (await this.#options.git(["ls-tree", "-r", "-z", commit])).split("\0").filter(Boolean);
     const rows = new Map<string, ShardSyncRow>(), files = new Map<string, Buffer>(), origins = new Map<string, ShardHistoryOrigin>();
     const objects = new Map<string, string>(), manifests = new Map<string, ShardHistoryManifest>();
+    const pause = cooperativeYield(); // #462: per-file and per-pack work yields to the caller's loop; checks are unchanged
     for (const entry of entries) {
       const match = /^100644 blob ([a-f0-9]{40})\t(.+)$/.exec(entry);
       if (!match || match[0] !== entry) fail("forbidden-entry");
@@ -159,6 +161,7 @@ export class ShardHistoryAuditor {
     const version = this.#options.placement ? decodePlacementTransportDescriptor(descriptor, this.#options.realm) : decodeShardDescriptor(descriptor, this.#options.realm);
     if (version !== "v1" && !this.#options.publicPrune) fail("public-prune-floor");
     for (const [path, bytes] of files) if (packPath(path)) {
+      await pause();
       const object = objects.get(path)!; let pack = this.#decoded.get(object);
       if (!pack) { pack = decodeShardPack(path, bytes, this.#options.realm, this.#options.generation); this.#decoded.set(object, pack); }
       else if (!path.endsWith(`/${digest(bytes)}.jsonl`) || pack.some(row => path !== `rows/${digest(row.machine)}/${digest(bytes)}.jsonl`)) fail();
@@ -168,6 +171,7 @@ export class ShardHistoryAuditor {
       }
     }
     for (const [path, bytes] of files) if (isShardManifestPath(path)) {
+      await pause();
       if (version === "v1") fail();
       const value = decodeShardManifest(path, bytes), candidate = value as { prune?: unknown; pruneOccurrence?: { pack: string; blob: string }; witnesses?: { pack: string; blob: string }[] };
       const row = validatePruneRow(candidate.prune, undefined, "synced");
@@ -214,6 +218,7 @@ export class ShardHistoryAuditor {
       const cached = this.#histories.get(tip); if (cached) return detached(cached);
       const lines = (await this.#options.git(["rev-list", "--topo-order", "--reverse", "--parents", tip])).split("\n").filter(Boolean);
       let latest: ShardHistory | undefined; const seen = new Set<string>();
+      const pause = cooperativeYield();
       // ponytail: complete selected history still costs time and immutable selected-blob memory per invocation.
       // Upgrade with a validated immutable commit/blob digest cache, never an arbitrary history lifetime cliff.
       for (const line of lines) {
@@ -228,6 +233,7 @@ export class ShardHistoryAuditor {
           if (!this.#audited.has(parent) || !seen.has(parent)) return fail();
           const previous = this.#histories.get(parent) ?? await this.#tree(parent);
           if (rank[current.version] < rank[previous.version]) fail();
+          await pause();
           if (previous.version !== "v1") for (const [path, bytes] of previous.files)
             if (path !== "shard.json" && !current.files.get(path)?.equals(bytes)) fail();
           for (const row of previous.rows.values()) if (canonicalJSON(current.rows.get(row.id)) !== canonicalJSON(row)) fail();

@@ -152,11 +152,15 @@ export function planPlacementPublication(input: Omit<PlacementPublicationRoot, "
 }): PlacementPublicationBundle {
   const values = object(items, kinds), chunks: PlacementPublicationChunk[] = [];
   for (const kind of kinds) {
-    let selected: PlacementPublicationChunk["items"] = [];
-    const flush = () => { if (selected.length) { chunks.push(validatePlacementPublicationChunk({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind, index: chunks.length, items: selected })); selected = []; } };
+    let selected: PlacementPublicationChunk["items"] = [], selectedBytes = 0;
+    const flush = () => { if (selected.length) { chunks.push(validatePlacementPublicationChunk({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind, index: chunks.length, items: selected })); selected = []; selectedBytes = 0; } };
     for (const value of array(values[kind], PLACEMENT_JOURNAL_MAX_RECORDS)) {
-      const row = item(kind, value), candidate = { schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind, index: chunks.length, items: [...selected, row] };
-      if (publicationBytes(candidate).length > PLACEMENT_JOURNAL_CHUNK_MAX_BYTES) flush(); selected.push(row);
+      // #462: the candidate chunk's exact canonical size, summed per item instead of re-serializing the whole chunk per row
+      // (quadratic). canonicalJSON of an array is its items' canonical forms joined by commas, so the sum is identical.
+      const row = item(kind, value), rowBytes = Buffer.byteLength(canonicalJSON(row));
+      const empty = publicationBytes({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind, index: chunks.length, items: [] }).length;
+      if (empty + selectedBytes + (selected.length ? 1 : 0) + rowBytes > PLACEMENT_JOURNAL_CHUNK_MAX_BYTES) flush();
+      selectedBytes += (selected.length ? 1 : 0) + rowBytes; selected.push(row);
     }
     flush();
   }

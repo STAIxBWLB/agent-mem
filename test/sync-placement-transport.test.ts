@@ -27,6 +27,7 @@ import type { PublicPruneWitnessV1 } from "../src/memory/public-prune-witness.ts
 import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
 import { syncOutboundContent } from "../src/memory/sync-screen.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
+import { PLACEMENT_APPEND_SLICE } from "../src/memory/sync-placement-yield.ts";
 
 // Real local-Git round trips: hosted macOS runs these at up to ~20 s, so each keeps a 60 s test-local allowance (global --timeout unchanged).
 const PROJECT = "example.test/placement/transport", USER_REF = "refs/heads/amem/u", PROJECT_REF = `refs/heads/amem/p/${shardKeyHash(PROJECT)}`;
@@ -636,7 +637,8 @@ test("v2 batch resumes when a later journal chunk ends inside a record", async (
   let writes = 0, fired = false;
   const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
     realAppend(home, epochHash, events, head, { ...options, phase(stage) {
-      options.phase?.(stage); if (fired || stage !== "chunk-written" || ++writes !== 2) return;
+      // #462: appends are sliced into consecutive batches; fault the second chunk written by one batch that spans two chunks.
+      options.phase?.(stage); if (stage === "intent-written") writes = 0; if (fired || stage !== "chunk-written" || ++writes !== 2) return;
       const dir = join(home, "sync-placement", "epochs", epochHash);
       const batch = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { chunks: { name: string }[] };
       expect(batch.chunks.length).toBeGreaterThan(1);
@@ -647,7 +649,8 @@ test("v2 batch resumes when a later journal chunk ends inside a record", async (
   try {
     expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false); expect(fired).toBe(true);
     const pending = journalStorage.readPlacementJournal(f.home, f.epochHash);
-    expect(pending.pending).toBe(true); expect(pending.sequence).toBe(0); expect(refs(remote)).toEqual([]);
+    // #462: earlier slices are durable whole batches; the interrupted slice leaves none of its own records.
+    expect(pending.pending).toBe(true); expect(pending.sequence % PLACEMENT_APPEND_SLICE).toBe(0); expect(refs(remote)).toEqual([]);
     fault.mockRestore();
     const result = await syncPlacementMemory(f.store, f.opts(remote)); expect(result.ok, JSON.stringify(result)).toBe(true);
     const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
