@@ -81,11 +81,45 @@ export function writeRealmProof(homeInput: string, raw: RealmIntent, input: Real
   if (canonicalJSON(readRealmProof(home, intent)) !== canonicalJSON(record)) fail();
 }
 
-/** Abandon removes only a fully validated companion, after any attributable tail has been removed. */
-export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: RealmIntentProof): void {
+export function hasRealmProofStage(homeInput: string, raw: RealmIntent): boolean {
+  const home = realPath(homeInput), intent = validateRealmIntent(raw);
+  if (intent.home !== home) fail();
+  return !!lstatSync(`${pathOf(home, intent)}.pending`, { throwIfNoEntry: false });
+}
+
+function readStage(home: string, intent: RealmIntent, candidate: RealmExtension): BigIntStats | undefined {
+  const staged = `${pathOf(home, intent)}.pending`, before = lstatSync(staged, { bigint: true, throwIfNoEntry: false });
+  if (!before) return undefined;
+  const expected = Buffer.from(bytesOf(intent, validateRealmExtension(candidate)));
+  owned(before); if (before.size > BigInt(expected.length)) fail();
+  const fd = openSync(staged, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = fstatSync(fd, { bigint: true }); owned(opened); if (stamp(opened) !== stamp(before)) fail();
+    const data = Buffer.alloc(Number(opened.size)); let at = 0;
+    while (at < data.length) { const n = readSync(fd, data, at, data.length - at, at); if (!n) fail(); at += n; }
+    if (!data.equals(expected.subarray(0, data.length)) || stamp(fstatSync(fd, { bigint: true })) !== stamp(opened)
+      || stamp(lstatSync(staged, { bigint: true })) !== stamp(opened)) fail();
+    return before;
+  } finally { closeSync(fd); }
+}
+/** Preview an owned exact proof prefix without changing it. */
+export function inspectRealmProofStage(homeInput: string, raw: RealmIntent, candidate: RealmExtension): boolean {
+  const home = realPath(homeInput), intent = validateRealmIntent(raw); if (intent.home !== home) fail();
+  return !!readStage(home, intent, candidate);
+}
+
+/** Abandon removes only validated proof bytes, after any attributable log tail has been removed. */
+export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: RealmIntentProof, candidate?: RealmExtension): void {
   const home = realPath(homeInput), intent = validateRealmIntent(raw), file = pathOf(home, intent);
   assertMutationHandle(proof.mutation, home); proof.assertCurrent();
-  if (lstatSync(`${file}.pending`, { throwIfNoEntry: false })) fail();
+  const staged = `${file}.pending`, beforeStage = lstatSync(staged, { bigint: true, throwIfNoEntry: false });
+  if (beforeStage) {
+    if (!candidate) fail();
+    const inspected = readStage(home, intent, candidate); if (!inspected || stamp(inspected) !== stamp(beforeStage)) fail();
+    proof.assertCurrent(); assertMutationHandle(proof.mutation, home);
+    if (stamp(lstatSync(staged, { bigint: true })) !== stamp(beforeStage)) fail();
+    unlinkSync(staged); fsyncDirectory(home); proof.assertCurrent();
+  }
   const prior = readProof(home, intent); if (!prior) return;
   const before = prior.stat; owned(before);
   proof.assertCurrent(); assertMutationHandle(proof.mutation, home);

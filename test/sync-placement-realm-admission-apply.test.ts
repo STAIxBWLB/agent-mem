@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
 import type { SyncOptions } from "../src/memory/sync.ts";
@@ -101,6 +101,35 @@ test("#448: a changed proof before append cannot authorize a record", async () =
     }
   } })).rejects.toThrow();
   expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
+  expect(intents(f.home)).toHaveLength(1);
+}, 240_000);
+
+test("#448: confirmed abandon removes an attributable partial proof before append", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-stage-abandon";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-proof") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const name = readdirSync(f.home).find(item => /^placement-realm-proof-.*\.json$/.test(item))!;
+  const file = join(f.home, name), bytes = readFileSync(file);
+  rmSync(file); writeFileSync(`${file}.pending`, bytes.subarray(0, 80), { mode: 0o600 });
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "abandonable" });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned" });
+  expect(existsSync(`${file}.pending`)).toBe(false);
+  expect(intents(f.home)).toEqual([]);
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
+}, 240_000);
+
+test("#448: abandon preview refuses a foreign proof stage", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-stage-foreign";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-proof") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const name = readdirSync(f.home).find(item => /^placement-realm-proof-.*\.json$/.test(item))!;
+  const file = join(f.home, name);
+  rmSync(file); writeFileSync(`${file}.pending`, "foreign", { mode: 0o600 });
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "unavailable" });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).rejects.toThrow();
+  expect(readFileSync(`${file}.pending`, "utf8")).toBe("foreign");
   expect(intents(f.home)).toHaveLength(1);
 }, 240_000);
 

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
@@ -57,5 +57,18 @@ test("foreign staging and unsafe proof files refuse without replacing them", () 
     chmodSync(f.file, 0o644);
     expect(() => readRealmProof(f.home, f.intent)).toThrow();
     expect(() => clearRealmProof(f.home, f.intent, f.proof)).toThrow();
+  } finally { f.mutation(); }
+});
+
+test("abandon removes only an exact staged proof prefix", () => {
+  const f = fixture();
+  try {
+    writeFileSync(`${f.file}.pending`, Buffer.from(f.text).subarray(0, 80), { mode: 0o600 });
+    expect(() => clearRealmProof(f.home, f.intent, f.proof)).toThrow();
+    clearRealmProof(f.home, f.intent, f.proof, f.record);
+    expect(existsSync(`${f.file}.pending`)).toBe(false);
+    writeFileSync(`${f.file}.pending`, "foreign", { mode: 0o600 });
+    expect(() => clearRealmProof(f.home, f.intent, f.proof, f.record)).toThrow();
+    expect(readFileSync(`${f.file}.pending`, "utf8")).toBe("foreign");
   } finally { f.mutation(); }
 });

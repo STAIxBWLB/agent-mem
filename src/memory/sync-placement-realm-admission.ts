@@ -30,7 +30,7 @@ import { readRealmExtensionHistory, type RealmExtensionBinding, type RealmExtens
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { createRealmIntent, REALM_INTENT_SCHEMA, type RealmIntent } from "./sync-placement-realm-intent-format.ts";
 import { clearRealmIntent, readRealmIntent, writeRealmIntent } from "./sync-placement-realm-intent-storage.ts";
-import { clearRealmProof, readRealmProof, writeRealmProof } from "./sync-placement-realm-proof.ts";
+import { clearRealmProof, hasRealmProofStage, inspectRealmProofStage, readRealmProof, writeRealmProof } from "./sync-placement-realm-proof.ts";
 import { attributeTornRealmAppend } from "./sync-placement-realm-attribution.ts";
 import { appendRealmExtension, discardRealmExtensionTail, ensureCuratedRealmMetadata } from "./sync-placement-realm-admission-storage.ts";
 import { readWriterHistory } from "./sync-placement-writer-history.ts";
@@ -153,6 +153,17 @@ export function planRealmAbandon(homeInput: string, project: string): RealmAband
     const home = realPath(homeInput), binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
     if (!intent) return { realm, state: "none", nextStep: "no admission intent is retained for this realm" };
     readRealmProof(home, intent); // A malformed retained proof is not a clean abandon preview.
+    if (hasRealmProofStage(home, intent)) {
+      try {
+        const source = previewSyncPlacementSources(home), captured = source.base.realms.find(item => item.scope === "project" && item.keyHash === realm);
+        const descriptor = readShardDescriptor(home, realm.slice(0, 16));
+        if (!captured || intent.descriptorHash !== null && (!descriptor || hashJSON(descriptor) !== intent.descriptorHash)
+          || intent.sourceHash !== null && source.base.sourceHash !== intent.sourceHash
+          || source.base.aliasesHash !== intent.aliasesHash || source.base.policyHash !== intent.policyHash
+          || !inspectRealmProofStage(home, intent, recordFor(intent, captured.bindingHash, source.base.sourceHash))) return { realm, state: "unavailable", sequence: intent.sequence };
+        source.assertSourcesUnchanged();
+      } catch { return { realm, state: "unavailable", sequence: intent.sequence }; }
+    }
     const history = readRealmExtensionHistory(home, binding, { attributeTorn: () => true });
     if (history.records.length + 1 > intent.sequence) return { realm, state: "committed", sequence: intent.sequence, nextStep: "amem migrate --sync-placement --admit <project> --resume" };
     if (history.records.length + 1 < intent.sequence || history.headHash !== intent.previousHash
@@ -215,8 +226,18 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
         const binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
         if (!intent) throw Error("No admission intent is retained for this realm; run amem migrate --sync-placement --admit <project> --dry-run.");
         const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
+        let stagedRecord: RealmExtension | undefined, stagedProof = proof;
+        if (hasRealmProofStage(home, intent)) {
+          const source = previewOwnedSyncPlacementSources(home, owner), captured = source.base.realms.find(item => item.scope === "project" && item.keyHash === realm);
+          const descriptor = readShardDescriptor(home, realm.slice(0, 16));
+          if (!captured || intent.descriptorHash !== null && (!descriptor || hashJSON(descriptor) !== intent.descriptorHash)
+            || intent.sourceHash !== null && source.base.sourceHash !== intent.sourceHash
+            || source.base.aliasesHash !== intent.aliasesHash || source.base.policyHash !== intent.policyHash) fail("changed");
+          stagedRecord = recordFor(intent, captured.bindingHash, source.base.sourceHash);
+          stagedProof = { mutation, assertCurrent: () => { check(); source.assertSourcesUnchanged(); check(); } };
+        }
         const { discarded } = discardRealmExtensionTail(home, binding, intent, proof);
-        clearRealmProof(home, intent, proof);
+        clearRealmProof(home, intent, stagedProof, stagedRecord);
         clearRealmIntent(home, intent, proof);
         return { mode: "abandon" as const, state: "abandoned" as const, realm, sequence: intent.sequence, discarded,
           nextStep: `amem migrate --sync-placement --admit ${project} --dry-run` };
