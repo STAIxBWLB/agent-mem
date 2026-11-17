@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createPlacementInspectionFixture, inspectionFilesystemSnapshot, inspectionGit, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
 import { canonicalJSON, generationDescriptor, hashJSON, writeProfileJSON } from "../src/memory/generation.ts";
 import { ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
-import { memoryGitSync } from "../src/memory/platform.ts";
+import { memoryGitSync, realPath } from "../src/memory/platform.ts";
 import { shardSyncRef } from "../src/memory/shard-sync-format.ts";
 import { readPlacementJournal } from "../src/memory/sync-placement-journal-storage.ts";
 import { readPublicPruneViewForActivation } from "../src/memory/public-prune-view.ts";
@@ -15,6 +15,7 @@ import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-plac
 import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
 import { createRealmExtension, realmExtensionGenesis, REALM_EXTENSION_SCHEMA } from "../src/memory/sync-placement-realm-extension-format.ts";
+import { createRealmIntent, REALM_INTENT_SCHEMA } from "../src/memory/sync-placement-realm-intent-format.ts";
 import { readEffectiveRealmInventory } from "../src/memory/sync-placement-realm-effective.ts";
 import { writerInventoryGenesis } from "../src/memory/sync-placement-writer-revision-format.ts";
 import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
@@ -50,6 +51,16 @@ test("#448 N-1: 0.28.2 ignores extension and leaves the unadmitted realm untouch
     realm: { scope: "project", keyHash, bindingHash: "1".repeat(64) }, sourceHash: "2".repeat(64), aliasesHash: "3".repeat(64), policyHash: "4".repeat(64),
     writerHash: writerInventoryGenesis(f.epochHash, active.activation.seal), journal: { sequence: 0, headHash: f.epochHash } });
   writeFileSync(join(f.home, "placement-realm-extensions.jsonl"), canonicalJSON(record) + "\n", { mode: 0o600 });
+  // A completed new writer retains the bounded proof companion after removing its intent.
+  const machine = JSON.parse(readFileSync(join(f.home, "machine.json"), "utf8")) as { id: string };
+  const intent = createRealmIntent({ schema: REALM_INTENT_SCHEMA, home: realPath(f.home), project: newProject, keyHash, machine: machine.id,
+    epochHash: f.epochHash, activationHash: active.activation.seal, homeHash: active.epoch.homeHash, generation: f.generation,
+    sequence: 1, previousHash: record.previousHash, previousLogBytes: 0, previousLogHash: createHash("sha256").update("").digest("hex"),
+    mode: "new", descriptorHash: null, sourceHash: null, aliasesHash: record.aliasesHash, policyHash: record.policyHash,
+    writerHash: record.writerHash, journal: record.journal });
+  const proofBody = { schema: "agent-mem.sync-placement-realm-proof/v1", intent: intent.seal, record };
+  const proofFile = join(f.home, `placement-realm-proof-${intent.seal}.json`), proofText = canonicalJSON({ ...proofBody, seal: hashJSON(proofBody) }) + "\n";
+  writeFileSync(proofFile, proofText, { mode: 0o600 });
   installSyntheticRealm(f.home, f.generation, newProject);
   const shardBefore = inspectionFilesystemSnapshot(shardDir(f.home, newProject)), realmRef = shardSyncRef({ scope: "project", key: newProject });
   const tree = memoryGitSync(["-C", f.remote, "mktree"], { encoding: "utf8", input: "" }); expect(tree.status).toBe(0);
@@ -70,6 +81,7 @@ try {
 } finally { store.close(); }`;
   const child = Bun.spawnSync([process.execPath, "--smol", "-e", source], { env: { PATH: process.env.PATH ?? "", HOME: f.root, AMEM_HOME: f.home, TMPDIR: f.root }, stdout: "pipe", stderr: "pipe", timeout: 120_000 });
   expect(child.exitCode, child.stderr.toString()).toBe(0);
+  expect(readFileSync(proofFile, "utf8")).toBe(proofText);
   expect(JSON.parse(child.stdout.toString()).ok).toBe(true);
   expect(inspectionGit(f.remote, "rev-parse", realmRef)).toBe(remoteBefore);
   expect(inspectionFilesystemSnapshot(shardDir(f.home, newProject))).toEqual(shardBefore);
