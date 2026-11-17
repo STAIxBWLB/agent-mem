@@ -280,7 +280,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         if (measured && ![project, ...aliases].some(key => lstatSync(join(shardDir(measured.workBase!, key), "work", "log"), { throwIfNoEntry: false }))) return;   // no work log: the real brief shows an empty list
         // #455: the native brief reads the derived machine-local snapshot only; a stale, foreign or unreadable file is
         // unavailable with today's instruction, never older content. Every kept row is screened again at read.
-        if (options.nativeSession && !measured) {
+        if (options.nativeSession && !measured && !effectivePolicy.host) {
           let floor: string | undefined;
           try { assertFormatFloor(base, "work-lists"); }
           catch (error) { floor = error instanceof FormatFloorError && error.code === "format_floor" ? "floor: upgrade amem" : "floor: amem doctor"; }
@@ -288,7 +288,6 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           let machine: string | undefined;
           try { machine = JSON.parse(readFileSync(join(base, "machine.json"), "utf8")).id; } catch { /* no machine, no snapshot */ }
           const effective = effectivePolicy;
-          if (effective.host) { coverage.work = "unavailable"; reasons.work = "work cache stale (host callback); use amem_work_state_read"; return; }
           const revision = workPolicyRevision(effective), homeRevision = workPolicyRevision(configuredPolicyOptions(base));
           const segments = workLogSegments(base, project, aliases);
           const snapshot = typeof machine === "string" && /^[a-f0-9]{16}$/.test(machine) && segments ? readWorkBrief({ base, project, machine, ...(revision !== homeRevision ? { revision } : {}) }) : undefined;

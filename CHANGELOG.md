@@ -18,7 +18,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
-- Serve native work briefs from revision-bound snapshots for static repository and host policy options, and retry oversized snapshots after a possible shrink or a bounded number of writes. Arbitrary host callbacks remain unavailable. Refs #463.
+- Serve native work briefs from revision-bound snapshots for static repository and host policy options, and retry oversized snapshots after a possible shrink or a bounded number of writes. Host callbacks continue to use the deadline-bound live read. Refs #463.
 - On an activated sync placement, let doctor check duplicates, stale references and brief coverage after validating the real home. The index check is skipped with an amem rebuild instruction because opening a placement index rebuilds it. Refs #453.
 - Keep other projects' prebuilt curated session briefs when one project's curated notes change. A project-scope, non-preference change now invalidates only that project's `brief-curated.json` and `brief-preferences.json`. A shared (user realm) or preference change still invalidates every project. Before this, most session starts reported `curated: curated cache missing`. Work-section coverage at session start remains open in #455. Refs #424.
 

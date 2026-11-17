@@ -244,10 +244,25 @@ test("policy-scoped snapshots reproduce live operation screening including sourc
     expect(section(native.context)).toBe(section(live.context));
     expect(native.context).toContain("public-note");
     expect(native.context).not.toContain("harmless-note");
-    const blocked = await sessionStartBrief({ ...h.options, policy: { host: { screen: async () => false } } });
-    expect(blocked.coverage.work).toBe("unavailable");
-    expect(blocked.context).toContain("use amem_work_state_read");
   } finally { store.close(); h.store.close(); }
+});
+
+test("a host callback uses live work reads without consulting a snapshot", async () => {
+  const h = home("host-live-work");
+  try {
+    await h.store.write("queue", { task: "visible", status: "doing" });
+    const file = workBriefFile({ base: h.base, project: h.project, machine: h.machine });
+    writeFileSync(file, "invalid snapshot");
+    let screened = false;
+    const result = await sessionStartBrief({ ...h.options, policy: { host: { screen: async value => {
+      if (JSON.stringify(value).includes("visible")) screened = true;
+      return true;
+    } } } });
+    expect(screened).toBe(true);
+    expect(result.coverage.work).toBe("complete");
+    expect(result.context).toContain("visible");
+    expect(readFileSync(file, "utf8")).toBe("invalid snapshot");
+  } finally { h.store.close(); }
 });
 
 test("policy snapshot publication keeps the four most recently published revisions", async () => {
