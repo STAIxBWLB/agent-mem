@@ -1,7 +1,8 @@
 /** Internal activation-owner proof. No serialized object or boolean grants lock bypass authority. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
-import { canonicalJSON, hashJSON } from "./generation.ts";
+import { canonicalJSON } from "./generation.ts";
+import { homeIdentityMatches } from "./home-identity.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { processSignature, realPath } from "./platform.ts";
 import type { PlacementActivationMarkerSnapshot } from "./sync-placement-capture.ts";
@@ -53,7 +54,7 @@ export function createPlacementActivationCaptureProof(owner: PlacementActivation
   const state = owners.get(owner)!;
   const intent = validatePlacementActivationIntent(input), actual = readPlacementActivationIntent(state.home);
   if (!intent || !actual || canonicalJSON(intent) !== canonicalJSON(actual)
-    || actual.home !== state.home || actual.epoch.homeHash !== hashJSON([state.home,String(state.root.dev),String(state.root.ino),String(state.root.uid)])) fail();
+    || actual.home !== state.home || !homeIdentityMatches(actual.epoch.homeHash,state.home,state.root)) fail();
   const token = Object.freeze({}) as PlacementActivationCaptureProof; captures.set(token,{owner,intent:actual}); return token;
 }
 export function activationSourceMarkers(token: PlacementActivationCaptureProof, home: string, markers: { profileText: string; shardsText: string; profileStamp: readonly string[]; shardsStamp: readonly string[] }): PlacementActivationMarkerSnapshot {

@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.28.1 (unreleased)
+
+### Fixed
+
+- Keep an activated sync placement bound after a reboot renumbers the memory home's volume device (`st.dev`), as macOS can. A retained epoch `homeHash` that reproduces from the current path, inode and uid with a device number differing only in its low 16 bits still binds; capture, activation and writer-history checks use the same rule. Retained metadata is not rewritten and new epochs hash as before; a replaced, copied or moved home is still refused. Refs #444.
+
 ## 0.28.0
 
 ### Added

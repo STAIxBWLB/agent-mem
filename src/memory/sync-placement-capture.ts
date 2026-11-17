@@ -2,7 +2,7 @@ import type { PlacementPublicationSource } from "./sync-placement-publication-pl
 import { validatePlacementKey, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import { types } from "node:util";
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readFileSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, generationDescriptor, hashJSON, validateVaultLinkRow, type BoundProfile, type VaultLinkRow } from "./generation.ts";
 import { validatePlacementBaseV2, validatePlacementProfile, validatePlacementShards, PLACEMENT_PROFILE_SCHEMA } from "./sync-placement-format.ts";
@@ -16,7 +16,9 @@ import { readShardLegacySnapshot } from "./shard-bridge.ts";
 import { coalesceGenerationSource } from "./generation-index.ts";
 import { validatePruneRow, type PruneSourceRow, type PruneRow } from "./prune.ts";
 import { shardKeyHash, SHARD_SCHEMA } from "./shard.ts";
-import { SyncPlacementJournalError, placementKeyId, type PlacementKey } from "./sync-placement-journal-format.ts";
+import { SyncPlacementJournalError, placementKeyId, validatePlacementActiveFence, type PlacementKey } from "./sync-placement-journal-format.ts";
+import { readPlacementActivationIntent } from "./sync-placement-activation-storage.ts";
+import { homeIdentityHash } from "./home-identity.ts";
 import type { Entry } from "./store.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { activationSourceMarkers, assertPlacementActivationOwner, type PlacementActivationOwner, type PlacementActivationCaptureProof } from "./sync-placement-activation-proof.ts";
@@ -288,7 +290,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   const defaults = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS }); if (!defaults) fail();
   const configuration = loadAmemConfig(home).config;
   const contextBase: PlacementSourcePreview["base"] = { ...base,
-    homeHash: hashJSON([home, String(root.dev), String(root.ino), String(root.uid)]), sourceHash: hashJSON(facts),
+    homeHash: homeIdentityHash(home, root, pinnedHomeHash(home, activeHead, !!ownerProof)), sourceHash: hashJSON(facts),
     aliasesHash: digest(aliases ?? Buffer.alloc(0)), policyHash: hashJSON({ config: configuration, defaults, policyVersion }), realms };
   // ponytail: passive checks rely on native inode/size/ctime identity for the hashed prefixes.
   // Immutable descriptor-bound source blocks are the upgrade path for hostile same-user raw writers.
@@ -304,6 +306,14 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   };
   return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, markers,
     directories: directories.sort(), prefixes, rows, specialRows, sourceRowsByRealm };
+}
+/** The homeHash a retained epoch (or an in-flight activation) already committed to, so a reboot-renumbered device keeps binding (#444). */
+function pinnedHomeHash(home: string, activeHead: string | undefined, activating: boolean): string | undefined {
+  try {
+    if (activeHead) return validatePlacementActiveFence(JSON.parse(readFileSync(join(home, "sync-placement", "active.json"), "utf8"))).homeHash;
+    if (activating) return readPlacementActivationIntent(home)?.epoch.homeHash;
+  } catch { /* unreadable metadata stays refused by the binding checks */ }
+  return undefined;
 }
 /** Read-only preview shares the source collector, without fabricating a quiescence attestation. */
 export function previewSyncPlacementSources(home: string): PlacementSourcePreview {
