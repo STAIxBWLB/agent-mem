@@ -10,17 +10,20 @@ import { REALM_EXTENSION_LIMIT, REALM_EXTENSION_LOG_MAX_BYTES, RealmExtensionFor
 export const REALM_EXTENSION_LOG = "placement-realm-extensions.jsonl";
 export interface RealmExtensionBinding { epochHash: string; activationHash: string; homeHash: string; generation: string; initialProjectHashes: readonly string[] }
 export interface RealmExtensionHistory { records: readonly RealmExtension[]; headHash: string; torn: Buffer; assertCurrent(): void }
+/** A tail is attributed to the position it would occupy, so only evidence for that exact append can vouch for it. */
+export interface RealmTornEvidence { prefix: Buffer; tail: Buffer; sequence: number; headHash: string }
+export interface RealmExtensionOptions { attributeTorn?: (evidence: RealmTornEvidence) => boolean }
 const fail = (): never => { throw new RealmExtensionFormatError(); };
 const stamp = (stat: BigIntStats) => [stat.dev, stat.ino, stat.uid, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(":");
 function owned(stat: BigIntStats, directory: boolean): void {
   if (stat.isSymbolicLink() || stat.uid !== BigInt(process.getuid?.() ?? -1)
     || (directory ? !stat.isDirectory() || (stat.mode & 0o077n) !== 0n : !stat.isFile() || stat.nlink !== 1n || (stat.mode & 0o777n) !== 0o600n)) fail();
 }
-/** A modified or mismatched chain is unavailable. An incomplete final append is reported as `torn` and never folded, so existing realms keep syncing after an interrupted admission. */
-export function readRealmExtensionHistory(homeInput: string, binding: RealmExtensionBinding): RealmExtensionHistory {
-  try { return readHistory(homeInput, binding); } catch { return fail(); }
+/** A modified or mismatched chain is unavailable. An incomplete final append is reported as `torn` and never folded, but only when `attributeTorn` vouches for it, so an interrupted admission keeps existing realms syncing while any unattributed tail still closes the chain. */
+export function readRealmExtensionHistory(homeInput: string, binding: RealmExtensionBinding, options: RealmExtensionOptions = {}): RealmExtensionHistory {
+  try { return readHistory(homeInput, binding, options); } catch { return fail(); }
 }
-function readHistory(homeInput: string, binding: RealmExtensionBinding): RealmExtensionHistory {
+function readHistory(homeInput: string, binding: RealmExtensionBinding, options: RealmExtensionOptions): RealmExtensionHistory {
   const home = realPath(homeInput), original = lstatSync(homeInput, { bigint: true }), root = lstatSync(home, { bigint: true });
   owned(original, true); owned(root, true);
   if (original.dev !== root.dev || original.ino !== root.ino || !homeIdentityMatches(binding.homeHash, home, root)) return fail();
@@ -62,5 +65,7 @@ function readHistory(homeInput: string, binding: RealmExtensionBinding): RealmEx
     journalSequence = record.journal.sequence; journalHead = record.journal.headHash;
     Object.freeze(record.realm); Object.freeze(record.journal); records.push(Object.freeze(record));
   }
+  const prefix = Buffer.from(bytes.subarray(0, cut + 1));
+  if (torn.length && !options.attributeTorn?.({ prefix, tail: torn, sequence: records.length + 1, headHash: head })) return fail();
   checks(); return { records: Object.freeze(records), headHash: head, torn, assertCurrent: checks };
 }

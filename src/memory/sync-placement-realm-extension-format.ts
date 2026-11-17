@@ -5,7 +5,7 @@ import { canonicalJSON, hashJSON } from "./generation.ts";
 export const REALM_EXTENSION_SCHEMA = "agent-mem.sync-placement-realm-extension/v1";
 export const REALM_EXTENSION_LIMIT = 64;
 export const REALM_EXTENSION_LOG_MAX_BYTES = 64 * 1024;
-const RECORD_MAX_BYTES = 4096;
+export const REALM_RECORD_MAX_BYTES = 4096;
 
 export interface RealmExtensionBody {
   schema: typeof REALM_EXTENSION_SCHEMA;
@@ -59,7 +59,7 @@ function checked(input: unknown, sealed: boolean): RealmExtension {
   if (body.sequence === 1 && body.previousHash !== realmExtensionGenesis(body.epochHash, body.activationHash)
     || body.journal.sequence === 0 && body.journal.headHash !== body.epochHash) return fail();
   const result = { ...body, seal: hashJSON(body) };
-  if (sealed && hex(row.seal) !== result.seal || Buffer.byteLength(canonicalJSON(result) + "\n") > RECORD_MAX_BYTES) return fail();
+  if (sealed && hex(row.seal) !== result.seal || Buffer.byteLength(canonicalJSON(result) + "\n") > REALM_RECORD_MAX_BYTES) return fail();
   return result;
 }
 export function createRealmExtension(input: RealmExtensionBody): RealmExtension { return checked(input, false); }

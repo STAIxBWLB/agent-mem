@@ -4,6 +4,7 @@ import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "
 import { readWriterHistory } from "./sync-placement-writer-history.ts";
 import { writerInventoryGenesis } from "./sync-placement-writer-revision-format.ts";
 import { readRealmExtensionHistory } from "./sync-placement-realm-extension-storage.ts";
+import { attributeTornRealmAppend } from "./sync-placement-realm-attribution.ts";
 import { RealmExtensionFormatError, realmExtensionGenesis } from "./sync-placement-realm-extension-format.ts";
 import type { ActivePlacementBinding } from "./sync-placement-active.ts";
 import type { SyncPlacementRealmBinding } from "./sync-placement-plan.ts";
@@ -16,7 +17,8 @@ export function readEffectiveRealmInventory(home: string, active: ActivePlacemen
     const epochHash = active.profile.placementHead, activationHash = active.activation.seal;
     const initialProjectHashes = active.activation.realms.flatMap(realm => realm.scope === "project" ? [realm.keyHash] : []);
     const extensions = readRealmExtensionHistory(home, { epochHash, activationHash, homeHash: active.epoch.homeHash,
-      generation: active.epoch.generation, initialProjectHashes });
+      generation: active.epoch.generation, initialProjectHashes }, { attributeTorn: evidence => attributeTornRealmAppend(home, {
+        epochHash, activationHash, homeHash: active.epoch.homeHash, generation: active.epoch.generation, initialProjectHashes }, evidence) });
     if (!extensions.records.length) return { realms: active.activation.realms, extensionHead: realmExtensionGenesis(epochHash, activationHash), assertCurrent: extensions.assertCurrent };
     const token = placementWriterJournalToken(home, epochHash), journal = readPlacementWriterJournalAnchors(home, epochHash);
     if (journal.epoch.homeHash !== active.epoch.homeHash || journal.activation.seal !== activationHash) return fail();

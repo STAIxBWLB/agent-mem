@@ -1,16 +1,22 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { chmodSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON } from "../src/memory/generation.ts";
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
+import { attributeTornRealmAppend } from "../src/memory/sync-placement-realm-attribution.ts";
 import { createRealmExtension, realmExtensionGenesis, REALM_EXTENSION_SCHEMA } from "../src/memory/sync-placement-realm-extension-format.ts";
-import { readRealmExtensionHistory, REALM_EXTENSION_LOG, type RealmExtensionBinding } from "../src/memory/sync-placement-realm-extension-storage.ts";
+import { readRealmExtensionHistory, REALM_EXTENSION_LOG, type RealmExtensionBinding, type RealmExtensionOptions } from "../src/memory/sync-placement-realm-extension-storage.ts";
+import { createRealmIntent, REALM_INTENT_SCHEMA, type RealmIntentBody } from "../src/memory/sync-placement-realm-intent-format.ts";
+import { REALM_INTENT_PREFIX } from "../src/memory/sync-placement-realm-pending.ts";
 import { createPlacementInspectionFixture, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
 
 const homes: PlacementInspectionFixture[] = [];
 afterEach(() => { for (const home of homes.splice(0).reverse()) home.close(); });
 const hex = (n: string) => n.repeat(64);
+const sha = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
+const project = "/scratch/admitted-project", keyHash = sha(project);
 async function fixture() {
   const f = await createPlacementInspectionFixture(); homes.push(f);
   const markers = readPlacementRuntimeMarkers(f.home), active = readActivePlacementBinding(f.home, markers.profile, markers.shards)!;
@@ -21,7 +27,17 @@ async function fixture() {
     sequence, previousHash, realm: { scope: "project", keyHash, bindingHash: hex("a") }, sourceHash: hex("b"), aliasesHash: hex("c"), policyHash: hex("d"), writerHash: hex("e"),
     journal: { sequence: 0, headHash: binding.epochHash },
   });
-  return { f, binding, make, file: join(f.home, REALM_EXTENSION_LOG) };
+  const intent = (overrides: Partial<RealmIntentBody> = {}) => createRealmIntent({ schema: REALM_INTENT_SCHEMA, home: f.home, project, keyHash,
+    machine: "0".repeat(16), epochHash: binding.epochHash, activationHash: binding.activationHash, homeHash: binding.homeHash, generation: binding.generation,
+    sequence: 1, previousHash: realmExtensionGenesis(binding.epochHash, binding.activationHash), previousLogBytes: 0, previousLogHash: sha(""),
+    mode: "new", descriptorHash: null, sourceHash: null, aliasesHash: hex("c"), policyHash: hex("d"), writerHash: hex("e"),
+    journal: { sequence: 0, headHash: binding.epochHash }, ...overrides });
+  const pending = (body: RealmIntentBody) => {
+    const path = join(f.home, `${REALM_INTENT_PREFIX}${keyHash}.json`);
+    writeFileSync(path, canonicalJSON(body) + "\n", { mode: 0o600 }); return path;
+  };
+  const options: RealmExtensionOptions = { attributeTorn: evidence => attributeTornRealmAppend(f.home, binding, evidence) };
+  return { f, binding, make, intent, pending, options, file: join(f.home, REALM_EXTENSION_LOG) };
 }
 const text = (value: unknown) => canonicalJSON(value) + "\n";
 
@@ -54,16 +70,41 @@ test("#448: extension history fails closed on duplicate, foreign and unsafe evid
   rmSync(file); symlinkSync(join(f.home, "profile.json"), file); expect(() => readRealmExtensionHistory(f.home, binding)).toThrow();
 });
 
-test("#448: an interrupted final append is reported torn instead of closing the chain to existing realms", async () => {
-  const { f, binding, make, file } = await fixture(), first = make(hex("1")), second = make(hex("2"), 2, first.seal);
-  const alone = text(second).slice(0, -12);                                     // no complete line at all: nothing is applied
-  writeFileSync(file, alone, { mode: 0o600 });
-  const empty = readRealmExtensionHistory(f.home, binding);
-  expect(empty.records).toEqual([]); expect(empty.torn).toEqual(Buffer.from(alone));
-  const tail = text(second).slice(0, -14);                                      // one complete record, then a torn second
+test("#448: an unattributed tail closes the chain instead of granting partial trust", async () => {
+  const { f, binding, make, file, options } = await fixture(), first = make(hex("1"));
+  const tail = text(make(hex("2"), 2, first.seal)).slice(0, -14);
   writeFileSync(file, text(first) + tail, { mode: 0o600 });
-  const history = readRealmExtensionHistory(f.home, binding);
-  expect(history.records).toEqual([first]); expect(history.headHash).toBe(first.seal);
-  expect(history.torn).toEqual(Buffer.from(tail));
+  expect(() => readRealmExtensionHistory(f.home, binding)).toThrow();
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
+});
+
+test("#448: a matching pending intent keeps the completed prefix readable", async () => {
+  const { f, binding, make, file, intent, pending, options } = await fixture();
+  const first = make(hex("1")), second = make(hex("2"), 2, first.seal), tail = text(second).slice(0, -14);
+  pending(intent({ sequence: 2, previousHash: first.seal, previousLogBytes: Buffer.byteLength(text(first)), previousLogHash: sha(text(first)) }));
+  writeFileSync(file, text(first) + tail, { mode: 0o600 });
+  const history = readRealmExtensionHistory(f.home, binding, options);
+  expect(history.records).toEqual([first]); expect(history.headHash).toBe(first.seal); expect(history.torn).toEqual(Buffer.from(tail));
   history.assertCurrent();
+});
+
+test("#448: a truncated record is not attributed by an intent for another position", async () => {
+  const { f, binding, make, file, intent, pending, options } = await fixture();
+  const first = make(hex("1")), second = make(hex("2"), 2, first.seal), whole = text(first) + text(second);
+  pending(intent({ sequence: 3, previousHash: second.seal, previousLogBytes: Buffer.byteLength(whole), previousLogHash: sha(whole) }));
+  writeFileSync(file, whole.slice(0, -14), { mode: 0o600 });
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
+});
+
+test("#448: an intent that does not pin this prefix or is unsafe never attributes the tail", async () => {
+  const { f, binding, make, file, intent, pending, options } = await fixture();
+  const first = make(hex("1")), tail = text(make(hex("2"), 2, first.seal)).slice(0, -14);
+  const exact = { sequence: 2, previousHash: first.seal, previousLogBytes: Buffer.byteLength(text(first)), previousLogHash: sha(text(first)) };
+  const path = pending(intent({ ...exact, previousLogHash: hex("7") }));
+  writeFileSync(file, text(first) + tail, { mode: 0o600 });
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
+  pending(intent(exact)); chmodSync(path, 0o644);
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
+  writeFileSync(path, "{torn", { mode: 0o600 }); chmodSync(path, 0o600);
+  expect(() => readRealmExtensionHistory(f.home, binding, options)).toThrow();
 });
