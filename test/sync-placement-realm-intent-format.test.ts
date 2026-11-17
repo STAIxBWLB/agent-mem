@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { createRealmIntent, REALM_INTENT_SCHEMA, validateRealmIntent, type RealmIntentBody } from "../src/memory/sync-placement-realm-intent-format.ts";
-import { realmExtensionGenesis } from "../src/memory/sync-placement-realm-extension-format.ts";
+import { createRealmExtension, REALM_EXTENSION_SCHEMA, realmExtensionGenesis } from "../src/memory/sync-placement-realm-extension-format.ts";
+import { canonicalJSON } from "../src/memory/generation.ts";
+import { verifyTornRealmAppend } from "../src/memory/sync-placement-realm-torn.ts";
 
 const hex = (n: string) => n.repeat(64), sha = (text: string) => createHash("sha256").update(text).digest("hex");
 function input(): RealmIntentBody {
@@ -23,4 +25,20 @@ test("#448: intent parsing rejects accessors and proxies without invoking them",
   Object.defineProperty(value, "project", { enumerable: true, get() { invoked = true; return "secret"; } });
   expect(() => validateRealmIntent(value)).toThrow(); expect(invoked).toBe(false);
   expect(() => validateRealmIntent(new Proxy(createRealmIntent(input()), {}))).toThrow();
+});
+
+test("#448: only an exact incomplete frozen record may be treated as a torn append", () => {
+  const intent = createRealmIntent(input());
+  const record = createRealmExtension({ schema: REALM_EXTENSION_SCHEMA, epochHash: intent.epochHash, activationHash: intent.activationHash,
+    homeHash: intent.homeHash, generation: intent.generation, sequence: intent.sequence, previousHash: intent.previousHash,
+    realm: { scope: "project", keyHash: intent.keyHash, bindingHash: hex("4") }, sourceHash: hex("5"), aliasesHash: intent.aliasesHash,
+    policyHash: intent.policyHash, writerHash: intent.writerHash, journal: intent.journal });
+  const line = Buffer.from(canonicalJSON(record) + "\n"), partial = line.subarray(0, line.length - 1);
+  expect(verifyTornRealmAppend(partial, intent, record)).toEqual(Buffer.alloc(0));
+  expect(() => verifyTornRealmAppend(line, intent, record)).toThrow();
+  expect(() => verifyTornRealmAppend(Buffer.concat([partial, Buffer.from("x")]), intent, record)).toThrow();
+  expect(() => verifyTornRealmAppend(Buffer.alloc(0), intent, record)).toThrow();
+  const { seal: _seal, ...body } = record;
+  const other = createRealmExtension({ ...body, realm: { ...record.realm, keyHash: hex("6") } });
+  expect(() => verifyTornRealmAppend(partial, intent, other)).toThrow();
 });
