@@ -6,6 +6,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Added
 
+- Admit a curated project realm that appeared after activation into the same epoch with a person command: `amem migrate --sync-placement --admit <project> --dry-run` reports the one extension record it would append and writes nothing, `--apply` retains a frozen intent, completes the realm's empty curated metadata with `generation.json` last, appends the record and cleans the intent, `--resume` completes or only cleans up an interrupted attempt, and `--abandon --confirm` removes just the retained intent with the incomplete bytes it authorized. Activation's own metadata is never rewritten, an appended record carries the same proofs activation recorded, and a realm already in force is never appended twice. Refs #448.
 - Measure a 5,154-row first placement sync with the explicitly enabled v2 batch path in advisory Ubuntu and macOS CI jobs. Refs #420.
 - Prepare the session-start work section off the hook: a work write publishes a derived, machine-local `brief-work.json` bound to the work log's segment frontier and the home policy revision, and the native brief reads that file only instead of replaying the project's work log inside its 10 ms work slice. A stale, foreign or unreadable snapshot shows the work section `unavailable` with `use amem_work_state_read`, never older rows, and every kept view is screened again at read under the current repository and host policy. An ordinary write folds its own row into the published views; only a first or foreign frontier replays the log. Refs #455.
 
@@ -15,6 +16,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Compatibility with N-1 (0.28.2), sync wire and remote refs: unchanged; each publication writes the same refs, descriptors and packs as before.
 - Compatibility with N-1 (0.28.2), placement journal and publication plans: unchanged formats; every retained plan still has at most two targets, so a 0.28.2 reader resumes or inspects it. No floor is raised.
 - Compatibility with N-1 (0.28.2), sync status sidecar: snapshots may carry an additive `inventory` object; 0.28.2 `sync --status` ignores it (tested against the verbatim 0.28.2 reader).
+- Compatibility with N-1 (0.28.2), realm admission: the same-epoch `placement-realm-extensions.jsonl` chain is ignored by 0.28.2, which keeps refusing admitted realms. Refs #448.
 
 ### Fixed
 
