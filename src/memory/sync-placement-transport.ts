@@ -6,7 +6,7 @@ import { canonicalJSON, hashJSON, readSelector } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
 import { generationSyncGit, generationSyncGitBytes, remoteVisibility, type SyncOptions, type SyncResult } from "./sync.ts";
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
-import { isLocalKey, resolveShardProfile } from "./shard.ts";
+import { isLocalKey, PlacementRealmRefusal, resolveShardProfile } from "./shard.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { outboundPolicyEvaluator } from "./sync-screen.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
@@ -580,6 +580,7 @@ class PlacementTransport {
       const bound=this.attemptHash||this.journal?.publicationReservation?undefined:placementSyncBoundReceipt(error);
       if(bound){this.bound=bound;return this.result(false,"not-needed",placementSyncBoundMessage(bound));}
       if(this.attemptHash)return this.result(false,"unknown","Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.");
+      if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementRealmRefusal && error.origin === "remote") return this.result(false, "not-needed", error.message);
       // #426: name the failing check by a fixed category and the phase; never the error's own text, which may carry a path.
       this.refusal=placementRefusalCategoryOf(error)??classifyPlacementError(error)??"other";
       return this.result(false,"not-needed",placementRefusalMessage(this.refusal,this.phaseNow));

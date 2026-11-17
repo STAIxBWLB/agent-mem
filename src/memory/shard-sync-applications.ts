@@ -141,7 +141,7 @@ export class ShardSyncApplications {
     const view: PublicPruneViewV1 = { ...this.#boundView, realms };
     if (canonicalJSON(view) !== canonicalJSON(this.#boundView)) {
       for (const target of o.targets) shardSelectorRetention(target, true, true);
-      const result = await advancePublicPruneView({ memoryDir: o.home, view, expectedRevision: o.getRevision(), mutations: [o.homeMutation, ...o.targets.map(target => target.mutation!)] });
+      const result = await advancePublicPruneView({ memoryDir: o.home, view, expectedRevision: o.getRevision(), origin: "remote", mutations: [o.homeMutation, ...o.targets.map(target => target.mutation!)] });
       o.setRevision(result.revision); this.#boundView = view;
       for (const target of o.targets) target.store.refresh();
       await o.afterAdvance();

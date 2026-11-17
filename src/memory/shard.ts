@@ -153,17 +153,24 @@ export function readShardedSelection(memoryDir: string): ShardedSelection {
   }catch(error){if(safeProfileLockMessage(error))throw error;throw profileLockRecoveryError(memoryDir)??error;}
 }
 
+/** Bounded identifiers only, safe to surface without exposing a project key or row. */
+export class PlacementRealmRefusal extends Error {
+  constructor(readonly scope: "user" | "project", readonly keyHash: string | undefined, readonly origin: "cwd binding" | "remote" | "local binding") {
+    super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; review its activation before opening it`);
+  }
+}
+
 /** Fixed curated paths cannot redirect writes into legacy inputs or another shard.
  * ponytail: same-user concurrent parent replacement needs descriptor-relative opens; fixed preflight does not claim that fence.
  */
-export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }): void {
+export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }, origin: "cwd binding" | "remote" | "local binding" = "local binding"): void {
   assertPlacementRuntime(memoryDir);
   const selector = readProfileJSON(join(memoryDir, "profile.json")) as {schema?:unknown} | undefined;
   if (selector?.schema === "agent-mem.profile/v3") {
     const active = readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
     const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
     if (!active || !active.activation.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
-      throw new Error("sync placement realm is outside the activated inventory; review its activation before opening it");
+      throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin);
   }
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
   const check = (path: string, directory: boolean) => {
@@ -180,9 +187,9 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
 }
 
 /** Open one already-sealed shard without consulting the legacy home or the catalog. */
-export function resolveShardProfile(memoryDir: string, opts: { project?: string; user?: boolean }): BoundProfile {
+export function resolveShardProfile(memoryDir: string, opts: { project?: string; user?: boolean }, origin?: "cwd binding" | "remote" | "local binding"): BoundProfile {
   if (opts.user === true && opts.project !== undefined || opts.user !== true && !opts.project) throw new Error("choose exactly one project or the user shard");
-  assertCuratedShardPaths(memoryDir, opts);
+  assertCuratedShardPaths(memoryDir, opts, origin);
   const deadline = Date.now() + PROFILE_LOCK_TIMEOUT_MS, initial = shardSnapshot(memoryDir, deadline), generation = initial.journal.generation;
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
   if (opts.project !== undefined && readShardDescriptor(memoryDir, shardKeyHash(opts.project))?.key !== opts.project) throw new Error("curated shard project identity mismatch");

@@ -14,6 +14,7 @@ import { invalidateCuratedCaches } from "./curated-cache-state.ts";
 export type PublicPruneAdvanceStage = "after-intent" | "after-shards" | "after-profile" | "after-remove";
 export interface PublicPruneAdvanceOptions {
   memoryDir: string; view: PublicPruneViewV1; expectedRevision: string; mutations?: readonly MutationHandle[];
+  origin?: "remote";
   checkpoint?: (stage: PublicPruneAdvanceStage) => void | Promise<void>;
 }
 export interface PublicPruneAdvanceResult { revision: string; viewHash: string }
@@ -141,7 +142,7 @@ export async function advancePublicPruneView(options: PublicPruneAdvanceOptions)
   const previousProfile=raw(join(home,"profile.json")),previousShards=raw(join(home,"shards.json")),old=readPublicPruneViewForActivation(home,profile.pruneInputSetHash,profile.generation);
   const bindings:Binding[]=[];
   for(const key of Object.keys(view.realms).sort())if(old.realms[key]!==view.realms[key]){
-    const bound=resolveShardProfile(home,key==="user"?{user:true}:{project:key.slice(8)}),stat=owned(bound.dir,true);
+    const bound=resolveShardProfile(home,key==="user"?{user:true}:{project:key.slice(8)}, options.origin),stat=owned(bound.dir,true);
     bindings.push({key,dir:bound.dir,dev:stat.dev,ino:stat.ino,metadata:metadata(bound.dir)});
   }
   const final={...profile,pruneInputSetHash:publicPruneViewHash(view)},shards={...JSON.parse(previousShards),selectorRevision:hashJSON(final)};

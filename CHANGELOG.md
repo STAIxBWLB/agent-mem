@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Skip a cwd project outside the activated placement inventory while syncing the user realm. Refs #449.
+
 ## 0.28.1
 
 ### Fixed
