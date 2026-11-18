@@ -108,7 +108,8 @@ test("alias binding drift after cache view open leaves the invalidated cache mis
     f.store.note(note("cache view baseline"));
     expect(f.cache()?.rows).toHaveLength(1);
     prototype.withStoreFences = function<T>(this: MemoryStore, work: (stores: readonly MemoryStore[]) => T): T {
-      if (this !== f.store && !injected) {
+      // #466: a single-project publication reuses the handle that made the change, so the drift lands in its own fence.
+      if (!injected) {
         injected = true;
         appendAlias(f.base, { alias, key: f.project, actor: "person", machine: machineId(f.base).id });
       }

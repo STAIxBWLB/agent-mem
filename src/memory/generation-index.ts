@@ -109,11 +109,15 @@ export class GenerationIndex {
   constructor(private readonly options: GenerationIndexOptions) {
     this.profile = options.profile;
     const db = options.db;
+    db.run("CREATE TABLE IF NOT EXISTS generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     if (this.profile.foreignPruneFormat) {
       db.run("CREATE TABLE IF NOT EXISTS generation_foreign_inputs (id TEXT PRIMARY KEY)");
       db.run("CREATE TABLE IF NOT EXISTS generation_foreign_rows (id TEXT PRIMARY KEY, hash TEXT NOT NULL)");
       db.run("CREATE TABLE IF NOT EXISTS generation_foreign_targets (id TEXT PRIMARY KEY)");
-      this.replayProvenance = true; // persistent SQLite never supplies foreign membership
+      // #466: a stored stamp is the proof that the three tables below came from this view, so a reopen replays nothing.
+      // A missing stamp (an index written before it existed) still rebuilds once.
+      this.foreignStamp = this.persistedForeignStamp();
+      this.replayProvenance = this.foreignStamp === undefined; // persistent SQLite never supplies foreign membership by itself
     }
     db.run("CREATE TABLE IF NOT EXISTS generation_rows (id TEXT PRIMARY KEY, line TEXT NOT NULL, local INTEGER NOT NULL, public INTEGER NOT NULL, own INTEGER NOT NULL, legacy INTEGER NOT NULL)");
     if (!(db.query("PRAGMA table_info(generation_rows)").all() as { name: string }[]).some(row => row.name === "legacy")) { db.run("ALTER TABLE generation_rows ADD COLUMN legacy INTEGER NOT NULL DEFAULT 0"); this.replayProvenance = true; }
@@ -122,7 +126,6 @@ export class GenerationIndex {
     db.run("CREATE TABLE IF NOT EXISTS generation_targets (id TEXT PRIMARY KEY)");
     db.run("CREATE TABLE IF NOT EXISTS generation_segments (source TEXT NOT NULL, path TEXT NOT NULL, offset INTEGER NOT NULL, hash TEXT NOT NULL, commit_id TEXT, stamp TEXT, PRIMARY KEY(source,path))");
     if (!(db.query("PRAGMA table_info(generation_segments)").all() as { name: string }[]).some(row => row.name === "stamp")) db.run("ALTER TABLE generation_segments ADD COLUMN stamp TEXT");
-    db.run("CREATE TABLE IF NOT EXISTS generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   }
   private ownSegments(reader: SegmentReader = this.reader, full = this.fullCapture, inspect?: LegacySegmentInspector): LegacySegment[] {
     const prior = sourceMetadataRows<LegacyCheckpoint & { stamp: string | null }>(this.options.db, "SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments WHERE source='generation'", !!inspect);
@@ -226,19 +229,29 @@ export class GenerationIndex {
     this.applyForeign(true);
     this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as {id:string}[]).map(row => row.id));
   }
-  private applyForeign(validateRows = false): void {
-    if (!this.profile.foreignPruneFormat) return;
+  /** This shard's realm entry in the active public prune view, or undefined when the view holds none. */
+  private foreignSet(): string | undefined {
     const profile = this.profile;
     if (!profile.pruneInputSetHash || !profile.generation || !profile.sharded) return fail();
     const view = (this.options.limits !== undefined ? readPublicPruneViewForActivation : readPublicPruneView)(profile.home, profile.pruneInputSetHash, profile.generation);
-    const key = profile.shardUser ? "user" : `project:${profile.shardKey}`, set = view.realms[key];
-    const db = this.options.db;
-    if (!set) {
+    return view.realms[profile.shardUser ? "user" : `project:${profile.shardKey}`];
+  }
+  /** The stamp a previous index proved, so a reopen needs no replay; absent on an index written before it existed. */
+  private persistedForeignStamp(): string | undefined {
+    return (this.options.db.query("SELECT value FROM generation_state WHERE key='foreignStamp'").get() as { value: string } | null)?.value;
+  }
+  private applyForeign(validateRows = false, resolved?: { set: string | undefined }): void {
+    if (!this.profile.foreignPruneFormat) return;
+    const profile = this.profile, db = this.options.db, generation = profile.generation;
+    if (!profile.pruneInputSetHash || !generation || !profile.sharded) return fail();
+    const applied = resolved ? resolved.set : this.foreignSet();
+    if (applied === undefined) {
       if ((db.query("SELECT COUNT(*) AS n FROM generation_foreign_inputs").get() as {n:number}).n) return fail();
       return;
     }
+    const set: string = applied;
     if (!this.foreignCache || this.foreignCache.set !== set) this.foreignCache = { set, load: createPublicPruneReplayCache({ dir: profile.dir,
-      realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: profile.generation, inputSetHash: set, ...(profile.publicationFormat ? {publicationFormat:profile.publicationFormat} : {}) }) };
+      realm: profile.shardUser ? { scope: "user" } : { scope: "project", key: profile.shardKey! }, receivingGeneration: generation, inputSetHash: set, ...(profile.publicationFormat ? {publicationFormat:profile.publicationFormat} : {}) }) };
     const proof = this.foreignCache.load();
     if (validateRows || this.foreignStamp !== set) for (const item of db.query("SELECT id,line FROM generation_rows").all() as {id:string;line:string}[]) {
       const expected = proof.rowHashes.get(item.id); if (expected && hashJSON(JSON.parse(item.line)) !== expected) return fail();
@@ -249,9 +262,15 @@ export class GenerationIndex {
     for (const [id, hash] of proof.rowHashes) db.query("INSERT INTO generation_foreign_rows VALUES (?,?)").run(id, hash);
     for (const id of proof.targets) db.query("INSERT INTO generation_foreign_targets VALUES (?)").run(id);
     this.foreignStamp = set;
+    // #466: written by rebuild() and by every incremental write alike, so both leave the same generation_state rows.
+    db.query("INSERT INTO generation_state VALUES ('foreignStamp',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(set);
     }
     const current = new Set((db.query("SELECT id FROM generation_targets").all() as {id:string}[]).map(row => row.id));
     for (const id of proof.targets) if (!current.has(id)) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
+  }
+  /** An unchanged frontier still re-proves the committed foreign inputs; only the table rewrite waits for a moved stamp. */
+  private refreshForeign(): void {
+    this.options.db.transaction(() => this.applyForeign(false, { set: this.foreignSet() })).immediate();
   }
   private recordSkipped(segment: LegacySegment): void {
     this.options.db.query("INSERT INTO generation_state VALUES (?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(`skipped:${segment.source}:${segment.path}`);
@@ -278,7 +297,7 @@ export class GenerationIndex {
     const known = db.query("SELECT source,path,offset,hash,commit_id,stamp FROM generation_segments").all() as { source: string; path: string; offset: number; hash: string; commit_id: string | null; stamp: string | null }[];
     const currentCommit = (db.query("SELECT value FROM generation_state WHERE key='legacyCommit'").get() as { value: string } | null)?.value;
     const unchanged = known.length === input.segments.length && currentCommit === input.commit && input.segments.every(segment => known.some(row => row.source === segment.source && row.path === segment.path && row.offset === segment.offset && row.hash === segment.hash && row.commit_id === (segment.commit ?? null) && row.stamp === (segment.stamp ?? null)));
-    if (unchanged) { if (this.profile.foreignPruneFormat) db.transaction(() => this.applyForeign()).deferred(); this.retainedTail = input.segments.some(segment => segment.tailBytes > 0); this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
+    if (unchanged) { if (this.profile.foreignPruneFormat) this.refreshForeign(); this.retainedTail = input.segments.some(segment => segment.tailBytes > 0); this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as { id: string }[]).map(row => row.id)); return; }
     const committed = db.transaction(() => { if (this.frontier() !== before) return false; this.index(input); return true; }).immediate();
     if (!committed) { if (attempt < 5) return this.refresh(attempt + 1, reader); return fail(); }
     this.retainedTail = input.segments.some(segment => segment.tailBytes > 0);
