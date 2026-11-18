@@ -163,6 +163,16 @@ function assertSpoolReplayArguments(path: readonly string[], options: Record<str
     if (!isAbsolute(source)) throw new AgentUsageError("--source is a relative path; pass the absolute path of the parked directory");
   }
 }
+/** Realm admission receipts name hashes and counts only; the project key is the caller's own argument. */
+function realmAdmissionDetail(result: { state: string; next?: { sequence: number; mode: "new" | "existing" }; sequence?: number; headHash?: string; created?: boolean; discarded?: number; discards?: number; staged?: number; nextStep?: string }): string {
+  if (result.staged) return `; ${result.state === "abandoned" ? "removed" : "would remove"} ${result.staged} private intent stage(s), ${result.discarded ?? result.discards ?? 0} bytes${result.state === "abandoned" ? "" : "; rerun with --confirm"}`;
+  if (result.state === "admitted") return `; appended record ${result.sequence} ${result.headHash}${result.created ? "; wrote the realm's empty curated metadata first" : ""}`;
+  if (result.state === "already-admitted") return result.nextStep ? `; ${result.nextStep}` : "; the realm is already in the effective inventory and nothing was appended";
+  if (result.state === "abandoned") return `; removed the retained intent for record ${result.sequence} and discarded ${result.discarded ?? 0} incomplete bytes`;
+  if (result.next) return `; would append record ${result.next.sequence} over the ${result.next.mode} realm's curated metadata; writes nothing until --apply`;
+  if (result.state === "abandonable" || result.state === "retained") return `; would remove the retained intent for record ${result.sequence} and discard ${result.discards ?? result.discarded ?? 0} incomplete bytes; rerun with --confirm`;
+  return result.nextStep ? `; ${result.nextStep}` : `; no change`;
+}
 /** Body-free preview text: counts by class, then each record's cwd, current project and class for explicit confirmation. */
 function replayPreviewText(plan: { records: { name: string; cwd: string; project: string | null; class: string; event: string | null }[]; counts: Record<string, number>; digest: string; needsConfirmation: { cwd: string; project: string; count: number }[] }): string {
   const lines = [`spool replay preview (no record bodies shown; plan ${plan.digest.slice(0, 12)})`,
@@ -398,8 +408,14 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const modes = ["--dry-run","--apply","--resume","--abandon","--deactivate"].filter(key=>options[key]===true);
     if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
       throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
-  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined)) {
-    throw new AgentUsageError("--writer-root and --abandon apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
+    if (options["--admit"] !== undefined) {
+      if (options["--writer-root"] !== undefined || options["--confirm"] === true && options["--abandon"] !== true)
+        throw new AgentUsageError("Admitting one realm uses only --sync-placement --admit <project> with --dry-run, --apply, --resume or --abandon --confirm; writer roots belong to initial activation.");
+    } else if (options["--confirm"] === true) {
+      throw new AgentUsageError("--confirm applies only to --sync-placement --admit <project> --abandon; other placement modes keep their own confirmation.");
+    }
+  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined)) {
+    throw new AgentUsageError("--writer-root, --abandon and --admit apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
@@ -502,6 +518,18 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
     if (options["--sync-placement"] === true) {
+      if (options["--admit"] !== undefined) {
+        const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");
+        const project = String(options["--admit"]);
+        const result = options["--apply"] === true ? await applyRealmAdmission(memoryHome(), project, { mode: "apply" })
+          : options["--resume"] === true ? await applyRealmAdmission(memoryHome(), project, { mode: "resume" })
+          : options["--abandon"] === true ? options["--confirm"] === true ? await applyRealmAdmission(memoryHome(), project, { mode: "abandon", confirm: true })
+            : planRealmAbandon(memoryHome(), project)
+          : previewRealmAdmission(memoryHome(), project);
+        if (options["--json"] === true) return JSON.stringify(result, null, 2);
+        // Identifiers and counts only: the named project key never reaches output.
+        return `sync placement realm admission: ${result.state}; realm ${result.realm}${realmAdmissionDetail(result)}\n`;
+      }
       const { activateSyncPlacement } = await import("./memory/sync-placement-activation.ts");
       const result = await activateSyncPlacement({ memoryDir:memoryHome(),mode:options["--abandon"]?"abandon":mode as "dry-run"|"apply"|"resume",
         writerRoots:repeated(argv,"--writer-root"),ownRoot:fileURLToPath(new URL("..",import.meta.url)),

@@ -1,6 +1,7 @@
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
-import { assertPlacementRuntime, doctorScratchBinding, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
+import { assertPlacementRuntime, doctorScratchBinding, doctorScratchInventory, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -156,22 +157,20 @@ export function readShardedSelection(memoryDir: string): ShardedSelection {
 /** Bounded identifiers only, safe to surface without exposing a project key or row. */
 export class PlacementRealmRefusal extends Error {
   constructor(readonly scope: "user" | "project", readonly keyHash: string | undefined, readonly origin: "cwd binding" | "remote" | "local binding") {
-    super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; review its activation before opening it`);
+    // A same-epoch extension record describes a project realm only, so the user realm is fixed by activation and has no admission command.
+    const next = scope === "user" ? "the user realm is fixed at activation; review it with amem migrate --sync-placement --dry-run"
+      : "admit it with amem migrate --sync-placement --admit <project> --dry-run, then --apply";
+    super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; ${next}`);
   }
 }
 
-/** Fixed curated paths cannot redirect writes into legacy inputs or another shard.
- * ponytail: same-user concurrent parent replacement needs descriptor-relative opens; fixed preflight does not claim that fence.
+/**
+ * The fixed layout of one curated shard, checked with `lstat` and never followed: a symlinked directory or metadata file
+ * would redirect a write out of the home. Split from `assertCuratedShardPaths` so a writer that has not yet created the
+ * shard can refuse a redirecting scaffold before it creates anything, while the inventory gate stays with the callers that
+ * open an existing one.
  */
-export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }, origin: "cwd binding" | "remote" | "local binding" = "local binding"): void {
-  assertPlacementRuntime(memoryDir);
-  const selector = readProfileJSON(join(memoryDir, "profile.json")) as {schema?:unknown} | undefined;
-  if (selector?.schema === "agent-mem.profile/v3") {
-    const active = doctorScratchBinding(memoryDir) ?? readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
-    const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
-    if (!active || !active.activation.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
-      throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin);
-  }
+export function assertCuratedShardLayout(memoryDir: string, opts: { project?: string; user?: boolean }): void {
   const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
   const check = (path: string, directory: boolean) => {
     try {
@@ -184,6 +183,27 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
   for (const folder of ["log", "local", "legacy", "legacy/log", "legacy/local", "legacy-main", "legacy-main/log", "legacy-main/local"]) check(join(dir, folder), true);
   for (const name of ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "legacy/machine.json", "legacy-main/machine.json", "prune-translations.jsonl"]) check(join(dir, name), false);
   for (const database of new Set(["index.db", "index-v2.db", indexFileName(false), indexFileName(true), "search.db", "mutation-lock.db"])) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
+}
+/** Fixed curated paths cannot redirect writes into legacy inputs or another shard.
+ * ponytail: same-user concurrent parent replacement needs descriptor-relative opens; fixed preflight does not claim that fence.
+ */
+export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }, origin: "cwd binding" | "remote" | "local binding" = "local binding"): void {
+  assertPlacementRuntime(memoryDir);
+  const selector = readProfileJSON(join(memoryDir, "profile.json")) as {schema?:unknown} | undefined;
+  let recheckInventory: (() => void) | undefined;
+  if (selector?.schema === "agent-mem.profile/v3") {
+    const scratch = doctorScratchBinding(memoryDir);
+    const active = scratch ?? readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
+    const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
+    // An appended same-epoch extension is part of the inventory a curated write may open (#448); a realm it does not name stays refused.
+    const inventory = scratch ? doctorScratchInventory(memoryDir) : active ? readEffectiveRealmInventory(memoryDir, active) : undefined;
+    if (!inventory?.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
+      throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin);
+    inventory.assertCurrent();
+    recheckInventory = inventory.assertCurrent;
+  }
+  assertCuratedShardLayout(memoryDir, opts);
+  recheckInventory?.();
 }
 
 /** Open one already-sealed shard without consulting the legacy home or the catalog. */

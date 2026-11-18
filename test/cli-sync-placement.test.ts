@@ -53,6 +53,17 @@ test("shared parser/help/completions expose only migrate writer roots and forwar
   for(const shell of ["zsh","bash","fish"])expect(completionScript(shell)).toContain("--sync-placement");
 });
 
+// #448: realm admission keeps its own flags, refuses the activation families, and touches no home it cannot read.
+test("#448 realm admission parses only under --sync-placement and refuses before home access",()=>{
+  expect(parseCommand(["migrate","--sync-placement","--admit","example.test/realm","--apply"]).options["--admit"]).toBe("example.test/realm");
+  expect(commandHelp(["migrate"])).toContain("--admit");expect(COMMANDS.migrate?.options?.["--confirm"]).toBeDefined();
+  expect(parseCommand(["migrate"]).options["--admit"]).toBeUndefined();
+  const f=hookFixture();cleanup.push(f.close);expect(existsSync(f.base)).toBe(false);
+  const conflicts: [string[], string][] = [[["migrate","--admit","example.test/realm"],"--sync-placement"],[["migrate","--sync-placement","--admit","example.test/realm","--writer-root","/fixture/root"],"writer roots"],[["migrate","--sync-placement","--confirm"],"--confirm"]];
+  for(const [args,message] of conflicts){const result=run(f,args);expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain(message);}
+  expect(existsSync(f.base)).toBe(false);
+});
+
 // #431 AC3: an agent-marked session reaches the same activation steps a person does; a missing home still fails before anything is created.
 for(const mode of ["--dry-run","--apply","--resume","--abandon"])test("agent activation runs the person path and creates no home: "+mode,()=>{
   const f=hookFixture();cleanup.push(f.close);expect(existsSync(f.base)).toBe(false);

@@ -16,6 +16,7 @@ import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readPlacementJournal } from "./sync-placement-journal-storage.ts";
 import { readPlacementPublication } from "./sync-placement-publication-storage.ts";
+import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { readShardDescriptor, shardDir, userShardDir } from "./shard.ts";
 import { projectState } from "./lifecycle.ts";
 import type { PlacementRealm } from "./sync-placement-journal-format.ts";
@@ -33,12 +34,15 @@ export interface PlacementRealmResult { realm: "user" | string; outcome: Placeme
 
 const label = (realm: PlacementRealm | InventoryRealm): string => realm.scope === "user" ? "user" : realm.keyHash;
 
-/** The effective activated inventory in publication order; realms without a local curated shard are reported, never opened or initialized. */
+/** The effective activated inventory in publication order; realms without a local curated shard are reported, never opened or initialized.
+ * The inventory is the effective one (#448): a realm admitted after activation by an appended extension joins it exactly like an activated realm.
+ */
 export function placementInventory(home: string): { local: InventoryRealm[]; missing: string[]; inactive: string[] } {
   const markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home, markers.profile, markers.shards);
   if (!active) throw new Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
+  const { realms } = readEffectiveRealmInventory(home, active);
   const local: InventoryRealm[] = [], missing: string[] = [], inactive: string[] = [];
-  for (const realm of active.activation.realms) {
+  for (const realm of realms) {
     if (realm.scope === "user") { if (existsSync(join(userShardDir(home), "generation.json"))) local.unshift({ scope: "user" }); else missing.push("user"); continue; }
     const descriptor = readShardDescriptor(home, realm.keyHash.slice(0, 16));
     if (!descriptor || digest(descriptor.key) !== realm.keyHash || !lstatSync(join(shardDir(home, descriptor.key), "generation.json"), { throwIfNoEntry: false })) { missing.push(realm.keyHash); continue; }

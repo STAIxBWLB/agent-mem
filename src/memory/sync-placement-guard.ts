@@ -1,4 +1,5 @@
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
+import { readEffectiveRealmInventory, type EffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { tmpdir } from "node:os";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -45,6 +46,16 @@ export function doctorScratchBinding(home: string): ActivePlacementBinding | und
     if (placementRuntimeRefusal(context.realHome) || canonicalJSON(real) !== canonicalJSON(copy)) return undefined;
     return readActivePlacementBinding(context.realHome, real.profile, real.shards);
   } catch { return undefined; }
+}
+
+/** Only the private doctor scratch capability can borrow the real home's freshly verified inventory. */
+export function doctorScratchInventory(home: string): EffectiveRealmInventory | undefined {
+  const binding = doctorScratchBinding(home), context = doctorContext.getStore();
+  if (!binding || !context) return undefined;
+  const inventory = readEffectiveRealmInventory(context.realHome, binding);
+  if (!doctorScratchBinding(home)) return undefined;
+  inventory.assertCurrent();
+  return inventory;
 }
 
 export const PLACEMENT_STAGE1_REFUSAL = "sync placement v3 requires matching durable activation metadata; keep the current compatible profile active until person-authorized activation is complete";
