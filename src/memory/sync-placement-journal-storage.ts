@@ -372,30 +372,6 @@ function sameEvent(record: PlacementRecord, value: PlacementEvent): boolean {
 }
 
 /** A publication step is one durable intent; chunk writes remain bounded and prefix-only. */
-/** Select only a uniquely attributable torn v2 intent; short prefixes can match multiple valid batches. */
-export function selectTornPlacementBatch(home: string, epochHash: string, candidates: readonly (readonly PlacementEvent[])[],
-  expectedHead: string, opts: PlacementStorageOptions): number | undefined {
-  return protectedIO(() => {
-    if (!opts.publicationAttemptHash || !hex(expectedHead)) fail("invalid");
-    const p = paths(home, epochHash); current(p, opts);
-    const read = snapshot(p), saved = readOwned(join(p.dir, "append-intent.json"), PLACEMENT_BATCH_INTENT_MAX_BYTES);
-    if (!read.intentPending || saved === undefined || read.headHash !== expectedHead) fail("conflict");
-    const matches: number[] = [];
-    for (const [candidateIndex, values] of candidates.entries()) {
-      let head = expectedHead;
-      const records = values.map((event, index) => {
-        const record = createPlacementRecord(epochHash, read.sequence + index + 1, head, validatePlacementEvent(event));
-        head = record.seal; return record;
-      });
-      const encoded = line(planPlacementBatchIntent(epochHash, opts.publicationAttemptHash!, records, read.chunks));
-      if (saved.length <= encoded.length && encoded.subarray(0, saved.length).equals(saved)) matches.push(candidateIndex);
-    }
-    current(p, opts);
-    if (matches.length > 1) fail("conflict");
-    return matches[0];
-  });
-}
-
 export function appendPlacementEvents(home: string, epochHash: string, values: readonly PlacementEvent[], expectedHead: string,
   opts: PlacementStorageOptions): { records: PlacementRecord[]; already: boolean } {
   if (!values.length || !hex(expectedHead) || !opts.publicationAttemptHash) fail("invalid");

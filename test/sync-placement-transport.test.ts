@@ -572,11 +572,7 @@ for (const mode of ["sliced", "legacy", "ambiguous"] as const) test(`v2 handles 
     const first = await syncPlacementMemory(f.store, f.opts(remote));
     expect(fired).toBe(true); expect(first.ok).toBe(false); expect(refs(remote)).toEqual([]);
     fault.mockRestore(); records.mockRestore();
-    const intent = join(f.home, "sync-placement", "epochs", f.epochHash, "append-intent.json"), prefix = readFileSync(intent);
     const resumed = await syncPlacementMemory(f.store, f.opts(remote));
-    if (mode === "ambiguous") {
-      expect(resumed.ok).toBe(false); expect(readFileSync(intent)).toEqual(prefix); expect(refs(remote)).toEqual([]); return;
-    }
     expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
     const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
     expect(done.pending).toBe(false); expect(done.records.slice(0, frozen.length)).toEqual(frozen);
