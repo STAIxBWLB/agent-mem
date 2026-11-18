@@ -556,6 +556,11 @@ export class MemoryStore {
           && (aliases.length ? opened.reconcile?.canonical === project && opened.reconcile.aliases.join("\n") === aliases.join("\n") : !opened.reconcile);
         if (opened && !reusable && !openOnMiss) continue; // Explicit single-project preparation never retries with a second store.
         view = reusable ? opened! : sharded ? openShardStore({ ...common, project }) : new MemoryStore(common);
+        // #466 review (codex-connector P1): a derived publication may only republish an index this handle has updated.
+        // One attempt outside the publication flag, so a lock that is still held leaves the invalidated cache missing
+        // instead of republishing rows that predate the change (a forgotten note served for up to 24 h).
+        if (view.stale) view.ensureFresh();
+        if (view.stale) throw Error("curated snapshot source is unavailable; a later mutation retries");
         // #466: a publication that already failed to index waits on the writer once, not once per derived read.
         view.curatedPublication = true;
         try {
@@ -1269,6 +1274,7 @@ export class MemoryStore {
       return;
     }
     // Another process (a CLI, another project's hub, a sync) may have written since this one last read the segments.
+    if (this.stale && this.curatedPublication) return; // one refusal is enough inside a derived publication
     if (this.stale || this.shape() !== this.seen) try { this.stale = false; this.refresh(); } catch { this.stale = true; /* still busy: the next read tries again */ }
   }
 
