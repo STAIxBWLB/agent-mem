@@ -22,10 +22,13 @@ test("#426: foreign errors map by class and allowlisted code only, never by mess
   const { classifyPlacementError } = await import("../src/memory/sync-placement-transport.ts");
   const { SyncPlacementJournalError } = await import("../src/memory/sync-placement-journal-format.ts");
   const { SharedWriterRevisionError } = await import("../src/memory/sync-placement-writer-revision-format.ts");
+  const { ShardSourceChangedError } = await import("../src/memory/shard-sync.ts");
   expect(classifyPlacementError(new SyncPlacementJournalError("bound"))).toBe("size-bound");
   expect(classifyPlacementError(new SyncPlacementJournalError("changed"))).toBe("source-selection");
   expect(classifyPlacementError(new SyncPlacementJournalError("invalid"))).toBe("epoch");
   expect(classifyPlacementError(new SharedWriterRevisionError("changed"))).toBe("writer-pin");
+  // #462: a collector that found its authored source changed under its own yield names that cause, by class.
+  expect(classifyPlacementError(new ShardSourceChangedError("authored segment changed during the preflight round trip"))).toBe("source-selection");
   expect(classifyPlacementError(Object.assign(new Error("x"), { code: "EBUSY" }))).toBe("lock");
   expect(classifyPlacementError(new Error("remote epoch policy lock writer"))).toBeUndefined();
 });

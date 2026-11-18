@@ -37,6 +37,8 @@ type SyncManifest = { path: string; bytes: Buffer; value: unknown; row: PruneRow
 type Target = { store: MemoryStore; realm: ShardSyncRealm; rows: Map<string, ShardSyncRow>; fetched: Set<string>; sources: PruneSourceRow[]; pending: PendingPrune[]; origins: Map<string, HoldSource>; holds: Hold[]; generation: string; manifests: Map<string,SyncManifest>; eligible: Set<string>; mutation?: MutationHandle; batch?: PublicPruneInputBatch; registered: PublicPruneInputV1[]; selectorChecks?: (()=>void)[]; local?: string; remote?: string; commit?: string };
 class SyncRefusal extends Error {}
 function refuse(reason: string): never { throw new SyncRefusal(reason); }
+/** #462: an authored source changed under the collector's own yield; the placement transport reports `source-selection`. */
+export class ShardSourceChangedError extends SyncRefusal {}
 function directory(path: string): void {
   const stat = lstatSync(path);
   if (!stat.isDirectory() || stat.isSymbolicLink()) refuse("shard sync requires independent private directories");
@@ -296,9 +298,8 @@ function* sourceRowsSteps(store: MemoryStore, realm: ShardSyncRealm): Generator<
   const changed = () => {
     const found = stamps.find(stamp => stamp.read() !== stamp.seen);
     if (!found) return;
-    if (found.change === "segment") refuse(`${shardSyncLabel(realm)}: authored segment changed during the preflight round trip`);
-    if (found.change === "claim") refuse(`${shardSyncLabel(realm)}: pending prune changed during the preflight round trip`);
-    refuse(`${shardSyncLabel(realm)}: realm listing changed during the preflight round trip`);
+    const source = found.change === "segment" ? "authored segment" : found.change === "claim" ? "pending prune" : "realm listing";
+    throw new ShardSourceChangedError(`${shardSyncLabel(realm)}: ${source} changed during the preflight round trip`);
   };
   for (const name of readdirSync(folder).sort()) {
     if (!name.endsWith(".jsonl")) continue;

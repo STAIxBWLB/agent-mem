@@ -25,7 +25,7 @@ import { preparePlacementPublication, readPlacementPublication, recordPlacementP
 import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
 import { ShardHistoryAuditor, type ShardHistory } from "./shard-sync-history.ts";
 import { ShardSyncApplications } from "./shard-sync-applications.ts";
-import { shardSourceRowsAsync, shardProvePrunes, shardImportRows, shardSelectorRetention, shardInstallHold, shardHoldWarning, type ShardSyncApplicationTarget } from "./shard-sync.ts";
+import { ShardSourceChangedError, shardSourceRowsAsync, shardProvePrunes, shardImportRows, shardSelectorRetention, shardInstallHold, shardHoldWarning, type ShardSyncApplicationTarget } from "./shard-sync.ts";
 import { shardSyncRef, SHARD_PACK_MAX_BYTES } from "./shard-sync-format.ts";
 import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineages } from "./prune-publisher-lineage.ts";
 import type { MemoryStore } from "./store.ts";
@@ -59,6 +59,7 @@ function refuse(category: PlacementRefusalCategory = "other"): never { throw new
 export function classifyPlacementError(error: unknown): PlacementRefusalCategory | undefined {
   try {
     if (!error || typeof error !== "object" || types.isProxy(error)) return undefined;
+    if (error instanceof ShardSourceChangedError) return "source-selection";
     if (error instanceof SharedWriterRevisionError) return "writer-pin";
     if (error instanceof SyncPlacementJournalError) { const code = Object.getOwnPropertyDescriptor(error, "code")?.value; return code === "bound" ? "size-bound" : code === "changed" ? "source-selection" : "epoch"; }
     const code = Object.getOwnPropertyDescriptor(error, "code")?.value;

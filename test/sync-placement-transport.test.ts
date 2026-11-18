@@ -30,6 +30,7 @@ import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
 import { syncOutboundContent } from "../src/memory/sync-screen.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
 import { PLACEMENT_APPEND_SLICE } from "../src/memory/sync-placement-yield.ts";
+import { appendAuthoredLine } from "./fakes/sync-placement-source-change.ts";
 
 // Real local-Git round trips: hosted macOS runs these at up to ~20 s, so each keeps a 60 s test-local allowance (global --timeout unchanged).
 const PROJECT = "example.test/placement/transport", USER_REF = "refs/heads/amem/u", PROJECT_REF = `refs/heads/amem/p/${shardKeyHash(PROJECT)}`;
@@ -1035,4 +1036,22 @@ test("#426: an unclassified throw in source capture is category other, never a g
   expect(result.placementPublication?.refusal).toEqual({ category: "other", phase: "source-capture" });
   expect(result.error).toContain("Placement sync is unavailable (category other, phase source capture)"); expect(result.error).not.toContain("/secret/capture");
   expect(final.category).toBe("other");
+}, 120_000);
+test("#462: a source changed during the preflight's own yield refuses as source-selection with its retry step", async () => {
+  const shardSync = await import("../src/memory/shard-sync.ts"), collect = shardSync.shardSourceRowsAsync;
+  let turns = 0;
+  const { result, final } = await refusal((f, remote) => f.opts(remote), f => {
+    // A row authored through the shard store, so this realm has a segment of its own for the change to append to.
+    f.store.note(note("synthetic authored segment row"));
+    // The preflight's own pause, so the change lands after the collector stamped its sources and before it returns.
+    const spy = spyOn(shardSync, "shardSourceRowsAsync").mockImplementation((store, realm) =>
+      collect(store, realm, async () => { if (++turns === 2) appendAuthoredLine(f.store.dir); }));
+    return () => spy.mockRestore();
+  });
+  expect(turns).toBeGreaterThan(1);
+  expect(result.placementPublication?.refusal).toEqual({ category: "source-selection", phase: "source-capture" });
+  expect(result.failure).toEqual({ cause: "refusal", category: "source-selection" });
+  expect(result.error).toContain("Placement sync refused (category source-selection, phase source capture)");
+  expect(result.error).toContain("close other memory writers, then rerun amem sync");
+  expect(final).toEqual({ state: "failed", category: "source-selection" });
 }, 120_000);

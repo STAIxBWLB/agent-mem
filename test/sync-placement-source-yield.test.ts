@@ -1,13 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { legacySnapshotSteps, readLegacySnapshot, type LegacySegment } from "../src/memory/bridge.ts";
 import { shardSourceRows, shardSourceRowsAsync, type ShardSyncSourceRows } from "../src/memory/shard-sync.ts";
-import { entryId, type NoteEntry } from "../src/memory/store.ts";
+import { entryId } from "../src/memory/store.ts";
 import { drainSteps } from "../src/memory/sync-placement-yield.ts";
 import { createPlacementInspectionFixture, inspectionNote, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
+import { appendAuthoredLine, appendedAuthoredLine } from "./fakes/sync-placement-source-change.ts";
 
 /**
  * #462: the placement preflight yields inside its wire round trip, so the collector re-proves the authored metadata it
@@ -30,20 +31,12 @@ async function placement(rows = 3): Promise<PlacementInspectionFixture> {
   return fixture;
 }
 const realm = (fixture: PlacementInspectionFixture) => ({ scope: "project" as const, key: fixture.project });
-const segment = (fixture: PlacementInspectionFixture): string =>
-  join(fixture.store.dir, "log", readdirSync(join(fixture.store.dir, "log")).find(name => name.endsWith(".jsonl"))!);
 const ids = (source: ShardSyncSourceRows) => source.rows.map(row => row.id);
 
 /** A pause that changes the realm once, on the first step after the collector has stamped its sources. */
 function mutateOn(change: () => void): { pause: () => Promise<void>; turns: () => number } {
   let turns = 0;
   return { pause: async () => { if (++turns === 2) change(); }, turns: () => turns };
-}
-/** The next row this machine would author: the file's own template with new text and its recomputed id. */
-function appendedLine(fixture: PlacementInspectionFixture): string {
-  const template = JSON.parse(readFileSync(segment(fixture), "utf8").split("\n")[0]!) as NoteEntry;
-  const { id: _id, ...body } = template, row = { ...body, text: "synthetic row written during the preflight yield" };
-  return JSON.stringify({ ...row, id: entryId(row) }) + "\n";
 }
 
 test("the async collector returns exactly the rows the synchronous one does", async () => {
@@ -55,13 +48,13 @@ test("the async collector returns exactly the rows the synchronous one does", as
 
 test("an authored row appended during the yield refuses instead of returning the rows read before it", async () => {
   const fixture = await placement(), target = realm(fixture);
-  const { pause } = mutateOn(() => appendFileSync(segment(fixture), appendedLine(fixture)));
+  const { pause } = mutateOn(() => appendAuthoredLine(fixture.store.dir));
   await expect(shardSourceRowsAsync(fixture.store, target, pause)).rejects.toThrow("authored segment changed during the preflight round trip");
 });
 
 test("a segment created during the yield refuses instead of trusting the listing it read", async () => {
   const fixture = await placement(), target = realm(fixture);
-  const { pause } = mutateOn(() => writeFileSync(join(fixture.store.dir, "log", `${"c".repeat(16)}.jsonl`), appendedLine(fixture)));
+  const { pause } = mutateOn(() => writeFileSync(join(fixture.store.dir, "log", `${"c".repeat(16)}.jsonl`), appendedAuthoredLine(fixture.store.dir)));
   await expect(shardSourceRowsAsync(fixture.store, target, pause)).rejects.toThrow("realm listing changed during the preflight round trip");
 });
 
