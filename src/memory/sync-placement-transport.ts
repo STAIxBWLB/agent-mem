@@ -19,7 +19,7 @@ import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
-import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, readPlacementWriterJournalAnchors, placementWriterJournalToken, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
@@ -175,7 +175,10 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
     // Ref names use only 16 hex characters; a prefix already bound to another full key is never adopted as a new realm.
     if (ctx.inventory.realms.some(realm => realm.scope === "project" && realm.keyHash.slice(0, 16) === keyHash.slice(0, 16))) return refuse("source-selection");
     const ref = shardSyncRef({ scope: "project", key: project }), source = previewSyncPlacementSources(ctx.home);
-    const check = () => { ctx.check(); source.assertSourcesUnchanged(); ctx.check(); };
+    const writers = readEffectiveSyncPlacementWriters(ctx.home), journalToken = placementWriterJournalToken(ctx.home, ctx.active.profile.placementHead);
+    const journal = readPlacementWriterJournalAnchors(ctx.home, ctx.active.profile.placementHead);
+    const journalHead = journal.sequence ? journal.records[journal.sequence - 1]!.seal : ctx.active.profile.placementHead;
+    const check = () => { ctx.check(); writers.assertCurrent(); if (placementWriterJournalToken(ctx.home, ctx.active.profile.placementHead) !== journalToken) return refuse("source-selection"); source.assertSourcesUnchanged(); ctx.check(); };
     check(); releaseRoot = acquireMutation(ctx.root); if (!releaseRoot) return refuse("lock");
     releaseSync = generationSyncLock(ctx.root); if (!releaseSync) return refuse("lock");
     const gitBytes = async (args: string[], max: number) => { check(); const result = await generationSyncGitBytes(ctx.root, ctx.args(args), opts.signal, undefined, max); check(); if (result.code !== 0) return refuse("remote"); return Buffer.from(result.out); };
@@ -190,7 +193,8 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
     check();
     const plan = createRemoteAdoption({ schema: REMOTE_ADOPTION_SCHEMA, homeHash: ctx.active.epoch.homeHash, epochHash: ctx.active.profile.placementHead,
       generation: ctx.active.epoch.generation, keyHash, remoteHash: createHash("sha256").update(ctx.url).digest("hex"), remoteHead: head,
-      sourceHash: source.base.sourceHash, policyHash: source.base.policyHash, aliasesHash: source.base.aliasesHash, omitted: selection.omitted,
+      sourceHash: source.base.sourceHash, policyHash: source.base.policyHash, aliasesHash: source.base.aliasesHash,
+      writerHash: writers.revisionHash, inventoryHead: ctx.inventory.extensionHead, journalSequence: journal.sequence, journalHead, omitted: selection.omitted,
       packs: packs.map(pack => ({ name: pack.name, bytes: pack.bytes.length })) });
     check(); return { plan, packs };
   } catch { throw new Error("Remote placement realm preview is unavailable; check the configured private sync remote and complete realm proof."); }

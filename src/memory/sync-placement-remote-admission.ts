@@ -10,6 +10,8 @@ import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { readRealmIntent } from "./sync-placement-realm-intent-storage.ts";
+import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "./sync-placement-journal-storage.ts";
+import { readEffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { pendingRealmInventory } from "./sync-placement-realm-pending.ts";
 import { withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
 import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
@@ -119,8 +121,16 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
     if (admitted()) return;
     const remotePending = pendingRemoteAdoptions(home); if (remotePending.unknown || remotePending.hashes.some(hash => hash !== realm)) return unavailable();
     const pending = pendingRealmInventory(home); if (pending.unknown || pending.hashes.some(hash => hash !== realm)) return unavailable();
+    const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home, markers.profile, markers.shards);
+    if (!binding) return unavailable();
+    const inventory = readEffectiveRealmInventory(home, binding), expectedWriters = readEffectiveSyncPlacementWriters(home);
+    const journalToken = placementWriterJournalToken(home, frozen.epochHash), journal = readPlacementWriterJournalAnchors(home, frozen.epochHash);
+    const journalHead = journal.sequence ? journal.records[journal.sequence - 1]!.seal : frozen.epochHash;
+    if (inventory.extensionHead !== frozen.inventoryHead || expectedWriters.revisionHash !== frozen.writerHash
+      || journal.sequence !== frozen.journalSequence || journalHead !== frozen.journalHead) return unavailable();
     const writer = activePlacementWriterContext(home, fileURLToPath(new URL("../..", import.meta.url)));
-    const current = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); writer.attest(); assertPlacementActivationOwner(owner, home); };
+    const current = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); writer.attest(); expectedWriters.assertCurrent(); inventory.assertCurrent();
+      if (placementWriterJournalToken(home, frozen.epochHash) !== journalToken) unavailable(); assertPlacementActivationOwner(owner, home); };
     current(); const source = previewOwnedSyncPlacementSources(home, owner), installed = remoteAdoptionLogMayBeInstalled(home, project, frozen);
     if (source.base.homeHash !== frozen.homeHash || source.base.policyHash !== frozen.policyHash || source.base.aliasesHash !== frozen.aliasesHash
       || !installed && source.base.sourceHash !== frozen.sourceHash) return unavailable();
@@ -138,6 +148,7 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
   }
   const existing = readRealmIntent(home, realm);
   const result = await applyRealmAdmission(home, project, { mode: existing ? "resume" : "apply",
+    expectedRemoteAnchors: { writerHash: frozen.writerHash, inventoryHead: frozen.inventoryHead, journalSequence: frozen.journalSequence, journalHead: frozen.journalHead },
     ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}) });
   await options.checkpoint?.("after-admission");
   await clearOwn();

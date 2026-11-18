@@ -2,12 +2,14 @@
 import { types } from "node:util";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS } from "./sync-placement-bound.ts";
+import { PLACEMENT_JOURNAL_MAX_RECORDS } from "./sync-placement-journal-format.ts";
 
 const SCHEMA = "agent-mem.sync-placement-remote-adoption/v1", MAX_BYTES = 4 * 1024 * 1024;
 export interface RemoteAdoptionBody {
   schema: typeof SCHEMA;
   homeHash: string; epochHash: string; generation: string; keyHash: string;
   remoteHash: string; remoteHead: string; sourceHash: string; policyHash: string; aliasesHash: string;
+  writerHash: string; inventoryHead: string; journalSequence: number; journalHead: string;
   omitted: number; packs: { name: string; bytes: number }[];
 }
 export interface RemoteAdoption extends RemoteAdoptionBody { seal: string }
@@ -28,7 +30,7 @@ function integer(value: unknown, maximum: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > maximum) return unavailable(); return value;
 }
 function checked(value: unknown, sealed: boolean): RemoteAdoption {
-  const row = object(value, ["schema", "homeHash", "epochHash", "generation", "keyHash", "remoteHash", "remoteHead", "sourceHash", "policyHash", "aliasesHash", "omitted", "packs", ...(sealed ? ["seal"] : [])]);
+  const row = object(value, ["schema", "homeHash", "epochHash", "generation", "keyHash", "remoteHash", "remoteHead", "sourceHash", "policyHash", "aliasesHash", "writerHash", "inventoryHead", "journalSequence", "journalHead", "omitted", "packs", ...(sealed ? ["seal"] : [])]);
   if (row.schema !== SCHEMA || !Array.isArray(row.packs) || row.packs.length > PLACEMENT_SOURCE_MAX_ROWS) return unavailable();
   let previous = "", total = 0;
   const packs = row.packs.map(item => {
@@ -39,8 +41,10 @@ function checked(value: unknown, sealed: boolean): RemoteAdoption {
   });
   const body: RemoteAdoptionBody = { schema: SCHEMA, homeHash: hex(row.homeHash, 64), epochHash: hex(row.epochHash, 64), generation: hex(row.generation, 32),
     keyHash: hex(row.keyHash, 64), remoteHash: hex(row.remoteHash, 64), remoteHead: hex(row.remoteHead, 40), sourceHash: hex(row.sourceHash, 64), policyHash: hex(row.policyHash, 64), aliasesHash: hex(row.aliasesHash, 64),
+    writerHash: hex(row.writerHash, 64), inventoryHead: hex(row.inventoryHead, 64), journalSequence: integer(row.journalSequence, PLACEMENT_JOURNAL_MAX_RECORDS), journalHead: hex(row.journalHead, 64),
     omitted: integer(row.omitted, PLACEMENT_SOURCE_MAX_ROWS), packs };
   const result = { ...body, seal: hashJSON(body) };
+  if (body.journalSequence === 0 && body.journalHead !== body.epochHash) return unavailable();
   if (sealed && hex(row.seal, 64) !== result.seal || Buffer.byteLength(canonicalJSON(result) + "\n") > MAX_BYTES) return unavailable();
   return result;
 }

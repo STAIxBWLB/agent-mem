@@ -19,7 +19,8 @@ function fixture() {
   mkdirSync(join(home, "projects"), { mode: 0o700 });
   const project = "example.test/private-stage", bytes = Buffer.from('{"test":"synthetic"}\n'), name = `sync-${sha(bytes)}.jsonl`;
   const plan = createRemoteAdoption({ schema: REMOTE_ADOPTION_SCHEMA, homeHash: "1".repeat(64), epochHash: "2".repeat(64), generation: "3".repeat(32), keyHash: sha(project),
-    remoteHash: "4".repeat(64), remoteHead: "5".repeat(40), sourceHash: "8".repeat(64), policyHash: "6".repeat(64), aliasesHash: "7".repeat(64), omitted: 1, packs: [{ name, bytes: bytes.length }] });
+    remoteHash: "4".repeat(64), remoteHead: "5".repeat(40), sourceHash: "8".repeat(64), policyHash: "6".repeat(64), aliasesHash: "7".repeat(64),
+    writerHash: "9".repeat(64), inventoryHead: "a".repeat(64), journalSequence: 0, journalHead: "2".repeat(64), omitted: 1, packs: [{ name, bytes: bytes.length }] });
   const mutation = acquireMutation(home); if (!mutation) throw Error("fixture lock unavailable");
   const proof = { mutation, assertCurrent() {} }, packs = [{ name, bytes }];
   const root = join(home, `.placement-remote-adoption-${plan.keyHash}-${plan.seal}.stage`);
