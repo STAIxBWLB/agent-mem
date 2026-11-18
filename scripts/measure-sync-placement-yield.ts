@@ -1,6 +1,6 @@
 /** Opt-in isolated #462 measurement. No real home, host policy, network or model is used. */
 import { createHash } from "node:crypto";
-import { appendFileSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { appendFileSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCli } from "../src/cli.ts";
@@ -13,7 +13,10 @@ import { SegmentReader } from "../src/memory/bridge.ts";
 import { createPlacementInspectionFixture, inspectionNote } from "../test/fakes/sync-placement-inspection.ts";
 
 const runLarge = process.argv.includes("--run-large"), runV1 = process.argv.includes("--run-v1");
+const attribute = process.argv.includes("--attribute");
+const gapsOut = process.argv.find(value => value.startsWith("--gaps-out="))?.slice("--gaps-out=".length);
 if (!runLarge && !runV1) throw Error("Pass --run-large or --run-v1 to run an isolated placement measurement.");
+if (attribute && !gapsOut) throw Error("--attribute requires --gaps-out=<file> to hold the #470 gap windows.");
 if (runV1) {
   const legacy = await createPlacementInspectionFixture({ seed(store, project) {
     const first = store.note(inspectionNote("isolated seed", project));
@@ -70,13 +73,17 @@ try {
   if (realmBytes < MIN_REALM_BYTES) throw Error(`Generated realm is ${realmBytes} bytes, below the ${MIN_REALM_BYTES}-byte measurement requirement.`);
   let phase = "startup", last = performance.now(), maximum = 0;
   const started = last;
-  const gaps: { phase: string; ms: number }[] = [], attestMs: number[] = [], segmentMs: number[] = [];
+  const gaps: { phase: string; ms: number; startEpochMs: number; endEpochMs: number }[] = [], attestMs: number[] = [], segmentMs: number[] = [];
   const originalRead = SegmentReader.prototype.read;
   SegmentReader.prototype.read = function (this: SegmentReader, ...args: Parameters<SegmentReader["read"]>) {
     const start = performance.now();
     try { return originalRead.apply(this, args); } finally { segmentMs.push(performance.now() - start); }
   };
-  const sample = () => { const now = performance.now(), gap = now - last; last = now; maximum = Math.max(maximum, gap); if (gap > 250) gaps.push({ phase, ms: Math.round(gap * 100) / 100 }); };
+  // #470: each >250 ms gap is written as an absolute window so a CPU profile's samples can be intersected with it;
+  // the phase name only marks the last report, never the work that filled the gap.
+  const sample = () => { const now = performance.now(), gap = now - last; last = now; maximum = Math.max(maximum, gap);
+    if (gap > 250) gaps.push({ phase, ms: Math.round(gap * 100) / 100,
+      startEpochMs: Math.round((performance.timeOrigin + now - gap) * 1000) / 1000, endEpochMs: Math.round((performance.timeOrigin + now) * 1000) / 1000 }); };
   const timer = setInterval(sample, 10), progress = new SyncProgress({ intervalMs: 0, sink: value => { phase = value.phase; } });
   let result;
   try {
@@ -92,5 +99,9 @@ try {
     maximumInstallMeasureMs: attestMs.length ? Math.round(Math.max(...attestMs) * 100) / 100 : null,
     maximumSegmentReadMs: segmentMs.length ? Math.round(Math.max(...segmentMs) * 100) / 100 : null,
     result: { ok: result.ok, cause: result.failure?.cause ?? null, bound: result.placementPublication?.bound ?? null } }, null, 2));
+  if (gapsOut) {
+    writeFileSync(gapsOut, JSON.stringify({ rows: ROWS, realmBytes, gaps }, null, 2) + "\n", { mode: 0o600 });
+    console.log(`attribution: ${gaps.length} gap window(s) written to ${gapsOut}`);
+  }
 } finally { f.close(); }
 }
