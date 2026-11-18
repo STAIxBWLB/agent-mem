@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { listRemotePlacementRealms, remoteOnlyPlacementRealms } from "../src/memory/sync-placement-realm-discovery.ts";
 import type { SyncPlacementRealmBinding } from "../src/memory/sync-placement-plan.ts";
+import type { ShardSyncRow } from "../src/memory/shard-sync-format.ts";
 
 const ref = (hash: string) => `${"a".repeat(40)}\trefs/heads/amem/p/${hash}\n`;
 const inventory: SyncPlacementRealmBinding[] = [
@@ -73,7 +74,7 @@ test("pre-admission selection omits verified prune targets and refuses unsupport
   const graph = publicPruneGraph(), prune = graph.manifest.prune;
   const safe = publicPruneGraph({ note: { text: "safe staged fixture" } }).note;
   const manifest = { path: "fixture", bytes: Buffer.alloc(0), value: graph.manifest, row: prune, eligible: true, commit: "a".repeat(40), blob: "b".repeat(40) };
-  const history = { version: "v3" as const, rows: new Map([[graph.note.id, graph.note], [safe.id, safe], [prune.id, prune]]),
+  const history = { version: "v3" as const, rows: new Map<string, ShardSyncRow>([[graph.note.id, graph.note], [safe.id, safe], [prune.id, prune]]),
     files: new Map(), origins: new Map(), manifests: new Map([["fixture", manifest]]) };
   expect(selectRemoteMaterialization(history)).toEqual({ rows: [safe], omitted: 2 });
   expect(() => selectRemoteMaterialization({ ...history, manifests: new Map([["fixture", { ...manifest, eligible: false }]]) })).toThrow();
