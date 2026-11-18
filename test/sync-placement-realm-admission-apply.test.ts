@@ -92,6 +92,32 @@ test("#448: abandoning one torn intent stage preserves another realm's retained 
   await expect(applyRealmAdmission(f.home, first, { mode: "resume" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
 }, 240_000);
 
+test("#448: stage-only abandon preserves an installed intent for the same realm", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/intent-and-stage", key = digest(realm);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-proof") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const intent = join(f.home, `${REALM_INTENT_PREFIX}${key}.json`), before = readFileSync(intent);
+  const staged = `${intent}.pending-${"d".repeat(64)}`; writeFileSync(staged, "partial", { mode: 0o600 });
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "abandonable", staged: 1 });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned", staged: 1 });
+  expect(readFileSync(intent)).toEqual(before);
+  expect(existsSync(staged)).toBe(false);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "resume" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+}, 240_000);
+
+test("#448: a torn stage for a committed realm can be removed without rewriting the record", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/committed-stage", key = digest(realm);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+  const log = join(f.home, REALM_EXTENSION_LOG), before = readFileSync(log);
+  const staged = join(f.home, `${REALM_INTENT_PREFIX}${key}.json.pending-${"e".repeat(64)}`);
+  writeFileSync(staged, "partial", { mode: 0o600 });
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "abandonable", staged: 1 });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned", staged: 1 });
+  expect(existsSync(staged)).toBe(false);
+  expect(readFileSync(log)).toEqual(before);
+}, 240_000);
+
 test("#448: a retained writer inventory without current install evidence cannot authorize admission", async () => {
   const f = await inventoryFixture(1), realm = "example.test/placement/no-current-writer-proof";
   writeFileSync(join(f.home, "formats.json"), JSON.stringify([{ surface: "home", minReader: "0.21.0", since: "2026-11-06" }]) + "\n", { mode: 0o600 });
