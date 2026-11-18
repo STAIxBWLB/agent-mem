@@ -116,11 +116,12 @@ async function configuredRemoteContext(homeInput: string, opts: RemoteReadOption
 export async function discoverRemotePlacementRealms(homeInput: string, opts: RemoteReadOptions = {}): Promise<RemoteOnlyRealm[]> {
   try {
     const context = await configuredRemoteContext(homeInput, opts);
-    return await listRemotePlacementRealms(context.inventory, async () => {
+    const realms = await listRemotePlacementRealms(context.inventory, async () => {
       const advertised = await generationSyncGitBytes(context.root, context.args(["ls-remote", "--refs", context.url, "refs/heads/amem/p/*"]), opts.signal, undefined, REMOTE_REALM_ADVERTISEMENT_BYTES);
       context.check(); if (advertised.code !== 0) return refuse("remote");
       return advertised.out;
     });
+    context.check(); return realms;
   } catch { throw new Error("Remote placement realm listing is unavailable; check the configured private sync remote and active inventory."); }
 }
 

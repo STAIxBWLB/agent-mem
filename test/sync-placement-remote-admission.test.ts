@@ -195,3 +195,18 @@ test("a concurrent admission after remote preview returns already-admitted witho
   expect(readdirSync(b.home).filter(name => name.includes("placement-remote-adoption-")).length).toBe(0);
   expect(readFileSync(join(b.home, "placement-realm-extensions.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
 }, 120_000);
+
+test("confirmed abandon uses cached proof when the remote ref disappears", async () => {
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const shared = "example.test/adoption-offline/shared", target = "example.test/adoption-offline/target";
+  const a = await inventoryFixture(2, [shared, target], true), b = await inventoryFixture(1, [shared], true), remote = bareRemote();
+  expect((await sync(a.home, a.opts(remote))).ok).toBe(true); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+  await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: stage => {
+    if (stage === "after-stage") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const removed = memoryGitSync(["--git-dir", remote, "update-ref", "-d", `refs/heads/amem/p/${shardKeyHash(target)}`], { encoding: "utf8" });
+  expect(removed.status).toBe(0);
+  expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
+  expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
+  expect(readdirSync(b.home).filter(name => name.includes("placement-remote-adoption-")).length).toBe(0);
+}, 120_000);
