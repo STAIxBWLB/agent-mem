@@ -441,6 +441,24 @@ test("#448 review: a zero-byte extension log with no retained intent stays a ref
   expect(() => realmsOf(f.home)).toThrow();
 }, 240_000);
 
+test("#448 review: confirmed abandon removes a zero-byte extension log before it clears the intent", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/empty-extension-log-abandon";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-intent") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  writeFileSync(join(f.home, REALM_EXTENSION_LOG), Buffer.alloc(0), { mode: 0o600 });
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "abandonable", sequence: 1, discards: 0 });
+  // The intent is the only evidence that reads the empty log as this chain's pre-write state, so abandon removes the file
+  // it authorized instead of leaving a chain no reader can open once the intent is gone.
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned", discarded: 0 });
+  expect(intents(f.home)).toEqual([]);
+  expect(existsSync(join(f.home, REALM_EXTENSION_LOG))).toBe(false);
+  expect(realmsOf(f.home)).toEqual(bindingOf(f.home).active.activation.realms);
+  // And the home stays usable: a fresh admission of the same realm takes sequence 1 again.
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(1);
+}, 240_000);
+
 test("#448 review: a person hold placed before an admission still releases after it, and a torn chain closes effect validation", async () => {
   const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/hold-across-admission";
   const port: PlacementJournalPort = { attest: createPlacementAttestation(f.home), policyVersion: () => "initial", authorize: () => true };

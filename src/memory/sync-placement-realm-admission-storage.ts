@@ -96,11 +96,17 @@ export function discardRealmExtensionTail(home: string, binding: RealmExtensionB
   const file = join(home, REALM_EXTENSION_LOG), history = readRealmExtensionHistory(home, binding, { allowEmptyLog: retainedAdmissionCoversEmptyLog(home, binding.epochHash, binding.activationHash), attributeTorn: () => true });
   if (history.records.length + 1 !== intent.sequence || history.headHash !== intent.previousHash
     || history.logBytes.length !== intent.previousLogBytes || digest(history.logBytes) !== intent.previousLogHash) fail();
-  if (!history.torn.length) return { discarded: 0 };
-  if (!attributeTornRealmAppend(home, binding, { prefix: history.logBytes, tail: history.torn, sequence: intent.sequence, headHash: history.headHash })) fail();
+  // Clearing the intent withdraws the only evidence that reads a zero-byte log as this epoch's pre-write chain, so an
+  // abandoned admission that never wrote a byte removes the file it created instead of leaving every realm unreadable.
+  const tail = history.torn.length;
+  if (!tail && intent.previousLogBytes !== 0) return { discarded: 0 };
+  if (tail && !attributeTornRealmAppend(home, binding, { prefix: history.logBytes, tail: history.torn, sequence: intent.sequence, headHash: history.headHash })) fail();
   options.assertCurrent();
-  const before = lstatSync(file, { bigint: true }); owned(before);
-  if (Number(before.size) !== history.logBytes.length + history.torn.length) fail();
+  const before = lstatSync(file, { bigint: true, throwIfNoEntry: false });
+  // A stop before the file existed has nothing to remove; a damaged chain must still be there to be cut back.
+  if (!before) { if (tail) fail(); return { discarded: 0 }; }
+  owned(before);
+  if (Number(before.size) !== history.logBytes.length + tail) fail();
   const fd = openSync(file, constants.O_WRONLY | constants.O_NOFOLLOW);
   try {
     const opened = fstatSync(fd, { bigint: true }); owned(opened); if (stamp(opened) !== stamp(before)) fail();
@@ -113,5 +119,5 @@ export function discardRealmExtensionTail(home: string, binding: RealmExtensionB
   if (intent.previousLogBytes === 0 ? after !== undefined : !after || Number(after.size) !== intent.previousLogBytes) fail();
   const installed = readRealmExtensionHistory(home, binding);
   if (installed.torn.length || installed.records.length + 1 !== intent.sequence) fail();
-  return { discarded: history.torn.length };
+  return { discarded: tail };
 }
