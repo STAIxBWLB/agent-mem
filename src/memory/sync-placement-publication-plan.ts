@@ -159,7 +159,7 @@ export async function planPlacementPublicationAsync(input: Omit<PlacementPublica
 }, yieldPoint?: CooperativeYield): Promise<PlacementPublicationBundle> {
   return await drainStepsAsync(planSteps(input, items), yieldPoint);
 }
-/** Items between step boundaries: at most 256 canonicalized chunk items per uninterrupted stretch. */
+/** Items between step boundaries: at most 64 canonicalized chunk items per uninterrupted stretch. */
 const STEP_ITEMS = 64;
 function* planSteps(input: Omit<PlacementPublicationRoot, "schema" | "chunks" | "seal">, items: {
   sources: readonly PlacementPublicationSource[]; decisions: readonly PlacementPublicationDecision[]; objects: readonly PlacementPublicationObject[];

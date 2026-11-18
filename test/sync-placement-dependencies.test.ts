@@ -215,7 +215,7 @@ test("#470: the async compiler returns exactly the synchronous decisions and yie
   let boundaries = 0;
   const cooperative = await compilePlacementDependenciesAsync(input(rows), async () => { boundaries++; });
   expect(cooperative).toEqual(decisions(rows));
-  expect(boundaries).toBeGreaterThan(1); // 603 rows over the 256-row step
+  expect(boundaries).toBeGreaterThan(1); // 603 rows over the 64-row step
   let refused = 0;
   await expect(compilePlacementDependenciesAsync(input([note() as never]), async () => { refused++; })).rejects.toThrow(PlacementDependencyInputError);
   expect(refused).toBe(0); // a refusal before the first chunk is the same refusal, not a partial result
