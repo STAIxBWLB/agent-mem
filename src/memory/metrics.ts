@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import type { RecordIntakeRefusal } from "../hook-record.ts";
-import type { HookRssSources } from "../hook-resources.ts";
+import { processImageRssKB, type HookRssSources } from "../hook-resources.ts";
 import type { HookTranscriptStopReason } from "../hook-contract.ts";
 import { join } from "node:path";
 
@@ -51,37 +51,55 @@ export interface RecordVariantMetric {
   recordValidRecords?: number; recordBasisRecords?: number; recordUnverifiedRecords?: number;
   recordInstructionInvalid?: number; recordInstructionEmitted?: number; recordBriefBytes?: number;
 }
-export interface MetricSample extends RecordVariantMetric { at: string; kind: "hook" | "search"; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+export interface MetricSample extends RecordVariantMetric { at: string; kind: "hook" | "search"; /** #485: the read tool that completed, so a peak can be attributed; never its arguments or result. */ tool?: string; /** #485: the process peak after this call was higher than after any sample before it. */ peakRaised?: boolean; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
+
+/**
+ * #485: the newest `limit` samples of each kind. Hook samples share this file with the read-tool samples a long-lived
+ * `amem mcp` process appends, so one kind's flood must not evict the other kind from the window.
+ */
+function newestPerKind<T>(items: readonly T[], limit: number, kindOf: (item: T) => string): T[] {
+  const kept: T[] = [], seen = new Map<string, number>();
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index]!, kind = kindOf(item), count = seen.get(kind) ?? 0;
+    if (count >= limit) continue;
+    seen.set(kind, count + 1); kept.push(item);
+  }
+  return kept.reverse();
+}
+
+/** #485: the process peak on the same basis as `scripts/budget-rss.ts` `peakRssKB` (VmHWM on Linux, rusage maxRSS elsewhere). */
+export function processPeakRssKB(): number { return processImageRssKB("self") ?? process.resourceUsage().maxRSS; }
 
 export function metricsPath(base: string): string {
   return join(base, "metrics.jsonl");
 }
 
-/** Append samples, trimming the rolling file when it outgrows its bound (newest samples win). */
+/** Append samples, trimming the rolling file when it outgrows its bound; the newest METRICS_KEEP of each kind win (#485). */
 export function appendMetrics(base: string, samples: MetricSample[]): void {
   mkdirSync(base, { recursive: true, mode: 0o700 });
   const file = metricsPath(base);
   appendFileSync(file, samples.map((s) => JSON.stringify(s)).join("\n") + "\n", { mode: 0o600 });
   try {
     if (statSync(file).size <= METRICS_MAX_BYTES) return;
-    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean).slice(-METRICS_KEEP);
-    writeFileSync(file, lines.join("\n") + "\n", { mode: 0o600 });
-  } catch { /* a trim failure loses nothing: the file simply stays larger */ }
+    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+    const kept = newestPerKind(lines, METRICS_KEEP, line => { try { const kind = (JSON.parse(line) as { kind?: unknown }).kind; return typeof kind === "string" ? kind : "other"; } catch { return "other"; } });
+    writeFileSync(file, kept.join("\n") + "\n", { mode: 0o600 });
+  } catch { /* a trim failure loses nothing: the file simply stays larger, and a lost sample is acceptable telemetry */ }
 }
 
-/** The newest samples first-preserved order (oldest to newest); malformed lines are skipped. */
+/** The newest samples first-preserved order (oldest to newest), `limit` of each kind kept (#485); malformed lines are skipped. */
 export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] {
   let lines: string[] = [];
   try { lines = readFileSync(metricsPath(base), "utf8").split("\n").filter(Boolean); } catch { return []; }
-  const out: MetricSample[] = [];
-  for (const line of lines.slice(-limit)) {
+  const parsed: MetricSample[] = [];
+  for (const line of lines) {
     try {
       const s = JSON.parse(line) as MetricSample;
-      if ((s?.kind === "hook" || s?.kind === "search") && typeof s.at === "string") out.push(s);
+      if ((s?.kind === "hook" || s?.kind === "search") && typeof s.at === "string") parsed.push(s);
     } catch { /* a malformed line is skipped */ }
   }
-  return out;
+  return newestPerKind(parsed, limit, sample => sample.kind);
 }
 
 

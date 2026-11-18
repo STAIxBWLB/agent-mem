@@ -4,6 +4,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+### Added
+
+- Record one content-free telemetry sample per completed `amem mcp` read-tool call: the tool name, that call's wall time, the process peak on the `scripts/budget-rss.ts` basis and whether the call raised that peak, so `amem capacity` reports live `searchP95Ms` and `searchRssMB` readings for `amem_search`. The rolling `metrics.jsonl` window keeps the newest 200 hook and 200 search samples, so one kind never evicts the other, and a sample never holds query text, arguments, result content, an id or a path. Refs #485.
+
 ### Fixed
 
 - Restore project catalog and console Recap on activated placement homes by recognizing v3 selectors and binding private Recap snapshots to the verified placement. 0.29.x patch candidate. Refs #480.
