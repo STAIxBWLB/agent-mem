@@ -20,9 +20,15 @@ test("0.29 admission commands preserve staged curated rows beside work", async (
   const admission = await import(moduleAt("src/memory/sync-placement-realm-admission.ts"));
   const sync = await import(moduleAt("src/memory/sync.ts"));
   const doctor = await import(moduleAt("src/memory/doctor.ts"));
+  const cli = await import(moduleAt("src/cli.ts"));
+  const inspect = await import(moduleAt("test/fakes/sync-placement-inspection.ts"));
   const target = "example.test/staged-remote/n1", shared = "example.test/staged-remote/shared";
   try {
     const a = await fixture.inventoryFixture(1, [target], true), remote = fixture.bareRemote();
+    const snapshot = inspect.inspectionFilesystemSnapshot(a.home), previousHome = process.env.AMEM_HOME; process.env.AMEM_HOME = a.home;
+    try { await expect(cli.runCli(["migrate", "--sync-placement", "--list-remote", "--json"], { cwd: a.root, env: {} })).rejects.toThrow(); }
+    finally { if (previousHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previousHome; }
+    expect(inspect.inspectionFilesystemSnapshot(a.home)).toEqual(snapshot);
     const source = storeModule.openShardStore({ memoryDir: a.home, project: target, deferPromotions: true });
     try { source.note(fixture.note("staged remote row", target)); } finally { source.close(); }
     const sourceDir = join(shard.shardDir(a.home, target), "log"), name = readdirSync(sourceDir).find((item: string) => item.endsWith(".jsonl"));
