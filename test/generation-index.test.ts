@@ -12,6 +12,7 @@ import { advancePublicPruneView } from "../src/memory/public-prune-advance.ts";
 import { readSelector } from "../src/memory/generation.ts";
 import { aliasedKeys, appendAlias, resolveShardProfile } from "../src/memory/shard.ts";
 import { acquireMutation, type MutationHandle } from "../src/memory/mutation.ts";
+import { applyPrune, planPrune } from "../src/memory/prune.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { persistPublicPruneInput, preparePublicPruneInput } from "../src/memory/public-prune-inputs.ts";
 import type { PublicPruneViewV1 } from "../src/memory/public-prune-view.ts";
@@ -161,6 +162,69 @@ test("#466 AC3: incremental indexing equals rebuild() on v2 and v3, generation_s
       }
     } finally { store.close(); }
   }
+});
+
+test("#466 AC3: a one-line append skips the target rewrite and the foreign replay, and still equals rebuild()", async () => {
+  for (const v2 of [true, false]) {
+    const f = await home(v2);
+    const store = open(f.memoryDir);
+    const probe = v2 ? new Database(join(f.profile.dir, indexFileName(true))) : undefined;
+    try {
+      store.list({ project: PROJECT });
+      const sentinel = () => !!probe?.query("SELECT 1 FROM generation_foreign_inputs WHERE id='sentinel-299'").get();
+      const targets = () => (probe ? (probe.query("SELECT id FROM generation_targets ORDER BY id").all() as { id: string }[]) : []);
+      probe?.query("INSERT OR REPLACE INTO generation_foreign_inputs VALUES ('sentinel-299')").run();
+      const targetsBefore = targets();
+      store.note(note("one line appended after the seed"));
+      store.list({ project: PROJECT });
+      if (v2) {
+        expect(sentinel()).toBe(true); // neither stamp nor foreign membership moved: the proof was not replayed
+        expect(targets()).toEqual(targetsBefore); // and no prune row arrived, so the reduction did not move either
+        probe?.query("DELETE FROM generation_foreign_inputs WHERE id='sentinel-299'").run(); // the probe's own row must not reach the comparison
+      }
+      const incremental = store.derivedTables();
+      store.rebuild();
+      expect(store.derivedTables()).toEqual(incremental);
+    } finally { probe?.close(); store.close(); }
+  }
+});
+
+test("#466 AC3: a prune-row append still recomputes the reduction, restores the proof's targets and equals rebuild()", async () => {
+  const f = await home(true);
+  const store = open(f.memoryDir);
+  const probe = new Database(join(f.profile.dir, indexFileName(true)));
+  try {
+    const expiring = { ...note("row the person prunes"), expires: new Date(NOW - 1000).toISOString() };
+    const id = store.note(expiring);
+    store.list({ project: PROJECT });
+    const port = store.prunePort(), auth = { project: PROJECT, actor: "person" as const, authorize: () => true };
+    const plan = planPrune(port, { cutoff: new Date(NOW).toISOString() }, auth);
+    expect(plan.rows.map(row => row.payload.targets.map(target => target.id)).flat()).toContain(id);
+    probe.query("INSERT OR REPLACE INTO generation_foreign_inputs VALUES ('sentinel-299')").run();
+    expect(applyPrune(port, plan, auth).completed).toEqual([plan.rows[0]!.payload.id]);
+    store.list({ project: PROJECT });
+    const targets = (probe.query("SELECT id FROM generation_targets ORDER BY id").all() as { id: string }[]).map(row => row.id);
+    expect(targets).toContain(id); // the reduction ran and pruned the expired row
+    expect(!!probe.query("SELECT 1 FROM generation_foreign_inputs WHERE id='sentinel-299'").get()).toBe(true); // the stamp did not move, so only the proof's target tail ran
+    probe.query("DELETE FROM generation_foreign_inputs WHERE id='sentinel-299'").run(); // the probe's own row must not reach the comparison
+    const incremental = store.derivedTables();
+    store.rebuild();
+    expect(store.derivedTables()).toEqual(incremental);
+  } finally { probe.close(); store.close(); }
+});
+
+test("#466 AC3: a row the committed proof names is never skipped, while an unrelated one is", async () => {
+  const f = await home(true), store = open(f.memoryDir);
+  const probe = new Database(join(f.profile.dir, indexFileName(true)));
+  try {
+    store.list({ project: PROJECT });
+    const foreign = (probe.query("SELECT id FROM generation_foreign_rows ORDER BY id LIMIT 1").get() as { id: string } | null)?.id;
+    if (!foreign) throw new Error("the fixture committed no foreign row");
+    const index = (store as unknown as { generationIndex: GenerationIndex }).generationIndex;
+    const satisfied = (id: string) => (index as unknown as { foreignBatchSatisfied(touched: readonly string[]): boolean }).foreignBatchSatisfied([id]);
+    expect(satisfied(foreign)).toBe(false); // a re-proved hash of this row is still the only thing that can refuse it
+    expect(satisfied("0".repeat(32))).toBe(true);
+  } finally { probe.close(); store.close(); }
 });
 
 test("#466 AC3: an unchanged refresh does not replay the foreign tables, while a new stamp does", async () => {
