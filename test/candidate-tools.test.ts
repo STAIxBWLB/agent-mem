@@ -19,7 +19,8 @@ function fixture() {
   const sidecar = new CandidateStore({ memoryDir: base }); cleanup.push(() => sidecar.close());
   const note = (extra: Partial<NoteInput> = {}) => store.note({ op: "note", project, scope: "project", tier: "long", kind: "contract", peer: "person", source: "person", text: "the original public boundary", about: ["path:src/writer.ts"], ...extra });
   const open = (policy?: StandalonePolicyOptions) => { const mcp = createMemoryMcp({ cwd: root, base, project, ...(policy ? { policy } : {}) }); cleanup.push(() => mcp.close()); return mcp; };
-  const bytes = () => readdirSync(base, { recursive: true, withFileTypes: true }).filter(file => file.isFile() && file.name.endsWith(".jsonl")).map(file => { const full = join(file.parentPath, file.name); return [full, readFileSync(full, "utf8")]; }).sort((a, b) => a[0]!.localeCompare(b[0]!));
+  // `metrics.jsonl` is machine-local read-call telemetry (#485), not memory data, so it stays out of this byte snapshot.
+  const bytes = () => readdirSync(base, { recursive: true, withFileTypes: true }).filter(file => file.isFile() && file.name.endsWith(".jsonl") && file.name !== "metrics.jsonl").map(file => { const full = join(file.parentPath, file.name); return [full, readFileSync(full, "utf8")]; }).sort((a, b) => a[0]!.localeCompare(b[0]!));
   return { root, base, project, store, sidecar, note, open, bytes };
 }
 function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { resolve, promise }; }
