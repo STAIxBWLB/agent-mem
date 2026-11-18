@@ -93,6 +93,17 @@ export function pendingRemoteAdoptions(homeInput: string): { hashes: readonly st
   } catch { return { hashes: [], unknown: true }; }
   return { hashes: [...hashes].sort(), unknown };
 }
+/** A companion never claims another stage directory even when it names the same project. */
+export function assertRemoteAdoptionStageOwnership(homeInput: string, value: RemoteAdoption): void {
+  const home = realPath(homeInput), plan = validateRemoteAdoption(value), prefix = `.placement-remote-adoption-${plan.keyHash}-`, expected = staging(home, plan);
+  const dir = opendirSync(home); let count = 0;
+  try {
+    for (;;) {
+      const entry = dir.readSync(); if (!entry) break; if (++count > 20_000) fail();
+      if (entry.name.startsWith(prefix) && join(home, entry.name) !== expected) fail();
+    }
+  } finally { dir.closeSync(); }
+}
 /** A torn companion is private staging, not authority to materialize a realm. */
 export function inspectRemoteAdoptionPending(homeInput: string, keyHash: string): RemoteAdoptionPending[] {
   const home = realPath(homeInput); if (!/^[a-f0-9]{64}$/.test(keyHash)) return fail();
@@ -231,6 +242,7 @@ export function installRemoteAdoptionLog(homeInput: string, project: string, val
 /** Remove only this plan's attributable private staging; an installed curated log is never removed. */
 export function clearRemoteAdoption(homeInput: string, value: RemoteAdoption, packs: readonly RemoteStagedPack[], proof: RealmIntentProof): void {
   const home = realPath(homeInput), plan = validateRemoteAdoption(value); check(home, proof);
+  assertRemoteAdoptionStageOwnership(home, plan);
   if (canonicalJSON(readRemoteAdoption(home, plan.keyHash)) !== canonicalJSON(plan) || packs.length !== plan.packs.length) fail();
   for (let i = 0; i < packs.length; i++) {
     const expected = plan.packs[i], pack = packs[i];

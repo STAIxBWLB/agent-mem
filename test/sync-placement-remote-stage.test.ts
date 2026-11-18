@@ -105,6 +105,17 @@ test("abandon removes only attributable private staging and never an installed l
   }
 });
 
+test("a different stage for the same realm is retained rather than silently orphaned", () => {
+  const f = fixture();
+  try {
+    writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof);
+    const other = join(f.home, `.placement-remote-adoption-${f.plan.keyHash}-${"a".repeat(64)}.stage`);
+    mkdirSync(other, { mode: 0o700 }); writeFileSync(join(other, "retain"), "other", { mode: 0o600 });
+    expect(() => clearRemoteAdoption(f.home, f.plan, f.packs, f.proof)).toThrow();
+    expect(readFileSync(join(other, "retain"), "utf8")).toBe("other"); expect(readRemoteAdoption(f.home, f.plan.keyHash)).toEqual(f.plan);
+  } finally { f.close(); }
+});
+
 test("a torn unrelated companion stage refuses a new plan and is removed only after exact recheck", () => {
   const f = fixture();
   try {

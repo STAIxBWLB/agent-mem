@@ -19,7 +19,7 @@ import { previewOwnedSyncPlacementSources } from "./sync-placement-capture.ts";
 import { activePlacementWriterContext } from "../sync-placement-writer-context.ts";
 import { applyRealmAdmission, planRealmAbandon, previewRealmAdmission } from "./sync-placement-realm-admission.ts";
 import { assertRemoteAdoptionCurrent, prepareRemotePlacementRealm, recoverRemoteStagedPacks } from "./sync-placement-transport.ts";
-import { clearRemoteAdoption, clearRemoteAdoptionPending, discardRemoteInstalledLog, inspectRemoteAdoptionPending, installRemoteAdoptionLog,
+import { assertRemoteAdoptionStageOwnership, clearRemoteAdoption, clearRemoteAdoptionPending, discardRemoteInstalledLog, inspectRemoteAdoptionPending, installRemoteAdoptionLog,
   pendingRemoteAdoptions, readRemoteAdoption, remoteAdoptionLogMayBeInstalled, stageRemoteAdoption, writeRemoteAdoption } from "./sync-placement-remote-stage.ts";
 import type { RemoteAdoption } from "./sync-placement-remote-adoption-format.ts";
 import type { SyncOptions } from "./sync.ts";
@@ -53,6 +53,7 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
   const pending = pendingRemoteAdoptions(home);
   if (pending.unknown || options.mode !== "abandon" && pending.hashes.some(hash => hash !== realm)) return unavailable();
   let plan = readRemoteAdoption(home, realm), staged = inspectRemoteAdoptionPending(home, realm);
+  if (plan) assertRemoteAdoptionStageOwnership(home, plan);
   // A private stage without any companion cannot be attributed to this operation or silently abandoned.
   if (!plan && !staged.length && pending.hashes.includes(realm)) return unavailable();
   const admitted = () => active(home, realm);
@@ -137,6 +138,7 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
       || !installed && source.base.sourceHash !== frozen.sourceHash) return unavailable();
     source.assertSourcesUnchanged(); await assertRemoteAdoptionCurrent(home, project, frozen, transport); source.assertSourcesUnchanged(); current();
     const proof = { mutation, assertCurrent: current };
+    assertRemoteAdoptionStageOwnership(home, frozen);
     writeRemoteAdoption(home, frozen, proof); await options.checkpoint?.("after-companion");
     if (!installed) { stageRemoteAdoption(home, frozen, files, proof); await options.checkpoint?.("after-stage"); }
     const retained = readRealmIntent(home, realm);
