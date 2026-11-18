@@ -988,7 +988,7 @@ test("#426: an unclassified throw in source capture is category other, never a g
   const capture = await import("../src/memory/sync-placement-capture.ts");
   // Mocked only after the fixture is built: the fixture itself captures a context.
   const { result, final } = await refusal((f, remote) => f.opts(remote), () => {
-    const spy = spyOn(capture, "captureSyncPlacementContext").mockImplementation(() => { throw new Error("/secret/capture NEVER_PUBLIC_REFUSAL"); });
+    const spy = spyOn(capture, "captureSyncPlacementContextAsync").mockImplementation(async () => { throw new Error("/secret/capture NEVER_PUBLIC_REFUSAL"); });
     return () => spy.mockRestore();
   });
   expect(result.placementPublication?.refusal).toEqual({ category: "other", phase: "source-capture" });
