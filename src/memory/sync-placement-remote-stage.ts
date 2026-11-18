@@ -164,8 +164,10 @@ export function discardRemoteInstalledLog(homeInput: string, project: string, va
   ownedDir(root); if (lstatSync(staged, { throwIfNoEntry: false })) return;
   if (readdirSync(root).length) fail();
   const before = ownedDir(log);
-  if (canonicalJSON(readdirSync(log).sort()) !== canonicalJSON(plan.packs.map(pack => pack.name))) fail();
-  const files = plan.packs.map(pack => {
+  const names = new Set(readdirSync(log)), allowed = new Set(plan.packs.map(pack => pack.name));
+  if ([...names].some(name => !allowed.has(name))) fail();
+  // A prior confirmed cleanup may have removed a strict subset before a crash.
+  const files = plan.packs.filter(pack => names.has(pack.name)).map(pack => {
     const file = join(log, pack.name), bytes = readOwned(file, pack.bytes), stat = lstatSync(file, { bigint: true });
     if (!bytes || bytes.length !== pack.bytes || `sync-${sha(bytes)}.jsonl` !== pack.name) return fail();
     return { file, bytes, stamp: stamp(stat) };

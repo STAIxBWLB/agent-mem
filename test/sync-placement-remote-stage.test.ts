@@ -118,6 +118,16 @@ test("confirmed pre-admission cleanup removes only exact installed packs", () =>
   } finally { f.close(); }
 });
 
+test("confirmed pre-admission cleanup resumes after a pack was already removed", () => {
+  const f = fixture();
+  try {
+    writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof); installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof);
+    const log = join(shardDir(f.home, f.project), "log"); rmSync(join(log, f.packs[0]!.name));
+    discardRemoteInstalledLog(f.home, f.project, f.plan, f.proof); expect(existsSync(log)).toBe(false);
+    clearRemoteAdoption(f.home, f.plan, f.packs, f.proof); expect(readRemoteAdoption(f.home, f.plan.keyHash)).toBeUndefined();
+  } finally { f.close(); }
+});
+
 test("a cross-device staged log refuses before rename", () => {
   const f = fixture();
   try {
