@@ -243,3 +243,25 @@ test("remote staging refuses a changed writer install before admission", async (
   expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
   expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
 }, 120_000);
+
+test("remote staging refuses source or policy drift and remains abandonable", async () => {
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const { writeFileSync } = await import("node:fs");
+  const shared = "example.test/adoption-policy/shared", target = "example.test/adoption-policy/target";
+  const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote(); expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
+  for (const drift of ["source", "policy"] as const) {
+    const b = await inventoryFixture(1, [shared], true); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+    await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: stage => {
+      if (stage === "after-stage") throw Error("fixture interruption");
+    } })).rejects.toThrow();
+    if (drift === "policy") writeFileSync(join(b.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["NEW_PRIVATE_PATTERN"] }) + "\n", { mode: 0o600 });
+    else {
+      const writer = openShardStore({ memoryDir: b.home, project: shared, deferPromotions: true });
+      try { writer.note({ op: "note", project: shared, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "changed after preview", about: [] }); }
+      finally { writer.close(); }
+    }
+    await expect(remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility })).rejects.toThrow();
+    expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
+    expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
+  }
+}, 120_000);
