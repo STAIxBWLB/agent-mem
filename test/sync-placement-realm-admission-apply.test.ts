@@ -244,6 +244,22 @@ test("#448: a partial proof can be abandoned after an unrelated activated realm 
   await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
 }, 240_000);
 
+test("#448: a proof stage is not abandoned after its extension record commits", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-after-commit";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-append") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const name = readdirSync(f.home).find(item => /^placement-realm-proof-.*\.json$/.test(item))!;
+  const file = join(f.home, name), staged = `${file}.pending`, bytes = readFileSync(file).subarray(0, 80);
+  writeFileSync(staged, bytes, { mode: 0o600 });
+  const log = join(f.home, REALM_EXTENSION_LOG), before = readFileSync(log);
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "committed" });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).rejects.toThrow();
+  expect(readFileSync(staged)).toEqual(bytes);
+  expect(readFileSync(log)).toEqual(before);
+  expect(intents(f.home)).toHaveLength(1);
+}, 240_000);
+
 test("#448: abandon preview refuses a foreign proof stage", async () => {
   const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-stage-foreign";
   await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
