@@ -18,7 +18,7 @@ import { activePlacementWriterContext } from "../sync-placement-writer-context.t
 import { applyRealmAdmission, planRealmAbandon, previewRealmAdmission } from "./sync-placement-realm-admission.ts";
 import { assertRemoteAdoptionCurrent, prepareRemotePlacementRealm, recoverRemoteStagedPacks } from "./sync-placement-transport.ts";
 import { clearRemoteAdoption, clearRemoteAdoptionPending, discardRemoteInstalledLog, inspectRemoteAdoptionPending, installRemoteAdoptionLog,
-  readRemoteAdoption, remoteAdoptionLogMayBeInstalled, stageRemoteAdoption, writeRemoteAdoption } from "./sync-placement-remote-stage.ts";
+  pendingRemoteAdoptions, readRemoteAdoption, remoteAdoptionLogMayBeInstalled, stageRemoteAdoption, writeRemoteAdoption } from "./sync-placement-remote-stage.ts";
 import type { RemoteAdoption } from "./sync-placement-remote-adoption-format.ts";
 import type { SyncOptions } from "./sync.ts";
 
@@ -48,6 +48,9 @@ const nextSync = "amem sync";
 /** Returns identifiers/counts only. A callback is used only for the existing remote visibility check. */
 export async function remoteRealmAdmission(homeInput: string, project: string, options: RemoteAdmissionOptions): Promise<RemoteAdmissionResult> {
   const home = realPath(homeInput), realm = keyOf(project), transport = { ...(options.signal ? { signal: options.signal } : {}), ...(options.visibility ? { visibility: options.visibility } : {}) };
+  if (options.mode !== "abandon") {
+    const pending = pendingRemoteAdoptions(home); if (pending.unknown || pending.hashes.some(hash => hash !== realm)) return unavailable();
+  }
   let plan = readRemoteAdoption(home, realm), staged = inspectRemoteAdoptionPending(home, realm);
   const admitted = () => active(home, realm);
   if (options.mode === "dry-run") {
@@ -101,6 +104,7 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
   }
   await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
     if (admitted()) return;
+    const remotePending = pendingRemoteAdoptions(home); if (remotePending.unknown || remotePending.hashes.some(hash => hash !== realm)) return unavailable();
     const pending = pendingRealmInventory(home); if (pending.unknown || pending.hashes.some(hash => hash !== realm)) return unavailable();
     const writer = activePlacementWriterContext(home, fileURLToPath(new URL("../..", import.meta.url)));
     const current = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); writer.attest(); assertPlacementActivationOwner(owner, home); };

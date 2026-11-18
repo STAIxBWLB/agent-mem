@@ -62,6 +62,27 @@ function ensureDir(home: string, dir: string, parent: string, proof: RealmIntent
   ownedDir(dir); check(home, proof);
 }
 export interface RemoteAdoptionPending { name: string; size: number; hash: string; stamp: string }
+/** Metadata-only inventory; one remote adoption may remain outstanding per home. */
+export function pendingRemoteAdoptions(homeInput: string): { hashes: readonly string[]; unknown: boolean } {
+  const home = realPath(homeInput), hashes = new Set<string>(); let unknown = false, count = 0;
+  try {
+    const dir = opendirSync(home);
+    try {
+      for (;;) {
+        const entry = dir.readSync(); if (!entry) break; if (++count > 20_000) return { hashes: [], unknown: true };
+        const hidden = entry.name.startsWith(".placement-remote-adoption-"), visible = entry.name.startsWith("placement-remote-adoption-");
+        if (!hidden && !visible) continue;
+        const match = hidden ? /^\.placement-remote-adoption-([a-f0-9]{64})-[a-f0-9]{64}\.stage$/.exec(entry.name)
+          : /^placement-remote-adoption-([a-f0-9]{64})\.json(?:\.[a-f0-9]{64}\.pending)?$/.exec(entry.name);
+        if (!match) { unknown = true; continue; }
+        hashes.add(match[1]!); if (hashes.size > 64) return { hashes: [], unknown: true };
+        try { if (hidden) ownedDir(join(home, entry.name)); else ownedFile(lstatSync(join(home, entry.name), { bigint: true })); }
+        catch { unknown = true; }
+      }
+    } finally { dir.closeSync(); }
+  } catch { return { hashes: [], unknown: true }; }
+  return { hashes: [...hashes].sort(), unknown };
+}
 /** A torn companion is private staging, not authority to materialize a realm. */
 export function inspectRemoteAdoptionPending(homeInput: string, keyHash: string): RemoteAdoptionPending[] {
   const home = realPath(homeInput); if (!/^[a-f0-9]{64}$/.test(keyHash)) return fail();

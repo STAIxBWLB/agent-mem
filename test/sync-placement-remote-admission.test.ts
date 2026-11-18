@@ -103,3 +103,17 @@ test("remote admission resumes or abandons each durable staging boundary", async
     }
   }
 }, 240_000);
+
+test("a retained remote staging operation fences another remote admission", async () => {
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const shared = "example.test/adoption-serial/shared", first = "example.test/adoption-serial/first", second = "example.test/adoption-serial/second";
+  const a = await inventoryFixture(3, [shared, first, second], true), b = await inventoryFixture(1, [shared], true), remote = bareRemote();
+  expect((await sync(a.home, a.opts(remote))).ok).toBe(true); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+  await expect(remoteRealmAdmission(b.home, first, { mode: "apply", visibility: privateVisibility, checkpoint: stage => {
+    if (stage === "after-companion") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  await expect(remoteRealmAdmission(b.home, second, { mode: "apply", visibility: privateVisibility })).rejects.toThrow("unavailable");
+  expect(existsSync(join(shardDir(b.home, second), "generation.json"))).toBe(false);
+  expect(await remoteRealmAdmission(b.home, first, { mode: "abandon", confirm: true, visibility: privateVisibility })).toMatchObject({ state: "abandoned" });
+  expect(await remoteRealmAdmission(b.home, second, { mode: "apply", visibility: privateVisibility })).toMatchObject({ state: "admitted" });
+}, 240_000);
