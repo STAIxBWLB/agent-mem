@@ -530,9 +530,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (options["--admit"] !== undefined) {
         const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");
         const project = String(options["--admit"]);
-        const { readRemoteAdoption, inspectRemoteAdoptionPending } = await import("./memory/sync-placement-remote-stage.ts");
-        const realm = createHash("sha256").update(project).digest("hex"), remotePending = options["--resume"] === true || options["--abandon"] === true
-          ? !!readRemoteAdoption(memoryHome(), realm) || inspectRemoteAdoptionPending(memoryHome(), realm).length > 0 : false;
+        const { readRemoteAdoption, inspectRemoteAdoptionPending, pendingRemoteAdoptions } = await import("./memory/sync-placement-remote-stage.ts");
+        const realm = createHash("sha256").update(project).digest("hex"), recovery = options["--resume"] === true || options["--abandon"] === true;
+        const pending = recovery ? pendingRemoteAdoptions(memoryHome()) : undefined;
+        const remotePending = recovery && (!!readRemoteAdoption(memoryHome(), realm) || inspectRemoteAdoptionPending(memoryHome(), realm).length > 0 || !!pending?.unknown || !!pending?.hashes.includes(realm));
         if (options["--from-remote"] === true || remotePending) {
           const { remoteRealmAdmission } = await import("./memory/sync-placement-remote-admission.ts");
           const result = await remoteRealmAdmission(memoryHome(), project, { mode: options["--apply"] === true ? "apply" : options["--resume"] === true ? "resume" : options["--abandon"] === true ? "abandon" : "dry-run",

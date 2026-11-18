@@ -50,10 +50,11 @@ const nextSync = "amem sync";
 /** Returns identifiers/counts only. A callback is used only for the existing remote visibility check. */
 export async function remoteRealmAdmission(homeInput: string, project: string, options: RemoteAdmissionOptions): Promise<RemoteAdmissionResult> {
   const home = realPath(homeInput), realm = keyOf(project), transport = { ...(options.signal ? { signal: options.signal } : {}), ...(options.visibility ? { visibility: options.visibility } : {}) };
-  if (options.mode !== "abandon") {
-    const pending = pendingRemoteAdoptions(home); if (pending.unknown || pending.hashes.some(hash => hash !== realm)) return unavailable();
-  }
+  const pending = pendingRemoteAdoptions(home);
+  if (pending.unknown || options.mode !== "abandon" && pending.hashes.some(hash => hash !== realm)) return unavailable();
   let plan = readRemoteAdoption(home, realm), staged = inspectRemoteAdoptionPending(home, realm);
+  // A private stage without any companion cannot be attributed to this operation or silently abandoned.
+  if (!plan && !staged.length && pending.hashes.includes(realm)) return unavailable();
   const admitted = () => active(home, realm);
   if (options.mode === "dry-run") {
     if (plan || staged.length) return { state: "retained", realm, staged: staged.length, nextStep: "resume or review abandon" };

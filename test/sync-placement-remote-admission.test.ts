@@ -265,3 +265,18 @@ test("remote staging refuses source or policy drift and remains abandonable", as
     expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
   }
 }, 120_000);
+
+test("an orphan remote stage is retained and never reported as abandoned", async () => {
+  const { createHash } = await import("node:crypto");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const shared = "example.test/adoption-orphan/shared", target = "example.test/adoption-orphan/target", b = await inventoryFixture(1, [shared], true);
+  const hash = createHash("sha256").update(target).digest("hex"), stage = join(b.home, `.placement-remote-adoption-${hash}-${"a".repeat(64)}.stage`);
+  mkdirSync(stage, { mode: 0o700 }); writeFileSync(join(stage, "unattributed"), "retain", { mode: 0o600 });
+  const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = b.home;
+  try {
+    const invoke = (mode: string[]) => runCli(["migrate", "--sync-placement", "--admit", target, ...mode, "--json"], { cwd: b.root, env: {} });
+    await expect(invoke(["--resume"])).rejects.toThrow("unavailable");
+    await expect(invoke(["--abandon", "--confirm"])).rejects.toThrow("unavailable");
+    expect(readFileSync(join(stage, "unattributed"), "utf8")).toBe("retain");
+  } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
+}, 120_000);
