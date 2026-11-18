@@ -113,7 +113,8 @@ export function installRemoteAdoptionLog(homeInput: string, project: string, val
     if (lstatSync(join(projectDir, name), { throwIfNoEntry: false })) fail();
   ensureShardDescriptor(home, project); check(home, proof);
   if (source.dev !== target.dev || lstatSync(destination, { throwIfNoEntry: false })) fail();
-  if (stamp(ownedDir(log)) !== stamp(source) || stamp(ownedDir(projectDir)) !== stamp(target)) fail();
+  const currentTarget = ownedDir(projectDir);
+  if (stamp(ownedDir(log)) !== stamp(source) || currentTarget.dev !== target.dev || currentTarget.ino !== target.ino) fail();
   renameSync(log, destination); fsyncDirectory(root); fsyncDirectory(projectDir); check(home, proof);
   const installed = ownedDir(destination); if (installed.dev !== source.dev || installed.ino !== source.ino) fail();
 }
