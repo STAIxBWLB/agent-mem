@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryMcp, type MemoryMcp } from "../src/mcp-memory.ts";
-import { appendMetrics, metricsPath, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
+import { appendMetrics, metricsPath, processPeakRssKB, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 
@@ -64,19 +64,25 @@ test("#485 AC2: each read-tool call appends one named sample, and the call that 
   const f = seeded(), mcp = session(f);
   await mcp.tools.amem_search({ query: "telemetry" });
   await mcp.tools.amem_timeline({ limit: 5 });
-  // A 48 MB allocation between calls raises the process peak, so the next sample is a new high-water mark.
-  const held = Buffer.alloc(48 * 1024 * 1024, 1);
+  // The peak is a process-lifetime high-water mark, so a fixed allocation raises it only while this test process has
+  // not peaked higher already. Size the fill from the peak recorded so far: filling it puts resident memory about
+  // 8 MB above every earlier peak, so the call after it is the one that did raise the peak on any host.
+  const peakKB = processPeakRssKB(), residentKB = Math.round(process.memoryUsage().rss / 1024);
+  const held = Buffer.alloc((Math.max(0, peakKB - residentKB) + 8 * 1024) * 1024, 1);
   await mcp.tools.amem_show({ id: f.id });
-  expect(held.byteLength).toBe(48 * 1024 * 1024);
+  expect(held.byteLength).toBeGreaterThanOrEqual(8 * 1024 * 1024);
 
   const rows = samples(f.memory);
   expect(rows.map(row => row.tool)).toEqual(["amem_search", "amem_timeline", "amem_show"]);
   for (const row of rows) { expect(row.kind).toBe("search"); expect(row.wallMs).toBeGreaterThan(0); expect(row.rssMB).toBeGreaterThan(0); }
-  const peaks = rows.map(row => row.rssMB!);
-  // Flagged exactly where a sample is a new process high-water mark: the call that set a peak can be named.
-  const expected = rows.filter((_, index) => peaks[index]! > Math.max(0, ...peaks.slice(0, index))).map(row => row.tool);
-  expect(rows.filter(row => row.peakRaised).map(row => row.tool)).toEqual(expected);
+  // The call after the sized fill is the identified raiser: its peak is above every earlier sample's.
   expect(rows.at(-1)!.peakRaised).toBe(true);
+  const peaks = rows.map(row => row.rssMB!);
+  // From the second sample on a flag means this peak is above every earlier sample's, so the call that set a peak can
+  // be named. The first sample is compared with the session baseline the wrapper reads before any call, which the
+  // samples do not carry, so its flag is only a boolean here.
+  const raised = rows.slice(1).filter((_, offset) => peaks[offset + 1]! > Math.max(...peaks.slice(0, offset + 1)));
+  expect(rows.slice(1).filter(row => row.peakRaised).map(row => row.tool)).toEqual(raised.map(row => row.tool));
 }, 30_000);
 
 test("#485 AC3: a flood of one kind never evicts the other kind's samples", () => {
