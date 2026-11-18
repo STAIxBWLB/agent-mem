@@ -168,13 +168,7 @@ export function planRealmAbandon(homeInput: string, project: string): RealmAband
     readRealmProof(home, intent); // A malformed retained proof is not a clean abandon preview.
     if (hasRealmProofStage(home, intent)) {
       try {
-        const source = previewSyncPlacementSources(home), captured = source.base.realms.find(item => item.scope === "project" && item.keyHash === realm);
-        const descriptor = readShardDescriptor(home, realm.slice(0, 16));
-        if (!captured || intent.descriptorHash !== null && (!descriptor || hashJSON(descriptor) !== intent.descriptorHash)
-          || intent.sourceHash !== null && source.base.sourceHash !== intent.sourceHash
-          || source.base.aliasesHash !== intent.aliasesHash || source.base.policyHash !== intent.policyHash
-          || !inspectRealmProofStage(home, intent, recordFor(intent, captured.bindingHash, source.base.sourceHash))) return { realm, state: "unavailable", sequence: intent.sequence };
-        source.assertSourcesUnchanged();
+        if (!inspectRealmProofStage(home, intent)) return { realm, state: "unavailable", sequence: intent.sequence };
       } catch { return { realm, state: "unavailable", sequence: intent.sequence }; }
     }
     const history = readRealmExtensionHistory(home, binding, { attributeTorn: () => true });
@@ -248,18 +242,8 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
               ? "amem migrate --sync-placement --admit <project> --resume" : "amem migrate --sync-placement --admit <project> --dry-run" };
         }
         if (!intent) return fail("changed");
-        let stagedRecord: RealmExtension | undefined, stagedProof = proof;
-        if (hasRealmProofStage(home, intent)) {
-          const source = previewOwnedSyncPlacementSources(home, owner), captured = source.base.realms.find(item => item.scope === "project" && item.keyHash === realm);
-          const descriptor = readShardDescriptor(home, realm.slice(0, 16));
-          if (!captured || intent.descriptorHash !== null && (!descriptor || hashJSON(descriptor) !== intent.descriptorHash)
-            || intent.sourceHash !== null && source.base.sourceHash !== intent.sourceHash
-            || source.base.aliasesHash !== intent.aliasesHash || source.base.policyHash !== intent.policyHash) fail("changed");
-          stagedRecord = recordFor(intent, captured.bindingHash, source.base.sourceHash);
-          stagedProof = { mutation, assertCurrent: () => { check(); source.assertSourcesUnchanged(); check(); } };
-        }
         const { discarded } = discardRealmExtensionTail(home, binding, intent, proof);
-        clearRealmProof(home, intent, stagedProof, stagedRecord);
+        clearRealmProof(home, intent, proof);
         clearRealmIntent(home, intent, proof);
         return { mode: "abandon" as const, state: "abandoned" as const, realm, sequence: intent.sequence, discarded,
           nextStep: "amem migrate --sync-placement --admit <project> --dry-run" };
@@ -310,6 +294,8 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
         await options.checkpoint?.("after-intent");
       }
       const frozen = intent;
+      // A new realm's intent has no sourceHash; a partial proof cannot prove the original source snapshot after restart.
+      if (options.mode === "resume" && frozen.mode === "new" && hasRealmProofStage(home, frozen)) fail("pending");
       current();
       const created = ensureCuratedRealmMetadata(home, project, binding.generation, machineIdentity(home)).created;
       await options.checkpoint?.("after-metadata");

@@ -1,4 +1,5 @@
 /** Frozen record evidence for recovery of an interrupted realm extension. */
+import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readSync, renameSync, unlinkSync, writeSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory, hashJSON } from "./generation.ts";
@@ -87,37 +88,38 @@ export function hasRealmProofStage(homeInput: string, raw: RealmIntent): boolean
   return !!lstatSync(`${pathOf(home, intent)}.pending`, { throwIfNoEntry: false });
 }
 
-function readStage(home: string, intent: RealmIntent, candidate: RealmExtension): BigIntStats | undefined {
+function readStage(home: string, intent: RealmIntent): { stat: BigIntStats; hash: string } | undefined {
   const staged = `${pathOf(home, intent)}.pending`, before = lstatSync(staged, { bigint: true, throwIfNoEntry: false });
   if (!before) return undefined;
-  const expected = Buffer.from(bytesOf(intent, validateRealmExtension(candidate)));
-  owned(before); if (before.size > BigInt(expected.length)) fail();
+  const header = Buffer.from(`{"intent":"${intent.seal}"`);
+  owned(before); if (before.size > BigInt(LIMIT)) fail();
   const fd = openSync(staged, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const opened = fstatSync(fd, { bigint: true }); owned(opened); if (stamp(opened) !== stamp(before)) fail();
     const data = Buffer.alloc(Number(opened.size)); let at = 0;
     while (at < data.length) { const n = readSync(fd, data, at, data.length - at, at); if (!n) fail(); at += n; }
-    if (!data.equals(expected.subarray(0, data.length)) || stamp(fstatSync(fd, { bigint: true })) !== stamp(opened)
+    if (!data.subarray(0, Math.min(data.length, header.length)).equals(header.subarray(0, Math.min(data.length, header.length)))
+      || stamp(fstatSync(fd, { bigint: true })) !== stamp(opened)
       || stamp(lstatSync(staged, { bigint: true })) !== stamp(opened)) fail();
-    return before;
+    return { stat: before, hash: createHash("sha256").update(data).digest("hex") };
   } finally { closeSync(fd); }
 }
-/** Preview an owned exact proof prefix without changing it. */
-export function inspectRealmProofStage(homeInput: string, raw: RealmIntent, candidate: RealmExtension): boolean {
+/** Preview private stage bytes bound by name and the available intent header, without reading live sources. */
+export function inspectRealmProofStage(homeInput: string, raw: RealmIntent): boolean {
   const home = realPath(homeInput), intent = validateRealmIntent(raw); if (intent.home !== home) fail();
-  return !!readStage(home, intent, candidate);
+  return !!readStage(home, intent);
 }
 
 /** Abandon removes only validated proof bytes, after any attributable log tail has been removed. */
-export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: RealmIntentProof, candidate?: RealmExtension): void {
+export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: RealmIntentProof): void {
   const home = realPath(homeInput), intent = validateRealmIntent(raw), file = pathOf(home, intent);
   assertMutationHandle(proof.mutation, home); proof.assertCurrent();
   const staged = `${file}.pending`, beforeStage = lstatSync(staged, { bigint: true, throwIfNoEntry: false });
   if (beforeStage) {
-    const selected = candidate ?? fail();
-    const inspected = readStage(home, intent, selected); if (!inspected || stamp(inspected) !== stamp(beforeStage)) fail();
+    const inspected = readStage(home, intent); if (!inspected || stamp(inspected.stat) !== stamp(beforeStage)) fail();
     proof.assertCurrent(); assertMutationHandle(proof.mutation, home);
-    if (stamp(lstatSync(staged, { bigint: true })) !== stamp(beforeStage)) fail();
+    const current = readStage(home, intent);
+    if (!current || stamp(current.stat) !== stamp(beforeStage) || current.hash !== inspected.hash) fail();
     unlinkSync(staged); fsyncDirectory(home); proof.assertCurrent();
   }
   const prior = readProof(home, intent); if (!prior) return;

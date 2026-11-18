@@ -226,6 +226,24 @@ test("#448: confirmed abandon removes an attributable partial proof before appen
   expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
 }, 240_000);
 
+test("#448: a partial proof can be abandoned after an unrelated activated realm changes", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-unrelated-write";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-proof") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const name = readdirSync(f.home).find(item => /^placement-realm-proof-.*\.json$/.test(item))!;
+  const file = join(f.home, name), bytes = readFileSync(file);
+  rmSync(file); writeFileSync(`${file}.pending`, bytes.subarray(0, 80), { mode: 0o600 });
+  const store = openShardStore({ memoryDir: f.home, project: f.projects[0]!, deferPromotions: true });
+  try { store.note(note("unrelated activated realm update", f.projects[0]!)); } finally { store.close(); }
+  await expect(applyRealmAdmission(f.home, realm, { mode: "resume" })).rejects.toThrow();
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "abandonable" });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned" });
+  expect(existsSync(`${file}.pending`)).toBe(false);
+  expect(intents(f.home)).toEqual([]);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+}, 240_000);
+
 test("#448: abandon preview refuses a foreign proof stage", async () => {
   const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/proof-stage-foreign";
   await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {

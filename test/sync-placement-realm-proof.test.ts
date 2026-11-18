@@ -60,15 +60,14 @@ test("foreign staging and unsafe proof files refuse without replacing them", () 
   } finally { f.mutation(); }
 });
 
-test("abandon removes only an exact staged proof prefix", () => {
+test("abandon removes only a private intent-bound staged proof prefix", () => {
   const f = fixture();
   try {
     writeFileSync(`${f.file}.pending`, Buffer.from(f.text).subarray(0, 80), { mode: 0o600 });
-    expect(() => clearRealmProof(f.home, f.intent, f.proof)).toThrow();
-    clearRealmProof(f.home, f.intent, f.proof, f.record);
+    clearRealmProof(f.home, f.intent, f.proof);
     expect(existsSync(`${f.file}.pending`)).toBe(false);
     writeFileSync(`${f.file}.pending`, "foreign", { mode: 0o600 });
-    expect(() => clearRealmProof(f.home, f.intent, f.proof, f.record)).toThrow();
+    expect(() => clearRealmProof(f.home, f.intent, f.proof)).toThrow();
     expect(readFileSync(`${f.file}.pending`, "utf8")).toBe("foreign");
   } finally { f.mutation(); }
 });
