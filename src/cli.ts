@@ -164,7 +164,8 @@ function assertSpoolReplayArguments(path: readonly string[], options: Record<str
   }
 }
 /** Realm admission receipts name hashes and counts only; the project key is the caller's own argument. */
-function realmAdmissionDetail(result: { state: string; next?: { sequence: number; mode: "new" | "existing" }; sequence?: number; headHash?: string; created?: boolean; discarded?: number; discards?: number; nextStep?: string }): string {
+function realmAdmissionDetail(result: { state: string; next?: { sequence: number; mode: "new" | "existing" }; sequence?: number; headHash?: string; created?: boolean; discarded?: number; discards?: number; staged?: number; nextStep?: string }): string {
+  if (result.staged) return `; ${result.state === "abandoned" ? "removed" : "would remove"} ${result.staged} private intent stage(s), ${result.discarded ?? result.discards ?? 0} bytes${result.state === "abandoned" ? "" : "; rerun with --confirm"}`;
   if (result.state === "admitted") return `; appended record ${result.sequence} ${result.headHash}${result.created ? "; wrote the realm's empty curated metadata first" : ""}`;
   if (result.state === "already-admitted") return result.nextStep ? `; ${result.nextStep}` : "; the realm is already in the effective inventory and nothing was appended";
   if (result.state === "abandoned") return `; removed the retained intent for record ${result.sequence} and discarded ${result.discarded ?? 0} incomplete bytes`;

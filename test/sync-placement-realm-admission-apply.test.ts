@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
 import type { SyncOptions } from "../src/memory/sync.ts";
@@ -29,6 +29,62 @@ const bindingOf = (home: string) => {
     generation: active.epoch.generation, initialProjectHashes: active.activation.realms.flatMap(realm => realm.scope === "project" ? [realm.keyHash] : []) } };
 };
 const realmsOf = (home: string) => readEffectiveRealmInventory(home, bindingOf(home).active).realms;
+
+test("#448: a retained admission prevents another realm from consuming its sequence", async () => {
+  const f = await inventoryFixture(1, undefined, true), first = "example.test/placement/serial-first", second = "example.test/placement/serial-second";
+  await expect(applyRealmAdmission(f.home, first, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-metadata") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  let refusal: unknown;
+  try { await applyRealmAdmission(f.home, second, { mode: "apply" }); } catch (error) { refusal = error; }
+  expect(refusal).toMatchObject({ causeClass: "pending", retainedRealm: digest(first) });
+  expect(String(refusal)).toContain(digest(first));
+  expect(String(refusal)).toContain("--resume");
+  expect(String(refusal)).toContain("--abandon");
+  expect(String(refusal)).not.toContain(first);
+  expect(existsSync(join(shardDir(f.home, second), "generation.json"))).toBe(false);
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(0);
+  await expect(applyRealmAdmission(f.home, first, { mode: "resume" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+  await expect(applyRealmAdmission(f.home, second, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 2 });
+}, 240_000);
+
+test("#448: a torn private intent stage is previewed and removed only by confirmed abandon", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/torn-intent-stage", key = digest(realm);
+  const file = join(f.home, `${REALM_INTENT_PREFIX}${key}.json.pending-${"a".repeat(64)}`), bytes = Buffer.from('{"schema":"unfinished');
+  writeFileSync(file, bytes, { mode: 0o600 });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).rejects.toMatchObject({ causeClass: "pending", retainedRealm: key });
+  expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "abandonable", staged: 1, discards: bytes.length });
+  const preview = await applyRealmAdmission(f.home, realm, { mode: "abandon" });
+  expect(preview).toMatchObject({ state: "retained", staged: 1, discarded: bytes.length });
+  expect(preview.nextStep).not.toContain(realm);
+  expect(readFileSync(file)).toEqual(bytes);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned", staged: 1, discarded: bytes.length });
+  expect(existsSync(file)).toBe(false);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+}, 240_000);
+
+test("#448: an unsafe intent stage is never removed by abandon", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/unsafe-intent-stage", key = digest(realm);
+  const file = join(f.home, `${REALM_INTENT_PREFIX}${key}.json.pending-${"b".repeat(64)}`);
+  symlinkSync(join(f.home, "machine.json"), file);
+  expect(() => planRealmAbandon(f.home, realm)).toThrow();
+  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).rejects.toThrow();
+  expect(lstatSync(file).isSymbolicLink()).toBe(true);
+}, 240_000);
+
+test("#448: abandoning one torn intent stage preserves another realm's retained intent", async () => {
+  const f = await inventoryFixture(1, undefined, true), first = "example.test/placement/retained-first", second = "example.test/placement/staged-second";
+  await expect(applyRealmAdmission(f.home, first, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-metadata") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const retained = join(f.home, `${REALM_INTENT_PREFIX}${digest(first)}.json`), before = readFileSync(retained);
+  const staged = join(f.home, `${REALM_INTENT_PREFIX}${digest(second)}.json.pending-${"c".repeat(64)}`);
+  writeFileSync(staged, "partial", { mode: 0o600 });
+  await expect(applyRealmAdmission(f.home, second, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned", staged: 1 });
+  expect(readFileSync(retained)).toEqual(before);
+  expect(existsSync(staged)).toBe(false);
+  await expect(applyRealmAdmission(f.home, first, { mode: "resume" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+}, 240_000);
 
 test("#448: a retained writer inventory without current install evidence cannot authorize admission", async () => {
   const f = await inventoryFixture(1), realm = "example.test/placement/no-current-writer-proof";

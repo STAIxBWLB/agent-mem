@@ -29,7 +29,8 @@ import { createRealmExtension, REALM_EXTENSION_SCHEMA, RealmExtensionFormatError
 import { readRealmExtensionHistory, type RealmExtensionBinding, type RealmExtensionHistory } from "./sync-placement-realm-extension-storage.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { createRealmIntent, REALM_INTENT_SCHEMA, type RealmIntent } from "./sync-placement-realm-intent-format.ts";
-import { clearRealmIntent, readRealmIntent, writeRealmIntent } from "./sync-placement-realm-intent-storage.ts";
+import { clearRealmIntent, clearRealmIntentStages, inspectRealmIntentStages, readRealmIntent, writeRealmIntent } from "./sync-placement-realm-intent-storage.ts";
+import { pendingRealmInventory } from "./sync-placement-realm-pending.ts";
 import { clearRealmProof, hasRealmProofStage, inspectRealmProofStage, readRealmProof, writeRealmProof } from "./sync-placement-realm-proof.ts";
 import { attributeTornRealmAppend } from "./sync-placement-realm-attribution.ts";
 import { appendRealmExtension, discardRealmExtensionTail, ensureCuratedRealmMetadata } from "./sync-placement-realm-admission-storage.ts";
@@ -53,7 +54,7 @@ export interface RealmAdmissionNext {
   aliasesHash: string; policyHash: string;
 }
 export interface RealmAdmissionPreview { realm: string; state: RealmAdmissionState; next?: RealmAdmissionNext }
-export interface RealmAbandonPlan { realm: string; state: "abandonable" | "committed" | "none" | "unavailable"; sequence?: number; discards?: number; nextStep?: string }
+export interface RealmAbandonPlan { realm: string; state: "abandonable" | "committed" | "none" | "unavailable"; sequence?: number; discards?: number; staged?: number; nextStep?: string }
 export type RealmAdmissionMode = "apply" | "resume" | "abandon";
 export type RealmAdmissionStage = "after-intent" | "after-metadata" | "after-proof" | "after-append";
 export interface RealmAdmissionOptions {
@@ -63,11 +64,11 @@ export interface RealmAdmissionOptions {
 }
 export interface RealmAdmissionResult {
   mode: RealmAdmissionMode; state: "admitted" | "already-admitted" | "abandoned" | "retained";
-  realm: string; sequence?: number; headHash?: string; created?: boolean; discarded?: number; nextStep?: string;
+  realm: string; sequence?: number; headHash?: string; created?: boolean; discarded?: number; staged?: number; nextStep?: string;
 }
 export class RealmAdmissionError extends Error {
-  constructor(readonly causeClass: "readers" | "busy" | "changed" | "pending" | "committed" | "metadata") {
-    super(`Sync placement realm admission is ${causeClass}; the existing activated realms keep syncing. ${action(causeClass)}`);
+  constructor(readonly causeClass: "readers" | "busy" | "changed" | "pending" | "committed" | "metadata", readonly retainedRealm?: string) {
+    super(`Sync placement realm admission is ${causeClass}${retainedRealm ? `; retained realm keyHash=${retainedRealm}` : ""}; the existing activated realms keep syncing. ${action(causeClass)}`);
     this.name = "RealmAdmissionError";
   }
 }
@@ -79,6 +80,11 @@ function action(causeClass: RealmAdmissionError["causeClass"]): string {
   return "Close cooperating readers and writers, then run amem migrate --sync-placement --admit <project> --dry-run.";
 }
 function fail(causeClass: RealmAdmissionError["causeClass"]): never { throw new RealmAdmissionError(causeClass); }
+function assertNoPendingAdmission(home: string): void {
+  const pending = pendingRealmInventory(home);
+  if (pending.unknown) fail("pending");
+  if (pending.hashes.length) throw new RealmAdmissionError("pending", pending.hashes[0]);
+}
 function rethrow(error: unknown): never {
   if (error instanceof RealmAdmissionError || error instanceof RealmExtensionFormatError) throw error;
   if (error instanceof PlacementInventoryFenceError) fail(error.causeClass);
@@ -151,7 +157,13 @@ export function planRealmAbandon(homeInput: string, project: string): RealmAband
   const realm = digest(project);
   try {
     const home = realPath(homeInput), binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
-    if (!intent) return { realm, state: "none", nextStep: "no admission intent is retained for this realm" };
+    if (!intent) {
+      const stages = inspectRealmIntentStages(home, realm);
+      if (!stages.length) return { realm, state: "none", nextStep: "no admission intent is retained for this realm" };
+      const history = readRealmExtensionHistory(home, binding);
+      if (history.records.some(record => record.realm.keyHash === realm)) return { realm, state: "committed", nextStep: "amem migrate --sync-placement --admit <project> --resume" };
+      return { realm, state: "abandonable", staged: stages.length, discards: stages.reduce((sum, stage) => sum + stage.size, 0) };
+    }
     readRealmProof(home, intent); // A malformed retained proof is not a clean abandon preview.
     if (hasRealmProofStage(home, intent)) {
       try {
@@ -220,12 +232,21 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
     if (plan.state === "none") return { mode: "abandon", state: "already-admitted", realm, nextStep: plan.nextStep };
     if (plan.state !== "abandonable") fail(plan.state === "committed" ? "committed" : "metadata");
     if (options.confirm !== true) return { mode: "abandon", state: "retained", realm, sequence: plan.sequence, discarded: plan.discards,
-      nextStep: `confirm amem migrate --sync-placement --admit ${project} --abandon --confirm` };
+      ...(plan.staged ? { staged: plan.staged } : {}), nextStep: "confirm amem migrate --sync-placement --admit <project> --abandon --confirm" };
+    const stages = plan.staged ? inspectRealmIntentStages(home, realm) : undefined;
+    if (plan.staged && stages?.length !== plan.staged) fail("changed");
     return withPlacementActivationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
       try {
         const binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
-        if (!intent) throw Error("No admission intent is retained for this realm; run amem migrate --sync-placement --admit <project> --dry-run.");
         const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
+        if (!intent && stages) {
+          const history = readRealmExtensionHistory(home, binding);
+          if (history.records.some(record => record.realm.keyHash === realm)) fail("committed");
+          clearRealmIntentStages(home, realm, stages, proof);
+          return { mode: "abandon" as const, state: "abandoned" as const, realm, staged: stages.length,
+            discarded: stages.reduce((sum, stage) => sum + stage.size, 0), nextStep: "amem migrate --sync-placement --admit <project> --dry-run" };
+        }
+        if (!intent || stages) return fail("changed");
         let stagedRecord: RealmExtension | undefined, stagedProof = proof;
         if (hasRealmProofStage(home, intent)) {
           const source = previewOwnedSyncPlacementSources(home, owner), captured = source.base.realms.find(item => item.scope === "project" && item.keyHash === realm);
@@ -240,10 +261,11 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
         clearRealmProof(home, intent, stagedProof, stagedRecord);
         clearRealmIntent(home, intent, proof);
         return { mode: "abandon" as const, state: "abandoned" as const, realm, sequence: intent.sequence, discarded,
-          nextStep: `amem migrate --sync-placement --admit ${project} --dry-run` };
+          nextStep: "amem migrate --sync-placement --admit <project> --dry-run" };
       } catch (error) { return rethrow(error); }
     });
   }
+  if (options.mode === "apply") assertNoPendingAdmission(home);
   const planned = options.mode === "apply" ? inspectRealmAdmission(home, project) : undefined;
   if (planned?.state === "already-admitted") return { mode: options.mode, state: "already-admitted", realm };
   if (planned?.state === "unavailable") fail("metadata");
@@ -253,6 +275,7 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
   }
   return withPlacementActivationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
     try {
+      if (options.mode === "apply") assertNoPendingAdmission(home);
       const binding = realmBinding(activeBinding(home));
       const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
       let intent = readRealmIntent(home, realm);
