@@ -41,13 +41,18 @@ test("configured private remote listing is hash-only and does not change the hom
   await expect(discoverRemotePlacementRealms(b.home, { visibility: async () => "public" })).rejects.toThrow("not private");
   expect(inspectionFilesystemSnapshot(b.home)).toEqual(before);
   const trace = join(b.root, "must-not-write-trace"), priorTrace = process.env.GIT_TRACE; process.env.GIT_TRACE = trace;
-  try { await expect(discoverRemotePlacementRealms(b.home, { visibility })).rejects.toThrow("unavailable"); expect(existsSync(trace)).toBe(false); }
+  try { await expect(discoverRemotePlacementRealms(b.home, { visibility })).rejects.toThrow("Git tracing is enabled"); expect(existsSync(trace)).toBe(false); }
   finally { if (priorTrace === undefined) delete process.env.GIT_TRACE; else process.env.GIT_TRACE = priorTrace; }
   const link = join(b.home, "shard-sync-placement", "objects.git", "objects", "unsafe-link"); symlinkSync(b.root, link);
-  try { await expect(discoverRemotePlacementRealms(b.home, { visibility })).rejects.toThrow("unavailable"); } finally { rmSync(link); }
+  try { await expect(discoverRemotePlacementRealms(b.home, { visibility })).rejects.toThrow("local placement Git cache"); } finally { rmSync(link); }
+  const config = join(b.home, "shard-sync-placement", "objects.git", "config"), oldConfig = readFileSync(config);
+  try {
+    writeFileSync(config, Buffer.concat([oldConfig, Buffer.from("\n[core]\n\tfsmonitor = true\n")]));
+    await expect(discoverRemotePlacementRealms(b.home, { visibility })).rejects.toThrow("local placement Git cache");
+  } finally { writeFileSync(config, oldConfig); }
   const alternate = join(b.home, "shard-sync-placement", "objects.git", "objects", "info", "alternates");
   try {
-    await expect(discoverRemotePlacementRealms(b.home, { visibility: async () => { writeFileSync(alternate, "foreign\n", { mode: 0o600 }); return "private"; } })).rejects.toThrow("unavailable");
+    await expect(discoverRemotePlacementRealms(b.home, { visibility: async () => { writeFileSync(alternate, "foreign\n", { mode: 0o600 }); return "private"; } })).rejects.toThrow("local placement Git cache");
     expect(readFileSync(alternate, "utf8")).toBe("foreign\n");
   } finally { rmSync(alternate, { force: true }); }
   expect(readFileSync(join(b.home, "sync-placement", "active.json")).length).toBeGreaterThan(0);

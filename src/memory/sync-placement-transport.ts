@@ -1,6 +1,6 @@
 /** Activated placement transport. The public sync entrypoint owns dispatch; this module never activates a profile. */
 import { createHash, randomBytes } from "node:crypto";
-import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync, writeSync } from "node:fs";
+import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync, writeSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, hashJSON, readSelector } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
@@ -93,32 +93,37 @@ type RemoteReadOptions = Pick<SyncOptions, "signal" | "visibility">;
 /** Shared configured-remote proof for discovery and audited read-only preview. */
 async function configuredRemoteContext(homeInput: string, opts: RemoteReadOptions, requireVisibility = true) {
   // Git tracing can write an arbitrary file outside the sync cache, which a read-only listing must not do.
-  if (Object.entries(process.env).some(([name, value]) => name.startsWith("GIT_TRACE") && !!value)) return refuse("remote");
+  if (Object.entries(process.env).some(([name, value]) => name.startsWith("GIT_TRACE") && !!value)) throw new RemoteRealmRefusal("environment");
   const home = realPath(homeInput), markers = readPlacementRuntimeMarkers(home);
   if (!markers.profile || typeof markers.profile !== "object" || Object.getOwnPropertyDescriptor(markers.profile, "schema")?.value !== PLACEMENT_PROFILE_SCHEMA) return refuse("epoch");
   const active = readActivePlacementBinding(home, markers.profile, markers.shards);
   if (!active) return refuse("epoch");
   const inventory = readEffectiveRealmInventory(home, active), root = join(home, "shard-sync-placement"), cache = join(root, "objects.git");
-  const rootStamp = placementCacheRootStamp(home), configStamp = placementCacheConfigStamp(cache), initial = lstatSync(cache, { bigint: true });
-  if (!initial.isDirectory() || initial.isSymbolicLink() || initial.uid !== BigInt(process.getuid?.() ?? -1) || (initial.mode & 0o077n) !== 0n) return refuse("remote");
-  if (!placementCacheTreePrivate(cache)) return refuse("remote");
+  let rootStamp: string, configStamp: string, initial: BigIntStats;
+  try { rootStamp = placementCacheRootStamp(home); configStamp = placementCacheConfigStamp(cache); initial = lstatSync(cache, { bigint: true }); }
+  catch { throw new RemoteRealmRefusal("cache"); }
+  if (!initial.isDirectory() || initial.isSymbolicLink() || initial.uid !== BigInt(process.getuid?.() ?? -1) || (initial.mode & 0o077n) !== 0n) throw new RemoteRealmRefusal("cache");
+  if (!placementCacheTreePrivate(cache)) throw new RemoteRealmRefusal("cache");
   const forbidden = ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"];
-  if (forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) return refuse("remote");
+  try { if (forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) throw new RemoteRealmRefusal("cache"); }
+  catch { throw new RemoteRealmRefusal("cache"); }
   const check = () => {
-    const stat = lstatSync(cache, { bigint: true }), nowMarkers = readPlacementRuntimeMarkers(home), now = readActivePlacementBinding(home, nowMarkers.profile, nowMarkers.shards);
+    let stat: BigIntStats; try { stat = lstatSync(cache, { bigint: true }); } catch { throw new RemoteRealmRefusal("cache"); }
+    const nowMarkers = readPlacementRuntimeMarkers(home), now = readActivePlacementBinding(home, nowMarkers.profile, nowMarkers.shards);
     if (!now || canonicalJSON(now.profile) !== canonicalJSON(active.profile) || canonicalJSON(now.shards) !== canonicalJSON(active.shards)) return refuse("source-selection");
     if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== initial.dev || stat.ino !== initial.ino
-      || placementCacheRootStamp(home) !== rootStamp || placementCacheConfigStamp(cache) !== configStamp
-      || forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) return refuse("remote");
+      || !cacheUnchanged()) throw new RemoteRealmRefusal("cache");
     try { inventory.assertCurrent(); } catch { return refuse("source-selection"); }
   };
+  const cacheUnchanged = () => { try { return placementCacheRootStamp(home) === rootStamp && placementCacheConfigStamp(cache) === configStamp && !forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined); } catch { return false; } };
   const args = (values: string[]) => ["--no-replace-objects", "--git-dir", cache, "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.commitGraph=false", ...values];
   check();
   const config = await generationSyncGitBytes(root, args(["config", "--local", "--no-includes", "--null", "--list"]), opts.signal, undefined, 65536);
-  check(); if (config.code !== 0) return refuse("remote");
-  const settings = validatePlacementCacheConfig(new TextDecoder("utf-8", { fatal: true }).decode(config.out)), url = settings.get("remote.origin.url");
-  if (!url || url.length > 4096 || url.startsWith("-") || /[\r\n\0]/.test(url) || settings.get("core.bare") !== "true"
-    || settings.has("remote.origin.pushurl") && settings.get("remote.origin.pushurl") !== url) return refuse("remote");
+  check(); if (config.code !== 0) throw new RemoteRealmRefusal("cache");
+  let settings: ReadonlyMap<string, string>; try { settings = validatePlacementCacheConfig(new TextDecoder("utf-8", { fatal: true }).decode(config.out)); } catch { throw new RemoteRealmRefusal("cache"); }
+  const url = settings.get("remote.origin.url");
+  if (settings.get("core.bare") !== "true" || settings.has("remote.origin.pushurl") && settings.get("remote.origin.pushurl") !== url) throw new RemoteRealmRefusal("cache");
+  if (!url || url.length > 4096 || url.startsWith("-") || /[\r\n\0]/.test(url)) return refuse("remote");
   if (requireVisibility && await (opts.visibility ?? remoteVisibility)(url) !== "private") return refuse("remote");
   check();
   return { home, active, inventory, root, cache, url, args, check };
