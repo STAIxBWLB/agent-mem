@@ -5,7 +5,7 @@
 - Install with `bun install` (Bun 1.4.4, `.bun-version`).
 - Before reporting completion, run `bun x tsc --noEmit`, `bun scripts/check-boundary.ts`, `bun test` and `npm pack --dry-run`; report their results. Boundary success prints `boundary: OK`.
 - Run one focused file with `bun test test/<name>.test.ts`.
-- On the Mac, keep one heavy job per repository, including its worktrees. Remote runs on dgx02 (`dot remote run|verify`) take one slot per worktree, up to the `max_runs` that `dot remote status` reports; announce the slot in an unmarked hub message before starting one.
+- On the Mac, keep one heavy job per repository, including its worktrees. Remote runs on dgx02 (`dot remote run|verify`) take one slot per worktree, up to the `max_runs` that `dot remote status` reports; announce the slot in an `[FYI]` hub message before starting one, and never reply to another peer's slot or progress notice.
 
 ## Conventions and structure
 
@@ -67,6 +67,7 @@
 - For the extraction contract (2026-10-16, recheck when changing storage or host integration), preserve schema/hash/path compatibility with existing agent-hub stores; do not rename the schema to match this package.
 - Before recording vault links, require every host sharing the memory home to exact-pin a P2 vault-link-capable version (0.4.0 or later); recheck support when changing a host pin. See `docs/contracts.md` §Generation-only vault links for the host import path and compatibility checks.
 - Never write `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves` or `resolved` directly before an issue reference (`#N`, `owner/repo#N`) in a PR title, body or commit message unless that PR should close the issue, negations included: GitHub reads `close #15` inside "Does not close #15" as a closing keyword. Write "stays open" or "Refs #N". Observed 2026-10-24: PR #36 closed the shard design issue (#15) while T3 was open. agent-hub's `closing-refs` workflow checks its own PRs; this repository relies on the rule.
+- A staged board task (such as step-1 measurement or diagnosis followed by implementation) spans turns: report the step result and keep the task `in_progress`; never call `hub_task_decline` because work remains for a later turn (observed 2026-11-17: declining a multi-step task excluded the owner and stalled the task; recheck when changing hub task-decline or turn-handoff rules).
 
 <!-- AGENT_HUB:BEGIN (managed by `ahub init`, edits inside are overwritten) -->
 ## agent-hub
