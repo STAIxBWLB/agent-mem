@@ -150,3 +150,27 @@ test("the standard admission commands recognize a retained remote operation", as
     } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
   }
 }, 120_000);
+
+test("new resume survives an older confirmed abandon after shard metadata", async () => {
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const oldRoot = mkdtempSync(join(tmpdir(), "amem-029-remote-abandon-"));
+  const archive = Bun.spawnSync(["git", "archive", "57a4ace57bdf5c4fc12996146c76843de4ee21cc"], { stdout: "pipe", stderr: "pipe" });
+  expect(archive.exitCode, archive.stderr.toString()).toBe(0);
+  const extract = Bun.spawnSync(["tar", "-x", "-C", oldRoot], { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" });
+  expect(extract.exitCode, extract.stderr.toString()).toBe(0);
+  const oldAdmission = await import(pathToFileURL(join(oldRoot, "src/memory/sync-placement-realm-admission.ts")).href);
+  const shared = "example.test/adoption-old-abandon/shared", target = "example.test/adoption-old-abandon/target";
+  try {
+    const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote(); expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
+    for (const stage of ["after-metadata", "after-proof"] as const) {
+      const b = await inventoryFixture(1, [shared], true, [oldRoot]); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+      await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: at => {
+        if (at === stage) throw Error("isolated crash seam");
+      } })).rejects.toThrow();
+      expect(await oldAdmission.applyRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
+      expect(await remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility })).toMatchObject({ state: "admitted" });
+      const targetStore = openShardStore({ memoryDir: b.home, project: target, deferPromotions: true });
+      try { expect(targetStore.list({ project: target }).map(row => row.text)).toContain(`inventory note for ${target}`); } finally { targetStore.close(); }
+    }
+  } finally { rmSync(oldRoot, { recursive: true, force: true }); }
+}, 240_000);

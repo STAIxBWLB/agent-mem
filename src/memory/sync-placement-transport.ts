@@ -194,7 +194,9 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
     check(); return { plan, packs };
   } catch { throw new Error("Remote placement realm preview is unavailable; check the configured private sync remote and complete realm proof."); }
   finally {
-    if (context && incoming) try { await generationSyncGit(context.root, context.args(["update-ref", "-d", incoming]), opts.signal); } catch { /* no authoritative state uses this private cache ref */ }
+    if (context && incoming) try {
+      context.check(); await generationSyncGit(context.root, context.args(["update-ref", "--no-deref", "-d", incoming]), undefined);
+    } catch { /* no authoritative state uses this private cache ref */ }
     releaseSync?.(); releaseRoot?.();
   }
 }

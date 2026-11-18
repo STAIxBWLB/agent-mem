@@ -119,7 +119,8 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
     writeRemoteAdoption(home, frozen, proof); await options.checkpoint?.("after-companion");
     if (!installed) { stageRemoteAdoption(home, frozen, files, proof); await options.checkpoint?.("after-stage"); }
     const retained = readRealmIntent(home, realm);
-    installRemoteAdoptionLog(home, project, frozen, proof, !!retained); await options.checkpoint?.("after-install");
+    const completeMetadata = source.base.realms.some(item => item.scope === "project" && item.keyHash === realm);
+    installRemoteAdoptionLog(home, project, frozen, proof, !!retained || completeMetadata); await options.checkpoint?.("after-install");
   });
   if (admitted()) {
     await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
