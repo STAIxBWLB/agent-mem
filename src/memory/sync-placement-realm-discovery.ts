@@ -1,5 +1,6 @@
 /** Bounded, data-only parsing of the selected placement remote's advertised project refs. */
 import type { SyncPlacementRealmBinding } from "./sync-placement-plan.ts";
+import type { EffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 
 const REF_BYTES = 256 * 1024, REF_COUNT = 4096;
 export interface RemoteOnlyRealm { scope: "project"; keyHash: string }
@@ -27,4 +28,14 @@ export function remoteOnlyPlacementRealms(bytes: Uint8Array, inventory: readonly
     remote.add(match[2]!);
   }
   return [...remote].filter(hash => !local.has(hash)).sort().map(keyHash => ({ scope: "project", keyHash }));
+}
+
+/** The transport owns the bounded remote call; inventory must remain current across the await. */
+export async function listRemotePlacementRealms(inventory: EffectiveRealmInventory, advertise: () => Promise<Uint8Array>): Promise<RemoteOnlyRealm[]> {
+  inventory.assertCurrent();
+  const bytes = await advertise();
+  inventory.assertCurrent();
+  const realms = remoteOnlyPlacementRealms(bytes, inventory.realms);
+  inventory.assertCurrent();
+  return realms;
 }

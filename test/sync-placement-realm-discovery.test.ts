@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { remoteOnlyPlacementRealms } from "../src/memory/sync-placement-realm-discovery.ts";
+import { listRemotePlacementRealms, remoteOnlyPlacementRealms } from "../src/memory/sync-placement-realm-discovery.ts";
 import type { SyncPlacementRealmBinding } from "../src/memory/sync-placement-plan.ts";
 
 const ref = (hash: string) => `${"a".repeat(40)}\trefs/heads/amem/p/${hash}\n`;
@@ -20,6 +20,12 @@ test("remote-only listing refuses malformed, duplicate, truncated, oversized and
   expect(() => remoteOnlyPlacementRealms(Buffer.from([255]), inventory)).toThrow();
   const collision = [...inventory, { scope: "project" as const, keyHash: "1".repeat(16) + "2".repeat(48), bindingHash: "d".repeat(64) }];
   expect(() => remoteOnlyPlacementRealms(Buffer.alloc(0), collision)).toThrow();
+});
+
+test("remote listing refuses an inventory change during the transport call", async () => {
+  let current = true;
+  const binding = { realms: inventory, extensionHead: "a".repeat(64), assertCurrent() { if (!current) throw Error("inventory changed"); } };
+  await expect(listRemotePlacementRealms(binding, async () => { current = false; return Buffer.from(ref("2".repeat(16))); })).rejects.toThrow("inventory changed");
 });
 
 // Baseline 0.29 admission ignores any future sidecar: an older resume can commit before a new protocol imports data.
