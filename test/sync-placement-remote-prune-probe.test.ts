@@ -26,7 +26,8 @@ for (const reader of ["baseline", "current"] as const) test(`a strict staged sub
   const shared = "example.test/remote-prune/shared", target = "example.test/remote-prune/target", start = Date.now();
   let now = start;
   try {
-    const a = await inventoryFixture(1, [target], true), b = await oldFixture.inventoryFixture(1, [shared], true), remote = bareRemote();
+    const a = await inventoryFixture(1, [target], true), b = reader === "baseline"
+      ? await oldFixture.inventoryFixture(1, [shared], true) : await inventoryFixture(1, [shared], true), remote = bareRemote();
     const source = openShardStore({ memoryDir: a.home, project: target, deferPromotions: true, ttlMs: 1000, now: () => now });
     try {
       const masked = source.note(note("remote pruned target", target)), safe = source.note(note("remote safe subset", target));
