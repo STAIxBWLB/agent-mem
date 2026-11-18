@@ -408,13 +408,15 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const modes = ["--dry-run","--apply","--resume","--abandon","--deactivate"].filter(key=>options[key]===true);
     if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
       throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
+    if (options["--list-remote"] === true && (modes.length || options["--admit"] !== undefined || options["--writer-root"] !== undefined || options["--confirm"] === true))
+      throw new AgentUsageError("Remote realm listing uses only --sync-placement --list-remote and optional --json.");
     if (options["--admit"] !== undefined) {
       if (options["--writer-root"] !== undefined || options["--confirm"] === true && options["--abandon"] !== true)
         throw new AgentUsageError("Admitting one realm uses only --sync-placement --admit <project> with --dry-run, --apply, --resume or --abandon --confirm; writer roots belong to initial activation.");
     } else if (options["--confirm"] === true) {
       throw new AgentUsageError("--confirm applies only to --sync-placement --admit <project> --abandon; other placement modes keep their own confirmation.");
     }
-  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined)) {
+  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined)) {
     throw new AgentUsageError("--writer-root, --abandon and --admit apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "setup") {
@@ -518,6 +520,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
     if (options["--sync-placement"] === true) {
+      if (options["--list-remote"] === true) {
+        const { discoverRemotePlacementRealms } = await import("./memory/sync-placement-transport.ts");
+        const realms = await discoverRemotePlacementRealms(memoryHome(), { ...(context.visibility ? { visibility: context.visibility } : {}) });
+        return options["--json"] === true ? JSON.stringify({ realms }, null, 2) : realms.map(realm => `scope=${realm.scope} keyHash=${realm.keyHash}`).join("\n") || "no remote-only placement realms";
+      }
       if (options["--admit"] !== undefined) {
         const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");
         const project = String(options["--admit"]);

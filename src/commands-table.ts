@@ -121,6 +121,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--shards": flag("Migrate the curated home into project and user shards"),
     "--public-prune-view": flag("Enable the forward-only v2 public prune view on an active split"),
     "--sync-placement": flag("Person-only forward-only placement activation on this memory home; no automatic migration or renewal"),
+    "--list-remote": flag("List remote placement project refs outside the active inventory by hash"),
     "--abandon": flag("Person-only: discard an interrupted sync-placement attempt only before either v3 marker is installed"),
     "--admit": text("Admit one curated project realm that appeared after activation into the same epoch; previews without --apply"),
     "--confirm": flag("Confirm the previewed realm admission abandonment"),

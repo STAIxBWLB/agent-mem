@@ -2,13 +2,14 @@
 import type { SyncPlacementRealmBinding } from "./sync-placement-plan.ts";
 import type { EffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 
-const REF_BYTES = 256 * 1024, REF_COUNT = 4096;
+export const REMOTE_REALM_ADVERTISEMENT_BYTES = 256 * 1024;
+const REF_COUNT = 4096;
 export interface RemoteOnlyRealm { scope: "project"; keyHash: string }
 const unavailable = (): never => { throw new Error("Remote placement realm listing is unavailable or exceeds its bound; inspect the remote before continuing."); };
 
 /** Names are never inferred from ref hashes; invalid or ambiguous input refuses the entire listing. */
 export function remoteOnlyPlacementRealms(bytes: Uint8Array, inventory: readonly SyncPlacementRealmBinding[]): RemoteOnlyRealm[] {
-  if (bytes.byteLength > REF_BYTES || inventory.length > REF_COUNT) return unavailable();
+  if (bytes.byteLength > REMOTE_REALM_ADVERTISEMENT_BYTES || inventory.length > REF_COUNT) return unavailable();
   let text: string;
   try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { return unavailable(); }
   if (text && !text.endsWith("\n")) return unavailable();
