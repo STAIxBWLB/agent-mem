@@ -43,6 +43,11 @@ import { groupByTask, taskGroupKey } from "./task-group.ts";
  */
 export const MEMORY_SCHEMA = "agent-hub.memory/v1";
 export const MEMORY_DB_BUSY_TIMEOUT_MS = 3000;
+/** SQLite's own lock refusal: a concurrent writer caused it, and a later read retries it. */
+function lockedDatabase(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return (typeof code === "string" && code.startsWith("SQLITE_BUSY")) || /database is locked|SQLITE_BUSY/i.test(`${(error as Error | null)?.message ?? error}`);
+}
 export const KINDS = ["decision", "finding", "contract", "fail", "preference"] as const;
 export type Kind = (typeof KINDS)[number];
 /** Kinds that move to long-term when their task is approved; findings stay short-term unless a person promotes them. */
@@ -425,7 +430,8 @@ export class MemoryStore {
       const pending = curatedPending.get(home); curatedPending.delete(home);
       if (!pending) return;
       publishingCurated = true;
-      try { for (const [store, projects] of pending) store.publishCurated(projects); }
+      // #466: a project's own handle publishes its brief instead of a second handle indexing the same shard.
+      try { for (const [store, projects] of pending) store.publishCurated(projects, store, true); }
       finally { publishingCurated = false; }
     };
   }
@@ -529,7 +535,7 @@ export class MemoryStore {
     catch { /* An off-hook read still succeeds when its optional derived cache cannot be prepared. */ }
   }
 
-  private publishCurated(input: ReadonlySet<string>, opened?: MemoryStore): void {
+  private publishCurated(input: ReadonlySet<string>, opened?: MemoryStore, openOnMiss = false): void {
     const projects = new Set(input);
     if (this.curatedRebuildAll) {
       this.curatedRebuildAll = false;
@@ -548,27 +554,31 @@ export class MemoryStore {
         if (sharded && !existsSync(join(shardDir(this.profile.home, project), "generation.json"))) continue;
         const reusable = opened && (!sharded || opened.profile.shardKey === project)
           && (aliases.length ? opened.reconcile?.canonical === project && opened.reconcile.aliases.join("\n") === aliases.join("\n") : !opened.reconcile);
-        if (opened && !reusable) continue; // Explicit single-project preparation never retries with a second store.
+        if (opened && !reusable && !openOnMiss) continue; // Explicit single-project preparation never retries with a second store.
         view = reusable ? opened! : sharded ? openShardStore({ ...common, project }) : new MemoryStore(common);
-        view.withStoreFences(() => {
-          const selected = readSelector(this.profile.home);
-          const shards = sharded ? readShardedSelection(this.profile.home) : null;
-          if (view!.profile.selectorRevision !== selected.revision || view!.profile.kind !== (shards ? "generation" : selected.selector?.kind ?? "shared-v1")
-            || view!.profile.generation !== (shards?.generation ?? selected.selector?.generation) || resolveAlias(this.profile.home, raw) !== project
-            || shards && (shards.selectorRevision !== selected.revision || shards.generation !== view!.profile.generation)
-            || aliasedKeys(this.profile.home, project).join("\n") !== aliases.join("\n")
-            || (view!.reconcile?.aliases.join("\n") ?? "") !== aliases.join("\n")) {
-            throw Error("curated snapshot source binding changed; retry an off-hook amem brief");
-          }
-          // Stamp the source handle's inputs, never a newer metadata read that it did not open.
-          const binding = JSON.stringify({ selector: selected.revision, shards, aliases });
-          ensureShardDescriptor(this.profile.home, project);
-          const directory = shardMachineDir(this.profile.home, project, machineId(this.profile.home).id);
-          mkdirSync(directory, { recursive: true, mode: 0o700 });
-          buildCuratedBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
-          buildPreferenceBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
-          if (curatedProfileBinding(this.profile.home, project) !== binding) for (const name of ["brief-curated.json", "brief-preferences.json"]) rmSync(join(directory, name), { force: true });
-        });
+        // #466: a publication that already failed to index waits on the writer once, not once per derived read.
+        view.curatedPublication = true;
+        try {
+          view.withStoreFences(() => {
+            const selected = readSelector(this.profile.home);
+            const shards = sharded ? readShardedSelection(this.profile.home) : null;
+            if (view!.profile.selectorRevision !== selected.revision || view!.profile.kind !== (shards ? "generation" : selected.selector?.kind ?? "shared-v1")
+              || view!.profile.generation !== (shards?.generation ?? selected.selector?.generation) || resolveAlias(this.profile.home, raw) !== project
+              || shards && (shards.selectorRevision !== selected.revision || shards.generation !== view!.profile.generation)
+              || aliasedKeys(this.profile.home, project).join("\n") !== aliases.join("\n")
+              || (view!.reconcile?.aliases.join("\n") ?? "") !== aliases.join("\n")) {
+              throw Error("curated snapshot source binding changed; retry an off-hook amem brief");
+            }
+            // Stamp the source handle's inputs, never a newer metadata read that it did not open.
+            const binding = JSON.stringify({ selector: selected.revision, shards, aliases });
+            ensureShardDescriptor(this.profile.home, project);
+            const directory = shardMachineDir(this.profile.home, project, machineId(this.profile.home).id);
+            mkdirSync(directory, { recursive: true, mode: 0o700 });
+            buildCuratedBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
+            buildPreferenceBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
+            if (curatedProfileBinding(this.profile.home, project) !== binding) for (const name of ["brief-curated.json", "brief-preferences.json"]) rmSync(join(directory, name), { force: true });
+          });
+        } finally { view.curatedPublication = false; }
       } catch { /* Failed derived publication leaves the invalidated cache unavailable; a later mutation retries. */ }
       finally { try { if (view !== opened) view?.close(); } catch { /* Preserve the authoritative mutation result. */ } }
     }
@@ -883,16 +893,20 @@ export class MemoryStore {
    * long-term. Returns how many moved.
    */
   settle(task: string, actor: string): number {
-    this.promoting = true; // promoted here, in the settling actor's name, not after each read
-    try {
-      const entry = { op: "settle", target: task, actor, by: this.until() } as const;
-      const at = new Date(this.now()).toISOString();
-      // #27: a task key `<key>#...` belongs to the shard of `<key>`. In a reconciled sharded store that can be an aliased key's shard, which refuses a settlement of any other key.
-      const owner = this.aliasStores.find(store => store.profile.shardKey !== undefined && task.startsWith(`${store.profile.shardKey}#`));
-      (owner ?? this).append(entry, true, at, owner ? this.machine.id : undefined);
-      if (this.userOverlay) this.userOverlay.append(entry, true, at, this.machine.id);
-      return this.promoteSettled(task, actor) + (this.userOverlay?.promoteSettled(task, actor) ?? 0) + this.aliasStores.reduce((n, store) => n + store.promoteSettled(task, actor), 0);
-    } finally { this.promoting = false; }
+    // #466: the settle rows and every promotion they release land before one publication runs, and `promoting` covers
+    // this handle, its user overlay and its alias shards for the whole call.
+    return this.withDeferredPromotions(() => {
+      const release = this.deferCuratedPublication();
+      try {
+        const entry = { op: "settle", target: task, actor, by: this.until() } as const;
+        const at = new Date(this.now()).toISOString();
+        // #27: a task key `<key>#...` belongs to the shard of `<key>`. In a reconciled sharded store that can be an aliased key's shard, which refuses a settlement of any other key.
+        const owner = this.aliasStores.find(store => store.profile.shardKey !== undefined && task.startsWith(`${store.profile.shardKey}#`));
+        (owner ?? this).append(entry, true, at, owner ? this.machine.id : undefined);
+        if (this.userOverlay) this.userOverlay.append(entry, true, at, this.machine.id);
+        return this.promoteSettled(task, actor) + (this.userOverlay?.promoteSettled(task, actor) ?? 0) + this.aliasStores.reduce((n, store) => n + store.promoteSettled(task, actor), 0);
+      } finally { release(); }
+    });
   }
   private promoteSettled(task: string, actor: string): number {
     // Only the notes held for promotion (no deadline): one saved short-term after the settlement stays short-term.
@@ -1243,7 +1257,17 @@ export class MemoryStore {
     if (!this.bootstrapOnly) rebindPublicPruneProfile(this.profile);
     this.userOverlay?.ensureFresh();
     for (const store of this.aliasStores) store.ensureFresh();
-    if (this.generationIndex) { this.generationIndex.refresh(); return; }
+    // #466: a generation index that cannot take its writer keeps the rows it already has and retries on the next read,
+    // exactly as the legacy path below does; any other failure still reaches the caller.
+    if (this.generationIndex) {
+      if (this.stale && this.curatedPublication) return; // one refusal is enough inside a derived publication
+      try { this.generationIndex.refresh(); this.stale = false; }
+      catch (error) {
+        if (!lockedDatabase(error)) throw error;
+        this.stale = true; this.log(`hub memory index not updated yet: ${(error as Error).message}`);
+      }
+      return;
+    }
     // Another process (a CLI, another project's hub, a sync) may have written since this one last read the segments.
     if (this.stale || this.shape() !== this.seen) try { this.stale = false; this.refresh(); } catch { this.stale = true; /* still busy: the next read tries again */ }
   }
@@ -1258,6 +1282,8 @@ export class MemoryStore {
   }
   /** A write whose index update failed: the next read refreshes first. */
   private stale = false;
+  /** This handle is publishing a derived brief: a write lock already refused once is not re-waited on per derived read. */
+  private curatedPublication = false;
 
   /** Entries visible from `project` (its own, and `shared` ones of any project), newest first, filtered. */
   list(f: Filter = {}): View[] {
