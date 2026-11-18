@@ -9,6 +9,7 @@ import { readWriterHistory, isWriterRenewalIntentTempName } from "./sync-placeme
 import { SharedWriterRevisionError, writerRevisionWriters, WRITER_RENEWAL_INTENT_FILE } from "./sync-placement-writer-revision-format.ts";
 import { readInitialSyncPlacementWriterLocator, SYNC_PLACEMENT_WRITER_ROOTS_FILE } from "./sync-placement-writer-roots.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
+import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import type { SyncPlacementWriterAttestation } from "./sync-placement-plan.ts";
 
 export interface EffectiveSyncPlacementWriters {
@@ -39,21 +40,24 @@ export function writerInventoryEvidence(home:string,epochHash:string):boolean{
     dir=join(dir,part);const s=lstatSync(dir,{throwIfNoEntry:false});if(!s)return outside;
     if(!s.isDirectory()||s.isSymbolicLink()||s.uid!==process.getuid?.()||(s.mode&0o077)!==0)throw new SharedWriterRevisionError("invalid");
   }
-  return scan(dir,255,name=>name.startsWith("writer-"))||outside;
+  // #288: a committed checkpoint is itself writer evidence (its (W, 1) renewal); the live window comes from the resolver.
+  let window;try{window=resolvePlacementWindow(home,epochHash);}catch{throw new SharedWriterRevisionError("invalid");}
+  if(window.window||window.pending)return true;
+  return scan(window.dir,255,name=>name.startsWith("writer-"))||outside;
 }
 export function readEffectiveSyncPlacementWriters(home:string):EffectiveSyncPlacementWriters {
   const binding=active(home),bindingKey=key(binding),epochHash=binding.profile.placementHead;
   writerInventoryEvidence(home,epochHash);
   const history=readWriterHistory(home,{epochHash,activationHash:binding.activation.seal,homeHash:binding.epoch.homeHash,generation:binding.epoch.generation});
   const initialStamp=fileStamp(home),initial=initialStamp===undefined?undefined:readInitialSyncPlacementWriterLocator(home);
-  if(history.sequence){
+  if(history.sequence||history.window){
     requireWriterRenewalHomeFloor(home);
     if(!initial||history.current?.initialLocatorHash!==initial.seal)fail();
   }
   let anchorToken:string|undefined;
   // ponytail: native inode/size/ctime identity permits prefix reuse; hostile same-user rewrites need immutable snapshot blocks.
   const anchors=()=>{
-    if(!history.sequence)return;
+    if(!history.sequence&&!history.window)return;
     const token=placementWriterJournalToken(home,epochHash);if(token===anchorToken)return;
     const journal=readPlacementWriterJournalAnchors(home,epochHash);
     if(journal.epoch.homeHash!==binding.epoch.homeHash||journal.activation.seal!==binding.activation.seal)fail();
@@ -65,13 +69,15 @@ export function readEffectiveSyncPlacementWriters(home:string):EffectiveSyncPlac
   const assertCurrent=()=>{
     history.assertCurrent();if(key(active(home))!==bindingKey||fileStamp(home)!==initialStamp)fail();
     if(initial&&readInitialSyncPlacementWriterLocator(home).seal!==initial.seal)fail();
-    if(history.sequence)requireWriterRenewalHomeFloor(home);
+    if(history.sequence||history.window)requireWriterRenewalHomeFloor(home);
     anchors();history.assertCurrent();
   };
   anchors();assertCurrent();
   const roots=history.current?.roots.map(root=>root.root)??initial?.roots.map(root=>root.root);
-  return{epochHash,activationHash:binding.activation.seal,revisionSequence:history.sequence,revisionHash:history.headHash,
-    writers:history.current?writerRevisionWriters(history.current):binding.activation.writers,
+  // #288: the logical revision count spans every window; the head is the live window's last commit.
+  return{epochHash,activationHash:binding.activation.seal,revisionSequence:history.commits.length,revisionHash:history.headHash,
+    // The revision was chain-checked against its own window genesis by readWriterHistory.
+    writers:history.current?writerRevisionWriters(history.current,history.current.sequence===1?history.current.previousHash:undefined):binding.activation.writers,
     ...(roots?{roots}:{}),...(initial?{initialLocatorHash:initial.seal}:{}),assertCurrent};
 }
 /** Locators only; these paths and expected pins never replace a fresh callback. */

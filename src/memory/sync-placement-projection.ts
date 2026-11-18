@@ -1,5 +1,5 @@
 import { types } from "node:util";
-import { canonicalJSON } from "./generation.ts";
+import { canonicalJSON, hashJSON } from "./generation.ts";
 import {
   SyncPlacementJournalError, PLACEMENT_JOURNAL_MAX_RECORDS, placementEpochHash, placementKeyId,
   validatePlacementEpoch, validatePlacementKey, validatePlacementRecord,
@@ -31,6 +31,12 @@ export class PlacementProjection {
     for (const [key, value] of this.#rowHashes) out.#rowHashes.set(key, value);
     for (const [key, value] of this.#requests) out.#requests.set(key, value);
     return out;
+  }
+  /** #288: one hash of the whole projected state (states, row identities, requests, frontier); a checkpoint seals it. */
+  digest(): string {
+    const sorted = <T>(map: Map<string, T>) => [...map].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+    return hashJSON(["agent-mem.sync-placement-projection-digest/v1", this.#epochHash, this.#sequence, this.#headHash,
+      sorted(this.#states), sorted(this.#rowHashes), sorted(this.#requests).map(([id, record]) => [id, record.seal])]);
   }
   get epochHash(): string { return this.#epochHash; }
   get sequence(): number { return this.#sequence; }

@@ -6,6 +6,9 @@ import { types } from "node:util";
 import { canonicalJSON } from "./generation.ts";
 import { homeIdentityMatches } from "./home-identity.ts";
 import { realPath } from "./platform.ts";
+import { resolvePlacementWindow, type ResolvedPlacementWindow } from "./sync-placement-checkpoint-storage.ts";
+import { checkpointWriterGenesis } from "./sync-placement-checkpoint-format.ts";
+import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import {
   WRITER_REVISION_MAX_BYTES, WRITER_COMMIT_MAX_BYTES, WRITER_RENEWAL_INTENT_MAX_BYTES, WRITER_REVISION_LIMIT,
@@ -19,7 +22,7 @@ export type WriterHistoryPhase = "intent-started" | "intent-written" | "intent-f
 export interface WriterHistoryOptions { mutation: MutationHandle; assertCurrent(): void; phase?(phase: WriterHistoryPhase): void }
 export interface WriterHistoryRead {
   current?: WriterRevision; commits: WriterCommit[]; anchors: { sequence: number; headHash: string }[];
-  sequence: number; headHash: string; logBytes: number; logHash: string; pending?: WriterRenewalIntent; appendStarted: boolean; assertCurrent(): void;
+  sequence: number; headHash: string; window: number; genesis: string; logBytes: number; logHash: string; pending?: WriterRenewalIntent; appendStarted: boolean; assertCurrent(): void;
 }
 const encode = (value: unknown) => Buffer.from(canonicalJSON(value) + "\n");
 const sha = (value: Uint8Array) => createHash("sha256").update(value).digest("hex");
@@ -68,13 +71,49 @@ function binding(value: WriterHistoryBinding): WriterHistoryBinding {
   const locator=descriptors.initialLocatorHash;if(locator){if(!("value"in locator)||!locator.enumerable||typeof locator.value!=="string"||locator.value.length!==64||!/^[a-f0-9]+$/.test(locator.value))fail();result.initialLocatorHash=locator.value;}
   return result as unknown as WriterHistoryBinding;
 }
-interface Paths { home: string; epoch: string; intent: string; log: string; dirs: [string,BigIntStats][] }
+interface Paths { home: string; epoch: string; intent: string; log: string; dirs: [string,BigIntStats][]; window: ResolvedPlacementWindow; genesis: string }
 function paths(homeInput: string, input: WriterHistoryBinding): Paths {
   const home=realPath(homeInput), original=checkedDir(homeInput), root=checkedDir(home);
   if(identity(original)!==identity(root)||!homeIdentityMatches(input.homeHash,home,root))fail("changed");
+  // #288: the one window resolver names the live window; window 0 is the v1 epoch directory.
+  let window:ResolvedPlacementWindow;try{window=resolvePlacementWindow(home,input.epochHash);}catch(error){throw checkpointError(error);}
+  if(window.pending)fail("pending"); // A started checkpoint owns the writer chain until resume or abandon.
   const dirs:[string,BigIntStats][]=[[home,root]];
-  let current=home;for(const part of ["sync-placement","epochs",input.epochHash]){current=join(current,part);dirs.push([current,checkedDir(current)]);}
-  return {home,epoch:current,intent:join(home,WRITER_RENEWAL_INTENT_FILE),log:join(current,WRITER_COMMIT_LOG),dirs};
+  for(const dir of [...window.parents.slice(1),window.dir])dirs.push([dir,checkedDir(dir)]);
+  const manifest=window.manifests.at(-1);
+  const genesis=manifest?checkpointWriterGenesis(input.epochHash,input.activationHash,manifest.seal,manifest.writer.headHash):writerInventoryGenesis(input.epochHash,input.activationHash);
+  return {home,epoch:window.dir,intent:join(home,WRITER_RENEWAL_INTENT_FILE),log:join(window.dir,WRITER_COMMIT_LOG),dirs,window,genesis};
+}
+/** A checkpoint pending or broken refuses writer history the same way the journal does: pending, else invalid. */
+function checkpointError(error:unknown):SharedWriterRevisionError{
+  const code=error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SyncPlacementJournalError?Object.getOwnPropertyDescriptor(error,"code")?.value:undefined;
+  return new SharedWriterRevisionError(code==="pending"?"pending":code==="bound"?"bound":code==="changed"?"changed":"invalid");
+}
+interface ArchivedWriters { commits: WriterCommit[]; anchors: {sequence:number;headHash:string}[]; current?: WriterRevision }
+/**
+ * Writer history of every frozen window, rechecked against each window's genesis and the manifest that froze it. Members
+ * were content-verified by the resolver; this only replays their chain. The logical chain continues across windows.
+ */
+function archivedWriters(p:Paths,b:WriterHistoryBinding):ArchivedWriters {
+  const out:ArchivedWriters={commits:[],anchors:[]};let genesis=writerInventoryGenesis(b.epochHash,b.activationHash),previous=0;
+  for(const [index,window] of p.window.archived.entries()){
+    const manifest=p.window.manifests[index]!,names=new Set(window.members.map(member=>member.name));
+    let head=genesis,local=0;
+    if(names.has(WRITER_COMMIT_LOG)){
+      const log=read(join(window.dir,WRITER_COMMIT_LOG),WRITER_COMMIT_MAX_BYTES)?.bytes??fail();if(!log.length||log.at(-1)!==10)fail();
+      let at=0;while(at<log.length){const end=log.indexOf(10,at);const commit=decode(log.subarray(at,end+1),validateWriterCommit);at=end+1;
+        if(++local>WRITER_REVISION_LIMIT||commit.epochHash!==b.epochHash||commit.sequence!==local||commit.previousHash!==head)fail();
+        const revision=decode(read(join(window.dir,writerRevisionFile(local)),WRITER_REVISION_MAX_BYTES)?.bytes??fail(),value=>validateWriterRevision(value,genesis));boundRevision(revision,b);
+        if(revision.previousHash!==head||canonicalJSON(createWriterCommit(revision,genesis))!==canonicalJSON(commit))fail();
+        if(out.current&&revision.initialLocatorHash!==out.current.initialLocatorHash)fail();
+        if(revision.journal.sequence<previous)fail();previous=revision.journal.sequence;
+        out.anchors.push({...revision.journal});out.commits.push(commit);out.current=revision;head=commit.seal;}
+    }
+    for(const name of names)if(name.startsWith("writer-")&&name!==WRITER_COMMIT_LOG&&!(/^writer-revision-(\d{5})\.json$/.test(name)&&Number(name.slice(16,21))<=local))fail();
+    if(manifest.writer.headHash!==head||manifest.writer.sequence!==out.commits.length)fail();
+    genesis=checkpointWriterGenesis(b.epochHash,b.activationHash,manifest.seal,head);
+  }
+  return out;
 }
 function manifest(p: Paths): string[] {
   const iterator=opendirSync(p.epoch), names:string[]=[]; let count=0;
@@ -86,8 +125,17 @@ function boundRevision(revision: WriterRevision,b:WriterHistoryBinding):void {
   if(revision.epochHash!==b.epochHash||revision.activationHash!==b.activationHash||revision.homeHash!==b.homeHash||revision.generation!==b.generation||b.initialLocatorHash!==undefined&&revision.initialLocatorHash!==b.initialLocatorHash)fail();
 }
 function intentBinding(intent:WriterRenewalIntent):WriterHistoryBinding {const r=intent.revision;return {epochHash:r.epochHash,activationHash:r.activationHash,homeHash:r.homeHash,generation:r.generation};}
+/**
+ * #288: a window's first revision starts at that window's genesis, which only the resolver knows. Codec validation here
+ * accepts the revision's own first link; every snapshot then requires it to equal the live window's genesis (beforeHead).
+ */
+function intentCodec(value:unknown):WriterRenewalIntent {
+  let genesis:string|undefined;
+  try{const revision=(value as {revision?:{sequence?:unknown;previousHash?:unknown}}).revision;if(revision?.sequence===1&&typeof revision.previousHash==="string")genesis=revision.previousHash;}catch{fail();}
+  return validateWriterRenewalIntent(value,genesis);
+}
 /** Exact basename reserved alongside the final outside intent during atomic publication. */
-export function writerRenewalIntentTempName(value:WriterRenewalIntent):string {return WRITER_RENEWAL_INTENT_FILE+".pending-"+sha(encode(validateWriterRenewalIntent(value)));}
+export function writerRenewalIntentTempName(value:WriterRenewalIntent):string {return WRITER_RENEWAL_INTENT_FILE+".pending-"+sha(encode(intentCodec(value)));}
 export function isWriterRenewalIntentTempName(name:string):boolean {const match=new RegExp("^"+WRITER_RENEWAL_INTENT_FILE.replaceAll(".","\\.")+"\\.pending-[a-f0-9]{64}$").exec(name);return !!match&&match[0]===name;}
 function intentTemps(p:Paths):string[]{
   const iterator=opendirSync(p.home),out:string[]=[];let count=0,bytes=0;
@@ -105,7 +153,7 @@ function readIntent(p:Paths,checks:(()=>void)[],expected?:WriterRenewalIntent,ig
   const file=final??staging!;
   let intent:WriterRenewalIntent;
   if(expected){const full=encode(expected);if(file.bytes.length>full.length||!file.bytes.equals(full.subarray(0,file.bytes.length)))fail();intent=expected;}
-  else {try{intent=decode(file.bytes,validateWriterRenewalIntent);}catch{fail("pending");}}
+  else {try{intent=decode(file.bytes,intentCodec);}catch{fail("pending");}}
   const full=encode(intent),known=join(p.home,writerRenewalIntentTempName(intent));if(temp&&temp!==known)fail();
   if(final){if(!final.bytes.equals(full))fail();if(staging){if(final.stat.nlink!==2n||staging.stat.nlink!==2n||stamp(final.stat)!==stamp(staging.stat)||!staging.bytes.equals(full))fail();}else if(final.stat.nlink!==1n)fail();}
   else if(staging!.stat.nlink!==1n)fail();
@@ -134,25 +182,30 @@ function snapshot(home:string,b:WriterHistoryBinding,allowPending:boolean,expect
   else if(expected)fail("pending");
   const logFile=read(p.log,WRITER_COMMIT_MAX_BYTES,checks), log=logFile?.bytes??Buffer.alloc(0);
   const commits:WriterCommit[]=[],anchors:{sequence:number;headHash:string}[]=[];let current:WriterRevision|undefined;
-  let head=writerInventoryGenesis(b.epochHash,b.activationHash),previous=0,completeBytes=log.length;
+  // #288: the live window's local chain starts at its own genesis; archived windows come first in the logical chain.
+  const archived=archivedWriters(p,b);current=archived.current;
+  let head=p.genesis,previous=archived.anchors.at(-1)?.sequence??0,completeBytes=log.length;
   const lastLF=log.lastIndexOf(10);if(lastLF!==log.length-1){if(!pending)fail("pending");completeBytes=lastLF+1;}
   let at=0;
   while(at<completeBytes){const end=log.indexOf(10,at);if(end<at)fail();const commit=decode(log.subarray(at,end+1),validateWriterCommit);at=end+1;
     if(commits.length>=WRITER_REVISION_LIMIT)fail("bound");if(commit.epochHash!==b.epochHash||commit.sequence!==commits.length+1||commit.previousHash!==head)fail();
     const file=join(p.epoch,writerRevisionFile(commit.sequence)),raw=read(file,WRITER_REVISION_MAX_BYTES,checks);if(!raw)fail();
-    const revision=decode(raw.bytes,validateWriterRevision);boundRevision(revision,b);
-    if(revision.sequence!==commit.sequence||revision.previousHash!==head||canonicalJSON(createWriterCommit(revision))!==canonicalJSON(commit))fail();
+    const revision=decode(raw.bytes,value=>validateWriterRevision(value,p.genesis));boundRevision(revision,b);
+    if(revision.sequence!==commit.sequence||revision.previousHash!==head||canonicalJSON(createWriterCommit(revision,p.genesis))!==canonicalJSON(commit))fail();
     if(current&&revision.initialLocatorHash!==current.initialLocatorHash)fail();
-    if(revision.journal.sequence<previous||revision.journal.sequence===previous&&anchors.length&&revision.journal.headHash!==anchors.at(-1)!.headHash)fail();
+    const prior=anchors.at(-1)??archived.anchors.at(-1);
+    if(revision.journal.sequence<previous||revision.journal.sequence===previous&&prior&&revision.journal.headHash!==prior.headHash)fail();
     anchors.push({...revision.journal});previous=revision.journal.sequence;commits.push(commit);current=revision;head=commit.seal;
   }
+  // A committed checkpoint always carries its (W, 1) renewal, so a later live window is never empty.
+  if(p.window.window&&!commits.length)fail();
   const expectedNames=new Set(commits.map(commit=>writerRevisionFile(commit.sequence)));if(logFile)expectedNames.add(WRITER_COMMIT_LOG);
   if(pending){
     const start=pending.previousLogBytes, next=pending.revision.sequence;
     if(start>log.length||sha(log.subarray(0,start))!==pending.previousLogHash||start>0&&log[start-1]!==10)fail();
     const beforeCount=commits.filter(commit=>commit.sequence<next).length;
     if(beforeCount!==next-1||commits.length<next-1||commits.length>next)fail();
-    const beforeHead=next===1?writerInventoryGenesis(b.epochHash,b.activationHash):commits[next-2]!.seal;
+    const beforeHead=next===1?p.genesis:commits[next-2]!.seal;
     if(pending.revision.previousHash!==beforeHead||start!==committedPrefixLength(log,next-1))fail();
     const tail=log.subarray(start),line=encode(pending.commit);if(tail.length>line.length||!tail.equals(line.subarray(0,tail.length)))fail();
     const candidateFile=join(p.epoch,writerRevisionFile(next)),candidate=read(candidateFile,WRITER_REVISION_MAX_BYTES,checks),full=encode(pending.revision);
@@ -163,7 +216,10 @@ function snapshot(home:string,b:WriterHistoryBinding,allowPending:boolean,expect
   }else if(completeBytes!==log.length||logFile&&commits.length===0)fail("pending");
   if(canonicalJSON([...expectedNames].sort())!==canonicalJSON(names))fail();
   const assertCurrent=()=>safe(()=>{for(const check of checks)check();});assertCurrent();
-  return{paths:p,log,intentBytes:intentFile?.bytes,result:{current,commits,anchors,sequence:commits.length,headHash:head,logBytes:log.length,logHash:sha(log),pending,appendStarted:!!pending&&log.length>pending.previousLogBytes,assertCurrent}};
+  // `sequence`, `headHash` and the log describe the live window (what a renewal appends to); `commits` and `anchors` are the
+  // whole logical chain across windows, so every head a realm record or capture ever bound stays resolvable.
+  return{paths:p,log,intentBytes:intentFile?.bytes,result:{current,commits:[...archived.commits,...commits],anchors:[...archived.anchors,...anchors],sequence:commits.length,headHash:head,
+    window:p.window.window,genesis:p.genesis,logBytes:log.length,logHash:sha(log),pending,appendStarted:!!pending&&log.length>pending.previousLogBytes,assertCurrent}};
 }
 function committedPrefixLength(log:Buffer,count:number):number {let at=0;for(let n=0;n<count;n++){const lf=log.indexOf(10,at);if(lf<0)fail();at=lf+1;}return at;}
 export function readWriterHistory(home:string,input:WriterHistoryBinding,options:{allowPending?:boolean}={}):WriterHistoryRead {
@@ -190,12 +246,12 @@ function complete(p:Paths,file:string,full:Buffer,max:number,opts:WriterHistoryO
   }finally{closeSync(fd);}syncDir(p,dirname(file),opts);proof(p,opts);if(stamp(lstatSync(file,{bigint:true}))!==stamp(installed!))fail("changed");
 }
 function checkedIntent(home:string,value:WriterRenewalIntent,opts:WriterHistoryOptions):{intent:WriterRenewalIntent;snapshot:Snapshot}{
-  const intent=validateWriterRenewalIntent(value),b=intentBinding(intent),p=paths(home,b);proof(p,opts);
+  const intent=intentCodec(value),b=intentBinding(intent),p=paths(home,b);proof(p,opts);
   const read=snapshot(home,b,true,intent);if(!read.intentBytes)fail("pending");return{intent,snapshot:read};
 }
 export function writeWriterRenewalIntent(home:string,value:WriterRenewalIntent,opts:WriterHistoryOptions):void {
   safe(()=>{
-    const intent=validateWriterRenewalIntent(value),b=intentBinding(intent),p=paths(home,b);if(intent.home!==p.home)fail();
+    const intent=intentCodec(value),b=intentBinding(intent),p=paths(home,b);if(intent.home!==p.home)fail();
     if(intent.previousLogBytes+encode(intent.commit).length>WRITER_COMMIT_MAX_BYTES)fail("bound");proof(p,opts);
     const prior=readIntent(p,[],intent).file;
     const old=prior?snapshot(home,b,true,intent):snapshot(home,b,false);
@@ -217,7 +273,7 @@ export function appendWriterCommit(home:string,value:WriterRenewalIntent,opts:Wr
     complete(read.paths,read.paths.log,full,WRITER_COMMIT_MAX_BYTES,opts,"commit-written","commit-fsync",{at:intent.previousLogBytes,phase:"commit-started"});snapshot(home,intentBinding(intent),true).result.assertCurrent();});
 }
 export function clearWriterRenewalIntent(home:string,value:WriterRenewalIntent,opts:WriterHistoryOptions):void {
-  safe(()=>{const intent=validateWriterRenewalIntent(value),p=paths(home,intentBinding(intent));proof(p,opts);
+  safe(()=>{const intent=intentCodec(value),p=paths(home,intentBinding(intent));proof(p,opts);
     const prior=readIntent(p,[],intent).file;
     if(prior){const read=snapshot(home,intentBinding(intent),true,intent);if(!prior.bytes.equals(encode(intent))||read.result.headHash!==intent.commit.seal||read.log.length!==intent.previousLogBytes+encode(intent.commit).length)fail("pending");
       appendWriterCommit(home,intent,opts);proof(p,opts);const now=readFileExpected(p.intent,encode(intent),WRITER_RENEWAL_INTENT_MAX_BYTES);proof(p,opts);if(stamp(lstatSync(p.intent,{bigint:true}))!==stamp(now.stat))fail("changed");unlinkSync(p.intent);opts.phase?.("intent-cleared");}
@@ -226,7 +282,7 @@ export function clearWriterRenewalIntent(home:string,value:WriterRenewalIntent,o
 }
 function readFileExpected(file:string,full:Buffer,max:number):FileRead {const value=read(file,max);if(!value||!value.bytes.equals(full))fail();return value;}
 export function abandonWriterRenewal(home:string,value:WriterRenewalIntent,opts:WriterHistoryOptions):void {
-  safe(()=>{const intent=validateWriterRenewalIntent(value),p=paths(home,intentBinding(intent));proof(p,opts);
+  safe(()=>{const intent=intentCodec(value),p=paths(home,intentBinding(intent));proof(p,opts);
     if(!readIntent(p,[],intent).file){
       const cleared=snapshot(home,intentBinding(intent),false);
       if(cleared.result.sequence!==intent.revision.sequence-1||cleared.result.headHash!==intent.revision.previousHash||cleared.result.logBytes!==intent.previousLogBytes||cleared.result.logHash!==intent.previousLogHash)fail("changed");

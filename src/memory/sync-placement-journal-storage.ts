@@ -18,6 +18,8 @@ import { WRITER_RENEWAL_INTENT_FILE, WRITER_RENEWAL_INTENT_MAX_BYTES, WRITER_COM
 import { isWriterRenewalIntentTempName } from "./sync-placement-writer-history.ts";
 import { PLACEMENT_BATCH_INTENT_MAX_BYTES, planPlacementBatchIntent, validatePlacementBatchIntent, type PlacementBatchIntent } from "./sync-placement-batch-intent.ts";
 import { formatFloorAtLeast } from "./formats.ts";
+import { resolvePlacementWindow, placementWindowToken, releasePlacementCheckpointCaches, type ResolvedPlacementWindow } from "./sync-placement-checkpoint-storage.ts";
+import { isCheckpointSealedName, PLACEMENT_CHECKPOINT_MANIFEST_MAX_BYTES, type CheckpointMember } from "./sync-placement-checkpoint-format.ts";
 
 export type PlacementStoragePhase = "epoch-written" | "epoch-fsync" | "activation-written" | "activation-fsync" | "fence-written" | "fence-fsync"
   | "intent-written" | "intent-fsync" | "chunk-written" | "chunk-fsync" | "intent-cleared"
@@ -27,7 +29,7 @@ export interface PlacementStorageOptions { mutation: MutationHandle; assertCurre
 export interface PlacementJournalRead {
   epoch: PlacementEpoch; activation: SyncPlacementActivationPlan; records: PlacementRecord[]; headHash: string; sequence: number; objects: number; pending: boolean; pendingRecordSequence?: number; pendingRecord?: PlacementRecord; pendingBatch?: { attemptHash: string; count: number }; publicationReservation?: { attemptHash: string; reservedRecords: number; consumedRecords: number };
 }
-interface Paths { home: string; root: string; epochs: string; dir: string; hash: string }
+interface Paths { home: string; root: string; epochs: string; dir: string; hash: string; epochDir: string; window: ResolvedPlacementWindow }
 interface Chunk { name: string; size: number; hash: string }
 interface Intent { schema: "agent-mem.sync-placement-append-intent/v1"; epochHash: string; record: PlacementRecord; chunk: string; prefixBytes: number; prefixHash: string; lineHash: string }
 interface Snapshot extends PlacementJournalRead { chunks: Chunk[]; projection: PlacementProjection; intent?: Intent; batchIntent?: PlacementBatchIntent; intentPending: boolean; fencePending: boolean }
@@ -49,8 +51,15 @@ function state(file: string, directory = false): BigIntStats | undefined {
 function paths(home: string, epochHash: string): Paths {
   if (!hex(epochHash)) return fail("invalid");
   const canonical = realPath(home); owned(lstatSync(home, { bigint: true }), true);
-  return { home: canonical, root: join(canonical, "sync-placement"), epochs: join(canonical, "sync-placement", "epochs"), dir: join(canonical, "sync-placement", "epochs", epochHash), hash: epochHash };
+  // #288: the one window resolver selects the live window; epoch.json and activation.json stay in frozen window 0.
+  const window = resolvePlacementWindow(canonical, epochHash), epochDir = join(canonical, "sync-placement", "epochs", epochHash);
+  return { home: canonical, root: join(canonical, "sync-placement"), epochs: join(canonical, "sync-placement", "epochs"), dir: window.dir, hash: epochHash, epochDir, window };
 }
+/** Archived journal chunks in replay order: every frozen window's `records-*` members, by their global chunk index. */
+function archivedChunks(p: Paths): { dir: string; name: string; member: CheckpointMember }[] {
+  return p.window.archived.flatMap(window => window.members.filter(member => /^records-\d{5}\.jsonl$/.test(member.name)).map(member => ({ dir: window.dir, name: member.name, member })));
+}
+const checkpointMember = (name: string) => isCheckpointSealedName(name);
 function names(dir: string, maximum: number): string[] {
   const reader = opendirSync(dir), result: string[] = [];
   try { for (;;) { const entry = reader.readSync(); if (!entry) break; if (result.length >= maximum) fail("bound"); result.push(entry.name); } }
@@ -70,25 +79,28 @@ function renewalIntentObjects(home:string):{count:number;token:unknown[]} {
 }
 function inventory(p: Paths): { files: Map<string, BigIntStats>; token: string; renewalObjects:number } {
   const parents: unknown[] = [];
-  for (const dir of [p.home, p.root, p.epochs, p.dir]) { const stat = state(dir, true); parents.push([dir, stat ? [String(stat.dev), String(stat.ino)] : null]); }
+  for (const dir of [p.home, p.root, p.epochs, p.epochDir, ...(p.window.window ? [p.dir] : [])]) { const stat = state(dir, true); parents.push([dir, stat ? [String(stat.dev), String(stat.ino)] : null]); }
   if (state(p.root, true)) for (const name of names(p.root, 2)) {
     if (name === "epochs") state(p.epochs, true); else if (name === "active.json") { const stat = state(join(p.root, name))!; if (stat.size > BigInt(PLACEMENT_JOURNAL_ROOT_MAX_BYTES)) fail("bound"); }
     else fail();
   }
-  const files = new Map<string, BigIntStats>();
+  const files = new Map<string, BigIntStats>(), live = p.window.window > 0;
   if (state(p.dir, true)) for (const name of names(p.dir, PLACEMENT_JOURNAL_MAX_OBJECTS - 1)) {
     const chunk = /^records-\d{5}\.jsonl$/.test(name);
-    const writerLimit=writerHistoryFileLimit(name);
-    if (!chunk && !publicationName(name) && writerLimit===undefined && !["epoch.json", "activation.json", "append-intent.json"].includes(name)) fail();
+    const writerLimit=writerHistoryFileLimit(name), sealed = live && checkpointMember(name);
+    // Window 0 holds the epoch's own metadata; a later live window holds the checkpoint's sealed files instead.
+    if (!chunk && !publicationName(name) && writerLimit===undefined && !sealed && ![...(live ? [] : ["epoch.json", "activation.json"]), "append-intent.json"].includes(name)) fail();
     const stat = state(join(p.dir, name))!;
-    if (stat.size > BigInt(writerLimit??(name === "append-intent.json" ? PLACEMENT_BATCH_INTENT_MAX_BYTES : chunk || /-chunk-\d{5}\.json$/.test(name) ? PLACEMENT_JOURNAL_CHUNK_MAX_BYTES : PLACEMENT_JOURNAL_ROOT_MAX_BYTES))) fail("bound");
+    if (stat.size > BigInt(writerLimit??(sealed ? PLACEMENT_CHECKPOINT_MANIFEST_MAX_BYTES : name === "append-intent.json" ? PLACEMENT_BATCH_INTENT_MAX_BYTES : chunk || /-chunk-\d{5}\.json$/.test(name) ? PLACEMENT_JOURNAL_CHUNK_MAX_BYTES : PLACEMENT_JOURNAL_ROOT_MAX_BYTES))) fail("bound");
     files.set(name, stat);
   }
-  // One global active.json slot is always reserved, whether that fence exists yet or not.
+  // The frozen epoch metadata still binds every read once the live window moved on.
+  const metadata = live ? ["epoch.json", "activation.json"].map(name => { const stat = state(join(p.epochDir, name)); return [name, stat ? stamp(stat) : null]; }) : [];
+  // One global active.json slot is always reserved, whether that fence exists yet or not. Only the live window is charged (#288).
   const renewal=renewalIntentObjects(p.home);
   if (files.size + 1 + renewal.count > PLACEMENT_JOURNAL_MAX_OBJECTS) fail("bound");
   const fence = state(join(p.root, "active.json"));
-  return { files, renewalObjects:renewal.count, token: canonicalJSON({ parents, renewal:renewal.token, files: [...files].map(([name, stat]) => [name, String(stat.dev), String(stat.ino), String(stat.size), String(stat.mtimeNs), String(stat.ctimeNs)]),
+  return { files, renewalObjects:renewal.count, token: canonicalJSON({ parents, renewal:renewal.token, window: placementWindowToken(p.home, p.hash), metadata, files: [...files].map(([name, stat]) => [name, String(stat.dev), String(stat.ino), String(stat.size), String(stat.mtimeNs), String(stat.ctimeNs)]),
     fence: fence ? [String(fence.dev), String(fence.ino), String(fence.size), String(fence.mtimeNs), String(fence.ctimeNs)] : null }) };
 }
 function readOwned(file: string, maximum: number): Buffer | undefined {
@@ -138,17 +150,52 @@ let journalSnapshot: { token: string; value: Snapshot } | undefined;
 /** #462: the validated batch intent by its exact bytes; a pure function of content, so a hit cannot change a result. */
 let batchIntentMemo: { key: string; value: PlacementBatchIntent } | undefined;
 /** Drop every decoded journal/publication memo; a sync calls this when it ends so a resident host never keeps a journal's records. */
-export function releasePlacementStorageCaches(): void { journalPrefix = undefined; journalTail = undefined; journalSnapshot = undefined; publicationBundle = undefined; reservationRoot = undefined; batchIntentMemo = undefined; reservedNamesMemo = undefined; }
+export function releasePlacementStorageCaches(): void { journalPrefix = undefined; journalTail = undefined; journalSnapshot = undefined; publicationBundle = undefined; reservationRoot = undefined; batchIntentMemo = undefined; reservedNamesMemo = undefined; archiveReplay = undefined; releasePlacementCheckpointCaches(); }
 // Records are frozen and shared (the bulk); every small mutable field is a fresh copy, so a caller's mutation never reaches the memo.
 const detachSnapshot = (value: Snapshot): Snapshot => ({ ...value, records: value.records.map(freeze), chunks: value.chunks.map(chunk => ({ ...chunk })), projection: value.projection.clone(),
   epoch: structuredClone(value.epoch), activation: structuredClone(value.activation),
   ...(value.intent ? { intent: structuredClone(value.intent) } : {}), ...(value.batchIntent ? { batchIntent: freeze(value.batchIntent) } : {}), ...(value.pendingBatch ? { pendingBatch: { ...value.pendingBatch } } : {}), ...(value.pendingRecord ? { pendingRecord: structuredClone(value.pendingRecord) } : {}) });
+/**
+ * #288: the replayed frozen windows for one committed checkpoint chain, keyed by the resolver's token and the last manifest.
+ * The replay is verified once against the sealed projection snapshot; later snapshots replay only the live tail.
+ */
+let archiveReplay: { key: string; records: PlacementRecord[]; chunks: Chunk[]; projection: PlacementProjection } | undefined;
+/** Archived chunks are closed: their reported size is the chunk ceiling, so no append or reservation ever reuses one. */
+function replayArchive(p: Paths, epoch: PlacementEpoch): { records: PlacementRecord[]; chunks: Chunk[]; projection: PlacementProjection } | undefined {
+  const manifest = p.window.manifests.at(-1); if (!manifest) return undefined;
+  const key = canonicalJSON([p.hash, manifest.seal, p.window.token]);
+  if (archiveReplay?.key === key) return { records: [...archiveReplay.records], chunks: archiveReplay.chunks.map(chunk => ({ ...chunk })), projection: archiveReplay.projection.clone() };
+  const projection = new PlacementProjection(epoch), records: PlacementRecord[] = [], chunks: Chunk[] = [];
+  for (const [index, chunk] of archivedChunks(p).entries()) {
+    if (chunk.name !== `records-${String(index).padStart(5, "0")}.jsonl`) fail();
+    const bytes = readOwned(join(chunk.dir, chunk.name), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES);
+    if (!bytes?.length || bytes.length !== chunk.member.size || digest(bytes) !== chunk.member.sha256) fail();
+    let start = 0;
+    while (start < bytes.length) {
+      const end = bytes.indexOf(10, start); if (end < 0 || end === start) fail();
+      if (records.length >= PLACEMENT_JOURNAL_MAX_RECORDS) fail("bound");
+      const row = decode(bytes.subarray(start, end + 1), validatePlacementRecord); projection.apply(row); records.push(freeze(row)); start = end + 1;
+    }
+    chunks.push({ name: chunk.name, size: PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, hash: chunk.member.sha256 });
+  }
+  const sealed = p.window.projection;
+  if (chunks.length !== manifest.journal.chunks || projection.sequence !== manifest.journal.sequence || projection.headHash !== manifest.journal.headHash
+    || !sealed || sealed.projectionHash !== projection.digest()) fail();
+  archiveReplay = { key, records: [...records], chunks: chunks.map(chunk => ({ ...chunk })), projection: projection.clone() };
+  return { records, chunks, projection };
+}
+function epochMetadataStamp(p: Paths): string {
+  const stat = state(join(p.epochDir, "epoch.json")); if (!stat) fail("changed"); return stamp(stat);
+}
 function snapshot(p: Paths): Snapshot {
+  // #288: a started checkpoint owns the window until resume or abandon; no journal reader treats it as settled.
+  if (p.window.pending) fail("pending");
   const before = inventory(p);
   if (journalSnapshot?.token === canonicalJSON([p.dir, before.token])) return detachSnapshot(journalSnapshot.value);
-  const epoch = decode(readOwned(join(p.dir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
+  const epoch = decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
   if (placementEpochHash(epoch) !== p.hash) return fail("conflict");
-  const plan = decode(readOwned(join(p.dir, "activation.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), value => activation(epoch, p.hash, value));
+  const plan = decode(readOwned(join(p.epochDir, "activation.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), value => activation(epoch, p.hash, value));
+  if (p.window.manifests.some(manifest => manifest.activationHash !== plan.seal)) fail("conflict");
   const pendingBytes = readOwned(join(p.dir, "append-intent.json"), PLACEMENT_BATCH_INTENT_MAX_BYTES);
   const intentPending = pendingBytes !== undefined && (!pendingBytes.length || pendingBytes.at(-1) !== 10);
   let pending: Intent | undefined, batch: PlacementBatchIntent | undefined;
@@ -162,6 +209,8 @@ function snapshot(p: Paths): Snapshot {
     else { if (pendingBytes.length > PLACEMENT_JOURNAL_ROOT_MAX_BYTES) fail("bound"); pending = decode(pendingBytes, value => intent(value, p.hash)); }
   }
   let projection = new PlacementProjection(epoch); const records: PlacementRecord[] = [], chunks: Chunk[] = [];
+  const archive = replayArchive(p, epoch), base = archive?.chunks.length ?? 0;
+  if (archive) { projection = archive.projection; records.push(...archive.records); chunks.push(...archive.chunks); }
   const apply = (bytes: Buffer) => {
     let start = 0;
     while (start < bytes.length) {
@@ -171,17 +220,18 @@ function snapshot(p: Paths): Snapshot {
     }
   };
   const chunkNames = [...before.files.keys()].filter(name => /^records-\d{5}\.jsonl$/.test(name));
-  const prefixKey = (count: number) => canonicalJSON([p.dir, stamp(before.files.get("epoch.json")!), chunkNames.slice(0, count).map(name => [name, stamp(before.files.get(name)!)])]);
+  const prefixKey = (count: number) => canonicalJSON([p.dir, epochMetadataStamp(p), archive ? p.window.token : null, chunkNames.slice(0, count).map(name => [name, stamp(before.files.get(name)!)])]);
   // #462: a batch only touches its own chunks, so a prefix that ends before the batch's first chunk is still exact.
-  const batchStart = batch ? Number(batch.chunks[0]!.name.slice(8, 13)) : Infinity;
+  const batchStart = batch ? Number(batch.chunks[0]!.name.slice(8, 13)) - base : Infinity;
   const cached = journalPrefix && journalPrefix.count < chunkNames.length && journalPrefix.count <= batchStart && journalPrefix.key === prefixKey(journalPrefix.count) ? journalPrefix : undefined;
   let batchPartial = false;
   let prefix: typeof journalPrefix, tail: typeof journalTail;
-  if (cached) { projection = cached.projection.clone(); records.push(...cached.records); chunks.push(...cached.chunks); }
+  if (cached) { projection = cached.projection.clone(); records.length = 0; records.push(...cached.records); chunks.length = 0; chunks.push(...cached.chunks); }
   for (const [index, name] of chunkNames.entries()) {
     if (index < (cached?.count ?? 0)) continue;
     if (!batch && index > 0 && index === chunkNames.length - 1) prefix = { key: prefixKey(index), count: index, records: records.map(freeze), chunks: [...chunks], projection: projection.clone() };
-    if (name !== `records-${String(index).padStart(5, "0")}.jsonl`) fail();
+    // Chunk names stay global across windows: the live window continues after the archived chunks (#288).
+    if (name !== `records-${String(base + index).padStart(5, "0")}.jsonl`) fail();
     const bytes = readOwned(join(p.dir, name), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES)!;
     const batchChunk = batch?.chunks.find(chunk => chunk.name === name);
     if (batchChunk) {
@@ -216,7 +266,7 @@ function snapshot(p: Paths): Snapshot {
   }
   if (pending) {
     const found = chunkNames.includes(pending.chunk);
-    if (!found && (pending.chunk !== `records-${String(chunkNames.length).padStart(5, "0")}.jsonl` || pending.prefixBytes !== 0 || pending.prefixHash !== digest(Buffer.alloc(0)))) fail();
+    if (!found && (pending.chunk !== `records-${String(base + chunkNames.length).padStart(5, "0")}.jsonl` || pending.prefixBytes !== 0 || pending.prefixHash !== digest(Buffer.alloc(0)))) fail();
     if (!found && (projection.headHash !== pending.record.previousHash || projection.sequence + 1 !== pending.record.sequence)) fail();
     if (pending.record.sequence > PLACEMENT_JOURNAL_MAX_RECORDS) fail("bound");
   }
@@ -268,7 +318,8 @@ export function readPlacementJournal(home: string, epochHash: string): Placement
 export function placementWriterJournalToken(home:string,epochHash:string):string {
   return protectedIO(()=>{
     const p=paths(home,epochHash),dir=state(p.dir,true);if(!dir)fail("changed");
-    const rows:unknown[]=[["directory",String(dir.dev),String(dir.ino),String(dir.mode),String(dir.uid)]];
+    // #288: a checkpoint commit moves the live window, so the window's own identity is part of the anchor token.
+    const rows:unknown[]=[["window",p.window.window,placementWindowToken(p.home,p.hash)],["directory",String(dir.dev),String(dir.ino),String(dir.mode),String(dir.uid)]];
     for(const name of names(p.dir,PLACEMENT_JOURNAL_MAX_OBJECTS-1))if(name.startsWith("records-")||name==="append-intent.json"){
       const s=state(join(p.dir,name));if(!s)fail("changed");
       rows.push([name,String(s.dev),String(s.ino),String(s.mode),String(s.uid),String(s.nlink),String(s.size),String(s.mtimeNs),String(s.ctimeNs)]);
@@ -286,6 +337,9 @@ function current(p: Paths, opts: PlacementStorageOptions, required: readonly str
   try { assertMutationHandle(opts.mutation, p.home); } catch { return fail("busy"); }
   try { opts.assertCurrent(); } catch (error) { if (knownError(error)) throw error; return fail("changed"); }
   try { assertMutationHandle(opts.mutation, p.home); } catch { return fail("busy"); }
+  // #288: a started checkpoint refuses every placement effect until it is resumed or abandoned; a committed one moved the window.
+  if (p.window.pending) fail("pending");
+  if (placementWindowToken(p.home, p.hash) !== p.window.token) fail("changed");
   const found = inventory(p), names = new Set([...found.files.keys(), ...required, ...reservedPublicationJournalNames(p)]);
   if(found.renewalObjects)fail("pending");
   if (names.size + 1 + found.renewalObjects > PLACEMENT_JOURNAL_MAX_OBJECTS) fail("bound");
@@ -350,6 +404,7 @@ export function preparePlacementEpoch(home: string, value: PlacementEpoch, activ
   const epoch = validatePlacementEpoch(value), epochHash = placementEpochHash(epoch);
   writer(home, epochHash, opts, p => {
     const plan = activation(epoch, epochHash, activationPlan), required = ["epoch.json", "activation.json"];
+    if (p.window.window) fail("conflict"); // A checkpointed epoch was prepared long ago; its metadata is frozen.
     current(p, opts, required); directories(p, opts, required);
     complete(p, opts, join(p.dir, "epoch.json"), line(epoch), PLACEMENT_JOURNAL_ROOT_MAX_BYTES, required, "epoch-written", "epoch-fsync");
     complete(p, opts, join(p.dir, "activation.json"), line(plan), PLACEMENT_JOURNAL_ROOT_MAX_BYTES, required, "activation-written", "activation-fsync");
@@ -469,23 +524,30 @@ export interface PlacementPublicationStored {
 /** Validated plan bundle keyed by the stat stamps of epoch.json, the root and every plan chunk (#420); same ceiling as journalPrefix. */
 let publicationBundle: { key: string; bundle: PlacementPublicationBundle } | undefined;
 function publicationRead(p: Paths, attemptHash: string): PlacementPublicationStored {
-  const stem = `publication-${attemptHash}-`, files = inventory(p).files;
-  const keyOf = (found: Map<string, BigIntStats>) => canonicalJSON([p.dir, attemptHash, [...found].filter(([name]) => name === "epoch.json" || name === stem + "root.json" || name.startsWith(stem + "chunk-")).map(([name, stat]) => [name, stamp(stat)])]);
+  // #288: a completed publication frozen by a checkpoint resolves through the sealed catalog, never the live window.
+  // Its members were content-verified by the resolver, so their sealed hashes stand in for the live stat stamps.
+  const archived = p.window.catalog.get(attemptHash);
+  const dir = archived?.dir ?? p.dir, stem = `publication-${attemptHash}-`;
+  const files: Map<string, string> = archived ? new Map(archived.members.map(member => [member.name, member.sha256]))
+    : new Map([...inventory(p).files].map(([name, stat]) => [name, stamp(stat)]));
+  const keyOf = (found: Map<string, string>) => canonicalJSON([dir, attemptHash, epochMetadataStamp(p), [...found].filter(([name]) => name === stem + "root.json" || name.startsWith(stem + "chunk-"))]);
   const key = keyOf(files);
   let bundle = publicationBundle?.key === key ? publicationBundle.bundle : undefined;
   if (!bundle) {
-    const root = decode(readOwned(join(p.dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementPublicationRoot);
-    const epoch = decode(readOwned(join(p.dir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
+    const root = decode(readOwned(join(dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementPublicationRoot);
+    const epoch = decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
     if (root.seal !== attemptHash || root.epochHash !== p.hash || root.generation !== epoch.generation || root.homeHash !== epoch.homeHash) fail("corrupt");
-    const chunks = root.chunks.map(c => decode(readOwned(join(p.dir, `${stem}chunk-${String(c.index).padStart(5, "0")}.json`), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES), value => value));
+    const chunks = root.chunks.map(c => decode(readOwned(join(dir, `${stem}chunk-${String(c.index).padStart(5, "0")}.json`), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES), value => value));
     bundle = freeze(validatePlacementPublicationBundle({ root, chunks }));
-    if (keyOf(inventory(p).files) === key) publicationBundle = { key, bundle }; // Never cache bytes read across a concurrent change.
+    const after = archived ? files : new Map([...inventory(p).files].map(([name, stat]) => [name, stamp(stat)]));
+    if (keyOf(after) === key) publicationBundle = { key, bundle }; // Never cache bytes read across a concurrent change.
   }
   const root = bundle.root, allowed = new Set(publicationFileNames(root));
   for (const name of files.keys()) if (name.startsWith(stem) && !allowed.has(name)) fail("corrupt");
+  if (archived && [...allowed].some(name => !files.has(name))) fail("corrupt");
   const facts: PlacementPublicationFact[] = []; let phase: PlacementPublicationStored["phase"] = "prepared", pending = false, absent = false; let pendingPhase: PlacementPublicationFact["phase"] | undefined;
   for (const [index, suffix] of ["artifact", "intent", "receipt"].entries()) {
-    const bytes = readOwned(join(p.dir, stem + suffix + ".json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
+    const bytes = readOwned(join(dir, stem + suffix + ".json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
     if (bytes === undefined) fail("corrupt"); // Every future phase slot was reserved before root acknowledgement.
     if (!bytes.length) { absent = true; continue; }
     if (absent && (suffix !== "receipt" || pendingPhase)) fail("corrupt");
@@ -622,6 +684,8 @@ export interface PlacementPublicationMetadataIO {
   names(): string[]; read(name: string): Buffer | undefined; journal(): PlacementJournalRead;
   reservedJournalNames(root: PlacementPublicationRoot): string[];
   publication(attemptHash: string): PlacementPublicationStored;
+  /** #288: completed publications frozen by a checkpoint, by attempt; `publication()` resolves them through the same catalog. */
+  archivedPublications(): string[];
   complete(name: string, bytes: Buffer, written: PlacementStoragePhase, synced: PlacementStoragePhase): boolean;
   check(): void;
 }
@@ -631,6 +695,7 @@ function metadataIO(p: Paths, opts?: PlacementStorageOptions, required: readonly
     names: () => [...inventory(p).files.keys()], read: name => readOwned(join(p.dir, name), valid(name)), journal: () => snapshot(p),
     reservedJournalNames: root => { const read = snapshot(p); return placementPublicationReservedJournalNames(root, read, read.chunks.map(c => c.size)); },
     publication: hash => { if (!hex(hash)) fail("invalid"); return publicationRead(p, hash); },
+    archivedPublications: () => [...p.window.catalog.keys()].sort(),
     complete: (name, bytes, written, synced) => { const maximum = valid(name); if (!opts || !required.includes(name)) fail("invalid"); return complete(p, opts, join(p.dir, name), bytes, maximum, required, written, synced); },
     check: () => { if (opts) current(p, opts, required); else inventory(p); },
   };
@@ -647,7 +712,7 @@ export function readPlacementPublicationMetadata<T>(home: string, epochHash: str
   return capturePlacementPublicationMetadata(home, epochHash, work).value;
 }
 function assertPublicationActive(p: Paths): void {
-  const epoch = decode(readOwned(join(p.dir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
+  const epoch = decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
   const profile = decode(readOwned(join(p.home, "profile.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementProfile);
   decode(readOwned(join(p.home, "shards.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), value => validatePlacementShards(value, profile));
   const fence = decode(readOwned(join(p.root, "active.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementActiveFence);

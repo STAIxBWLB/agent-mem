@@ -88,35 +88,36 @@ export interface WriterCommitBody {schema:typeof WRITER_COMMIT_SCHEMA;epochHash:
 export interface WriterCommit extends WriterCommitBody {seal:string}
 export interface WriterRenewalIntentBody {schema:typeof WRITER_RENEWAL_INTENT_SCHEMA;home:string;revision:WriterRevision;commit:WriterCommit;previousLogBytes:number;previousLogHash:string}
 export interface WriterRenewalIntent extends WriterRenewalIntentBody {seal:string}
-function revision(input:unknown,sealed:boolean):WriterRevision {
+function revision(input:unknown,sealed:boolean,genesis?:string):WriterRevision {
   const v=object(input,["schema","epochHash","generation","homeHash","activationHash","initialLocatorHash","sequence","previousHash","journal","roots","requestId",...(sealed?["seal"]:[])]);
   if(v.schema!==WRITER_REVISION_SCHEMA)fail();const journal=object(v.journal,["sequence","headHash"]);
   const body:WriterRevisionBody={schema:WRITER_REVISION_SCHEMA,epochHash:hex(v.epochHash),generation:hex(v.generation,32),homeHash:hex(v.homeHash),activationHash:hex(v.activationHash),
     initialLocatorHash:hex(v.initialLocatorHash),sequence:sequence(v.sequence),previousHash:hex(v.previousHash),journal:{sequence:integer(journal.sequence,0,20000),headHash:hex(journal.headHash)},roots:roots(v.roots),requestId:hex(v.requestId)};
-  if(body.sequence===1&&body.previousHash!==writerInventoryGenesis(body.epochHash,body.activationHash))fail();
+  // #288: window W > 0 starts from its own checkpoint genesis; window 0 keeps the epoch genesis.
+  if(body.sequence===1&&body.previousHash!==(genesis??writerInventoryGenesis(body.epochHash,body.activationHash)))fail();
   const value={...body,seal:hashJSON(body)};if(sealed&&hex(v.seal)!==value.seal)fail();bounded(value,WRITER_REVISION_MAX_BYTES);return value;
 }
-export function createWriterRevision(body:WriterRevisionBody):WriterRevision {return safe(()=>revision(body,false));}
-export function validateWriterRevision(value:unknown):WriterRevision {return safe(()=>revision(value,true));}
-export function writerRevisionWriters(input:WriterRevision):SyncPlacementWriterAttestation[]{
-  return validateWriterRevision(input).roots.map<SyncPlacementWriterAttestation>(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true as const})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
+export function createWriterRevision(body:WriterRevisionBody,genesis?:string):WriterRevision {return safe(()=>revision(body,false,genesis===undefined?undefined:hex(genesis)));}
+export function validateWriterRevision(value:unknown,genesis?:string):WriterRevision {return safe(()=>revision(value,true,genesis===undefined?undefined:hex(genesis)));}
+export function writerRevisionWriters(input:WriterRevision,genesis?:string):SyncPlacementWriterAttestation[]{
+  return validateWriterRevision(input,genesis).roots.map<SyncPlacementWriterAttestation>(({writerId,version,pin})=>({writerId,version,pin,publicationFormat:PLACEMENT_FORMAT,compatible:true as const})).sort((a,b)=>a.writerId.localeCompare(b.writerId));
 }
 function commit(input:unknown,sealed:boolean):WriterCommit {
   const v=object(input,["schema","epochHash","sequence","previousHash","revisionHash",...(sealed?["seal"]:[])]);if(v.schema!==WRITER_COMMIT_SCHEMA)fail();
   const body:WriterCommitBody={schema:WRITER_COMMIT_SCHEMA,epochHash:hex(v.epochHash),sequence:sequence(v.sequence),previousHash:hex(v.previousHash),revisionHash:hex(v.revisionHash)};
   const value={...body,seal:hashJSON(body)};if(sealed&&hex(v.seal)!==value.seal)fail();bounded(value,WRITER_COMMIT_MAX_BYTES);return value;
 }
-export function createWriterCommit(input:WriterRevision):WriterCommit {
-  const rev=validateWriterRevision(input);return safe(()=>commit({schema:WRITER_COMMIT_SCHEMA,epochHash:rev.epochHash,sequence:rev.sequence,previousHash:rev.previousHash,revisionHash:rev.seal},false));
+export function createWriterCommit(input:WriterRevision,genesis?:string):WriterCommit {
+  const rev=validateWriterRevision(input,genesis);return safe(()=>commit({schema:WRITER_COMMIT_SCHEMA,epochHash:rev.epochHash,sequence:rev.sequence,previousHash:rev.previousHash,revisionHash:rev.seal},false));
 }
 export function validateWriterCommit(value:unknown):WriterCommit {return safe(()=>commit(value,true));}
-function intent(input:unknown,sealed:boolean):WriterRenewalIntent {
+function intent(input:unknown,sealed:boolean,genesis?:string):WriterRenewalIntent {
   const v=object(input,["schema","home","revision","commit","previousLogBytes","previousLogHash",...(sealed?["seal"]:[])]);if(v.schema!==WRITER_RENEWAL_INTENT_SCHEMA)fail();
-  const rev=validateWriterRevision(v.revision),ack=validateWriterCommit(v.commit),previousLogBytes=integer(v.previousLogBytes,0,WRITER_COMMIT_MAX_BYTES),previousLogHash=hex(v.previousLogHash);
+  const rev=validateWriterRevision(v.revision,genesis),ack=validateWriterCommit(v.commit),previousLogBytes=integer(v.previousLogBytes,0,WRITER_COMMIT_MAX_BYTES),previousLogHash=hex(v.previousLogHash);
   if(ack.epochHash!==rev.epochHash||ack.sequence!==rev.sequence||ack.previousHash!==rev.previousHash||ack.revisionHash!==rev.seal)fail();
   if(rev.sequence===1&&(previousLogBytes!==0||previousLogHash!==createHash("sha256").update("").digest("hex")))fail();
   const body:WriterRenewalIntentBody={schema:WRITER_RENEWAL_INTENT_SCHEMA,home:path(v.home),revision:rev,commit:ack,previousLogBytes,previousLogHash};
   const value={...body,seal:hashJSON(body)};if(sealed&&hex(v.seal)!==value.seal)fail();bounded(value,WRITER_RENEWAL_INTENT_MAX_BYTES);return value;
 }
-export function createWriterRenewalIntent(body:WriterRenewalIntentBody):WriterRenewalIntent {return safe(()=>intent(body,false));}
-export function validateWriterRenewalIntent(value:unknown):WriterRenewalIntent {return safe(()=>intent(value,true));}
+export function createWriterRenewalIntent(body:WriterRenewalIntentBody,genesis?:string):WriterRenewalIntent {return safe(()=>intent(body,false,genesis));}
+export function validateWriterRenewalIntent(value:unknown,genesis?:string):WriterRenewalIntent {return safe(()=>intent(value,true,genesis));}

@@ -14,6 +14,7 @@ import { readPlacementJournal, readPlacementWriterJournalAnchors, writerRenewalC
 import { readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appendWriterCommit, clearWriterRenewalIntent, abandonWriterRenewal, abandonUnpublishedWriterStaging, type WriterHistoryPhase, type WriterHistoryRead } from "./sync-placement-writer-history.ts";
 import { createWriterRevision, createWriterCommit, createWriterRenewalIntent, writerRevisionWriters, WRITER_REVISION_SCHEMA, WRITER_RENEWAL_INTENT_SCHEMA, WRITER_REVISION_LIMIT, WRITER_COMMIT_LOG, SharedWriterRevisionError, type WriterRenewalIntent } from "./sync-placement-writer-revision-format.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
+import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
 import { assertPlacementActivationOwner, type PlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { previewSyncPlacementSources, previewOwnedSyncPlacementSources } from "./sync-placement-capture.ts";
@@ -132,8 +133,9 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
     let intent=history.pending;
     const cleanupOnly=!intent&&options.mode==="resume"&&!!history.current;
     if(cleanupOnly){
-      const prefix=Buffer.from(history.commits.slice(0,-1).map(row=>canonicalJSON(row)+"\n").join(""));
-      intent=createWriterRenewalIntent({schema:WRITER_RENEWAL_INTENT_SCHEMA,home,revision:history.current!,commit:history.commits.at(-1)!,previousLogBytes:prefix.length,previousLogHash:createHash("sha256").update(prefix).digest("hex")});
+      // #288: the live window's own log: commits before it belong to frozen windows.
+      const local=history.commits.slice(history.commits.length-history.sequence),prefix=Buffer.from(local.slice(0,-1).map(row=>canonicalJSON(row)+"\n").join(""));
+      intent=createWriterRenewalIntent({schema:WRITER_RENEWAL_INTENT_SCHEMA,home,revision:history.current!,commit:history.commits.at(-1)!,previousLogBytes:prefix.length,previousLogHash:createHash("sha256").update(prefix).digest("hex")},history.genesis);
     }
     const locator=readInitialSyncPlacementWriterLocator(home);
     const metadata=()=>{
@@ -152,14 +154,14 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
       const current=readWriterHistory(home,{...b,initialLocatorHash:locator.seal});
       if(current.sequence>=WRITER_REVISION_LIMIT)throw new SharedWriterRevisionError("cap");
       const candidate=initialPlacementWriterContext(home,options.writerRoots,options.ownRoot);if(candidate.measurement.roots.some(r=>!supported(r.version)))throw new WriterRenewalError("candidate");
-      candidate.attest();const previous=current.current?writerRevisionWriters(current.current):initial.activation.writers;
+      candidate.attest();const previous=current.current?writerRevisionWriters(current.current,current.current.sequence===1?current.current.previousHash:undefined):initial.activation.writers;
       if(canonicalJSON(previous)===canonicalJSON(candidate.measurement.writers))return{mode:options.mode,active:true,renewed:false,sequence:current.sequence,remainingRevisions:WRITER_REVISION_LIMIT-current.sequence};
       const journal=readPlacementJournal(home,b.epochHash),revision=createWriterRevision({schema:WRITER_REVISION_SCHEMA,...b,initialLocatorHash:locator.seal,sequence:current.sequence+1,previousHash:current.headHash,
-        journal:{sequence:journal.sequence,headHash:journal.headHash},roots:candidate.measurement.roots,requestId:randomBytes(32).toString("hex")});
-      intent=createWriterRenewalIntent({schema:WRITER_RENEWAL_INTENT_SCHEMA,home,revision,commit:createWriterCommit(revision),previousLogBytes:current.logBytes,previousLogHash:current.logHash});
+        journal:{sequence:journal.sequence,headHash:journal.headHash},roots:candidate.measurement.roots,requestId:randomBytes(32).toString("hex")},current.genesis);
+      intent=createWriterRenewalIntent({schema:WRITER_RENEWAL_INTENT_SCHEMA,home,revision,commit:createWriterCommit(revision,current.genesis),previousLogBytes:current.logBytes,previousLogHash:current.logHash},current.genesis);
     }
     const fixed=intent;person(options,fixed);
-    const log=join(home,"sync-placement","epochs",b.epochHash,WRITER_COMMIT_LOG);
+    const log=join(resolvePlacementWindow(home,b.epochHash).dir,WRITER_COMMIT_LOG);
     const started=()=>{const s=lstatSync(log,{throwIfNoEntry:false});return!!s&&s.isFile()&&!s.isSymbolicLink()&&s.size>fixed.previousLogBytes;};
     const check=()=>{
       metadata();
