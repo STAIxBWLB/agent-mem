@@ -138,7 +138,7 @@ test("#466: opening a v2 shard builds i5 without changing the old i4 index", asy
   const built = new Database(current, { readonly: true });
   try {
     expect((built.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(5);
-    expect((built.query("SELECT value FROM generation_state WHERE key='foreignStamp'").get() as { value: string } | null)?.value).toBe(f.initial);
+    expect((built.query("SELECT value FROM generation_state WHERE key='foreignStamp'").get() as { value: string } | null)?.value).toBe(f.initial!);
   } finally { built.close(); }
 });
 
