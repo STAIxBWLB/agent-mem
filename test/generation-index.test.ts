@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenerationIndex } from "../src/memory/generation-index.ts";
 import { indexFileName } from "../src/memory/index-file.ts";
-import { entryId, machineId, MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
+import { buildPublicPruneIndex, entryId, machineId, MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { advancePublicPruneView } from "../src/memory/public-prune-advance.ts";
@@ -160,6 +160,21 @@ test("#466 AC3: an unchanged refresh does not replay the foreign tables, while a
     store.list({ project: PROJECT });
     expect(sentinel()).toBe(false); // the stamp moved, so the membership was replayed
   } finally { probe.close(); store.close(); }
+});
+
+test("#466 AC3: the witness stamp never moves the activation source hash", async () => {
+  const f = await home(false);
+  const before = buildPublicPruneIndex(f.profile); // the shard before it carries a public prune view
+  await activatePublicPruneView({ memoryDir: f.memoryDir, mode: "apply", authorizedPerson: true, tty: true });
+  const registration = f.prepare();
+  await f.advance(f.view({ [`project:${PROJECT}`]: registration.inputSetHash }));
+  const stamped = resolveShardProfile(f.memoryDir, { project: PROJECT });
+  expect(stamped.foreignPruneFormat).toBeString();
+  const after = buildPublicPruneIndex(stamped); // activation and every later rebuild write the stamp
+  expect(after.sourceHash).toBe(before.sourceHash); // witness state, not a source row: activation must not move it
+  const probe = new Database(join(f.profile.dir, indexFileName(true)));
+  try { expect((probe.query("SELECT value FROM generation_state WHERE key='foreignStamp'").get() as { value: string } | null)?.value).toBeString(); }
+  finally { probe.close(); }
 });
 
 test("#466 AC2: a held writer does not fail or empty a read, and the read marks itself stale as the legacy path does", async () => {

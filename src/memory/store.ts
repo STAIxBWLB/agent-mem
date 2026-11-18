@@ -1905,8 +1905,11 @@ export function buildPublicPruneIndex(profile: BoundProfile): {targets:string[];
   try {
     const before = store.derivedTables(); store.rebuild(); const tables = store.derivedTables();
     if (!isDeepStrictEqual(before, tables)) throw new Error("public prune view rebuild differs from incremental index");
+    // #466: the foreign witness stamp proves the projected view's membership, so activating or advancing a view writes one
+    // by design and it is not a source row; the equality above still holds it to what `rebuild()` produces.
+    const state = (tables.generation_state as { key: string }[] | undefined)?.filter(row => row.key !== "foreignStamp");
     return { targets: (tables.generation_targets as {id:string}[]).map(row=>row.id).sort(),
-      sourceHash: hashJSON([tables.generation_rows, tables.generation_prunes, tables.generation_segments, tables.generation_state]) };
+      sourceHash: hashJSON([tables.generation_rows, tables.generation_prunes, tables.generation_segments, state]) };
   } finally {store.close();}
 }
 
