@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
+      "verifiedAgainst": "d763670aa5389955b81317aec7573dd2374a2b0c",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
+      "verifiedAgainst": "d763670aa5389955b81317aec7573dd2374a2b0c",
       "paths": [
         "package.json",
         "bin/",
@@ -30,7 +30,7 @@
       ]
     },
     "docs/purge.md": {
-      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
+      "verifiedAgainst": "d763670aa5389955b81317aec7573dd2374a2b0c",
       "paths": [
         "src/memory/forget-nearby.ts",
         "src/memory/commands.ts",
@@ -48,7 +48,7 @@
       ]
     },
     "docs/curated-shard-migration.md": {
-      "verifiedAgainst": "b3c1df242df99d885a9de63bd2eac8d13e5a67c5",
+      "verifiedAgainst": "d763670aa5389955b81317aec7573dd2374a2b0c",
       "paths": [
         "src/memory/shard-migration.ts",
         "src/memory/migrate.ts",
@@ -64,7 +64,7 @@
       ]
     },
     "docs/jcode.md": {
-      "verifiedAgainst": "0b9703a09be6a85004305be37674126e8d1b6ccd",
+      "verifiedAgainst": "d763670aa5389955b81317aec7573dd2374a2b0c",
       "paths": [
         "src/hook-jcode.ts",
         "src/hooks.ts",
@@ -78,7 +78,7 @@
       ]
     },
     "docs/opencode.md": {
-      "verifiedAgainst": "0b9703a09be6a85004305be37674126e8d1b6ccd",
+      "verifiedAgainst": "d763670aa5389955b81317aec7573dd2374a2b0c",
       "paths": [
         "src/setup-opencode.ts",
         "src/setup.ts",
@@ -88,7 +88,7 @@
       ]
     },
     "docs/gemini-cli.md": {
-      "verifiedAgainst": "0b9703a09be6a85004305be37674126e8d1b6ccd",
+      "verifiedAgainst": "d763670aa5389955b81317aec7573dd2374a2b0c",
       "paths": [
         "src/setup-gemini.ts",
         "src/setup.ts",
