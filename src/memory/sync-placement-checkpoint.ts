@@ -173,7 +173,7 @@ function finish(home: string, intent: CheckpointIntent, opts: PlacementCheckpoin
 /**
  * Confirm one exact planned checkpoint.
  * ponytail: the person-raised `minReader` 0.30.0 floor gate on confirm is #288 item 4 (task 312), added with the N-1
- * matrices; until then this library call has no CLI caller and runs only in isolated tests. Code never writes formats.json.
+ * matrices; until then this library call has no CLI caller and runs only in isolated tests. Only `amem formats raise` records a floor.
  */
 export function applyPlacementCheckpoint(homeInput: string, plan: CheckpointIntent, input: PlacementCheckpointInput, opts: PlacementCheckpointOptions): { window: number } {
   const home = realPath(homeInput), intent = validateCheckpointIntent(plan);

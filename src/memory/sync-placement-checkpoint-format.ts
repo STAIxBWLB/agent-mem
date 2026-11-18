@@ -15,7 +15,7 @@ export const PLACEMENT_CHECKPOINT_INTENT = "intent.json";
 export const PLACEMENT_CHECKPOINT_WINDOWS = "windows";
 export const PLACEMENT_CHECKPOINT_MANIFEST = "checkpoint-manifest.json";
 export const PLACEMENT_CHECKPOINT_PROJECTION = "checkpoint-projection.json";
-/** First minor whose readers resolve checkpoint windows; the person raises the floor (code never writes formats.json). */
+/** First minor whose readers resolve checkpoint windows; the person raises the floor (only `amem formats raise` records a floor). */
 export const PLACEMENT_CHECKPOINT_MIN_READER = "0.30.0";
 export const PLACEMENT_CHECKPOINT_LIMIT = 256;
 export const PLACEMENT_CHECKPOINT_PAGE_MAX_BYTES = 64 * 1024;
