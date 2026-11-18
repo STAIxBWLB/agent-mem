@@ -30,7 +30,7 @@ test("0.29 admission commands preserve staged curated rows beside work", async (
     const stagedBytes = readFileSync(join(sourceDir, name));
     const user = storeModule.openShardStore({ memoryDir: a.home, user: true, deferPromotions: true });
     try { expect((await sync.syncMemory(user, a.opts(remote))).ok).toBe(true); } finally { user.close(); }
-    for (const action of ["apply", "resume", "abandon", "sync", "doctor"] as const) {
+    for (const action of ["apply", "resume", "abandon", "sync", "doctor", "resume-after-intent"] as const) {
       const b = await fixture.inventoryFixture(1, [shared], true);
       const work = new workModule.WorkListStore({ base: b.home, project: target, policy: () => true });
       try { await work.write("existing", { task: "preserved work" }); } finally { work.close(); }
@@ -38,7 +38,12 @@ test("0.29 admission commands preserve staged curated rows beside work", async (
       mkdirSync(log, { recursive: true, mode: 0o700 }); writeFileSync(join(log, name), stagedBytes, { mode: 0o600 });
       let result: unknown;
       try {
-        if (action === "apply" || action === "resume") result = await admission.applyRealmAdmission(b.home, target, { mode: action });
+        if (action === "resume-after-intent") {
+          await expect(admission.applyRealmAdmission(b.home, target, { mode: "apply", checkpoint: (stage: string) => {
+            if (stage === "after-intent") throw Error("fixture interruption");
+          } })).rejects.toThrow();
+          result = await admission.applyRealmAdmission(b.home, target, { mode: "resume" });
+        } else if (action === "apply" || action === "resume") result = await admission.applyRealmAdmission(b.home, target, { mode: action });
         else if (action === "abandon") result = await admission.applyRealmAdmission(b.home, target, { mode: "abandon", confirm: true });
         else if (action === "sync") {
           const reader = storeModule.openShardStore({ memoryDir: b.home, user: true, deferPromotions: true });
@@ -49,7 +54,8 @@ test("0.29 admission commands preserve staged curated rows beside work", async (
       expect(readFileSync(join(log, name))).toEqual(stagedBytes);
       const workAgain = new workModule.WorkListStore({ base: b.home, project: target, policy: () => true });
       try { expect((await workAgain.read())[0]?.items[0]?.task).toBe("preserved work"); } finally { workAgain.close(); }
-      if (action === "apply" && result !== "refused") {
+      if (action === "resume-after-intent") expect(result).toMatchObject({ state: "admitted" });
+      if ((action === "apply" || action === "resume-after-intent") && result !== "refused") {
         expect(result).toMatchObject({ state: "admitted" });
         const reader = storeModule.openShardStore({ memoryDir: b.home, project: target, deferPromotions: true });
         try { expect(reader.list({ project: target }).map((row: { text: string }) => row.text)).toContain("staged remote row"); } finally { reader.close(); }
