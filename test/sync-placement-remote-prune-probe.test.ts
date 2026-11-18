@@ -10,7 +10,7 @@ import { prepareRemotePlacementRealm } from "../src/memory/sync-placement-transp
 import { bareRemote, closeInventoryFixtures, inventoryFixture, note } from "./fakes/sync-placement-inventory.ts";
 
 const BASELINE = "57a4ace57bdf5c4fc12996146c76843de4ee21cc";
-for (const reader of ["baseline", "current"] as const) test(`a strict staged subset accepts foreign prune history with ${reader} source`, async () => {
+for (const reader of ["baseline", "current", "remote-admission"] as const) test(`a strict staged subset accepts foreign prune history with ${reader} source`, async () => {
   const oldRoot = mkdtempSync(join(tmpdir(), "amem-029-prune-"));
   const archive = Bun.spawnSync(["git", "archive", BASELINE], { stdout: "pipe", stderr: "pipe" });
   expect(archive.exitCode, archive.stderr.toString()).toBe(0);
@@ -45,10 +45,15 @@ for (const reader of ["baseline", "current"] as const) test(`a strict staged sub
       expect(preview.plan.omitted).toBeGreaterThanOrEqual(2);
       const staged = preview.packs.flatMap(pack => pack.bytes.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as { id: string }));
       expect(staged.some(row => row.id === safe)).toBe(true); expect(staged.some(row => row.id === masked)).toBe(false);
-      oldShard.ensureShardDescriptor(b.home, target); const log = join(oldShard.shardDir(b.home, target), "log"); mkdirSync(log, { recursive: true, mode: 0o700 });
-      for (const pack of preview.packs) writeFileSync(join(log, pack.name), pack.bytes, { mode: 0o600 });
-      const admission = reader === "baseline" ? oldAdmission : await import("../src/memory/sync-placement-realm-admission.ts");
-      expect(await admission.applyRealmAdmission(b.home, target, { mode: "apply" })).toMatchObject({ state: "admitted" });
+      if (reader === "remote-admission") {
+        const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+        expect(await remoteRealmAdmission(b.home, target, { mode: "apply", visibility: async () => "private" })).toMatchObject({ state: "admitted", omitted: preview.plan.omitted });
+      } else {
+        oldShard.ensureShardDescriptor(b.home, target); const log = join(oldShard.shardDir(b.home, target), "log"); mkdirSync(log, { recursive: true, mode: 0o700 });
+        for (const pack of preview.packs) writeFileSync(join(log, pack.name), pack.bytes, { mode: 0o600 });
+        const admission = reader === "baseline" ? oldAdmission : await import("../src/memory/sync-placement-realm-admission.ts");
+        expect(await admission.applyRealmAdmission(b.home, target, { mode: "apply" })).toMatchObject({ state: "admitted" });
+      }
       const before = oldStore.openShardStore({ memoryDir: b.home, project: target, deferPromotions: true, now: () => start });
       try { expect(before.get(masked, target)).toBeUndefined(); expect(before.get(safe, target)?.text).toBe("remote safe subset"); } finally { before.close(); }
       const bUser = reader === "baseline" ? oldStore.openShardStore({ memoryDir: b.home, user: true, deferPromotions: true }) : openShardStore({ memoryDir: b.home, user: true, deferPromotions: true });
