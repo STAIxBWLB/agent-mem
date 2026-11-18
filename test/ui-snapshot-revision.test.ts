@@ -78,7 +78,7 @@ test("candidate WAL and the pending day counter participate, while read-only sum
 test("derived indexes, leases, ignored trees and empty WAL creation/deletion cannot invalidate a quiet source", () => {
   const base = home(); put(base, "log/peer.jsonl"); put(base, `projects/${project}/machine/${machine}/capture.db`);
   const before = revision(base);
-  for (const name of ["index.db", "index-v2-i4.db-wal", "search.db", "catalog.db", "mutation-lock.db", "reader-admission.db",
+  for (const name of ["index.db", "index-v2-i5.db-wal", "search.db", "catalog.db", "mutation-lock.db", "reader-admission.db",
     "readers/owner.json", "shard-readers/owner.json", ".git/objects/ignored", "node_modules/ignored/package.json",
     `projects/${project}/machine/${machine}/capture.db-shm`, `projects/${project}/work/index.db`,
     `projects/${project}/machine/${machine}/brief-capture.json`]) put(base, name);

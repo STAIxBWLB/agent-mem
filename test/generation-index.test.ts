@@ -124,6 +124,24 @@ test("#466 AC3: a reopened v2 shard proves its stored foreign stamp instead of r
   } finally { GenerationIndex.prototype.rebuild = rebuild; }
 });
 
+test("#466: opening a v2 shard builds i5 without changing the old i4 index", async () => {
+  const f = await home(true), old = join(f.profile.dir, indexFileName(true, 4)), current = join(f.profile.dir, indexFileName(true));
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(current + suffix, { force: true });
+  const legacy = new Database(old, { create: true });
+  legacy.run("PRAGMA user_version = 4");
+  legacy.run("CREATE TABLE generation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  legacy.query("INSERT INTO generation_state VALUES (?, ?)").run("legacy-only", "unchanged");
+  legacy.close();
+  const before = readFileSync(old), store = open(f.memoryDir);
+  try { expect(store.list({ project: PROJECT }).length).toBeGreaterThan(0); } finally { store.close(); }
+  expect(readFileSync(old)).toEqual(before);
+  const built = new Database(current, { readonly: true });
+  try {
+    expect((built.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(5);
+    expect((built.query("SELECT value FROM generation_state WHERE key='foreignStamp'").get() as { value: string } | null)?.value).toBe(f.initial!);
+  } finally { built.close(); }
+});
+
 test("#466 AC3: incremental indexing equals rebuild() on v2 and v3, generation_state included", async () => {
   for (const v2 of [true, false]) {
     const f = await home(v2);

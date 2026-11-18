@@ -20,6 +20,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- Isolate the persisted foreign-prune stamp from older index writers by using index version 5. Each profile rebuilds its derived index once on first open. Refs #466.
+- Compatibility with N-1 (0.28.2), derived index: 0.29.0 builds a separate index file (version 5) on first open; 0.28.2 keeps and uses its own version-4 file; neither reads the other's foreignStamp. Refs #466.
 - Serve native work briefs from revision-bound snapshots for static repository and host policy options, and retry oversized snapshots after a possible shrink or a bounded number of writes. Host callbacks continue to use the deadline-bound live read. Refs #463.
 - Split placement source collection, policy evaluation, journal appends and selected history work across event-loop turns, and expose a closed `failure.cause` for failed placement syncs without changing the existing error text or stored formats. A 583 MB synthetic fixture still observed a 2.58 s maximum gap; the remaining event-loop bound stays open in #462. Refs #462.
 - On an activated sync placement, let doctor check duplicates, stale references and brief coverage after validating the real home. The index check is skipped with an amem rebuild instruction because opening a placement index rebuilds it. Refs #453.

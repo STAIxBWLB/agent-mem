@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { entryId, type Entry } from "../src/memory/store.ts";
 import { persistPublicPruneInput, preparePublicPruneInput, reducePublicPruneInputs, validatePublicPruneInputSet,
@@ -96,7 +97,7 @@ for (const lost of ["set", "input", "tree", "blob"] as const) for (const damage 
   const file = lost === "set" ? archive(f.dir, "set", registration.inputSetHash) : lost === "input" ? archive(f.dir, "input", registration.inputHash!)
     : archive(f.dir, "object", lost === "tree" ? f.graph.rootTree.oid : f.graph.input.source.manifestBlob);
   if (damage === "missing") unlinkSync(file); else writeFileSync(file, Buffer.from("ALTERED-REQUIRED-CONTENT\n"));
-  for (const name of ["index.db", "index-v2.db"]) {
+  for (const name of ["index.db", "index-v2.db", indexFileName(false), indexFileName(true)]) {
     const db = new Database(join(f.dir, name), { create: true });
     db.run("CREATE TABLE cached_projection(id TEXT PRIMARY KEY)"); db.query("INSERT INTO cached_projection VALUES (?)").run(f.graph.note.id); db.close();
     unlinkSync(join(f.dir, name));

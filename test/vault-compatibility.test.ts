@@ -140,10 +140,10 @@ test("C1 pre-vault 0.3.1 keeps its own derived index, so a writer's newer index 
   const old = new PreVaultStore({ home: f.root, deferPromotions: true });
   try {
     expect(old.get(frozen.note.id, project)?.text).toBe(frozen.note.text);
-    // #370 moves this writer to `INDEX_VERSION` 4, which names its own file: 0.24.0-era and pre-vault-0.3.1 indexes no longer share one
+    // This writer uses its own versioned file: 0.24.0-era and pre-vault-0.3.1 indexes no longer share one
     // file, so the older reader's own `index.db` is not advanced by this append and it must refresh before answering.
     await f.link();
-    // Two files now coexist: this writer's own `index-v4.db` and the older reader's `index.db`, which this append never advances.
+    // Two files now coexist: this writer's own `index-v5.db` and the older reader's `index.db`, which this append never advances.
     expect(existsSync(join(f.store.dir, indexFileName(false)))).toBe(true);
     expect(existsSync(join(f.store.dir, "index.db"))).toBe(true);
     expect(() => old.list({ project })).toThrow("legacy bridge input changed or is invalid");

@@ -1,5 +1,5 @@
-/** Bumped when the index's tables change: an index with another version is dropped and rebuilt from the logs. */
-export const INDEX_VERSION = 4; // 4: the preference kind (an older index skipped such notes)
+/** Bumped when derived index tables change; each version uses its own file, rebuilt from logs on first open. */
+export const INDEX_VERSION = 5; // #466: isolate the persisted foreign-prune stamp from older index writers.
 /** The version that released 0.14.0 through 0.18.0 build into the unversioned names below; it keeps them so this release shares their warm index. */
 const SHARED_INDEX_VERSION = 3;
 
