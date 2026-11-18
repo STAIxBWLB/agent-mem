@@ -69,6 +69,7 @@ try {
   const realmBytes = size(shardDir(f.home, f.project));
   if (realmBytes < MIN_REALM_BYTES) throw Error(`Generated realm is ${realmBytes} bytes, below the ${MIN_REALM_BYTES}-byte measurement requirement.`);
   let phase = "startup", last = performance.now(), maximum = 0;
+  const started = last;
   const gaps: { phase: string; ms: number }[] = [], attestMs: number[] = [], segmentMs: number[] = [];
   const originalRead = SegmentReader.prototype.read;
   SegmentReader.prototype.read = function (this: SegmentReader, ...args: Parameters<SegmentReader["read"]>) {
@@ -87,7 +88,7 @@ try {
   } finally { clearInterval(timer); SegmentReader.prototype.read = originalRead; }
   if (!result.ok && !result.failure?.cause) throw Error("Placement failure did not carry a cause class.");
   console.log(JSON.stringify({ fixture: "isolated synthetic high-entropy rows; host proof is a timed install measurement plus fixture attestation",
-    rows: ROWS, realmBytes, elapsedPhase: phase, maximumGapMs: Math.round(maximum * 100) / 100, gapsOver250Ms: gaps,
+    rows: ROWS, realmBytes, elapsedMs: Math.round(performance.now() - started), elapsedPhase: phase, maximumGapMs: Math.round(maximum * 100) / 100, gapsOver250Ms: gaps,
     maximumInstallMeasureMs: attestMs.length ? Math.round(Math.max(...attestMs) * 100) / 100 : null,
     maximumSegmentReadMs: segmentMs.length ? Math.round(Math.max(...segmentMs) * 100) / 100 : null,
     result: { ok: result.ok, cause: result.failure?.cause ?? null, bound: result.placementPublication?.bound ?? null } }, null, 2));
