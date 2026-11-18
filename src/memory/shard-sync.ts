@@ -17,7 +17,8 @@ import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mu
 import { realPath } from "./platform.ts";
 import { reducePruneRows, validatePrunePlan, validatePruneRow, type PrunePlan, type PruneRow, type PruneSnapshot, type PruneSourceRow } from "./prune.ts";
 import { assertCuratedShardPaths, isLocalKey, resolveShardProfile } from "./shard.ts";
-import { decodeShardPack, encodeShardPacks, decodeShardDescriptor, decodeShardManifest, encodeShardManifest, isShardManifestPath, SHARD_PACK_MAX_BYTES, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "./shard-sync-format.ts";
+import { decodeShardPack, encodeShardPacks, encodeShardPacksSteps, decodeShardDescriptor, decodeShardManifest, encodeShardManifest, isShardManifestPath, SHARD_PACK_MAX_BYTES, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "./shard-sync-format.ts";
+import { cooperativeYield, drainSteps, drainStepsAsync, type CooperativeYield } from "./sync-placement-yield.ts";
 import { generationSyncGit, generationSyncGitBytes, remoteVisibility, shardSyncBinding, shardSyncSourceBinding, type SyncOptions, type SyncResult } from "./sync.ts";
 import type { Entry, MemoryStore } from "./store.ts";
 
@@ -255,7 +256,24 @@ function* lines(file: string, claim?: PendingPrune): Generator<string> {
       || named.dev !== before.dev || named.ino !== before.ino || offset !== before.size) refuse("shard sync authored segment changed or has an incomplete tail");
   } finally { closeSync(fd); }
 }
-function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyncRow[]; sources: PruneSourceRow[]; pending: PendingPrune[] } {
+type SourceRows = { rows: ShardSyncRow[]; sources: PruneSourceRow[]; pending: PendingPrune[] };
+/** Physical identity of one authored file or directory, as native metadata only: no byte is re-read to prove it. */
+const sourceStamp = (path: string): string => {
+  const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  return entry ? [entry.mode, entry.dev, entry.ino, entry.size, entry.mtimeNs, entry.ctimeNs].map(String).join(":") : "";
+};
+/** A directory's own listing is part of its identity: a new segment changes the names, an append changes the stamp. */
+const sourceListing = (path: string): string => {
+  const entry = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  return entry && entry.isDirectory() && !entry.isSymbolicLink() ? `${sourceStamp(path)}|${readdirSync(path).sort().join("\n")}` : "";
+};
+/**
+ * #462: one collector, drained synchronously by `sourceRows` and in the caller's own turns by `shardSourceRowsAsync`.
+ * The wire round trip is the fence that proves the exported prefix, so a drive that yields inside it re-proves the same
+ * authored metadata afterwards: a changed segment, listing or pending claim refuses instead of exporting rows read earlier.
+ */
+function* sourceRowsSteps(store: MemoryStore, realm: ShardSyncRealm): Generator<void, SourceRows, void> {
+  yield;
   const pending = pendingPrunes(store, realm), claims = new Map(pending.filter(claim=>!claim.unclaimed).map(claim => [`${claim.row.machine}.jsonl`, claim]));
   const snapshot = store.prunePort().snapshot();
   const pruned = new Set(snapshot.pruned ?? []);
@@ -263,9 +281,29 @@ function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyn
   // A local tombstone must prevent the first publication of an unwitnessed original.
   const rows: ShardSyncRow[] = snapshot.rows.filter(source => source.placement === "synced" && (source.publicWitness || !pruned.has(source.row.id))).map(source => source.row);
   const folder = join(store.dir, "log"); directory(folder);
+  // Every authored input the index snapshot was derived from is stamped before any yield, so the re-proof covers the
+  // sources of `rows` and `sources` as well as the segments this collector parses itself.
+  const stamps: { change: "segment" | "claim" | "listing"; read: () => string; seen: string }[] = [];
+  const watch = (change: "segment" | "claim" | "listing", read: () => string) => stamps.push({ change, read, seen: read() });
+  for (const path of [folder, join(store.dir, "local")]) {
+    watch("listing", () => sourceListing(path));
+    if (!lstatSync(path, { throwIfNoEntry: false })) continue;
+    for (const name of readdirSync(path)) if (name.endsWith(".jsonl")) watch("segment", () => sourceStamp(join(path, name)));
+  }
+  const plans = join(store.dir, "prune-plans");
+  watch("claim", () => sourceListing(plans));
+  if (lstatSync(plans, { throwIfNoEntry: false })) for (const name of readdirSync(plans)) watch("claim", () => sourceStamp(join(plans, name)));
+  const changed = () => {
+    const found = stamps.find(stamp => stamp.read() !== stamp.seen);
+    if (!found) return;
+    if (found.change === "segment") refuse(`${shardSyncLabel(realm)}: authored segment changed during the preflight round trip`);
+    if (found.change === "claim") refuse(`${shardSyncLabel(realm)}: pending prune changed during the preflight round trip`);
+    refuse(`${shardSyncLabel(realm)}: realm listing changed during the preflight round trip`);
+  };
   for (const name of readdirSync(folder).sort()) {
     if (!name.endsWith(".jsonl")) continue;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) refuse(`${shardSyncLabel(realm)}: invalid authored segment name`);
+    yield;
     for (const line of lines(join(folder, name), claims.get(name))) {
       const value = JSON.parse(line) as { schema?: unknown; op?: unknown };
       if (value.schema === "agent-mem.prune/v1") {
@@ -276,8 +314,13 @@ function sourceRows(store: MemoryStore, realm: ShardSyncRealm): { rows: ShardSyn
     }
   }
   // Round-trip public originals through the wire validator before touching remote refs or imported rows.
-  for (const [path, bytes] of encodeShardPacks(rows)) decodeShardPack(path, bytes, realm, store.profile.generation!);
+  const packs = yield* encodeShardPacksSteps(rows);
+  for (const [path, bytes] of packs) { yield; decodeShardPack(path, bytes, realm, store.profile.generation!); }
+  changed();
   return { rows, sources: [...snapshot.rows], pending };
+}
+function sourceRows(store: MemoryStore, realm: ShardSyncRealm): SourceRows {
+  return drainSteps(sourceRowsSteps(store, realm));
 }
 function provePrunes(targets: readonly Target[]): void {
   for (const target of targets) {
@@ -740,6 +783,10 @@ export async function syncShardedMemory(store: MemoryStore, opts: SyncOptions = 
 // These are deliberately absent from the package barrel: validation and complete fetched-proof preflight stay mandatory.
 export type { Target as ShardSyncApplicationTarget, PendingPrune as ShardSyncPendingPrune, HoldSource as ShardSyncHoldSource,
   HoldReceipt as ShardSyncHoldReceipt, Hold as ShardSyncHold, SyncPhase as ShardSyncApplicationPhase,
-  SyncManifest as ShardSyncApplicationManifest, ProveHoldSource as ShardSyncProveHoldSource };
+  SyncManifest as ShardSyncApplicationManifest, ProveHoldSource as ShardSyncProveHoldSource, SourceRows as ShardSyncSourceRows };
 export { sourceRows as shardSourceRows, provePrunes as shardProvePrunes, importRows as shardImportRows,
   selectorRetention as shardSelectorRetention, prepareHolds as shardPrepareHolds, installHold as shardInstallHold, holdWarning as shardHoldWarning };
+/** #462: the same collector, handing the caller's event loop back between its steps; rows and refusals are identical. */
+export function shardSourceRowsAsync(store: MemoryStore, realm: ShardSyncRealm, pause: CooperativeYield = cooperativeYield()): Promise<SourceRows> {
+  return drainStepsAsync(sourceRowsSteps(store, realm), pause);
+}

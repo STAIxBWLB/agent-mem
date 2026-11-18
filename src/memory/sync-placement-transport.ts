@@ -25,7 +25,7 @@ import { preparePlacementPublication, readPlacementPublication, recordPlacementP
 import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
 import { ShardHistoryAuditor, type ShardHistory } from "./shard-sync-history.ts";
 import { ShardSyncApplications } from "./shard-sync-applications.ts";
-import { shardSourceRows, shardProvePrunes, shardImportRows, shardSelectorRetention, shardInstallHold, shardHoldWarning, type ShardSyncApplicationTarget } from "./shard-sync.ts";
+import { shardSourceRowsAsync, shardProvePrunes, shardImportRows, shardSelectorRetention, shardInstallHold, shardHoldWarning, type ShardSyncApplicationTarget } from "./shard-sync.ts";
 import { shardSyncRef, SHARD_PACK_MAX_BYTES } from "./shard-sync-format.ts";
 import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineages } from "./prune-publisher-lineage.ts";
 import type { MemoryStore } from "./store.ts";
@@ -234,9 +234,11 @@ class PlacementTransport {
       target.manifests = new Map(target.remoteHistory.manifests); target.eligible = new Set([...target.manifests.values()].filter(item => item.eligible).map(item => item.row.id));
     }
   }
-  preflight(mergeLocal = true): void {
+  async preflight(mergeLocal = true): Promise<void> {
+    // #462: the collector yields inside the wire round trip, then re-proves the source metadata it exported.
+    const pause = cooperativeYield();
     for (const target of this.targets) {
-      const source = shardSourceRows(target.store, target.realm); target.sources = source.sources; target.pending = source.pending;
+      const source = await shardSourceRowsAsync(target.store, target.realm, pause); target.sources = source.sources; target.pending = source.pending;
       target.localPrunes = new Map([...source.rows.filter((row): row is PruneRow => row.op === "prune"), ...source.pending.map(item => item.row)].map(row => [row.id,row]));
       if (mergeLocal) for (const row of source.rows) { const old = target.rows.get(row.id); if (old && hashJSON(old) !== hashJSON(row)) refuse(); target.rows.set(row.id, row); }
     }
@@ -507,7 +509,7 @@ class PlacementTransport {
         target.rows = new Map(actual.rows); target.fetched = new Set(actual.rows.keys()); target.origins = new Map(actual.origins);
       } else { target.rows.clear(); target.fetched.clear(); target.candidate = emptyHistory(); }
     }
-    this.preflight(false);this.enter("import");
+    await this.preflight(false);this.enter("import");
     const applications=await this.applicationCoordinator();await applications.prepare();
     for(const target of this.targets)for(const hold of target.holds)shardInstallHold(this.root,hold);
     await applications.install();
@@ -592,7 +594,7 @@ class PlacementTransport {
         }
       }
       this.enter("source-capture");
-      try { await yieldTurn();this.preflight();for(const target of this.targets)if(existsSync(join(target.store.dir,"local",`publisher-boundary-${this.machineId}.json`)))assertPublisherBoundary(target.store.profile,target.mutation!);await yieldTurn();await this.startCapture(); }
+      try { await yieldTurn();await this.preflight();for(const target of this.targets)if(existsSync(join(target.store.dir,"local",`publisher-boundary-${this.machineId}.json`)))assertPublisherBoundary(target.store.profile,target.mutation!);await yieldTurn();await this.startCapture(); }
       catch(error) { if(retained)return await this.terminalUnknown(retained);if(placementSyncBoundReceipt(error))throw error;throw new PlacementSyncRefusal(placementRefusalCategoryOf(error)??classifyPlacementError(error)??"other"); }
       if(retained){
         const root=retained.bundle.root;

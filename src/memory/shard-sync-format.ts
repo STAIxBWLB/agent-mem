@@ -117,7 +117,8 @@ export async function encodeShardPacksAsync(rows: readonly ShardSyncRow[], yield
 /** Rows between step boundaries: one row's own canonicalization and id check is the floor of an uninterrupted stretch. */
 const SHARD_PACK_STEP_ROWS = 64;
 
-function* encodeShardPacksSteps(rows: readonly ShardSyncRow[]): Generator<void, Map<string, Buffer>, void> {
+/** #462: the step form itself, so a caller that owns a collector can drive the encoder inside its own turns. */
+export function* encodeShardPacksSteps(rows: readonly ShardSyncRow[]): Generator<void, Map<string, Buffer>, void> {
   const groups = new Map<string, { id: string; line: string }[]>(), seen = new Map<string, string>();
   const label = "shard pack";
   let stepped = 0;
