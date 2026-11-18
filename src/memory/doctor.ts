@@ -1,5 +1,5 @@
 import { placementRuntimeRefusal, withDoctorPlacementScratch } from "./sync-placement-guard.ts";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { indexFileName } from "./index-file.ts";
 import { assertFormatFloor } from "./formats.ts";
 import { tmpdir } from "node:os";
@@ -177,7 +177,6 @@ function copyWork(options: Pick<DoctorOptions, "home" | "project" | "aliases">, 
 /** Reuse doctor's bounded private inputs for an on-demand brief, never a live store or reader lease. */
 export async function withBriefSnapshot<T>(home: string, project: string, read: (inputs: NonNullable<BriefOptions["measureOnly"]>) => Promise<T>): Promise<T> {
   const aliases = aliasedKeys(home, project), selection = readSelector(home).revision, layout = layoutOf(home), guard = guardScratch();
-  let scratch: string | undefined, curated: MemoryStore | undefined;
   const budget: CopyBudget = { bytes: 0, verify: [] };
   const inputDirectories = [join(home, "projects"), ...(layout === "split" ? [join(home, "user")] : [join(home, "log"), join(home, "local")]),
     ...(layout === "generation" ? [join(home, "generations")] : []),
@@ -192,22 +191,26 @@ export async function withBriefSnapshot<T>(home: string, project: string, read: 
   };
   try {
     checkDirectories();
-    scratch = mkdtempSync(join(tmpdir(), `amem-doctor-${process.pid}-`)); chmodSync(scratch, 0o700); guard.adopt(scratch);
-    const options = { home, project, aliases }, workBase = join(scratch, "work-base"); mkdirSync(workBase, { mode: 0o700 });
-    copyWork(options, workBase, budget);
-    if (curatedPresent(home, project, layout)) {
-      const copy = join(scratch, "home"); mkdirSync(copy, { mode: 0o700 }); copyCurated(options, layout, copy, budget);
-      curated = openCuratedForRead(copy, project);
-      if (!curated) throw Error("recap curated snapshot unavailable");
-    }
-    check();
-    const result = await read({ ...(curated ? { curated } : {}), workBase });
-    check(); return result;
+    return await withDoctorPlacementScratch(home, guard.adopt, async scratch => {
+      let curated: MemoryStore | undefined;
+      try {
+        const options = { home, project, aliases }, workBase = join(scratch, "work-base"); mkdirSync(workBase, { mode: 0o700 });
+        copyWork(options, workBase, budget);
+        if (curatedPresent(home, project, layout)) {
+          const copy = join(scratch, "home"); copyCurated(options, layout, copy, budget);
+          curated = openCuratedForRead(copy, project);
+          if (!curated) throw Error("recap curated snapshot unavailable");
+        }
+        check();
+        const result = await read({ ...(curated ? { curated } : {}), workBase });
+        check(); return result;
+      } finally { curated?.close(); }
+    });
   } catch (error) {
     if (error instanceof TooBig) throw Error("recap snapshot exceeds the 64 MiB copy limit");
     throw error;
   } finally {
-    try { curated?.close(); } finally { try { if (scratch) rmSync(scratch, { recursive: true, force: true }); } finally { guard.release(); } }
+    guard.release();
   }
 }
 

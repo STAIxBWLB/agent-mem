@@ -8,6 +8,7 @@ import { readProfileJSON, validGeneration } from "./generation.ts";
 import { captureShardStats, readCaptureConfig } from "./capture.ts";
 import { openShardStore } from "./store.ts";
 import { lifecycleResolver, type LifecycleState } from "./lifecycle.ts";
+import { placementSelectorRefusal } from "./sync-placement-guard.ts";
 
 /**
  * #15 D3 (storage part only): the user-level catalog of project shards. `catalog.db` in the memory home is derived
@@ -35,7 +36,15 @@ const fromRow = (r: CatalogRow): CatalogProject => ({ hash: r.hash, key: r.key, 
 
 /** Interrupted splits expose capture facts, but cannot authorize any curated store open or initialization. */
 function capturedSelection(base: string): boolean {
-  const value = readProfileJSON(join(base, "shards.json")) as { schema?: unknown; generation?: unknown; phase?: unknown; selectorRevision?: unknown } | undefined;
+  let value: { schema?: unknown; generation?: unknown; phase?: unknown; selectorRevision?: unknown } | undefined, shardError: unknown;
+  try { value = readProfileJSON(join(base, "shards.json")) as typeof value; } catch (error) { shardError = error; }
+  let profile: { schema?: unknown } | undefined;
+  try { profile = readProfileJSON(join(base, "profile.json")) as typeof profile; } catch { /* Legacy selector diagnostics remain with their original reader. */ }
+  if (value?.schema === "agent-mem.shards/v3" || profile?.schema === "agent-mem.profile/v3") {
+    const refusal = placementSelectorRefusal(base); if (refusal) throw new Error(refusal);
+    return false;
+  }
+  if (shardError !== undefined) throw shardError;
   if (value === undefined) return false;
   if (!value || (value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || (value.phase !== "captured" && value.phase !== "active") || typeof value.selectorRevision !== "string") throw new Error("curated shard selection is unavailable or invalid");
   return value.phase === "captured";

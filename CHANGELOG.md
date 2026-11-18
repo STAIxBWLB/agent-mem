@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Restore project catalog and console Recap on activated placement homes by recognizing v3 selectors and binding private Recap snapshots to the verified placement. 0.29.x patch candidate. Refs #480.
+
 ## 0.29.0
 
 ### Added
