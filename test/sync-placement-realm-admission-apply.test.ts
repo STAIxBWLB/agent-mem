@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { withProfileLock } from "../src/memory/generation.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import type { SyncOptions } from "../src/memory/sync.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
-import { PlacementRealmRefusal, shardDir, shardKeyHash } from "../src/memory/shard.ts";
+import { PlacementRealmRefusal, ensureShardDescriptor, shardDir, shardKeyHash } from "../src/memory/shard.ts";
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
 import { readEffectiveRealmInventory } from "../src/memory/sync-placement-realm-effective.ts";
@@ -457,6 +457,24 @@ test("#448 review: confirmed abandon removes a zero-byte extension log before it
   // And the home stays usable: a fresh admission of the same realm takes sequence 1 again.
   await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
   expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(1);
+}, 240_000);
+
+test("#448 review: a scaffold with a symlinked fixed path refuses before any write", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/symlinked-scaffold";
+  const dir = shardDir(f.home, realm), outside = join(f.root, "outside");
+  // A restored scaffold: the descriptor and project.json exist, `generation.json` does not, and `legacy` is a symlink whose
+  // destination is outside the home.
+  ensureShardDescriptor(f.home, realm); mkdirSync(outside, { recursive: true, mode: 0o700 });
+  symlinkSync(outside, join(dir, "legacy"));
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).rejects.toThrow();
+  // The refusal comes before the intent and before every metadata write, so nothing reaches the link's destination.
+  expect(readdirSync(outside)).toEqual([]);
+  expect(readdirSync(dir).sort()).toEqual(["legacy", "project.json"]);
+  expect(existsSync(join(dir, "generation.json"))).toBe(false);
+  expect(intents(f.home)).toEqual([]);
+  // The dry run reports the state instead of throwing, and the refusal names the next step.
+  expect(previewRealmAdmission(f.home, realm)).toMatchObject({ state: "unavailable" });
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).rejects.toThrow(/--dry-run/);
 }, 240_000);
 
 test("#448 review: a person hold placed before an admission still releases after it, and a torn chain closes effect validation", async () => {

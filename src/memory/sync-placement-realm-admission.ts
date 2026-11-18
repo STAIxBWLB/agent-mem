@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { hashJSON, readProfileJSON } from "./generation.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { realPath } from "./platform.ts";
-import { readShardDescriptor, shardDir } from "./shard.ts";
+import { readShardDescriptor, assertCuratedShardLayout, shardDir } from "./shard.ts";
 import { assertPlacementActivationOwner, type PlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { withPlacementActivationFences, PlacementInventoryFenceError } from "./sync-placement-activation-locks.ts";
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
@@ -125,6 +125,10 @@ function inspectRealmAdmission(home: string, project: string, owner?: PlacementA
   let effective: readonly SyncPlacementRealmBinding[];
   try { effective = readEffectiveRealmInventory(home, active).realms; } catch { return { realm, state: "unavailable" }; }
   if (effective.some(item => item.scope === "project" && item.keyHash === realm)) return { realm, state: "already-admitted" };
+  // A scaffold whose fixed paths are not real directories and private files cannot be completed: completing it would create
+  // files through a symlink (a restored `legacy` is the easy case). Refuse before an intent or any metadata write, as the
+  // same `unavailable` the other unusable states report.
+  try { assertCuratedShardLayout(home, { project }); } catch { return { realm, state: "unavailable" }; }
   const descriptor = readShardDescriptor(home, realm.slice(0, 16));
   if (descriptor && digest(descriptor.key) !== realm) return { realm, state: "unavailable" };
   const curated = descriptor !== undefined && existsSync(join(shardDir(home, descriptor.key), "generation.json"));

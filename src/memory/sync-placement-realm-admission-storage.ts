@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, unlinkSync, writeSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory, generationDescriptor, hashJSON, readProfileJSON, writeProfileJSON } from "./generation.ts";
-import { ensureShardDescriptor, shardDir } from "./shard.ts";
+import { ensureShardDescriptor, assertCuratedShardLayout, shardDir } from "./shard.ts";
 import { attributeTornRealmAppend } from "./sync-placement-realm-attribution.ts";
 import { REALM_EXTENSION_LIMIT, REALM_EXTENSION_LOG_MAX_BYTES, RealmExtensionFormatError, type RealmExtension } from "./sync-placement-realm-extension-format.ts";
 import { readRealmExtensionHistory, REALM_EXTENSION_LOG, type RealmExtensionBinding } from "./sync-placement-realm-extension-storage.ts";
@@ -27,6 +27,11 @@ const owned = (stat: BigIntStats): void => {
  * with `generation.json` but without the provenance capture revalidates.
  */
 export function ensureCuratedRealmMetadata(home: string, project: string, generation: string, machine: { id: string; label?: string }): { created: boolean } {
+  // Validate the fixed scaffold before the first write: a restored or received directory holding a symlinked `legacy` (or any
+  // other fixed path) must refuse here instead of receiving machine.json and generation.json in the symlink's destination
+  // ahead of a source-capture refusal. These are the same no-follow checks curated writes already apply; the inventory gate
+  // they usually sit behind belongs to the caller, because a realm being admitted is not in the inventory until it commits.
+  assertCuratedShardLayout(home, { project });
   const dir = shardDir(home, project);
   if (readProfileJSON(join(dir, "generation.json")) !== undefined) return { created: false };
   ensureShardDescriptor(home, project);

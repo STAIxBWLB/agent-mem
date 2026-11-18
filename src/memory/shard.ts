@@ -164,6 +164,26 @@ export class PlacementRealmRefusal extends Error {
   }
 }
 
+/**
+ * The fixed layout of one curated shard, checked with `lstat` and never followed: a symlinked directory or metadata file
+ * would redirect a write out of the home. Split from `assertCuratedShardPaths` so a writer that has not yet created the
+ * shard can refuse a redirecting scaffold before it creates anything, while the inventory gate stays with the callers that
+ * open an existing one.
+ */
+export function assertCuratedShardLayout(memoryDir: string, opts: { project?: string; user?: boolean }): void {
+  const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
+  const check = (path: string, directory: boolean) => {
+    try {
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile())) throw new Error("curated shard path is not a regular owned path");
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  };
+  if (opts.user !== true) check(join(memoryDir, "projects"), true);
+  check(dir, true);
+  for (const folder of ["log", "local", "legacy", "legacy/log", "legacy/local", "legacy-main", "legacy-main/log", "legacy-main/local"]) check(join(dir, folder), true);
+  for (const name of ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "legacy/machine.json", "legacy-main/machine.json", "prune-translations.jsonl"]) check(join(dir, name), false);
+  for (const database of new Set(["index.db", "index-v2.db", indexFileName(false), indexFileName(true), "search.db", "mutation-lock.db"])) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
+}
 /** Fixed curated paths cannot redirect writes into legacy inputs or another shard.
  * ponytail: same-user concurrent parent replacement needs descriptor-relative opens; fixed preflight does not claim that fence.
  */
@@ -182,18 +202,7 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
     inventory.assertCurrent();
     recheckInventory = inventory.assertCurrent;
   }
-  const dir = opts.user === true ? userShardDir(memoryDir) : shardDir(memoryDir, opts.project!);
-  const check = (path: string, directory: boolean) => {
-    try {
-      const stat = lstatSync(path);
-      if (stat.isSymbolicLink() || (directory ? !stat.isDirectory() : !stat.isFile())) throw new Error("curated shard path is not a regular owned path");
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  };
-  if (opts.user !== true) check(join(memoryDir, "projects"), true);
-  check(dir, true);
-  for (const folder of ["log", "local", "legacy", "legacy/log", "legacy/local", "legacy-main", "legacy-main/log", "legacy-main/local"]) check(join(dir, folder), true);
-  for (const name of ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "legacy/machine.json", "legacy-main/machine.json", "prune-translations.jsonl"]) check(join(dir, name), false);
-  for (const database of new Set(["index.db", "index-v2.db", indexFileName(false), indexFileName(true), "search.db", "mutation-lock.db"])) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
+  assertCuratedShardLayout(memoryDir, opts);
   recheckInventory?.();
 }
 
