@@ -53,7 +53,7 @@ test("an existing curated subpath or redirected scaffold refuses before publicat
       if (kind === "existing") { mkdirSync(target, { mode: 0o700 }); writeFileSync(join(target, "keep"), "untouched", { mode: 0o600 }); }
       else symlinkSync(f.root, target);
       writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof);
-      expect(() => installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof)).toThrow(kind === "existing" ? /curated subpath: log/ : /path/);
+      expect(() => installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof)).toThrow(/curated subpath: log/);
       expect(existsSync(join(f.root, "log", f.packs[0]!.name))).toBe(true);
       if (kind === "existing") expect(readFileSync(join(target, "keep"), "utf8")).toBe("untouched");
       else expect(lstatSync(target).isSymbolicLink()).toBe(true);

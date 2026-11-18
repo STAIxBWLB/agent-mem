@@ -31,6 +31,8 @@ test("remote-only realm is explicitly previewed and admitted without changing ex
   const project = shardDir(b.home, target), before = readFileSync(join(project, "project.json")), prior = process.env.AMEM_HOME; process.env.AMEM_HOME = b.home;
   try {
     const invoke = (args: string[]) => runCli(args, { cwd: b.root, env: {}, visibility: privateVisibility });
+    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--dry-run", "--remote", remote])).rejects.toThrow();
+    await expect(invoke(["migrate", "--sync-placement", "--from-remote", "--dry-run"])).rejects.toThrow();
     const listing = JSON.parse(await invoke(["migrate", "--sync-placement", "--list-remote", "--json"]));
     expect(listing.realms).toContainEqual({ scope: "project", keyHash: shardKeyHash(target) });
     const dry = await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--dry-run", "--json"]);

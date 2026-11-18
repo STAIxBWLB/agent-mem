@@ -201,8 +201,14 @@ export function installRemoteAdoptionLog(homeInput: string, project: string, val
   const source = ownedDir(log);
   if (readdirSync(root).some(name => name !== "log")) fail();
   verifyLog(log);
-  check(home, proof); assertCuratedShardLayout(home, { project });
+  check(home, proof);
   const projects = join(home, "projects"); ownedDir(projects);
+  if (lstatSync(projectDir, { throwIfNoEntry: false })) {
+    ownedDir(projectDir);
+    for (const name of ["log", "local", "legacy", "legacy-main", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json"])
+      if (lstatSync(join(projectDir, name), { throwIfNoEntry: false })) throw new Error(`Remote placement adoption cannot replace existing curated subpath: ${name}.`);
+  }
+  assertCuratedShardLayout(home, { project });
   if (!lstatSync(projectDir, { throwIfNoEntry: false })) { mkdirSync(projectDir, { mode: 0o700 }); fsyncDirectory(projects); }
   const target = ownedDir(projectDir);
   for (const name of ["log", "local", "legacy", "legacy-main", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json"])
