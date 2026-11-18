@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { createRemoteAdoption, REMOTE_ADOPTION_SCHEMA, validateRemoteAdoption } from "../src/memory/sync-placement-remote-adoption-format.ts";
+import { createRemoteAdoption, REMOTE_ADOPTION_SCHEMA, validateRemoteAdoption, type RemoteAdoptionBody } from "../src/memory/sync-placement-remote-adoption-format.ts";
 
-const body = () => ({ schema: REMOTE_ADOPTION_SCHEMA, homeHash: "1".repeat(64), epochHash: "2".repeat(64), generation: "3".repeat(32), keyHash: "4".repeat(64),
+const body = (): RemoteAdoptionBody => ({ schema: REMOTE_ADOPTION_SCHEMA, homeHash: "1".repeat(64), epochHash: "2".repeat(64), generation: "3".repeat(32), keyHash: "4".repeat(64),
   remoteHash: "5".repeat(64), remoteHead: "6".repeat(40), policyHash: "7".repeat(64), aliasesHash: "8".repeat(64), omitted: 2,
   packs: [{ name: `sync-${"9".repeat(64)}.jsonl`, bytes: 25 }] });
 
