@@ -9,8 +9,9 @@ import { assertCuratedShardLayout, ensureShardDescriptor, shardDir } from "./sha
 import type { RealmIntentProof } from "./sync-placement-realm-intent-storage.ts";
 import { REMOTE_ADOPTION_MAX_BYTES, validateRemoteAdoption, type RemoteAdoption } from "./sync-placement-remote-adoption-format.ts";
 import type { RemoteStagedPack } from "./sync-placement-remote-materialization.ts";
+import { RemoteRealmRefusal } from "./sync-placement-remote-refusal.ts";
 
-const fail = (): never => { throw new Error("Remote placement adoption staging is unavailable or changed; retain it for inspection."); };
+const fail = (): never => { throw new RemoteRealmRefusal("staging"); };
 const sha = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const stamp = (s: BigIntStats) => [s.dev, s.ino, s.uid, s.mode, s.nlink, s.size, s.mtimeNs, s.ctimeNs].map(String).join(":");
 const companion = (home: string, plan: RemoteAdoption) => join(home, `placement-remote-adoption-${plan.keyHash}.json`);
@@ -30,7 +31,7 @@ function rejectExistingCurated(dir: string): void {
   for (const name of readdirSync(dir)) {
     if (fixed.has(name) || /^index(?:-v[0-9]+(?:-i[0-9]+)?)?\.db(?:-wal|-shm|-journal)?$/.test(name)
       || /^search\.db(?:-wal|-shm|-journal)?$/.test(name))
-      throw new Error(`Remote placement adoption cannot replace existing curated subpath: ${name}.`);
+      throw new RemoteRealmRefusal("existing", name);
   }
 }
 function check(home: string, proof: RealmIntentProof): void {

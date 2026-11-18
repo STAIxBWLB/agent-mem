@@ -15,8 +15,9 @@ import { captureSyncPlacementContextAsync, placementCaptureContextHash, previewS
 import { readEffectiveSyncPlacementWriters, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 import { types } from "node:util";
+import { RemoteRealmRefusal, type RemoteRealmCause } from "./sync-placement-remote-refusal.ts";
 import type { PlannedGitObject } from "./sync-placement-git.ts";
-import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
+import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, SyncPlacementFormatError } from "./sync-placement-format.ts";
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
 import { readPlacementJournal, readPlacementWriterJournalAnchors, placementWriterJournalToken, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
@@ -60,6 +61,15 @@ const oid = (v: unknown): v is string => typeof v === "string" && v.length === 4
 const sameRealm = (a: PlacementRealm, b: PlacementRealm) => canonicalJSON(a) === canonicalJSON(b);
 const physical = (target: Target): PlacementRealm => target.realm.scope === "user" ? { scope: "user" } : { scope: "project", keyHash: digest(target.realm.key) };
 function refuse(category: PlacementRefusalCategory = "other"): never { throw new PlacementSyncRefusal(category); }
+function remoteRefusal(error: unknown, fallback: RemoteRealmCause = "other"): never {
+  if (error instanceof RemoteRealmRefusal) throw error;
+  if (error instanceof SyncPlacementFormatError || error instanceof Error && error.message === "sync placement activation metadata unavailable or changed; inspect the retained activation before continuing") throw new RemoteRealmRefusal("epoch");
+  const category = placementRefusalCategoryOf(error) ?? classifyPlacementError(error);
+  const cause: RemoteRealmCause = category === "lock" ? "lock" : category === "epoch" ? "epoch"
+    : category === "remote" ? "remote" : category === "size-bound" ? "bound"
+    : category === "source-selection" || category === "policy" || category === "writer-pin" ? "drift" : fallback;
+  throw new RemoteRealmRefusal(cause);
+}
 /** #426: map a foreign error to a category by its class and allowlisted code only, never by its message text. */
 export function classifyPlacementError(error: unknown): PlacementRefusalCategory | undefined {
   try {
@@ -84,7 +94,9 @@ type RemoteReadOptions = Pick<SyncOptions, "signal" | "visibility">;
 async function configuredRemoteContext(homeInput: string, opts: RemoteReadOptions, requireVisibility = true) {
   // Git tracing can write an arbitrary file outside the sync cache, which a read-only listing must not do.
   if (Object.entries(process.env).some(([name, value]) => name.startsWith("GIT_TRACE") && !!value)) return refuse("remote");
-  const home = realPath(homeInput), markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home, markers.profile, markers.shards);
+  const home = realPath(homeInput), markers = readPlacementRuntimeMarkers(home);
+  if (!markers.profile || typeof markers.profile !== "object" || Object.getOwnPropertyDescriptor(markers.profile, "schema")?.value !== PLACEMENT_PROFILE_SCHEMA) return refuse("epoch");
+  const active = readActivePlacementBinding(home, markers.profile, markers.shards);
   if (!active) return refuse("epoch");
   const inventory = readEffectiveRealmInventory(home, active), root = join(home, "shard-sync-placement"), cache = join(root, "objects.git");
   const rootStamp = placementCacheRootStamp(home), configStamp = placementCacheConfigStamp(cache), initial = lstatSync(cache, { bigint: true });
@@ -94,11 +106,11 @@ async function configuredRemoteContext(homeInput: string, opts: RemoteReadOption
   if (forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) return refuse("remote");
   const check = () => {
     const stat = lstatSync(cache, { bigint: true }), nowMarkers = readPlacementRuntimeMarkers(home), now = readActivePlacementBinding(home, nowMarkers.profile, nowMarkers.shards);
-    if (!now || canonicalJSON(now.profile) !== canonicalJSON(active.profile) || canonicalJSON(now.shards) !== canonicalJSON(active.shards)
-    || !stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== initial.dev || stat.ino !== initial.ino
+    if (!now || canonicalJSON(now.profile) !== canonicalJSON(active.profile) || canonicalJSON(now.shards) !== canonicalJSON(active.shards)) return refuse("source-selection");
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== initial.dev || stat.ino !== initial.ino
       || placementCacheRootStamp(home) !== rootStamp || placementCacheConfigStamp(cache) !== configStamp
       || forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) return refuse("remote");
-    inventory.assertCurrent();
+    try { inventory.assertCurrent(); } catch { return refuse("source-selection"); }
   };
   const args = (values: string[]) => ["--no-replace-objects", "--git-dir", cache, "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.commitGraph=false", ...values];
   check();
@@ -122,7 +134,7 @@ export async function discoverRemotePlacementRealms(homeInput: string, opts: Rem
       return advertised.out;
     });
     context.check(); return realms;
-  } catch { throw new Error("Remote placement realm listing is unavailable; check the configured private sync remote and active inventory."); }
+  } catch (error) { return remoteRefusal(error); }
 }
 
 /** Recheck the reviewed head and configured remote immediately before staging publication. */
@@ -134,18 +146,8 @@ export async function assertRemoteAdoptionCurrent(homeInput: string, project: st
       || ctx.active.epoch.generation !== plan.generation || createHash("sha256").update(ctx.url).digest("hex") !== plan.remoteHash) return refuse("source-selection");
     const ref = shardSyncRef({ scope: "project", key: project }), result = await generationSyncGitBytes(ctx.root,
       ctx.args(["ls-remote", "--refs", ctx.url, ref]), opts.signal, undefined, 256);
-    ctx.check();
-    if (result.code !== 0) return refuse("remote");
-    const observed = new TextDecoder("utf-8", { fatal: true }).decode(result.out);
-    if (observed !== `${plan.remoteHead}\t${ref}\n`) {
-      if (/^[a-f0-9]{40}\t/.test(observed) && observed.endsWith(`\t${ref}\n`))
-        throw new Error("Remote head moved since the preview; rerun the --from-remote --dry-run before applying.");
-      return refuse("remote");
-    }
-  } catch (error) {
-    if (error instanceof Error && error.message === "Remote head moved since the preview; rerun the --from-remote --dry-run before applying.") throw error;
-    throw new Error("Remote placement adoption changed; review the configured private sync remote and preview again.");
-  }
+    ctx.check(); if (result.code !== 0 || new TextDecoder("utf-8", { fatal: true }).decode(result.out) !== `${plan.remoteHead}\t${ref}\n`) return refuse("remote");
+  } catch (error) { return remoteRefusal(error); }
 }
 
 export interface PreparedRemoteRealm { plan: RemoteAdoption; packs: RemoteStagedPack[] }
@@ -172,7 +174,7 @@ export async function recoverRemoteStagedPacks(homeInput: string, project: strin
     const selection = selectRemoteMaterialization(await auditRemoteHistory(ctx, project, plan.remoteHead, {})), packs = remoteStagedPacks(selection);
     if (selection.omitted !== plan.omitted || canonicalJSON(packs.map(pack => ({ name: pack.name, bytes: pack.bytes.length }))) !== canonicalJSON(plan.packs)) return refuse("source-selection");
     ctx.check(); return packs;
-  } catch { throw new Error("Remote placement staging evidence is unavailable; retain it for inspection."); }
+  } catch (error) { return remoteRefusal(error, "staging"); }
 }
 /** Fetch and audit one explicitly named remote-only realm into the existing private cache, never the live shard. */
 export async function prepareRemotePlacementRealm(homeInput: string, project: string, opts: RemoteReadOptions = {}): Promise<PreparedRemoteRealm> {
@@ -188,7 +190,12 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
     const writers = readEffectiveSyncPlacementWriters(ctx.home), journalToken = placementWriterJournalToken(ctx.home, ctx.active.profile.placementHead);
     const journal = readPlacementWriterJournalAnchors(ctx.home, ctx.active.profile.placementHead);
     const journalHead = journal.sequence ? journal.records[journal.sequence - 1]!.seal : ctx.active.profile.placementHead;
-    const check = () => { ctx.check(); writers.assertCurrent(); if (placementWriterJournalToken(ctx.home, ctx.active.profile.placementHead) !== journalToken) return refuse("source-selection"); source.assertSourcesUnchanged(); ctx.check(); };
+    const check = () => {
+      ctx.check();
+      try { writers.assertCurrent(); if (placementWriterJournalToken(ctx.home, ctx.active.profile.placementHead) !== journalToken) return refuse("source-selection"); source.assertSourcesUnchanged(); }
+      catch { return refuse("source-selection"); }
+      ctx.check();
+    };
     check(); releaseRoot = acquireMutation(ctx.root); if (!releaseRoot) return refuse("lock");
     releaseSync = generationSyncLock(ctx.root); if (!releaseSync) return refuse("lock");
     const gitBytes = async (args: string[], max: number) => { check(); const result = await generationSyncGitBytes(ctx.root, ctx.args(args), opts.signal, undefined, max); check(); if (result.code !== 0) return refuse("remote"); return Buffer.from(result.out); };
@@ -207,7 +214,7 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
       writerHash: writers.revisionHash, inventoryHead: ctx.inventory.extensionHead, journalSequence: journal.sequence, journalHead, omitted: selection.omitted,
       packs: packs.map(pack => ({ name: pack.name, bytes: pack.bytes.length })) });
     check(); return { plan, packs };
-  } catch { throw new Error("Remote placement realm preview is unavailable; check the configured private sync remote and complete realm proof."); }
+  } catch (error) { return remoteRefusal(error); }
   finally {
     if (context && incoming) try {
       context.check(); await generationSyncGit(context.root, context.args(["update-ref", "--no-deref", "-d", incoming]), undefined);

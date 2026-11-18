@@ -36,21 +36,12 @@ test("remote-only realm is explicitly previewed and admitted without changing ex
     const listing = JSON.parse(await invoke(["migrate", "--sync-placement", "--list-remote", "--json"]));
     expect(listing.realms).toContainEqual({ scope: "project", keyHash: shardKeyHash(target) });
     expect(listing.nextStep).toBe("amem migrate --sync-placement --admit <project> --from-remote --dry-run");
+    expect(await invoke(["migrate", "--sync-placement", "--list-remote"])).toContain(listing.nextStep);
     const dry = await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--dry-run", "--json"]);
     const preview = JSON.parse(dry); expect(preview.state).toBe("preview"); expect(preview.omitted).toBe(0); expect(preview.remoteHead).toMatch(/^[a-f0-9]{40}$/);
-    expect(preview.nextStep).toBe(`amem migrate --sync-placement --admit '${target}' --from-remote --apply --expect-head ${preview.remoteHead}`);
-    expect(dry).not.toContain(remote); expect(existsSync(join(project, "generation.json"))).toBe(false);
-    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply"])).rejects.toThrow("--expect-head");
-    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--expect-head", preview.remoteHead + "\n"])).rejects.toThrow("--expect-head");
-    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--apply", "--expect-head", preview.remoteHead])).rejects.toThrow("only used");
-    const source = openShardStore({ memoryDir: a.home, project: target, deferPromotions: true });
-    try { source.note({ op: "note", project: target, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "later remote row", about: [] }); }
-    finally { source.close(); }
-    expect((await sync(a.home, a.opts(remote))).ok).toBe(true); expect(head()).not.toBe(preview.remoteHead);
-    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--expect-head", preview.remoteHead])).rejects.toThrow("Remote head moved since the preview");
-    expect(existsSync(join(project, "generation.json"))).toBe(false);
-    const fresh = JSON.parse(await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--dry-run", "--json"]));
-    const applied = JSON.parse(await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--expect-head", fresh.remoteHead, "--json"]));
+    expect(preview.nextStep).toBe("amem migrate --sync-placement --admit <project> --from-remote --apply");
+    expect(dry).not.toContain(target); expect(dry).not.toContain(remote); expect(existsSync(join(project, "generation.json"))).toBe(false);
+    const applied = JSON.parse(await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--json"]));
     expect(applied).toMatchObject({ state: "admitted", omitted: 0, nextStep: "amem sync" });
     expect(readFileSync(join(project, "project.json"))).toEqual(before);
     const workAgain = new WorkListStore({ base: b.home, project: target, policy: () => true });
@@ -132,7 +123,7 @@ test("a retained remote staging operation fences another remote admission", asyn
   await expect(remoteRealmAdmission(b.home, first, { mode: "apply", visibility: privateVisibility, checkpoint: stage => {
     if (stage === "after-companion") throw Error("fixture interruption");
   } })).rejects.toThrow();
-  await expect(remoteRealmAdmission(b.home, second, { mode: "apply", visibility: privateVisibility })).rejects.toThrow("unavailable");
+  await expect(remoteRealmAdmission(b.home, second, { mode: "apply", visibility: privateVisibility })).rejects.toThrow("resume or abandon");
   expect(existsSync(join(shardDir(b.home, second), "generation.json"))).toBe(false);
   expect(await remoteRealmAdmission(b.home, first, { mode: "abandon", confirm: true, visibility: privateVisibility })).toMatchObject({ state: "abandoned" });
   expect(await remoteRealmAdmission(b.home, second, { mode: "apply", visibility: privateVisibility })).toMatchObject({ state: "admitted" });
@@ -272,7 +263,7 @@ test("remote staging refuses source or policy drift and remains abandonable", as
       try { writer.note({ op: "note", project: shared, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "changed after preview", about: [] }); }
       finally { writer.close(); }
     }
-    await expect(remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility })).rejects.toThrow();
+    await expect(remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility })).rejects.toThrow("Local sources, policy, aliases, writers or journal changed");
     expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
     expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
   }
@@ -287,8 +278,8 @@ test("an orphan remote stage is retained and never reported as abandoned", async
   const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = b.home;
   try {
     const invoke = (mode: string[]) => runCli(["migrate", "--sync-placement", "--admit", target, ...mode, "--json"], { cwd: b.root, env: {} });
-    await expect(invoke(["--resume"])).rejects.toThrow("unavailable");
-    await expect(invoke(["--abandon", "--confirm"])).rejects.toThrow("unavailable");
+    await expect(invoke(["--resume"])).rejects.toThrow("docs/purge.md");
+    await expect(invoke(["--abandon", "--confirm"])).rejects.toThrow("docs/purge.md");
     expect(readFileSync(join(stage, "unattributed"), "utf8")).toBe("retain");
   } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
 }, 120_000);
