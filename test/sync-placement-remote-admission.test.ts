@@ -35,10 +35,22 @@ test("remote-only realm is explicitly previewed and admitted without changing ex
     await expect(invoke(["migrate", "--sync-placement", "--from-remote", "--dry-run"])).rejects.toThrow();
     const listing = JSON.parse(await invoke(["migrate", "--sync-placement", "--list-remote", "--json"]));
     expect(listing.realms).toContainEqual({ scope: "project", keyHash: shardKeyHash(target) });
+    expect(listing.nextStep).toBe("amem migrate --sync-placement --admit <project> --from-remote --dry-run");
     const dry = await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--dry-run", "--json"]);
     const preview = JSON.parse(dry); expect(preview.state).toBe("preview"); expect(preview.omitted).toBe(0); expect(preview.remoteHead).toMatch(/^[a-f0-9]{40}$/);
-    expect(dry).not.toContain(target); expect(dry).not.toContain(remote); expect(existsSync(join(project, "generation.json"))).toBe(false);
-    const applied = JSON.parse(await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--json"]));
+    expect(preview.nextStep).toBe(`amem migrate --sync-placement --admit '${target}' --from-remote --apply --expect-head ${preview.remoteHead}`);
+    expect(dry).not.toContain(remote); expect(existsSync(join(project, "generation.json"))).toBe(false);
+    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply"])).rejects.toThrow("--expect-head");
+    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--expect-head", preview.remoteHead + "\n"])).rejects.toThrow("--expect-head");
+    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--apply", "--expect-head", preview.remoteHead])).rejects.toThrow("only used");
+    const source = openShardStore({ memoryDir: a.home, project: target, deferPromotions: true });
+    try { source.note({ op: "note", project: target, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "later remote row", about: [] }); }
+    finally { source.close(); }
+    expect((await sync(a.home, a.opts(remote))).ok).toBe(true); expect(head()).not.toBe(preview.remoteHead);
+    await expect(invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--expect-head", preview.remoteHead])).rejects.toThrow("Remote head moved since the preview");
+    expect(existsSync(join(project, "generation.json"))).toBe(false);
+    const fresh = JSON.parse(await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--dry-run", "--json"]));
+    const applied = JSON.parse(await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--expect-head", fresh.remoteHead, "--json"]));
     expect(applied).toMatchObject({ state: "admitted", omitted: 0, nextStep: "amem sync" });
     expect(readFileSync(join(project, "project.json"))).toEqual(before);
     const workAgain = new WorkListStore({ base: b.home, project: target, policy: () => true });

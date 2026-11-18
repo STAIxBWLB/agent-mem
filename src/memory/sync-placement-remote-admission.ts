@@ -27,6 +27,7 @@ import type { SyncOptions } from "./sync.ts";
 export type RemoteAdmissionMode = "dry-run" | "apply" | "resume" | "abandon";
 export interface RemoteAdmissionOptions extends Pick<SyncOptions, "signal" | "visibility"> {
   mode: RemoteAdmissionMode; confirm?: boolean;
+  expectedHead?: string;
   /** Internal crash seam; never supplied by the CLI. */
   checkpoint?(stage: "after-preview" | "after-companion" | "after-stage" | "after-install" | "after-intent" | "after-metadata" | "after-proof" | "after-append" | "after-admission"): void | Promise<void>;
 }
@@ -86,8 +87,11 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
   let packs = plan ? await recoverRemoteStagedPacks(home, project, plan) : undefined;
   // A torn first companion can be completed only if the exact plan is reconstructed; a changed head refuses.
   if (!plan) {
-    const prepared = await prepareRemotePlacementRealm(home, project, transport); plan = prepared.plan; packs = prepared.packs; await options.checkpoint?.("after-preview");
+    const prepared = await prepareRemotePlacementRealm(home, project, transport); plan = prepared.plan; packs = prepared.packs;
   }
+  if (options.mode === "apply" && options.expectedHead !== undefined && plan.remoteHead !== options.expectedHead)
+    throw new Error("Remote head moved since the preview; rerun the --from-remote --dry-run before applying.");
+  if (options.mode === "apply") await options.checkpoint?.("after-preview");
   const frozen: RemoteAdoption = plan, files = packs!;
   const clearOwn = async () => {
     await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {

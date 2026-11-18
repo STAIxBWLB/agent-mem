@@ -412,13 +412,19 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       throw new AgentUsageError("Remote realm listing uses only --sync-placement --list-remote and optional --json.");
     if (options["--from-remote"] === true && options["--admit"] === undefined)
       throw new AgentUsageError("--from-remote requires --sync-placement --admit <project>.");
+    if (options["--expect-head"] !== undefined && !(options["--from-remote"] === true && options["--apply"] === true && options["--admit"] !== undefined))
+      throw new AgentUsageError("--expect-head is only used with --admit <project> --from-remote --apply; run the remote dry-run first.");
+    if (options["--from-remote"] === true && options["--apply"] === true && (typeof options["--expect-head"] !== "string" || options["--expect-head"].length !== 40 || !/^[a-f0-9]{40}$/.test(options["--expect-head"])))
+      throw new AgentUsageError("Remote admission apply requires --expect-head <40-hex> from the --from-remote --dry-run.");
+    if (options["--from-remote"] === true && typeof options["--admit"] === "string" && /[\u0000-\u001f\u007f]/.test(options["--admit"]))
+      throw new AgentUsageError("The project key contains a control character; use a printable project key.");
     if (options["--admit"] !== undefined) {
       if (options["--writer-root"] !== undefined || options["--confirm"] === true && options["--abandon"] !== true)
         throw new AgentUsageError("Admitting one realm uses only --sync-placement --admit <project> with --dry-run, --apply, --resume or --abandon --confirm; writer roots belong to initial activation.");
     } else if (options["--confirm"] === true) {
       throw new AgentUsageError("--confirm applies only to --sync-placement --admit <project> --abandon; other placement modes keep their own confirmation.");
     }
-  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined)) {
+  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined||options["--expect-head"]!==undefined)) {
     throw new AgentUsageError("--writer-root, --abandon and --admit apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "setup") {
@@ -525,7 +531,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (options["--list-remote"] === true) {
         const { discoverRemotePlacementRealms } = await import("./memory/sync-placement-transport.ts");
         const realms = await discoverRemotePlacementRealms(memoryHome(), { ...(context.visibility ? { visibility: context.visibility } : {}) });
-        return options["--json"] === true ? JSON.stringify({ realms }, null, 2) : realms.map(realm => `scope=${realm.scope} keyHash=${realm.keyHash}`).join("\n") || "no remote-only placement realms";
+        const nextStep = "amem migrate --sync-placement --admit <project> --from-remote --dry-run";
+        return options["--json"] === true ? JSON.stringify({ realms, nextStep }, null, 2) : `${realms.map(realm => `scope=${realm.scope} keyHash=${realm.keyHash}`).join("\n") || "no remote-only placement realms"}\nNext: ${nextStep}`;
       }
       if (options["--admit"] !== undefined) {
         const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");
@@ -537,7 +544,15 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (options["--from-remote"] === true || remotePending) {
           const { remoteRealmAdmission } = await import("./memory/sync-placement-remote-admission.ts");
           const result = await remoteRealmAdmission(memoryHome(), project, { mode: options["--apply"] === true ? "apply" : options["--resume"] === true ? "resume" : options["--abandon"] === true ? "abandon" : "dry-run",
-            ...(options["--confirm"] === true ? { confirm: true } : {}), ...(context.visibility ? { visibility: context.visibility } : {}) });
+            ...(typeof options["--expect-head"] === "string" ? { expectedHead: options["--expect-head"] } : {}),
+            ...(options["--confirm"] === true ? { confirm: true } : {}), ...(context.visibility ? { visibility: context.visibility } : {}) }).catch(error => {
+              if (error instanceof Error && error.message === "Remote head moved since the preview; rerun the --from-remote --dry-run before applying.") throw new AgentUsageError(error.message);
+              throw error;
+            });
+          if (result.state === "preview" && result.remoteHead) {
+            const quoted = "'" + project.replaceAll("'", "'\\''") + "'";
+            result.nextStep = `amem migrate --sync-placement --admit ${quoted} --from-remote --apply --expect-head ${result.remoteHead}`;
+          }
           if (options["--json"] === true) return JSON.stringify(result, null, 2);
           return `sync placement remote admission: ${result.state}; realm ${result.realm}${result.remoteHead ? `; remote head ${result.remoteHead}` : ""}${result.omitted !== undefined ? `; omitted ${result.omitted}` : ""}${result.nextStep ? `; next ${result.nextStep}` : ""}\n`;
         }

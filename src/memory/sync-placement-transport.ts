@@ -134,8 +134,18 @@ export async function assertRemoteAdoptionCurrent(homeInput: string, project: st
       || ctx.active.epoch.generation !== plan.generation || createHash("sha256").update(ctx.url).digest("hex") !== plan.remoteHash) return refuse("source-selection");
     const ref = shardSyncRef({ scope: "project", key: project }), result = await generationSyncGitBytes(ctx.root,
       ctx.args(["ls-remote", "--refs", ctx.url, ref]), opts.signal, undefined, 256);
-    ctx.check(); if (result.code !== 0 || new TextDecoder("utf-8", { fatal: true }).decode(result.out) !== `${plan.remoteHead}\t${ref}\n`) return refuse("remote");
-  } catch { throw new Error("Remote placement adoption changed; review the configured private sync remote and preview again."); }
+    ctx.check();
+    if (result.code !== 0) return refuse("remote");
+    const observed = new TextDecoder("utf-8", { fatal: true }).decode(result.out);
+    if (observed !== `${plan.remoteHead}\t${ref}\n`) {
+      if (/^[a-f0-9]{40}\t/.test(observed) && observed.endsWith(`\t${ref}\n`))
+        throw new Error("Remote head moved since the preview; rerun the --from-remote --dry-run before applying.");
+      return refuse("remote");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "Remote head moved since the preview; rerun the --from-remote --dry-run before applying.") throw error;
+    throw new Error("Remote placement adoption changed; review the configured private sync remote and preview again.");
+  }
 }
 
 export interface PreparedRemoteRealm { plan: RemoteAdoption; packs: RemoteStagedPack[] }
