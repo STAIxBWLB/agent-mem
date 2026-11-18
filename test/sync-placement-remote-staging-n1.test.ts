@@ -26,7 +26,10 @@ test("0.29 admission commands preserve staged curated rows beside work", async (
   try {
     const a = await fixture.inventoryFixture(1, [target], true), remote = fixture.bareRemote();
     const snapshot = inspect.inspectionFilesystemSnapshot(a.home), previousHome = process.env.AMEM_HOME; process.env.AMEM_HOME = a.home;
-    try { await expect(cli.runCli(["migrate", "--sync-placement", "--list-remote", "--json"], { cwd: a.root, env: {} })).rejects.toThrow(); }
+    try {
+      await expect(cli.runCli(["migrate", "--sync-placement", "--list-remote", "--json"], { cwd: a.root, env: {} })).rejects.toThrow();
+      await expect(cli.runCli(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply"], { cwd: a.root, env: {} })).rejects.toThrow();
+    }
     finally { if (previousHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previousHome; }
     expect(inspect.inspectionFilesystemSnapshot(a.home)).toEqual(snapshot);
     const source = storeModule.openShardStore({ memoryDir: a.home, project: target, deferPromotions: true });
