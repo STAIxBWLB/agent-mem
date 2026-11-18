@@ -266,7 +266,10 @@ function* compileSteps(raw: PlacementDependencyInput): Generator<void, Dependenc
     if (good && node.row.op === "supersede") good = endpoints[0]!.row.scope !== "shared" || endpoints[1]!.row.scope === "shared";
     if (!good) { node.reason = "related-local"; for (const dependent of reverse.get(node.key.id) ?? []) queue.push(dependent); }
   }
-  const decisions: DependencyDecision[] = [];
+  // #470: each decision's id is computed once and the id itself is what the sort compares. Recomputing placementKeyId
+  // inside both comparators made ordering the dominant cost of this phase (1.79 s of one gap on the 8,000-row fixture),
+  // and a comparator cannot yield, so the decoration is where the work is bounded and the sort stays over strings.
+  const ordered: { id: string; decision: DependencyDecision }[] = [];
   for (const node of nodes) {
     if (!node.output) continue;
     if (++stepped >= STEP_ROWS) { stepped = 0; yield; }
@@ -277,10 +280,11 @@ function* compileSteps(raw: PlacementDependencyInput): Generator<void, Dependenc
       if (++refs >= STEP_REFS) { refs = 0; yield; }
       for (const to of candidates(node, ref)) { const id = placementKeyId(to.key); if (!related.has(id)) related.set(id, to.key); }
     }
-    decisions.push({ key: validatePlacementKey(node.key), eligible: !node.reason,
+    const key = validatePlacementKey(node.key);
+    ordered.push({ id: placementKeyId(key), decision: { key, eligible: !node.reason,
       ...(node.reason ? { reason: node.reason } : {}),
-      dependencies: [...related.values()].sort((a,b) => placementKeyId(a).localeCompare(placementKeyId(b))).map(validatePlacementKey) });
+      dependencies: [...related].sort(([a],[b]) => a.localeCompare(b)).map(([, value]) => validatePlacementKey(value)) } });
   }
-  decisions.sort((a,b) => placementKeyId(a.key).localeCompare(placementKeyId(b.key)));
-  return decisions;
+  ordered.sort((a, b) => a.id.localeCompare(b.id));
+  return ordered.map(entry => entry.decision);
 }
