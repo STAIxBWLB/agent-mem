@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
@@ -327,7 +328,7 @@ for (const missing of ["map","set","input","object"] as const) test(`R15 v2 sync
   const dir=f.receiver.a.dir,setFile=join(dir,"public-prune-input-sets",view.realms[`project:${A}`]+".json"),set=JSON.parse(readFileSync(setFile,"utf8"));
   const file=missing==="map"?mapFile:missing==="set"?setFile:missing==="input"?join(dir,"public-prune-inputs",set.inputs[0]+".json"):join(dir,"public-prune-objects",readdirSync(join(dir,"public-prune-objects")).find(name=>name.endsWith(".git"))!);
   f.receiver.close();rmSync(file);
-  for(const base of ["index.db","index-v2.db"])for(const suffix of ["","-wal","-shm"])rmSync(join(dir,base+suffix),{force:true});
+  for(const base of ["index.db","index-v2.db",indexFileName(false),indexFileName(true)])for(const suffix of ["","-wal","-shm"])rmSync(join(dir,base+suffix),{force:true});
   expect(()=>{const reader=openShardStore({memoryDir:f.receiver.memory,project:A,now:()=>f.receiver.clock.now});try{reader.rebuild();reader.list({project:A});}finally{reader.close();}}).toThrow();
 },60_000);
 

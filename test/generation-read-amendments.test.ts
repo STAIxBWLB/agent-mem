@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { indexFileName } from "../src/memory/index-file.ts";
 import { join } from "node:path";
 import { MemoryStore, entryId } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
@@ -144,7 +145,7 @@ test("recreating only the generation derived index replays captured legacy prefi
   const store = new MemoryStore({ home: parent, now: () => NOW, deferPromotions: true });
   const second = store.note(input("generation baseline after migration")), dir = store.dir;
   expect(store.list().map(row => row.id).sort()).toEqual([first, second].sort()); store.close();
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(join(dir, `index.db${suffix}`), { force: true });
+  for (const suffix of ["", "-wal", "-shm"]) rmSync(join(dir, `${indexFileName(false)}${suffix}`), { force: true });
   const recreated = new MemoryStore({ home: parent, now: () => NOW, deferPromotions: true });
   try {
     expect(recreated.list().map(row => row.id).sort()).toEqual([first, second].sort());
