@@ -1,6 +1,6 @@
 /** Private, fenced staging for remote placement adoption; never rewrites an existing curated log. */
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, writeSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory } from "./generation.ts";
 import { assertMutationHandle } from "./mutation.ts";
@@ -127,4 +127,37 @@ export function installRemoteAdoptionLog(homeInput: string, project: string, val
   if (stamp(ownedDir(log)) !== stamp(source) || currentTarget.dev !== target.dev || currentTarget.ino !== target.ino) fail();
   renameSync(log, destination); fsyncDirectory(root); fsyncDirectory(projectDir); check(home, proof);
   const installed = ownedDir(destination); if (installed.dev !== source.dev || installed.ino !== source.ino) fail();
+}
+
+/** Remove only this plan's attributable private staging; an installed curated log is never removed. */
+export function clearRemoteAdoption(homeInput: string, value: RemoteAdoption, packs: readonly RemoteStagedPack[], proof: RealmIntentProof): void {
+  const home = realPath(homeInput), plan = validateRemoteAdoption(value); check(home, proof);
+  if (canonicalJSON(readRemoteAdoption(home, plan.keyHash)) !== canonicalJSON(plan) || packs.length !== plan.packs.length) fail();
+  for (let i = 0; i < packs.length; i++) {
+    const expected = plan.packs[i], pack = packs[i];
+    if (!expected || !pack || expected.name !== pack.name || expected.bytes !== pack.bytes.length || `sync-${sha(pack.bytes)}.jsonl` !== pack.name) fail();
+  }
+  const root = staging(home, plan), log = join(root, "log"), stage = lstatSync(root, { bigint: true, throwIfNoEntry: false });
+  if (stage) {
+    ownedDir(root); if (readdirSync(root).some(name => name !== "log")) fail();
+    if (lstatSync(log, { throwIfNoEntry: false })) {
+      ownedDir(log); const byName = new Map(packs.map(pack => [pack.name, pack.bytes]));
+      const names = readdirSync(log); if (names.some(name => !byName.has(name))) fail();
+      // First prove every remaining prefix, then recheck each one immediately before removal.
+      const saved = names.map(name => {
+        const file = join(log, name), expected = byName.get(name)!, bytes = readOwned(file, expected.length), stat = lstatSync(file, { bigint: true });
+        if (!bytes || !bytes.equals(expected.subarray(0, bytes.length))) return fail();
+        return { file, expected, bytes, stamp: stamp(stat) };
+      });
+      for (const item of saved) {
+        check(home, proof); if (stamp(lstatSync(item.file, { bigint: true })) !== item.stamp || !readOwned(item.file, item.expected.length)?.equals(item.bytes)) fail();
+        unlinkSync(item.file);
+      }
+      fsyncDirectory(log); check(home, proof); rmdirSync(log); fsyncDirectory(root);
+    }
+    check(home, proof); if (readdirSync(root).length) fail(); rmdirSync(root); fsyncDirectory(home);
+  }
+  const file = companion(home, plan), expected = Buffer.from(canonicalJSON(plan) + "\n"), before = lstatSync(file, { bigint: true });
+  check(home, proof); if (!readOwned(file, REMOTE_ADOPTION_MAX_BYTES)?.equals(expected) || stamp(lstatSync(file, { bigint: true })) !== stamp(before)) fail();
+  unlinkSync(file); fsyncDirectory(home); check(home, proof);
 }

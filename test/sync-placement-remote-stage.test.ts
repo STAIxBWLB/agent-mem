@@ -8,7 +8,7 @@ import { acquireMutation } from "../src/memory/mutation.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
 import { createRemoteAdoption, REMOTE_ADOPTION_SCHEMA } from "../src/memory/sync-placement-remote-adoption-format.ts";
-import { installRemoteAdoptionLog, readRemoteAdoption, stageRemoteAdoption, writeRemoteAdoption } from "../src/memory/sync-placement-remote-stage.ts";
+import { clearRemoteAdoption, installRemoteAdoptionLog, readRemoteAdoption, stageRemoteAdoption, writeRemoteAdoption } from "../src/memory/sync-placement-remote-stage.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -71,4 +71,20 @@ test("torn companion and pack prefixes finish exactly while conflicting bytes re
     writeFileSync(pack, "conflict", { mode: 0o600 }); expect(() => stageRemoteAdoption(f.home, f.plan, f.packs, f.proof)).toThrow();
     expect(readFileSync(pack, "utf8")).toBe("conflict");
   } finally { f.close(); }
+});
+
+test("abandon removes only attributable private staging and never an installed log", () => {
+  for (const installed of [false, true]) {
+    const f = fixture();
+    try {
+      writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof);
+      if (installed) installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof);
+      const unrelated = join(f.root, "unrelated"); writeFileSync(unrelated, "retain", { mode: 0o600 });
+      expect(() => clearRemoteAdoption(f.home, f.plan, f.packs, f.proof)).toThrow();
+      expect(readFileSync(unrelated, "utf8")).toBe("retain"); rmSync(unrelated);
+      clearRemoteAdoption(f.home, f.plan, f.packs, f.proof);
+      expect(readRemoteAdoption(f.home, f.plan.keyHash)).toBeUndefined(); expect(existsSync(f.root)).toBe(false);
+      if (installed) expect(readFileSync(join(shardDir(f.home, f.project), "log", f.packs[0]!.name))).toEqual(f.packs[0]!.bytes);
+    } finally { f.close(); }
+  }
 });
