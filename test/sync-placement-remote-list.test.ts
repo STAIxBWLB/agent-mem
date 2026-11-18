@@ -6,7 +6,7 @@ import { openShardStore } from "../src/memory/store.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
 import { syncMemory } from "../src/memory/sync.ts";
-import { assertRemoteAdoptionCurrent, discoverRemotePlacementRealms, prepareRemotePlacementRealm } from "../src/memory/sync-placement-transport.ts";
+import { assertRemoteAdoptionCurrent, discoverRemotePlacementRealms, prepareRemotePlacementRealm, recoverRemoteStagedPacks } from "../src/memory/sync-placement-transport.ts";
 import { bareRemote, closeInventoryFixtures, inventoryFixture } from "./fakes/sync-placement-inventory.ts";
 import { inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.ts";
 
@@ -57,5 +57,6 @@ test("remote realm preview audits the frozen ref in the configured cache without
   const removed = memoryGitSync(["--git-dir", remote, "update-ref", "-d", `refs/heads/amem/p/${shardKeyHash(remoteOnly)}`], { encoding: "utf8" });
   expect(removed.status).toBe(0);
   await expect(assertRemoteAdoptionCurrent(b.home, remoteOnly, prepared.plan, { visibility: async () => "private" })).rejects.toThrow("changed");
+  expect(await recoverRemoteStagedPacks(b.home, remoteOnly, prepared.plan)).toEqual(prepared.packs);
   expect(existsSync(target)).toBe(false);
 }, 120_000);

@@ -40,7 +40,7 @@ import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { listRemotePlacementRealms, REMOTE_REALM_ADVERTISEMENT_BYTES, type RemoteOnlyRealm } from "./sync-placement-realm-discovery.ts";
 import { realPath } from "./platform.ts";
-import { createRemoteAdoption, REMOTE_ADOPTION_SCHEMA, type RemoteAdoption } from "./sync-placement-remote-adoption-format.ts";
+import { createRemoteAdoption, REMOTE_ADOPTION_SCHEMA, validateRemoteAdoption, type RemoteAdoption } from "./sync-placement-remote-adoption-format.ts";
 import { remoteStagedPacks, selectRemoteMaterialization, type RemoteStagedPack } from "./sync-placement-remote-materialization.ts";
 
 /**
@@ -81,7 +81,7 @@ export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions 
 
 type RemoteReadOptions = Pick<SyncOptions, "signal" | "visibility">;
 /** Shared configured-remote proof for discovery and audited read-only preview. */
-async function configuredRemoteContext(homeInput: string, opts: RemoteReadOptions) {
+async function configuredRemoteContext(homeInput: string, opts: RemoteReadOptions, requireVisibility = true) {
   // Git tracing can write an arbitrary file outside the sync cache, which a read-only listing must not do.
   if (Object.entries(process.env).some(([name, value]) => name.startsWith("GIT_TRACE") && !!value)) return refuse("remote");
   const home = realPath(homeInput), markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home, markers.profile, markers.shards);
@@ -106,7 +106,7 @@ async function configuredRemoteContext(homeInput: string, opts: RemoteReadOption
   const settings = validatePlacementCacheConfig(new TextDecoder("utf-8", { fatal: true }).decode(config.out)), url = settings.get("remote.origin.url");
   if (!url || url.length > 4096 || url.startsWith("-") || /[\r\n\0]/.test(url) || settings.get("core.bare") !== "true"
     || settings.has("remote.origin.pushurl") && settings.get("remote.origin.pushurl") !== url) return refuse("remote");
-  if (await (opts.visibility ?? remoteVisibility)(url) !== "private") return refuse("remote");
+  if (requireVisibility && await (opts.visibility ?? remoteVisibility)(url) !== "private") return refuse("remote");
   check();
   return { home, active, inventory, root, cache, url, args, check };
 }
@@ -126,6 +126,7 @@ export async function discoverRemotePlacementRealms(homeInput: string, opts: Rem
 /** Recheck the reviewed head and configured remote immediately before staging publication. */
 export async function assertRemoteAdoptionCurrent(homeInput: string, project: string, plan: RemoteAdoption, opts: RemoteReadOptions = {}): Promise<void> {
   try {
+    plan = validateRemoteAdoption(plan);
     const ctx = await configuredRemoteContext(homeInput, opts), key = createHash("sha256").update(project).digest("hex");
     if (key !== plan.keyHash || ctx.active.epoch.homeHash !== plan.homeHash || ctx.active.profile.placementHead !== plan.epochHash
       || ctx.active.epoch.generation !== plan.generation || createHash("sha256").update(ctx.url).digest("hex") !== plan.remoteHash) return refuse("source-selection");
@@ -136,6 +137,31 @@ export async function assertRemoteAdoptionCurrent(homeInput: string, project: st
 }
 
 export interface PreparedRemoteRealm { plan: RemoteAdoption; packs: RemoteStagedPack[] }
+async function auditRemoteHistory(ctx: Awaited<ReturnType<typeof configuredRemoteContext>>, project: string, head: string, opts: RemoteReadOptions): Promise<ShardHistory> {
+  const gitBytes = async (args: string[], max: number) => { ctx.check(); const result = await generationSyncGitBytes(ctx.root, ctx.args(args), opts.signal, undefined, max); ctx.check(); if (result.code !== 0) return refuse("remote"); return Buffer.from(result.out); };
+  const auditor = new ShardHistoryAuditor({ realm: { scope: "project", key: project }, generation: ctx.active.epoch.generation, placement: true, publicPrune: true,
+    git: async args => { ctx.check(); const result = await generationSyncGit(ctx.root, ctx.args(args), opts.signal); ctx.check(); if (result.code !== 0) return refuse("remote"); return result.out; },
+    blob: async (oid, path) => gitBytes(["cat-file", "blob", oid], path === "shard.json" || path.startsWith("prune-witnesses/") ? 65536 : SHARD_PACK_MAX_BYTES),
+    object: async (oid, type) => {
+      const bytes = await gitBytes(["cat-file", type, oid], type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES);
+      if (createHash("sha1").update(`${type} ${bytes.length}\0`).update(bytes).digest("hex") !== oid) return refuse("remote"); return bytes;
+    },
+  });
+  return auditor.history(head);
+}
+
+/** Reconstruct frozen pack bytes from the existing cache without contacting the remote. */
+export async function recoverRemoteStagedPacks(homeInput: string, project: string, plan: RemoteAdoption): Promise<RemoteStagedPack[]> {
+  try {
+    plan = validateRemoteAdoption(plan);
+    const ctx = await configuredRemoteContext(homeInput, {}, false), key = createHash("sha256").update(project).digest("hex");
+    if (key !== plan.keyHash || ctx.active.epoch.homeHash !== plan.homeHash || ctx.active.profile.placementHead !== plan.epochHash
+      || ctx.active.epoch.generation !== plan.generation || createHash("sha256").update(ctx.url).digest("hex") !== plan.remoteHash) return refuse("source-selection");
+    const selection = selectRemoteMaterialization(await auditRemoteHistory(ctx, project, plan.remoteHead, {})), packs = remoteStagedPacks(selection);
+    if (selection.omitted !== plan.omitted || canonicalJSON(packs.map(pack => ({ name: pack.name, bytes: pack.bytes.length }))) !== canonicalJSON(plan.packs)) return refuse("source-selection");
+    ctx.check(); return packs;
+  } catch { throw new Error("Remote placement staging evidence is unavailable; retain it for inspection."); }
+}
 /** Fetch and audit one explicitly named remote-only realm into the existing private cache, never the live shard. */
 export async function prepareRemotePlacementRealm(homeInput: string, project: string, opts: RemoteReadOptions = {}): Promise<PreparedRemoteRealm> {
   let releaseRoot: (() => void) | undefined, releaseSync: (() => void) | undefined, incoming: string | undefined;
@@ -157,15 +183,7 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
     const head = match[1]!; incoming = `refs/amem/placement-incoming/${randomBytes(16).toString("hex")}`;
     await gitBytes(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", ctx.url, `${ref}:${incoming}`], 65536);
     const fetched = (await gitBytes(["rev-parse", "--verify", incoming], 128)).toString("utf8").trim(); if (fetched !== head) return refuse("remote");
-    const auditor = new ShardHistoryAuditor({ realm: { scope: "project", key: project }, generation: ctx.active.epoch.generation, placement: true, publicPrune: true,
-      git: async args => { check(); const result = await generationSyncGit(ctx.root, ctx.args(args), opts.signal); check(); if (result.code !== 0) return refuse("remote"); return result.out; },
-      blob: async (oid, path) => gitBytes(["cat-file", "blob", oid], path === "shard.json" || path.startsWith("prune-witnesses/") ? 65536 : SHARD_PACK_MAX_BYTES),
-      object: async (oid, type) => {
-        const bytes = await gitBytes(["cat-file", type, oid], type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES);
-        if (createHash("sha1").update(`${type} ${bytes.length}\0`).update(bytes).digest("hex") !== oid) return refuse("remote"); return bytes;
-      },
-    });
-    const history = await auditor.history(head), selection = selectRemoteMaterialization(history), packs = remoteStagedPacks(selection);
+    const history = await auditRemoteHistory(ctx, project, head, opts), selection = selectRemoteMaterialization(history), packs = remoteStagedPacks(selection);
     if (!(await gitBytes(["ls-remote", "--refs", ctx.url, ref], 256)).equals(advertised)) return refuse("remote");
     check();
     const plan = createRemoteAdoption({ schema: REMOTE_ADOPTION_SCHEMA, homeHash: ctx.active.epoch.homeHash, epochHash: ctx.active.profile.placementHead,
