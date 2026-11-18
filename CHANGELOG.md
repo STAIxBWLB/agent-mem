@@ -14,7 +14,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
-- Restore project catalog and console Recap on activated placement homes by recognizing v3 selectors and binding private Recap snapshots to the verified placement. 0.29.x patch candidate. Refs #480.
+- Restore project catalog and console Recap on activated placement homes by recognizing v3 selectors and binding private Recap snapshots to the verified placement. Refs #480.
 
 ## 0.29.0
 

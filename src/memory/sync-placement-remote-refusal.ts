@@ -9,8 +9,8 @@ const messages: Record<RemoteRealmCause, string> = {
   cache: "The local placement Git cache or its configuration is unsafe, missing or changed; stop sync and inspect the private placement cache before retrying.",
   epoch: "No valid active placement is available; review and activate placement with amem migrate --sync-placement --dry-run first.",
   staging: "Remote admission staging cannot be attributed or verified; retain it for inspection and see docs/purge.md.",
-  bound: "The remote realm exceeds a supported bound; retain the evidence and inspect the bound before retrying.",
-  existing: "Existing curated state prevents remote admission; inspect the local realm and use the ordinary admission preview.",
+  bound: "The remote realm exceeds a supported bound; retain the evidence and run amem migrate --sync-placement --admit <project> --from-remote --dry-run to inspect the bound.",
+  existing: "Existing curated state prevents remote admission; inspect the local realm with amem migrate --sync-placement --admit <project> --dry-run.",
   other: "Remote realm discovery or admission is unavailable; inspect the placement state and retry its --dry-run.",
 };
 export class RemoteRealmRefusal extends Error {
