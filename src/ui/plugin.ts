@@ -95,7 +95,7 @@ export const plugin = {
       { id: "timeline", title: "Timeline", order: 4 },
       { id: "work", title: "Work lists", order: 5 },
       { id: "goals", title: "Goals", order: 6 },
-      { id: "capacity", title: "Capacity", order: 7 },
+      { id: "capacity", title: "Capacity", order: 7, maxAgeMs: 15_000 },
     ],
     commands: [
       { id: "gc", title: "Evict expired capture rows", hint: "amem gc", action: "gc" },

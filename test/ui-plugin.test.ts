@@ -80,7 +80,9 @@ test("the manifest declares one poll of Recap reuse without adding other panel c
   expect(plugin.manifest.panels.find(panel => panel.id === "recap")).toMatchObject({ maxAgeMs: 15_000 });
   expect(plugin.manifest.panels.find(panel => panel.id === "recap")?.maxAgeMs).toBe(plugin.manifest.pollMs);
   expect(plugin.manifest.panels.map(panel => panel.id)).not.toContain("inbox");
-  for (const id of ["capacity", "timeline"]) expect(plugin.manifest.panels.find(panel => panel.id === id)).not.toHaveProperty("maxAgeMs");
+  // #359: capacity recomputes on every provider call (no cursor), so the shell may reuse it for one poll.
+  expect(plugin.manifest.panels.find(panel => panel.id === "capacity")?.maxAgeMs).toBe(plugin.manifest.pollMs);
+  for (const id of ["timeline"]) expect(plugin.manifest.panels.find(panel => panel.id === id)).not.toHaveProperty("maxAgeMs");
 });
 
 test("Recap memoizes its screened projection and unchanged cursor polls take under 100 ms", async () => {
