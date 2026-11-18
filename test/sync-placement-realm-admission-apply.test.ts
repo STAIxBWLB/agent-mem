@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
+import { withProfileLock } from "../src/memory/generation.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import type { SyncOptions } from "../src/memory/sync.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
@@ -104,6 +105,23 @@ test("#448: stage-only abandon preserves an installed intent for the same realm"
   expect(readFileSync(intent)).toEqual(before);
   expect(existsSync(staged)).toBe(false);
   await expect(applyRealmAdmission(f.home, realm, { mode: "resume" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+}, 240_000);
+
+test("#448: resume never creates a new intent when the retained intent disappears before the fence", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/resume-lost-intent";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-intent") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  const file = join(f.home, `${REALM_INTENT_PREFIX}${digest(realm)}.json`);
+  let attempt: Promise<unknown> | undefined;
+  await withProfileLock(f.home, async () => {
+    attempt = applyRealmAdmission(f.home, realm, { mode: "resume" }).then(() => undefined, error => error);
+    rmSync(file); // Isolated fixture simulates a successful owner cleanup before the waiter gets the fence.
+  });
+  expect(await attempt).toBeInstanceOf(Error);
+  expect(intents(f.home)).toEqual([]);
+  expect(existsSync(join(f.home, REALM_EXTENSION_LOG))).toBe(false);
+  expect(existsSync(join(shardDir(f.home, realm), "generation.json"))).toBe(false);
 }, 240_000);
 
 test("#448: a torn stage for a committed realm can be removed without rewriting the record", async () => {

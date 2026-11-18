@@ -280,6 +280,10 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
       const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
       let intent = readRealmIntent(home, realm);
       if (intent && options.mode === "apply") fail("pending");
+      if (!intent && options.mode === "resume") {
+        if (inForce(home, realm)) return { mode: options.mode, state: "already-admitted" as const, realm };
+        throw Error("No retained admission intent exists for this realm; run amem migrate --sync-placement --admit <project> --dry-run.");
+      }
       if (intent) {
         assertAnchors(home, binding, intent);
         const committed = installedSeal(home, binding, intent);
