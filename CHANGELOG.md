@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.29.0
 
 ### Added
 
@@ -17,6 +17,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Compatibility with N-1 (0.28.2), placement journal and publication plans: unchanged formats; every retained plan still has at most two targets, so a 0.28.2 reader resumes or inspects it. No floor is raised.
 - Compatibility with N-1 (0.28.2), sync status sidecar: snapshots may carry an additive `inventory` object; 0.28.2 `sync --status` ignores it (tested against the verbatim 0.28.2 reader).
 - Compatibility with N-1 (0.28.2), realm admission: the same-epoch `placement-realm-extensions.jsonl` chain is ignored by 0.28.2, which keeps refusing admitted realms. Refs #448.
+- Compatibility with N-1 (0.28.2), work brief snapshots: the derived v1 snapshot files are ignored by 0.28.2; work logs and their format floor are unchanged. Refs #455, #463.
+- Compatibility with N-1 (0.28.2), placement sync scheduling and failure causes: journal records, publication formats and remote refs are unchanged; `failure.cause` is an additive library result field. Refs #462.
 
 ### Fixed
 
