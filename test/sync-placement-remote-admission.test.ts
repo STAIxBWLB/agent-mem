@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -225,6 +225,20 @@ test("remote staging refuses a changed journal frontier before admission", async
   const capture = captureSyncPlacementContext(b.home, port), source = [...capture.rows.values()].find(row => row.key.realm.scope === "project")!;
   const prior = readPlacementProjection(b.home, b.epochHash);
   holdPlacementRow(b.home, { epochHash: b.epochHash, expectedHead: prior.headHash, requestId: "a".repeat(64), key: source.key }, port, "person");
+  await expect(remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility })).rejects.toThrow();
+  expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
+  expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
+}, 120_000);
+
+test("remote staging refuses a changed writer install before admission", async () => {
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const shared = "example.test/adoption-writer/shared", target = "example.test/adoption-writer/target";
+  const a = await inventoryFixture(2, [shared, target], true), b = await inventoryFixture(1, [shared], true), remote = bareRemote();
+  expect((await sync(a.home, a.opts(remote))).ok).toBe(true); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+  await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: stage => {
+    if (stage === "after-stage") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  appendFileSync(join(b.extraWriterRoot!, "src", "index.ts"), "// writer changed after staging\n");
   await expect(remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility })).rejects.toThrow();
   expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
   expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
