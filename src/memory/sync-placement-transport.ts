@@ -350,7 +350,7 @@ class PlacementTransport {
     };
     let stepped=0;
     for(const decision of decisions){
-      if(++stepped>=256){stepped=0;yield;}
+      if(++stepped>=64){stepped=0;yield;}
       const state=projection.get(decision.key);
       const index=root.targets.findIndex(target=>sameRealm(target.realm,decision.key.realm)),target=root.targets[index];if(!target)refuse();
       const original=old[index]?.rows.get(decision.key.id),published=original&&hashJSON(original)===decision.key.rowHash;

@@ -161,8 +161,10 @@ export function compilePlacementDependencies(raw: PlacementDependencyInput): Dep
 export async function compilePlacementDependenciesAsync(raw: PlacementDependencyInput, yieldPoint?: CooperativeYield): Promise<DependencyDecision[]> {
   try { return await drainStepsAsync(compileSteps(raw), yieldPoint); } catch (error) { if (error instanceof PlacementDependencyInputError) throw error; return fail(); }
 }
-/** Rows (and decisions) between step boundaries: at most 256 canonicalizations per uninterrupted stretch. */
-const STEP_ROWS = 256;
+/** Rows (and decisions) between step boundaries: one chunk stays well inside the 250 ms bound on the 8,000-row fixture. */
+const STEP_ROWS = 64;
+/** A single decision's fan-out is bounded the same way: a goal with thousands of dependents must not block the loop. */
+const STEP_REFS = 64;
 function* compileSteps(raw: PlacementDependencyInput): Generator<void, DependencyDecision[], void> {
   preflight(raw);
   const input = object(copyInput(raw)); keys(input, ["generation", "selectedRealms", "rows"], ["publicEndpoints", "verifiedPrunes"]);
@@ -268,10 +270,16 @@ function* compileSteps(raw: PlacementDependencyInput): Generator<void, Dependenc
   for (const node of nodes) {
     if (!node.output) continue;
     if (++stepped >= STEP_ROWS) { stepped = 0; yield; }
+    // One decision's dependency set is the union of its refs' candidates; a wide fan-out yields per ref chunk.
+    const related = new Map<string, PlacementKey>();
+    let refs = 0;
+    for (const ref of node.refs) {
+      if (++refs >= STEP_REFS) { refs = 0; yield; }
+      for (const to of candidates(node, ref)) { const id = placementKeyId(to.key); if (!related.has(id)) related.set(id, to.key); }
+    }
     decisions.push({ key: validatePlacementKey(node.key), eligible: !node.reason,
       ...(node.reason ? { reason: node.reason } : {}),
-      dependencies: [...new Map(node.refs.flatMap(ref => candidates(node, ref).map(to => [placementKeyId(to.key), to.key] as const))).values()]
-        .sort((a,b) => placementKeyId(a).localeCompare(placementKeyId(b))).map(validatePlacementKey) });
+      dependencies: [...related.values()].sort((a,b) => placementKeyId(a).localeCompare(placementKeyId(b))).map(validatePlacementKey) });
   }
   decisions.sort((a,b) => placementKeyId(a.key).localeCompare(placementKeyId(b.key)));
   return decisions;

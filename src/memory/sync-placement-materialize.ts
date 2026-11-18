@@ -67,7 +67,7 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     const prunedByTarget = new Map(workTargets.map(target => [target, target.pruned]));
     let collected = 0;
     for (const source of capture.rows.values()) {
-      if (++collected % 256 === 0) await pause();
+      if (++collected % 64 === 0) await pause();
       const target = workTargets.find(target => sameRealm(physical(target), source.key.realm)); if (!target) refuse();
       const pruned = prunedByTarget.get(target)!.has(source.key.id) && !target.fetched.has(source.key.id);
       if (pruned) blocked.add(placementKeyId(source.key));
@@ -80,14 +80,14 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     // Incoming verified occurrences are selected immutable originals too. Classify them before import so a private
     // remote goal cannot temporarily authorize a new dependent, and exposure/holds are durable in this same attempt.
     for(const [index,target]of workTargets.entries())for(const row of old[index]?.rows.values()??[])if(row.op!=="prune"||row.generation===target.generation){
-      if (++collected % 256 === 0) await pause();
+      if (++collected % 64 === 0) await pause();
       const key=keyFor(target,row),id=placementKeyId(key);if(seenSources.has(id))continue;seenSources.add(id);
       admitted.push({key,row,sourcePlacement:"synced",held:!!projection.get(key)?.held});
     }
     // Source size, not outbound size: local and declined rows count too, because their decisions are bound in the plan.
     if (admitted.length > PLACEMENT_SOURCE_MAX_ROWS) throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-rows", limit: PLACEMENT_SOURCE_MAX_ROWS, observed: admitted.length });
     let sourceBytes = 0;
-    for (const [at, source] of admitted.entries()) { if (at % 256 === 0) await pause(); sourceBytes += Buffer.byteLength(canonicalJSON(source.row)); }
+    for (const [at, source] of admitted.entries()) { if (at % 64 === 0) await pause(); sourceBytes += Buffer.byteLength(canonicalJSON(source.row)); }
     if (sourceBytes > PLACEMENT_SOURCE_MAX_BYTES) throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-bytes", limit: PLACEMENT_SOURCE_MAX_BYTES, observed: sourceBytes });
     input.progress?.phase("policy-evaluation", "rows", admitted.length);
     for (const source of admitted) { await pause(); sources.push({ ...source, policy: input.evaluate(source.row) }); input.progress?.advance(); }
@@ -115,7 +115,7 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
         verifiedPrunes:sources.filter(source => verified.has(placementKeyId(source.key))).map(source => source.key) }, pause);
       decisions = [];
       for (const [at, decision] of compiled.entries()) {
-        if (at % 256 === 0) await pause();
+        if (at % 64 === 0) await pause();
         const source = sourceMap.get(placementKeyId(decision.key))!;
         const index=workTargets.findIndex(target=>sameRealm(physical(target),decision.key.realm));
         const original=old[index]?.rows.get(decision.key.id), published=!!original&&hashJSON(original)===decision.key.rowHash;
@@ -165,13 +165,20 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
       }
       if(!rejected)break;if(pass===1)refuse();
     }
-    const plannedTargets:PlacementPublicationTarget[]=workTargets.map((target,index)=>{
+    const plannedTargets: PlacementPublicationTarget[] = [];
+    for (const [index, target] of workTargets.entries()) {
       const publish=publishes[index]!,descriptor=target.candidate?.files.get("shard.json");
-      return{realm:physical(target),publish,refHash:digest(shardSyncRef(target.realm)),expectedRemoteHead:frozen?.root.targets[index]?.expectedRemoteHead??target.remote??null,
+      // #470: the export set hashes every row of the target; it is built in chunks so one 8,000-row target cannot hold the loop.
+      const exportRows: { id: string; rowHash: string }[] = [];
+      for (const [at, row] of [...target.candidate!.rows.values()].entries()) {
+        if (at % 64 === 0) await pause();
+        exportRows.push({ id: row.id, rowHash: hashJSON(row) });
+      }
+      plannedTargets[index]={realm:physical(target),publish,refHash:digest(shardSyncRef(target.realm)),expectedRemoteHead:frozen?.root.targets[index]?.expectedRemoteHead??target.remote??null,
         expectedCacheHead:frozen?.root.targets[index]?.expectedCacheHead??target.local??null,descriptorHash:digest(descriptor??Buffer.alloc(0)),
-        exportSetHash:hashJSON([...target.candidate!.rows.values()].map(row=>({id:row.id,rowHash:hashJSON(row)})).sort((a,b)=>a.id.localeCompare(b.id))),
+        exportSetHash:hashJSON(exportRows.sort((a,b)=>a.id.localeCompare(b.id))),
         tree:publish?target.objects.find(object=>object.type==="tree"&&object.path==="")!.oid:target.remote?frozen?.root.targets[index]?.tree??null:null,commit:target.commit??null};
-    });
+    }
     for(const [index,target]of workTargets.entries())if(!plannedTargets[index]!.publish&&target.remote)plannedTargets[index]!.tree=await input.readTree(index,target.remote);
     const objects:PlacementPublicationObject[]=workTargets.flatMap((target,targetIndex)=>target.objects.map(object=>({targetIndex,type:object.type,path:object.path === "" ? null : object.path,oid:object.oid,sha256:digest(object.bytes),size:object.bytes.length})));
     return {decisions,targets:workTargets.map(target=>({candidate:target.candidate!,objects:target.objects,commit:target.commit})),plannedTargets,objects};
