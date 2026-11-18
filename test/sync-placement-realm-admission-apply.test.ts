@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, lstatSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { runCli } from "../src/cli.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import type { SyncOptions } from "../src/memory/sync.ts";
 import { memoryGitSync } from "../src/memory/platform.ts";
@@ -54,11 +55,16 @@ test("#448: a torn private intent stage is previewed and removed only by confirm
   writeFileSync(file, bytes, { mode: 0o600 });
   await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).rejects.toMatchObject({ causeClass: "pending", retainedRealm: key });
   expect(planRealmAbandon(f.home, realm)).toMatchObject({ state: "abandonable", staged: 1, discards: bytes.length });
-  const preview = await applyRealmAdmission(f.home, realm, { mode: "abandon" });
-  expect(preview).toMatchObject({ state: "retained", staged: 1, discarded: bytes.length });
-  expect(preview.nextStep).not.toContain(realm);
-  expect(readFileSync(file)).toEqual(bytes);
-  await expect(applyRealmAdmission(f.home, realm, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned", staged: 1, discarded: bytes.length });
+  const previous = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
+  try {
+    const previewText = await runCli(["migrate", "--sync-placement", "--admit", realm, "--abandon", "--json"], { cwd: f.root, env: {}, stdinTTY: false });
+    expect(JSON.parse(previewText)).toMatchObject({ state: "abandonable", staged: 1, discards: bytes.length });
+    expect(previewText).not.toContain(realm);
+    expect(readFileSync(file)).toEqual(bytes);
+    const confirmedText = await runCli(["migrate", "--sync-placement", "--admit", realm, "--abandon", "--confirm", "--json"], { cwd: f.root, env: {}, stdinTTY: false });
+    expect(JSON.parse(confirmedText)).toMatchObject({ state: "abandoned", staged: 1, discarded: bytes.length });
+    expect(confirmedText).not.toContain(realm);
+  } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
   expect(existsSync(file)).toBe(false);
   await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
 }, 240_000);
