@@ -188,7 +188,8 @@ export class GenerationIndex {
     return { segments: [...legacy, ...own], ...(commit ? { commit } : {}) };
   }
   private index(captured: { segments: LegacySegment[]; commit?: string }): void {
-    const db = this.options.db;
+    const db = this.options.db, touched = new Set<string>();
+    let pruneInserted = false;
     for (const segment of captured.segments) {
       const consumed = (db.query("SELECT offset FROM generation_segments WHERE source=? AND path=?").get(segment.source, segment.path) as { offset: number } | null)?.offset ?? 0;
       if ((segment.start ?? 0) > consumed) return fail();
@@ -198,7 +199,7 @@ export class GenerationIndex {
         if (segment.source === "generation" && parsed && typeof parsed === "object" && (parsed as { op?: string }).op === "prune") {
           const row = validatePruneRow(parsed, this.profile.generation, segment.local ? "local" : "synced");
           if (segment.path !== `${segment.local ? "local" : "log"}/${row.machine}.jsonl`) fail();
-          db.query("INSERT OR IGNORE INTO generation_prunes VALUES (?,?,?)").run(row.id, canonicalJSON(row), Number(segment.local));
+          if (db.query("INSERT OR IGNORE INTO generation_prunes VALUES (?,?,?)").run(row.id, canonicalJSON(row), Number(segment.local)).changes > 0) pruneInserted = true;
           continue;
         }
         if (segment.source === "generation" && parsed && typeof parsed === "object" && (parsed as { op?: string }).op === "vault_link") {
@@ -216,18 +217,58 @@ export class GenerationIndex {
         const presence = coalesceGenerationSource(old ? { row, placement: old.local ? "local" : "synced", publicWitness: !!old.public, own: !!old.own, legacy: !!old.legacy } : undefined, row, segment);
         db.query("INSERT INTO generation_rows VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET local=MIN(local,excluded.local), public=MAX(public,excluded.public), own=excluded.own, legacy=excluded.legacy")
           .run(row.id, canonical, Number(presence.placement === "local"), Number(presence.publicWitness), Number(presence.own), Number(presence.legacy));
+        touched.add(row.id);
       }
       db.query("INSERT INTO generation_segments VALUES (?,?,?,?,?,?) ON CONFLICT(source,path) DO UPDATE SET offset=excluded.offset,hash=excluded.hash,commit_id=excluded.commit_id,stamp=excluded.stamp")
         .run(segment.source, segment.path, segment.offset, segment.hash, segment.commit ?? null, segment.stamp ?? null);
     }
     if (captured.commit) db.query("INSERT INTO generation_state VALUES ('legacyCommit',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(captured.commit);
-    const snapshot = this.snapshot(false);
-    const prunes = (db.query("SELECT line,local FROM generation_prunes ORDER BY id").all() as { line: string; local: number }[]).map(row => ({ row: JSON.parse(row.line), placement: row.local ? "local" as const : "synced" as const }));
-    const reduced = reducePruneRows(prunes, snapshot, this.profile.generation!);
-    db.run("DELETE FROM generation_targets");
-    for (const id of [...reduced.targets].sort()) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
-    this.applyForeign(true);
+    // #466: the reduction can only move when a prune row arrived or a row it names as target or basis arrived, and
+    // the committed proof only needs re-proving when its stamp moved or an arrived row is one it names. Otherwise
+    // both are skipped: nothing they derive from changed, so the tables stay exactly where rebuild() would put them.
+    const mentioned = pruneInserted ? undefined : this.pruneMentionedIds();
+    const reductionMoved = mentioned === undefined || [...touched].some(id => mentioned.has(id));
+    const resolved: { set: string | undefined } = { set: undefined };
+    const foreignSatisfied = this.foreignBatchSatisfied([...touched], resolved);
+    // The target table holds the reduction and the proof's own targets together, so whatever re-proves the proof
+    // also re-materializes the reduction: a moved stamp would otherwise leave the previous proof's targets behind.
+    const recompute = reductionMoved || !foreignSatisfied;
+    if (recompute) {
+      const snapshot = this.snapshot(false);
+      const prunes = (db.query("SELECT line,local FROM generation_prunes ORDER BY id").all() as { line: string; local: number }[]).map(row => ({ row: JSON.parse(row.line), placement: row.local ? "local" as const : "synced" as const }));
+      const reduced = reducePruneRows(prunes, snapshot, this.profile.generation!);
+      db.run("DELETE FROM generation_targets");
+      for (const id of [...reduced.targets].sort()) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
+    }
+    // Called on every batch, not only a recomputing one: the proof's files are the evidence a refusal rests on, so
+    // a deleted or altered one must still refuse an append that changes nothing. With an equal stamp this is the
+    // cached load() check plus one targets SELECT, the same work an unchanged refresh already pays.
+    this.applyForeign(!foreignSatisfied, resolved);
     this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as {id:string}[]).map(row => row.id));
+  }
+  /**
+   * Ids a stored prune row names as a target or as that target's basis: the only ids an arriving row can move the
+   * reduction with, because reducePruneRows reads nothing else about a row. Undefined when the prune table is large
+   * enough that parsing it costs more than the recompute it would save.
+   */
+  private pruneMentionedIds(): Set<string> | undefined {
+    const lines = this.options.db.query("SELECT line FROM generation_prunes ORDER BY id LIMIT 1025").all() as { line: string }[];
+    if (lines.length > 1024) return undefined;
+    const ids = new Set<string>();
+    for (const { line } of lines) for (const target of (JSON.parse(line) as PruneRow).targets) { ids.add(target.id); ids.add(target.basis.id); }
+    return ids;
+  }
+  /** True only when the committed proof already covers this batch, so re-proving every row would prove nothing new. */
+  private foreignBatchSatisfied(touched: readonly string[], resolved: { set: string | undefined }): boolean {
+    if (!this.profile.foreignPruneFormat) return true;
+    resolved.set = this.foreignSet();
+    if (resolved.set !== this.foreignStamp) return false;
+    // A large batch is rare and costs more to mark than to re-prove; the bounded form keeps every call's work flat.
+    if (touched.length > 64) return false;
+    if (!touched.length) return true;
+    const marks = touched.map(() => "?").join(",");
+    const hit = this.options.db.query(`SELECT 1 AS n FROM generation_foreign_rows WHERE id IN (${marks}) UNION SELECT 1 FROM generation_foreign_targets WHERE id IN (${marks}) LIMIT 1`).get(...touched, ...touched);
+    return !hit;
   }
   /** This shard's realm entry in the active public prune view, or undefined when the view holds none. */
   private foreignSet(): string | undefined {
@@ -311,6 +352,8 @@ export class GenerationIndex {
     const committed = this.options.db.transaction(() => {
       if (this.frontier() !== before) return false;
       for (const table of ["entries", "ops", "edges", "goals", "segments", "heads", ...GENERATION_TABLES, ...(this.profile.foreignPruneFormat ? FOREIGN_TABLES : [])]) this.options.db.run(`DELETE FROM ${table}`);
+      // The stamp described the tables just deleted, so the rebuild below proves them again instead of trusting it.
+      this.foreignStamp = undefined;
       this.index(input); return true;
     }).immediate();
     if (!committed) { if (attempt < 5) return this.rebuild(attempt + 1, reader); return fail(); }
