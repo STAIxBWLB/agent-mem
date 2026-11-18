@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,5 +115,22 @@ test("confirmed pre-admission cleanup removes only exact installed packs", () =>
     writeFileSync(pack, f.packs[0]!.bytes, { mode: 0o600 }); discardRemoteInstalledLog(f.home, f.project, f.plan, f.proof);
     expect(existsSync(join(project, "log"))).toBe(false); expect(readFileSync(join(project, "work", "keep"), "utf8")).toBe("work");
     clearRemoteAdoption(f.home, f.plan, f.packs, f.proof);
+  } finally { f.close(); }
+});
+
+test("a cross-device staged log refuses before rename", () => {
+  const f = fixture();
+  try {
+    ensureShardDescriptor(f.home, f.project); writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof);
+    const staged = join(f.root, "log"), original = fs.lstatSync;
+    const fake = ((...args: unknown[]) => {
+      const stat = (original as (...input: unknown[]) => fs.BigIntStats)(...args);
+      if (String(args[0]) === staged && typeof stat.dev === "bigint") Object.defineProperty(stat, "dev", { value: stat.dev + 1n });
+      return stat;
+    }) as typeof fs.lstatSync;
+    const spy = spyOn(fs, "lstatSync").mockImplementation(fake);
+    try { expect(() => installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof)).toThrow(); } finally { spy.mockRestore(); }
+    expect(existsSync(join(f.root, "log", f.packs[0]!.name))).toBe(true);
+    expect(existsSync(join(shardDir(f.home, f.project), "log"))).toBe(false);
   } finally { f.close(); }
 });
