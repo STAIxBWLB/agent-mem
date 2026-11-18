@@ -66,3 +66,16 @@ test("baseline admission can apply an empty realm while an unknown remote adopti
     expect(readFileSync(join(staged, "pending"), "utf8")).toBe("remote data");
   } finally { closeInventoryFixtures(); }
 }, 240_000);
+
+test("pre-admission selection omits verified prune targets and refuses unsupported witnesses", async () => {
+  const { publicPruneGraph } = await import("./fixtures/public-prune-graph.ts");
+  const { selectRemoteMaterialization } = await import("../src/memory/sync-placement-remote-materialization.ts");
+  const graph = publicPruneGraph(), prune = graph.manifest.prune;
+  const safe = publicPruneGraph({ note: { text: "safe staged fixture" } }).note;
+  const manifest = { path: "fixture", bytes: Buffer.alloc(0), value: graph.manifest, row: prune, eligible: true, commit: "a".repeat(40), blob: "b".repeat(40) };
+  const history = { version: "v3" as const, rows: new Map([[graph.note.id, graph.note], [safe.id, safe], [prune.id, prune]]),
+    files: new Map(), origins: new Map(), manifests: new Map([["fixture", manifest]]) };
+  expect(selectRemoteMaterialization(history)).toEqual({ rows: [safe], omitted: 2 });
+  expect(() => selectRemoteMaterialization({ ...history, manifests: new Map([["fixture", { ...manifest, eligible: false }]]) })).toThrow();
+  expect(() => selectRemoteMaterialization({ ...history, manifests: new Map() })).toThrow();
+});
