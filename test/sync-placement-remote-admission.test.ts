@@ -117,3 +117,17 @@ test("a retained remote staging operation fences another remote admission", asyn
   expect(await remoteRealmAdmission(b.home, first, { mode: "abandon", confirm: true, visibility: privateVisibility })).toMatchObject({ state: "abandoned" });
   expect(await remoteRealmAdmission(b.home, second, { mode: "apply", visibility: privateVisibility })).toMatchObject({ state: "admitted" });
 }, 240_000);
+
+test("a torn remote companion previews and confirms cleanup without changing other data", async () => {
+  const { createHash } = await import("node:crypto");
+  const { writeFileSync } = await import("node:fs");
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const shared = "example.test/adoption-pending/shared", target = "example.test/adoption-pending/target";
+  const b = await inventoryFixture(1, [shared], true), hash = createHash("sha256").update(target).digest("hex");
+  const file = join(b.home, `placement-remote-adoption-${hash}.json.${"a".repeat(64)}.pending`), bytes = Buffer.from("partial");
+  writeFileSync(file, bytes, { mode: 0o600 });
+  expect(await remoteRealmAdmission(b.home, target, { mode: "abandon" })).toMatchObject({ state: "retained", staged: 1 });
+  expect(readFileSync(file)).toEqual(bytes);
+  expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned", staged: 1 });
+  expect(existsSync(file)).toBe(false); expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
+}, 120_000);
