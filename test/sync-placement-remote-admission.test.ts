@@ -55,12 +55,13 @@ test("an older admission during staging is never duplicated and later sync impor
   const shared = "example.test/adoption-race/shared", target = "example.test/adoption-race/target";
   try {
     const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote(); expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
-    for (const stage of ["after-companion", "after-stage", "after-install"] as const) {
+    for (const stage of ["after-companion", "after-stage", "after-install", "after-intent", "after-metadata", "after-proof", "after-append"] as const) {
       const b = await inventoryFixture(1, [shared], true, [oldRoot]); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
       await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: at => {
         if (at === stage) throw Error("isolated crash seam");
       } })).rejects.toThrow();
-      expect(await oldAdmission.applyRealmAdmission(b.home, target, { mode: "apply" })).toMatchObject({ state: "admitted" });
+      const oldMode = ["after-intent", "after-metadata", "after-proof", "after-append"].includes(stage) ? "resume" : "apply";
+      expect(await oldAdmission.applyRealmAdmission(b.home, target, { mode: oldMode })).toMatchObject({ state: "admitted" });
       const extension = join(b.home, "placement-realm-extensions.jsonl"), before = readFileSync(extension);
       const resumed = await remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility });
       expect(resumed).toMatchObject({ state: "already-admitted", nextStep: "amem sync" }); expect(readFileSync(extension)).toEqual(before);
@@ -162,7 +163,7 @@ test("new resume survives an older confirmed abandon after shard metadata", asyn
   const shared = "example.test/adoption-old-abandon/shared", target = "example.test/adoption-old-abandon/target";
   try {
     const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote(); expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
-    for (const stage of ["after-metadata", "after-proof"] as const) {
+    for (const stage of ["after-intent", "after-metadata", "after-proof"] as const) {
       const b = await inventoryFixture(1, [shared], true, [oldRoot]); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
       await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: at => {
         if (at === stage) throw Error("isolated crash seam");

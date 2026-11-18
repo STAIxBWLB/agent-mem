@@ -7,7 +7,7 @@ import { openShardStore } from "../src/memory/store.ts";
 import { syncMemory } from "../src/memory/sync.ts";
 import { bareRemote, closeInventoryFixtures, inventoryFixture, note } from "./fakes/sync-placement-inventory.ts";
 
-// Frozen 0.29.0 release-preparation source: the release itself has not been published at fixture creation time.
+// Frozen source from the v0.29.0 release tag; this exercises its source tree rather than an installed package.
 const BASELINE = "57a4ace57bdf5c4fc12996146c76843de4ee21cc";
 for (const reader of ["baseline", "current"] as const) test(`an old empty admission syncs both sides without loss with ${reader} source`, async () => {
   const oldRoot = mkdtempSync(join(tmpdir(), "amem-029-admission-"));
