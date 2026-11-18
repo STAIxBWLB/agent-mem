@@ -7,8 +7,8 @@ import { entryId } from "../src/memory/store.ts";
 import { syncMemory, SYNC_FAILURE_CAUSES } from "../src/memory/sync.ts";
 import { PlacementSyncBoundError } from "../src/memory/sync-placement-bound.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES } from "../src/memory/sync-placement-journal-format.ts";
-import { PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, publicationBytes, validatePlacementPublicationChunk, type PlacementPublicationChunk } from "../src/memory/sync-placement-publication-plan.ts";
-import { cooperativeYield, PLACEMENT_SLICE_MS } from "../src/memory/sync-placement-yield.ts";
+import { PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, planPlacementPublicationAsync, publicationBytes, validatePlacementPublicationChunk, type PlacementPublicationChunk } from "../src/memory/sync-placement-publication-plan.ts";
+import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_SLICE_MS } from "../src/memory/sync-placement-yield.ts";
 import { captureSyncPlacementContext, captureSyncPlacementContextAsync } from "../src/memory/sync-placement-capture.ts";
 import { createPlacementInspectionFixture, inspectionNote, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
 
@@ -60,21 +60,42 @@ function quadraticChunks(kind: PlacementPublicationChunk["kind"], items: unknown
   }
   flush(); return chunks;
 }
-test("#462 AC3: linear publication-plan packing produces the same chunks and root as the quadratic packing", () => {
+/** Plan evidence shared by the packing test and the #470 async-equality test. */
+function planEvidence(count = 1500, objectsCount = 400) {
   const h = (value: string) => hashJSON(value), realm = { scope: "user" as const };
-  const decisions = Array.from({ length: 1500 }, (_, index) => ({ key: { realm, id: index.toString(16).padStart(32, "0"), rowHash: h(`row ${index}`) },
+  const decisions = Array.from({ length: count }, (_, index) => ({ key: { realm, id: index.toString(16).padStart(32, "0"), rowHash: h(`row ${index}`) },
     eligible: index % 3 !== 0, hold: index % 3 === 0, sourcePlacement: "synced" as const, reason: index % 3 === 0 ? "person-local" as const : null, dependencies: [] }));
-  const objects = Array.from({ length: 400 }, (_, index) => ({ targetIndex: 0, type: "blob" as const, path: `rows/${h("m")}/${h(String(index))}.jsonl`, oid: index.toString(16).padStart(40, "0"), sha256: h(`o${index}`), size: 100 + index }));
+  const objects = Array.from({ length: objectsCount }, (_, index) => ({ targetIndex: 0, type: "blob" as const, path: `rows/${h("m")}/${h(String(index))}.jsonl`, oid: index.toString(16).padStart(40, "0"), sha256: h(`o${index}`), size: 100 + index }));
   const sources = [{ realm, source: "generation" as const, pathHash: h("path"), dev: "1", ino: "2", byteLength: 4, hash: h("prefix"), mtimeNs: "3", ctimeNs: "4" }];
   const input = { epochHash: h("epoch"), generation: "a".repeat(32), homeHash: h("home"), contextHash: h("context"), markerHash: h("markers"), sourceHash: h("source"), aliasesHash: h("aliases"),
     policyHash: h("policy"), remoteHash: h("remote"), journal: { sequence: 0, headHash: h("epoch") }, reservedRecords: 0, reservedRecordBytes: [], createdUnixSeconds: 1, policySnapshotUnixMs: 1000,
     targets: [{ realm, publish: true, refHash: h("ref"), expectedRemoteHead: null, expectedCacheHead: null, descriptorHash: h("d"), exportSetHash: h("e"), tree: "1".repeat(40), commit: "2".repeat(40) }] };
+  return { input, parts: { sources, decisions, objects } };
+}
+test("#462 AC3: linear publication-plan packing produces the same chunks and root as the quadratic packing", () => {
+  const { input, parts } = planEvidence();
+  const { sources, decisions, objects } = parts;
   const bundle = planPlacementPublication(input, { sources, decisions, objects });
   const expected = [...quadraticChunks("sources", sources), ...quadraticChunks("decisions", decisions), ...quadraticChunks("objects", objects)];
   // The quadratic reference numbers each kind from 0; the plan numbers chunks across kinds.
   expect(bundle.chunks.map(chunk => canonicalJSON(chunk.items))).toEqual(expected.map(chunk => canonicalJSON(chunk.items)));
   expect(bundle.chunks.filter(chunk => chunk.kind === "decisions").length).toBeGreaterThan(1);
   for (const chunk of bundle.chunks) expect(publicationBytes(chunk).length).toBeLessThanOrEqual(PLACEMENT_JOURNAL_CHUNK_MAX_BYTES);
+});
+
+test("#470: the async steps return exactly the synchronous value and stop at every step boundary", async () => {
+  const { input, parts } = planEvidence();
+  let boundaries = 0;
+  const planned = await planPlacementPublicationAsync(input, parts, async () => { boundaries++; });
+  expect(planned).toEqual(planPlacementPublication(input, parts));
+  expect(boundaries).toBeGreaterThan(0);
+
+  const values: number[] = [], steps = function* () { for (let index = 0; index < 5; index++) { yield; values.push(index); } return "done"; };
+  let awaited = 0;
+  expect(await drainStepsAsync(steps(), async () => { awaited++; })).toBe("done");
+  expect(awaited).toBe(5);
+  expect(drainSteps(steps())).toBe("done");
+  expect(values).toEqual([0, 1, 2, 3, 4, 0, 1, 2, 3, 4]);
 });
 
 async function largeFixture(rows: number, syncFloor = true): Promise<PlacementInspectionFixture> {

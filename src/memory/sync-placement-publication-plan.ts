@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { validatePlacementKey, placementKeyId, SyncPlacementJournalError, PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS,
   PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES, type PlacementKey, type PlacementRealm, type PlacementHoldReason } from "./sync-placement-journal-format.ts";
+import { drainSteps, drainStepsAsync, type CooperativeYield } from "./sync-placement-yield.ts";
 
 export const PLACEMENT_PUBLICATION_PLAN_SCHEMA = "agent-mem.sync-placement-publication-plan/v1";
 export const PLACEMENT_PUBLICATION_CHUNK_SCHEMA = "agent-mem.sync-placement-publication-chunk/v1";
@@ -150,11 +151,26 @@ export function validatePlacementPublicationBundle(input: unknown): PlacementPub
 export function planPlacementPublication(input: Omit<PlacementPublicationRoot, "schema" | "chunks" | "seal">, items: {
   sources: readonly PlacementPublicationSource[]; decisions: readonly PlacementPublicationDecision[]; objects: readonly PlacementPublicationObject[];
 }): PlacementPublicationBundle {
+  return drainSteps(planSteps(input, items));
+}
+/** #470: the same bundle, awaiting the caller's event loop between chunk items; chunk boundaries and hashes are identical. */
+export async function planPlacementPublicationAsync(input: Omit<PlacementPublicationRoot, "schema" | "chunks" | "seal">, items: {
+  sources: readonly PlacementPublicationSource[]; decisions: readonly PlacementPublicationDecision[]; objects: readonly PlacementPublicationObject[];
+}, yieldPoint?: CooperativeYield): Promise<PlacementPublicationBundle> {
+  return await drainStepsAsync(planSteps(input, items), yieldPoint);
+}
+/** Items between step boundaries: at most 64 canonicalized chunk items per uninterrupted stretch. */
+const STEP_ITEMS = 64;
+function* planSteps(input: Omit<PlacementPublicationRoot, "schema" | "chunks" | "seal">, items: {
+  sources: readonly PlacementPublicationSource[]; decisions: readonly PlacementPublicationDecision[]; objects: readonly PlacementPublicationObject[];
+}): Generator<void, PlacementPublicationBundle, void> {
   const values = object(items, kinds), chunks: PlacementPublicationChunk[] = [];
+  let stepped = 0;
   for (const kind of kinds) {
     let selected: PlacementPublicationChunk["items"] = [], selectedBytes = 0;
     const flush = () => { if (selected.length) { chunks.push(validatePlacementPublicationChunk({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind, index: chunks.length, items: selected })); selected = []; selectedBytes = 0; } };
     for (const value of array(values[kind], PLACEMENT_JOURNAL_MAX_RECORDS)) {
+      if (++stepped >= STEP_ITEMS) { stepped = 0; yield; }
       // #462: the candidate chunk's exact canonical size, summed per item instead of re-serializing the whole chunk per row
       // (quadratic). canonicalJSON of an array is its items' canonical forms joined by commas, so the sum is identical.
       const row = item(kind, value), rowBytes = Buffer.byteLength(canonicalJSON(row));
@@ -165,7 +181,8 @@ export function planPlacementPublication(input: Omit<PlacementPublicationRoot, "
     flush();
   }
   const body = { ...object(input, ["epochHash", "generation", "homeHash", "contextHash", "markerHash", "sourceHash", "aliasesHash", "policyHash", "remoteHash", "journal", "reservedRecords", "reservedRecordBytes", "createdUnixSeconds", "policySnapshotUnixMs", "targets"]), schema: PLACEMENT_PUBLICATION_PLAN_SCHEMA,
-    chunks: chunks.map(c => ({ kind: c.kind, index: c.index, hash: publicationHash(publicationBytes(c)), count: c.items.length, bytes: publicationBytes(c).length })) };
+    // #470: each chunk is serialized once here; the descriptor only needs its hash and length.
+    chunks: chunks.map(c => { const bytes = publicationBytes(c); return { kind: c.kind, index: c.index, hash: publicationHash(bytes), count: c.items.length, bytes: bytes.length }; }) };
   const { seal: _seal, ...safeBody } = normalizedRoot({ ...body, seal: "0".repeat(64) }, false);
   return validatePlacementPublicationBundle({ root: { ...safeBody, seal: hashJSON(safeBody) }, chunks });
 }

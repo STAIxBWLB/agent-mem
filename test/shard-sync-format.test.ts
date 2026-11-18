@@ -4,7 +4,7 @@ import { canonicalJSON } from "../src/memory/generation.ts";
 import { entryId, MEMORY_SCHEMA, type OpEntry, type NoteEntry, type GoalEntry } from "../src/memory/store.ts";
 import { pruneId, type PruneRow } from "../src/memory/prune.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
-import { decodeShardDescriptor, decodeShardManifest, encodeShardManifest, isShardManifestPath, SHARD_SYNC_V2_SCHEMA, decodeShardPack, encodeShardPacks, SHARD_PACK_MAX_BYTES, SHARD_SYNC_SCHEMA, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "../src/memory/shard-sync-format.ts";
+import { decodeShardDescriptor, decodeShardManifest, encodeShardManifest, isShardManifestPath, SHARD_SYNC_V2_SCHEMA, decodeShardPack, encodeShardPacks, encodeShardPacksAsync, SHARD_PACK_MAX_BYTES, SHARD_SYNC_SCHEMA, ShardSyncFormatError, shardSyncDescriptor, shardSyncLabel, shardSyncRef, type ShardSyncRealm, type ShardSyncRow } from "../src/memory/shard-sync-format.ts";
 
 const G = "a".repeat(32), otherG = "b".repeat(32), project = "github.com/fixture/private-repository";
 const realm: ShardSyncRealm = { scope: "project", key: project };
@@ -145,4 +145,16 @@ test("manifest codec preserves canonical hash identity and leaves unsupported li
   }
   const wrong = canonicalJSON({ ...manifest, schema: "future" });
   expect(() => decodeShardManifest(`prune-witnesses/${digest(wrong)}.json`, Buffer.from(wrong + "\n"))).toThrow(ShardSyncFormatError);
+});
+
+test("#470: the async pack encoder returns exactly the synchronous packs and yields between row chunks", async () => {
+  const rows: ShardSyncRow[] = [...Array.from({ length: 300 }, (_, n) => note(n, { text: `${n}:` + "public payload ".repeat(40) })), goal(),
+    note(400, { machine: "another / original author", peer: "claude", source: "claude-mem" }), prune()];
+  let boundaries = 0;
+  const cooperative = await encodeShardPacksAsync(rows, async () => { boundaries++; });
+  expect([...cooperative]).toEqual([...encodeShardPacks(rows)]);
+  expect(boundaries).toBeGreaterThan(1); // the row chunks and the per-machine assembly steps
+  let refused = 0;
+  await expect(encodeShardPacksAsync([note(0, { tier: "short" })], async () => { refused++; })).rejects.toThrow("invalid public row");
+  expect(refused).toBe(0); // a refusal inside the first chunk is the same refusal, never a partial pack set
 });

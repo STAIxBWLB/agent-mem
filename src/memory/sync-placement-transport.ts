@@ -22,7 +22,7 @@ import { rebuildPlacementProjection, type PlacementProjection } from "./sync-pla
 import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
-import { planPlacementPublication, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
+import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
 import { ShardHistoryAuditor, type ShardHistory } from "./shard-sync-history.ts";
 import { ShardSyncApplications } from "./shard-sync-applications.ts";
 import { shardSourceRows, shardProvePrunes, shardImportRows, shardSelectorRetention, shardInstallHold, shardHoldWarning, type ShardSyncApplicationTarget } from "./shard-sync.ts";
@@ -31,7 +31,7 @@ import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineage
 import type { MemoryStore } from "./store.ts";
 import type { PruneRow } from "./prune.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
-import { cooperativeYield, PLACEMENT_APPEND_SLICE, yieldTurn } from "./sync-placement-yield.ts";
+import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_APPEND_SLICE, yieldTurn, type CooperativeYield } from "./sync-placement-yield.ts";
 import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 import { PlacementSyncBoundError, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
@@ -306,9 +306,10 @@ class PlacementTransport {
     const body={epochHash:this.epochHash,generation:this.journal.epoch.generation,homeHash:capture.context.homeHash,contextHash:placementCaptureContextHash(capture),markerHash:capture.markerHash,
       sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,policyHash:capture.context.policyHash,remoteHash:digest(this.url),
       journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??this.lastPolicyCheckUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
-    let bundle=planPlacementPublication(body,{sources:capture.prefixes,decisions,objects});
+    const planPause=cooperativeYield();
+    let bundle=await planPlacementPublicationAsync(body,{sources:capture.prefixes,decisions,objects},planPause);
     await yieldTurn(); // #462: planning is pure; each step gets its own turn
-    let scheduled=this.events(bundle,projection,old);
+    let scheduled=await this.eventsAsync(bundle,projection,old,planPause);
     await yieldTurn();
     if(!frozen&&body.journal.sequence+scheduled.events.length>PLACEMENT_JOURNAL_MAX_RECORDS)
       throw new PlacementSyncBoundError({phase:"publication-plan",kind:"journal-records",limit:PLACEMENT_JOURNAL_MAX_RECORDS,observed:body.journal.sequence+scheduled.events.length});
@@ -316,13 +317,20 @@ class PlacementTransport {
     const lengths:number[]=[],pause=cooperativeYield();
     for(const [index,event]of scheduled.events.entries()){await pause();const record=createPlacementRecord(this.epochHash,body.journal.sequence+index+1,head,event);head=record.seal;lengths.push(publicationBytes(record).length);}
     await yieldTurn();
-    bundle=planPlacementPublication({...body,reservedRecords:lengths.length,reservedRecordBytes:lengths},{sources:capture.prefixes,decisions,objects});
+    bundle=await planPlacementPublicationAsync({...body,reservedRecords:lengths.length,reservedRecordBytes:lengths},{sources:capture.prefixes,decisions,objects},planPause);
     await yieldTurn();
-    scheduled=this.events(bundle,projection,old);
+    scheduled=await this.eventsAsync(bundle,projection,old,planPause);
     if(frozen&&canonicalJSON(bundle)!==canonicalJSON(frozen))refuse();
     return{bundle,decisions,projection,old,...scheduled,exported:scheduled.events.filter(event=>event.kind==="publication-ambiguous").length,withheld:decisions.filter(decision=>!decision.eligible).length};
   }
   events(bundle:PlacementPublicationBundle,projection:PlacementProjection,old:(ShardHistory|undefined)[]):{events:PlacementEvent[];preCount:number;holdCount:number}{
+    return drainSteps(this.eventSteps(bundle,projection,old));
+  }
+  /** #470: the same schedule, awaiting the caller's event loop between decisions; the event order is identical. */
+  eventsAsync(bundle:PlacementPublicationBundle,projection:PlacementProjection,old:(ShardHistory|undefined)[],pause?:CooperativeYield):Promise<{events:PlacementEvent[];preCount:number;holdCount:number}>{
+    return drainStepsAsync(this.eventSteps(bundle,projection,old),pause);
+  }
+  private* eventSteps(bundle:PlacementPublicationBundle,projection:PlacementProjection,old:(ShardHistory|undefined)[]):Generator<void,{events:PlacementEvent[];preCount:number;holdCount:number},void>{
     const decisions=bundle.chunks.filter(chunk=>chunk.kind==="decisions").flatMap(chunk=>chunk.items as PlacementPublicationDecision[]).sort((a,b)=>placementKeyId(a.key).localeCompare(placementKeyId(b.key)));
     const holds:PlacementEvent[]=[],known:PlacementEvent[]=[],ambiguous:PlacementEvent[]=[],committed:PlacementEvent[]=[];
     const root=bundle.root;
@@ -340,7 +348,9 @@ class PlacementTransport {
       if(kind!=="publication-committed"||!commit)refuse();
       return{...base,kind,outcome:{...outcome,commit,proofHash:hashJSON({attempt:root.seal,key:decision.key,commit,remote:root.remoteHash,ref:root.targets[index]!.refHash})}};
     };
+    let stepped=0;
     for(const decision of decisions){
+      if(++stepped>=64){stepped=0;yield;}
       const state=projection.get(decision.key);
       const index=root.targets.findIndex(target=>sameRealm(target.realm,decision.key.realm)),target=root.targets[index];if(!target)refuse();
       const original=old[index]?.rows.get(decision.key.id),published=original&&hashJSON(original)===decision.key.rowHash;
