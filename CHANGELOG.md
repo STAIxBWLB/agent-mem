@@ -22,6 +22,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- A one-line append on a v2/v3 shard no longer re-derives prune targets or replays the foreign proof unless a prune, a prune-named row or a proof-named row arrived; the proof files are still checked on every append. Refs #466.
 - Isolate the persisted foreign-prune stamp from older index writers by using index version 5. Each profile rebuilds its derived index once on first open. Refs #466.
 - Compatibility with N-1 (0.28.2), derived index: 0.29.0 builds a separate index file (version 5) on first open; 0.28.2 keeps and uses its own version-4 file; neither reads the other's foreignStamp. Refs #466.
 - Serve native work briefs from revision-bound snapshots for static repository and host policy options, and retry oversized snapshots after a possible shrink or a bounded number of writes. Host callbacks continue to use the deadline-bound live read. Refs #463.
