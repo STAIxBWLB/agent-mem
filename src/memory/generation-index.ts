@@ -268,15 +268,9 @@ export class GenerationIndex {
     const current = new Set((db.query("SELECT id FROM generation_targets").all() as {id:string}[]).map(row => row.id));
     for (const id of proof.targets) if (!current.has(id)) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
   }
-  /** An unchanged frontier still replays foreign membership when its stamp differs; never inside a deferred read. */
+  /** An unchanged frontier still re-proves the committed foreign inputs; only the table rewrite waits for a moved stamp. */
   private refreshForeign(): void {
-    const resolved = { set: this.foreignSet() }, stamped = this.foreignStamp ?? this.persistedForeignStamp();
-    if (resolved.set !== undefined && resolved.set === stamped && !this.foreignTargetMissing()) { this.foreignStamp = resolved.set; return; }
-    this.options.db.transaction(() => this.applyForeign(false, resolved)).immediate();
-  }
-  /** A target the stored proof names but the index no longer holds: the next refresh repairs it. */
-  private foreignTargetMissing(): boolean {
-    return !!this.options.db.query("SELECT 1 FROM generation_foreign_targets WHERE id NOT IN (SELECT id FROM generation_targets) LIMIT 1").get();
+    this.options.db.transaction(() => this.applyForeign(false, { set: this.foreignSet() })).immediate();
   }
   private recordSkipped(segment: LegacySegment): void {
     this.options.db.query("INSERT INTO generation_state VALUES (?,'1') ON CONFLICT(key) DO UPDATE SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT)").run(`skipped:${segment.source}:${segment.path}`);

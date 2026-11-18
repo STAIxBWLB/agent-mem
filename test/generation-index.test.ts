@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenerationIndex } from "../src/memory/generation-index.ts";
@@ -160,6 +160,22 @@ test("#466 AC3: an unchanged refresh does not replay the foreign tables, while a
     store.list({ project: PROJECT });
     expect(sentinel()).toBe(false); // the stamp moved, so the membership was replayed
   } finally { probe.close(); store.close(); }
+});
+
+test("#466 AC3: an unchanged refresh still refuses a shard whose committed foreign proof was damaged", async () => {
+  const f = await home(true), store = open(f.memoryDir);
+  const sets = join(f.profile.dir, "public-prune-input-sets"), moved = join(f.root, "damaged-committed-set");
+  try {
+    expect(store.list({ project: PROJECT }).length).toBeGreaterThan(0);
+    const [name] = readdirSync(sets);
+    if (!name) throw new Error("the fixture committed no foreign input set");
+    renameSync(join(sets, name), moved);
+    try {
+      // The stamp still matches, so nothing is rewritten; the committed proof is re-read anyway and its loss refuses the read.
+      expect(() => store.list({ project: PROJECT })).toThrow();
+    } finally { renameSync(moved, join(sets, name)); }
+    expect(store.list({ project: PROJECT }).length).toBeGreaterThan(0); // the restored proof reads again
+  } finally { store.close(); }
 });
 
 test("#466 AC3: the witness stamp never moves the activation source hash", async () => {
