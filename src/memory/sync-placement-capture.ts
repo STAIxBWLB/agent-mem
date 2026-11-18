@@ -12,7 +12,7 @@ import { realPath, DENY_NAMES, DENY_SEGMENTS } from "./platform.ts";
 import { loadAmemConfig } from "./config.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { SegmentReader, SegmentReadBudgetError, checkedEntry, completeLines } from "./bridge.ts";
-import { readShardLegacySnapshot } from "./shard-bridge.ts";
+import { shardLegacySnapshotSteps } from "./shard-bridge.ts";
 import { coalesceGenerationSource } from "./generation-index.ts";
 import { validatePruneRow, type PruneSourceRow, type PruneRow } from "./prune.ts";
 import { shardKeyHash, SHARD_SCHEMA } from "./shard.ts";
@@ -195,7 +195,8 @@ function* sourcePreviewSteps(homeInput: string, selected?: readonly PlacementRea
         sourceChecks.push(() => { const now=lstatSync(file,{bigint:true,throwIfNoEntry:false}); if(s ? !now||!same(s,now) : now!==undefined) fail(); });
       }
     }
-    const segments = readShardLegacySnapshot(profile, { reader });
+    // #462: the legacy halves are read as steps, so this collector yields between their segments.
+    const segments = yield* shardLegacySnapshotSteps(profile, { reader });
     for (const folder of ["log", "local"]) {
       yield;
       directoryFact(join(dir, folder));

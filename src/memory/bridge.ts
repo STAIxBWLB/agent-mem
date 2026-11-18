@@ -4,6 +4,7 @@ import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirS
 import { basename, dirname, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { memoryGitArgv, memoryGitEnv, realPath } from "./platform.ts";
+import { drainSteps } from "./sync-placement-yield.ts";
 import { canonicalJSON, fsyncDirectory, readProfileJSON, writeProfileJSON } from "./generation.ts";
 import { OP_CONTRACTS } from "./ops-contract.ts";
 import type { InspectionBound } from "./inspection-bound.ts";
@@ -193,10 +194,20 @@ export function* completeLines(bytes: Buffer): Generator<Buffer> {
 
 /** Preserve original IDs; row order and JSON key order never produce duplicate evidence. */
 export function legacyEntries(segments: readonly LegacySegment[], options: { strict?: boolean; onMalformed?: () => void } = {}): Entry[] {
+  return drainSteps(legacyEntrySteps(segments, options));
+}
+
+/** Rows between step boundaries: one row's own canonicalisation and id check is the floor of an uninterrupted stretch. */
+const LEGACY_ENTRY_STEP_LINES = 512;
+
+/** #462: the same validation, handing the caller's event loop back every few hundred rows instead of once per read. */
+export function* legacyEntrySteps(segments: readonly LegacySegment[], options: { strict?: boolean; onMalformed?: () => void } = {}): Generator<void, Entry[], void> {
   const rows = new Map<string, Entry>();
+  let stepped = 0;
   for (const segment of segments) {
     if (segment.bytes.length !== segment.offset || digest(segment.bytes) !== segment.hash || segment.offset && segment.bytes.at(-1) !== 10) failure();
     for (const bytes of completeLines(segment.bytes)) {
+      if (++stepped >= LEGACY_ENTRY_STEP_LINES) { stepped = 0; yield; }
       let row: Entry;
       try {
         let line: string;
@@ -225,6 +236,13 @@ function inspectArchivedSegment(inspect: LegacySegmentInspector, file: string, c
 
 /** Raw authoritative inputs only: never constructs a legacy store, opens its index or performs network I/O. */
 function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: LegacySegmentInspector): LegacySegment[] {
+  return drainSteps(snapshotSteps(homeM, options, inspect));
+}
+/**
+ * #462: the same read, written once as steps so a caller that owns a collector yields between legacy segments instead of
+ * inside one call. Every fence, receipt check and row validation stays in the same order.
+ */
+function* snapshotSteps(homeM: string, options: LegacySnapshotOptions, inspect?: LegacySegmentInspector): Generator<void, LegacySegment[], void> {
   const root = realPath(homeM);
   directory(root);
   if (inspect && (options.incremental || options.limits)) failure();
@@ -248,6 +266,7 @@ function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: Legac
   const machineId = (machine as { id?: unknown } | undefined)?.id;
   if (typeof machineId !== "string" || !/^[a-f0-9]{16}$/.test(machineId)) failure();
   for (const folder of ["log", "local"]) {
+    yield;
     const dir = join(root, folder);
     if (!directory(dir, true)) continue;
     for (const name of options.reader ? options.reader.listFiles(dir) : readdirSync(dir).sort()) {
@@ -255,6 +274,7 @@ function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: Legac
       const path = `${folder}/${name}`;
       if (!segmentPath(path)) failure();
       if (folder === "local" && name !== `${machineId}.jsonl`) continue;
+      yield;
       if (inspect) {
         result.push(inspect(join(dir, name), { source: diskSource, path, local: folder === "local" }, checkpoints.get(`${diskSource}:${path}`)));
         continue;
@@ -275,6 +295,7 @@ function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: Legac
       directory(join(archiveDir(root, options.generation, commit), "log"));
       for (const prior of new Set([...(options.previousCommit ? [options.previousCommit] : []), ...[...checkpoints.values()].filter(row => row.source === remoteSource).map(row => row.commit!)])) if (!archivedAncestor(root, options.generation, prior, commit, options.reader?.sourceByteLimit)) failure();
       for (const segment of manifest.segments) {
+        yield;
         if (inspect) {
           result.push(inspectArchivedSegment(inspect, join(archiveDir(root, options.generation, commit), segment.path),
             { source: remoteSource, path: segment.path, local: false, commit }, checkpoints.get(`${remoteSource}:${segment.path}`), segment));
@@ -298,7 +319,7 @@ function snapshot(homeM: string, options: LegacySnapshotOptions, inspect?: Legac
     const bytes = segment.bytes.subarray(Math.max(0, start - (segment.start ?? 0)));
     return { ...segment, bytes, offset: bytes.length, hash: digest(bytes) };
   });
-  legacyEntries(suffixes, { onMalformed: options.onMalformed });
+  yield* legacyEntrySteps(suffixes, { onMalformed: options.onMalformed });
   return result;
 }
 
@@ -349,6 +370,10 @@ function head(homeM: string, generation: string, maximumArchiveBytes?: number, m
 
 export function readLegacySnapshot(homeM: string, options: LegacySnapshotOptions = {}): LegacySegment[] {
   try { return snapshot(homeM, options); } catch (error) { if (error instanceof SegmentReadBudgetError) throw error; return failure(); }
+}
+/** #462: the same snapshot as steps, so the transport's capture yields between legacy segments instead of inside one read. */
+export function* legacySnapshotSteps(homeM: string, options: LegacySnapshotOptions = {}): Generator<void, LegacySegment[], void> {
+  try { return yield* snapshotSteps(homeM, options); } catch (error) { if (error instanceof SegmentReadBudgetError) throw error; return failure(); }
 }
 /** Read-only enumeration reuses the legacy frontier checks without retaining source bodies or refreshing an index. */
 export function inspectLegacySnapshot(homeM: string, options: LegacySnapshotOptions, inspect: LegacySegmentInspector): LegacySegment[] {

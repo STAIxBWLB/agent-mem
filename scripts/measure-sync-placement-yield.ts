@@ -15,6 +15,8 @@ import { createPlacementInspectionFixture, inspectionNote } from "../test/fakes/
 const runLarge = process.argv.includes("--run-large"), runV1 = process.argv.includes("--run-v1");
 const attribute = process.argv.includes("--attribute");
 const gapsOut = process.argv.find(value => value.startsWith("--gaps-out="))?.slice("--gaps-out=".length);
+// #462: the reported floor, so a stretch that dropped under the 250 ms bound can still be named and attributed.
+const gapFloor = Number(process.argv.find(value => value.startsWith("--gap-ms="))?.slice("--gap-ms=".length) ?? 250);
 if (!runLarge && !runV1) throw Error("Pass --run-large or --run-v1 to run an isolated placement measurement.");
 if (attribute && !gapsOut) throw Error("--attribute requires --gaps-out=<file> to hold the #470 gap windows.");
 if (runV1) {
@@ -82,7 +84,7 @@ try {
   // #470: each >250 ms gap is written as an absolute window so a CPU profile's samples can be intersected with it;
   // the phase name only marks the last report, never the work that filled the gap.
   const sample = () => { const now = performance.now(), gap = now - last; last = now; maximum = Math.max(maximum, gap);
-    if (gap > 250) gaps.push({ phase, ms: Math.round(gap * 100) / 100,
+    if (gap > gapFloor) gaps.push({ phase, ms: Math.round(gap * 100) / 100,
       startEpochMs: Math.round((performance.timeOrigin + now - gap) * 1000) / 1000, endEpochMs: Math.round((performance.timeOrigin + now) * 1000) / 1000 }); };
   const timer = setInterval(sample, 10), progress = new SyncProgress({ intervalMs: 0, sink: value => { phase = value.phase; } });
   let result;
@@ -95,14 +97,14 @@ try {
   } finally { clearInterval(timer); SegmentReader.prototype.read = originalRead; }
   if (!result.ok && !result.failure?.cause) throw Error("Placement failure did not carry a cause class.");
   console.log(JSON.stringify({ fixture: "isolated synthetic high-entropy rows; host proof is a timed install measurement plus fixture attestation",
-    rows: ROWS, realmBytes, elapsedMs: Math.round(performance.now() - started), elapsedPhase: phase, maximumGapMs: Math.round(maximum * 100) / 100, gapsOver250Ms: gaps,
+    rows: ROWS, realmBytes, elapsedMs: Math.round(performance.now() - started), elapsedPhase: phase, maximumGapMs: Math.round(maximum * 100) / 100, gapThresholdMs: gapFloor, gapsOverThresholdMs: gaps,
     maximumInstallMeasureMs: attestMs.length ? Math.round(Math.max(...attestMs) * 100) / 100 : null,
     maximumSegmentReadMs: segmentMs.length ? Math.round(Math.max(...segmentMs) * 100) / 100 : null,
     result: { ok: result.ok, cause: result.failure?.cause ?? null, bound: result.placementPublication?.bound ?? null, journalObjects: result.placementPublication?.journalObjects ?? null,
       // #288 step 1: `amem sync` renders this message, so the measurement prints it beside the receipt it was built from.
       error: result.error ?? null } }, null, 2));
   if (gapsOut) {
-    writeFileSync(gapsOut, JSON.stringify({ rows: ROWS, realmBytes, gaps }, null, 2) + "\n", { mode: 0o600 });
+    writeFileSync(gapsOut, JSON.stringify({ rows: ROWS, realmBytes, gapThresholdMs: gapFloor, gaps }, null, 2) + "\n", { mode: 0o600 });
     console.log(`attribution: ${gaps.length} gap window(s) written to ${gapsOut}`);
   }
 } finally { f.close(); }
