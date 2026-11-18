@@ -12,6 +12,7 @@ import type { PlacementProjection } from "./sync-placement-projection.ts";
 import type { PlacementPublicationBundle, PlacementPublicationDecision, PlacementPublicationObject, PlacementPublicationTarget } from "./sync-placement-publication-plan.ts";
 import type { ShardHistory } from "./shard-sync-history.ts";
 import { decodeShardPack, encodeShardPacks, encodeShardManifest, shardSyncRef, type ShardSyncRow, type ShardSyncRealm } from "./shard-sync-format.ts";
+import { cooperativeYield, type CooperativeYield } from "./sync-placement-yield.ts";
 import { verifyPublicPruneWitness, type PublicPruneWitnessV1, type PublicPruneLineage } from "./public-prune-witness.ts";
 import type { Entry } from "./store.ts";
 import type { PruneRow } from "./prune.ts";
@@ -27,6 +28,8 @@ export interface PlacementMaterializeInput {
   readTree(index: number, head: string): Promise<string>;
   publisherLineages(index: number, rows: readonly PruneRow[]): ReadonlyMap<string, PublicPruneLineage>;
   createdUnixSeconds: number; frozen?: PlacementPublicationBundle;
+  /** #462: awaited between per-row items so the caller's event loop is never held for a whole realm; defaults to a time-budgeted yield. */
+  yieldPoint?: CooperativeYield;
   /** Advisory telemetry only (#418): phase names and unit counts, never a row, key or verdict detail. */
   progress?: { phase(name: "policy-evaluation" | "dependency-decisions" | "artifact-construction", unit?: "rows", total?: number): void; advance(): void };
 }
@@ -55,6 +58,7 @@ export function verifiedPlacementPrunes(targets: readonly PlacementPruneProofTar
 }
 export async function materializePlacementRows(input: PlacementMaterializeInput): Promise<PlacementMaterializeResult> {
   const {capture,projection,old,frozen,createdUnixSeconds}=input;
+  const pause = input.yieldPoint ?? cooperativeYield();
   const workTargets = input.targets.map(target => ({...target,objects:[] as PlannedGitObject[],commit:undefined as string|undefined,candidate:undefined as ShardHistory|undefined}));
     const sources: DependencySource[] = [], blocked = new Set<string>(), verified = input.verifiedPrunes;
     // Collect every selected original first: size admission below is pure and precedes the first policy evaluation
@@ -82,8 +86,9 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     let sourceBytes = 0; for (const source of admitted) sourceBytes += Buffer.byteLength(canonicalJSON(source.row));
     if (sourceBytes > PLACEMENT_SOURCE_MAX_BYTES) throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-bytes", limit: PLACEMENT_SOURCE_MAX_BYTES, observed: sourceBytes });
     input.progress?.phase("policy-evaluation", "rows", admitted.length);
-    for (const source of admitted) { sources.push({ ...source, policy: input.evaluate(source.row) }); input.progress?.advance(); }
+    for (const source of admitted) { await pause(); sources.push({ ...source, policy: input.evaluate(source.row) }); input.progress?.advance(); }
     input.progress?.phase("dependency-decisions");
+    await pause();
     // Strong endpoints are already in sources and current holds cannot be bypassed by past publication. Only
     // deletion/prune exceptions need a second verified occurrence fact; do not duplicate every historical body.
     const publicNeeded=new Set<string>();
@@ -101,6 +106,7 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     const sourceMap = new Map(sources.map(source => [placementKeyId(source.key), source]));
     let decisions: PlacementPublicationDecision[] = [];
     for (let pass = 0; pass < 2; pass++) {
+      await pause();
       decisions = compilePlacementDependencies({ generation: input.generation, selectedRealms: workTargets.map(physical), rows:sources, publicEndpoints:endpoints,
         verifiedPrunes:sources.filter(source => verified.has(placementKeyId(source.key))).map(source => source.key) }).map(decision => {
           const source = sourceMap.get(placementKeyId(decision.key))!;
@@ -112,18 +118,23 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
         });
       let rejected = false;
       for (const [index,target] of workTargets.entries()) {
+        await pause();
         const files = new Map(old[index]?.files), eligible = new Set(decisions.filter(decision => decision.eligible && sameRealm(decision.key.realm,physical(target))).map(decision => decision.key.id));
         const publish = descriptorVerdicts[index]!.ok && (!!old[index] || eligible.size > 0); publishes[index] = publish;
         if (publish) files.set("shard.json", Buffer.from(canonicalJSON({schema:PLACEMENT_DESCRIPTOR_SCHEMA,...target.realm,publicationFormat:PLACEMENT_FORMAT})+"\n"));
         const additions = sources.filter(source => sameRealm(source.key.realm,physical(target)) && eligible.has(source.key.id) && !old[index]?.rows.has(source.key.id)).map(source => source.row as ShardSyncRow);
         for (const [path,bytes] of encodeShardPacks(additions)) { const prior = files.get(path); if (prior && !prior.equals(bytes)) refuse(); files.set(path,bytes); }
         const manifests = new Map(old[index]?.manifests), occurrences = new Map<string,{pack:string;blob:string}>();
-        for (const [path,bytes] of files) if (path.startsWith("rows/")) for (const row of decodeShardPack(path,bytes,target.realm,target.generation))
-          if (!occurrences.has(row.id)) occurrences.set(row.id,{pack:path,blob:createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex")});
+        for (const [path,bytes] of files) if (path.startsWith("rows/")) {
+          // #462: one Git blob id per pack, not one per row in it (was quadratic in pack size); same value.
+          await pause(); const blob=createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+          for (const row of decodeShardPack(path,bytes,target.realm,target.generation)) if (!occurrences.has(row.id)) occurrences.set(row.id,{pack:path,blob});
+        }
         const native = additions.filter((row):row is PruneRow => row.op==="prune" && row.generation===target.generation);
         if (native.length) {
           const lineages = input.publisherLineages(index,native);
           for (const row of native) {
+            await pause();
             const lineage = lineages.get(row.id), own = occurrences.get(row.id); if (!lineage || !own) refuse();
             const needed = new Map<string,string>(); for (const item of row.targets) for (const ref of [item,item.basis]) needed.set(ref.id,ref.rowHash);
             const witnesses = [...needed].sort(([a],[b])=>a.localeCompare(b)).map(([id,rowHash])=>{ const place=occurrences.get(id); if(!place)refuse(); return{id,rowHash,...place}; });

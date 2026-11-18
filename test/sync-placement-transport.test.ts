@@ -21,12 +21,15 @@ import { runCli } from "../src/cli.ts";
 import * as publicationStorage from "../src/memory/sync-placement-publication-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
 import type { PlacementRecord } from "../src/memory/sync-placement-journal-format.ts";
+import * as journalFormat from "../src/memory/sync-placement-journal-format.ts";
+import type { PlacementEvent } from "../src/memory/sync-placement-journal-format.ts";
 import { applyPrune, planPrune, validatePrunePlan, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
 import type { PublicPruneWitnessV1 } from "../src/memory/public-prune-witness.ts";
 import { syncMemory, type SyncOptions } from "../src/memory/sync.ts";
 import { syncOutboundContent } from "../src/memory/sync-screen.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
+import { PLACEMENT_APPEND_SLICE } from "../src/memory/sync-placement-yield.ts";
 
 // Real local-Git round trips: hosted macOS runs these at up to ~20 s, so each keeps a 60 s test-local allowance (global --timeout unchanged).
 const PROJECT = "example.test/placement/transport", USER_REF = "refs/heads/amem/u", PROJECT_REF = `refs/heads/amem/p/${shardKeyHash(PROJECT)}`;
@@ -541,6 +544,45 @@ function retainedPublication(f: Awaited<ReturnType<typeof fixture>>) {
   return publicationStorage.readPlacementPublication(f.home, f.epochHash, root.seal);
 }
 
+for (const mode of ["sliced", "legacy", "ambiguous"] as const) test(`v2 handles a torn ${mode} intent with more pending events`, async () => {
+  const remote = bare(), f = await fixture({ seed(store) {
+    const ids: Record<string, string> = {};
+    for (let index = 0; index < 70; index++) ids[String(index)] = store.note(note(`torn intent ${index}`));
+    return ids;
+  } });
+  const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true);
+  const captured: PlacementEvent[] = [], realRecord = journalFormat.createPlacementRecord;
+  const records = spyOn(journalFormat, "createPlacementRecord").mockImplementation((epoch, sequence, previous, event) => {
+    captured.push(event); return realRecord(epoch, sequence, previous, event);
+  });
+  const realAppend = journalStorage.appendPlacementEvents; let fired = false, frozen: PlacementRecord[] = [];
+  const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epoch, events, head, options) => {
+    // A previous writer wrote the full 70-event prepublication batch, rather than the new 50-event slice.
+    const batch = mode === "legacy" && !fired ? captured.slice(-140, -70) : events;
+    return realAppend(home, epoch, batch, head, { ...options, phase(stage) {
+      options.phase?.(stage); if (fired || stage !== "intent-written") return;
+      const file = join(home, "sync-placement", "epochs", epoch, "append-intent.json"), full = readFileSync(file);
+      frozen = (JSON.parse(full.toString()) as { records: PlacementRecord[] }).records;
+      expect(frozen.length).toBe(mode === "legacy" ? 70 : PLACEMENT_APPEND_SLICE);
+      persistCrashPrefix(file, full.subarray(0, mode === "ambiguous" ? 1 : Math.floor(full.length / 2)));
+      fired = true; throw Error("synthetic torn intent");
+    } });
+  });
+  try {
+    const first = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(fired).toBe(true); expect(first.ok).toBe(false); expect(refs(remote)).toEqual([]);
+    fault.mockRestore(); records.mockRestore();
+    const resumed = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
+    const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
+    expect(done.pending).toBe(false); expect(done.records.slice(0, frozen.length)).toEqual(frozen);
+    expect(new Set(done.records.map(record => record.requestId)).size).toBe(done.records.length);
+    const publicRows = verifiedPublicRows(remote);
+    for (const id of Object.values(f.ids)) expect(publicRows.has(id)).toBe(true);
+    expect(publicRows.size).toBe(70);
+  } finally { fault.mockRestore(); records.mockRestore(); floor.mockRestore(); }
+}, 120_000);
+
 test("v2 publication batch hides a torn chunk and resumes the exact records once", async () => {
   const remote = bare(), f = await fixture({ seed(store) {
     const result: Record<string, string> = {};
@@ -636,7 +678,8 @@ test("v2 batch resumes when a later journal chunk ends inside a record", async (
   let writes = 0, fired = false;
   const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epochHash, events, head, options) =>
     realAppend(home, epochHash, events, head, { ...options, phase(stage) {
-      options.phase?.(stage); if (fired || stage !== "chunk-written" || ++writes !== 2) return;
+      // #462: appends are sliced into consecutive batches; fault the second chunk written by one batch that spans two chunks.
+      options.phase?.(stage); if (stage === "intent-written") writes = 0; if (fired || stage !== "chunk-written" || ++writes !== 2) return;
       const dir = join(home, "sync-placement", "epochs", epochHash);
       const batch = JSON.parse(readFileSync(join(dir, "append-intent.json"), "utf8")) as { chunks: { name: string }[] };
       expect(batch.chunks.length).toBeGreaterThan(1);
@@ -647,7 +690,8 @@ test("v2 batch resumes when a later journal chunk ends inside a record", async (
   try {
     expect((await syncPlacementMemory(f.store, f.opts(remote))).ok).toBe(false); expect(fired).toBe(true);
     const pending = journalStorage.readPlacementJournal(f.home, f.epochHash);
-    expect(pending.pending).toBe(true); expect(pending.sequence).toBe(0); expect(refs(remote)).toEqual([]);
+    // #462: earlier slices are durable whole batches; the interrupted slice leaves none of its own records.
+    expect(pending.pending).toBe(true); expect(pending.sequence % PLACEMENT_APPEND_SLICE).toBe(0); expect(refs(remote)).toEqual([]);
     fault.mockRestore();
     const result = await syncPlacementMemory(f.store, f.opts(remote)); expect(result.ok, JSON.stringify(result)).toBe(true);
     const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
@@ -985,7 +1029,7 @@ test("#426: an unclassified throw in source capture is category other, never a g
   const capture = await import("../src/memory/sync-placement-capture.ts");
   // Mocked only after the fixture is built: the fixture itself captures a context.
   const { result, final } = await refusal((f, remote) => f.opts(remote), () => {
-    const spy = spyOn(capture, "captureSyncPlacementContext").mockImplementation(() => { throw new Error("/secret/capture NEVER_PUBLIC_REFUSAL"); });
+    const spy = spyOn(capture, "captureSyncPlacementContextAsync").mockImplementation(async () => { throw new Error("/secret/capture NEVER_PUBLIC_REFUSAL"); });
     return () => spy.mockRestore();
   });
   expect(result.placementPublication?.refusal).toEqual({ category: "other", phase: "source-capture" });

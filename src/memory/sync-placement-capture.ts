@@ -26,6 +26,7 @@ import { readEffectiveSyncPlacementWriters, writerBoundPlacementContextHash, wri
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 import { inspectionBoundReceipt, type InspectionBound } from "./inspection-bound.ts";
 import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS } from "./sync-placement-bound.ts";
+import { cooperativeYield } from "./sync-placement-yield.ts";
 
 /** Home-wide source capture ceilings. Every file is read twice (bytes, then a stable recheck), so the read budget is 2x. */
 export const PLACEMENT_CAPTURE_MAX_SOURCE_BYTES = PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_CAPTURE_MAX_ROWS = PLACEMENT_SOURCE_MAX_ROWS;
@@ -83,7 +84,7 @@ function ownedDirectory(dir: string): BigIntStats {
 /** ponytail: capture holds the whole home in memory, capped at 256 metadata objects and 64 MiB/20000 source rows
  * across all realms (#414 raised 8 MiB; a 23 MB/10,248-row home was refused). Larger homes need a reviewed
  * chunked/streaming activation proof; no input is silently omitted at this ceiling. */
-function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof, sourceOwner?:PlacementActivationOwner): PlacementSourcePreview {
+function* sourcePreviewSteps(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof, sourceOwner?:PlacementActivationOwner): Generator<void, PlacementSourcePreview, void> {
   let selection: PlacementRealm[] | undefined;
   if (selected !== undefined) {
     if (!Array.isArray(selected) || types.isProxy(selected)) fail();
@@ -171,7 +172,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     finally { iterator.closeSync(); }
     names.sort(); facts.push([dir, names]); return names;
   };
-  const realm = (dir: string, identity: PlacementKey["realm"], project?: string) => {
+  const realm = function* (dir: string, identity: PlacementKey["realm"], project?: string): Generator<void, void, void> {
     directories.push(dir);
     const beforeFacts = facts.length; directoryFact(dir);
     if (project !== undefined) {
@@ -196,11 +197,13 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     }
     const segments = readShardLegacySnapshot(profile, { reader });
     for (const folder of ["log", "local"]) {
+      yield;
       directoryFact(join(dir, folder));
       const folderPath=join(dir,folder), folderStamp=lstatSync(folderPath,{bigint:true});
       sourceChecks.push(() => { if(!same(folderStamp,lstatSync(folderPath,{bigint:true}))) fail(); });
       if(folder === "local") bytes(join(dir,folder,`publisher-boundary-${machine.id}.json`),true);
       for (const name of reader.listFiles(join(dir, folder))) {
+        yield;
         if (!name.endsWith(".jsonl")) continue;
         if ( !/^[A-Za-z0-9][A-Za-z0-9._-]*\.jsonl$/.test(name)) fail();
         segments.push({ ...reader.read(join(dir, folder, name), undefined, true), source: "generation", path: `${folder}/${name}`, local: folder === "local" });
@@ -214,6 +217,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
       special.set(row.id, { key, row, sourcePlacement: local ? "local" : "synced", intrinsicLocal: row.op === "vault_link" });
     };
     for (const segment of segments) {
+      yield;
       const file = join(segment.source === "generation" ? dir : segment.source === "legacy-main" ? profile.legacyMainHome! : profile.legacyHome!, segment.path);
       const fileStat = lstatSync(file);
       if (!fileStat.isFile() || fileStat.isSymbolicLink() || fileStat.nlink !== 1 || fileStat.uid !== process.getuid?.() || (fileStat.mode & 0o022) !== 0) fail();
@@ -243,6 +247,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
         dev: physical[0] as string, ino: physical[1] as string, byteLength: sourceLength, hash: sourceHash,
         mtimeNs: physical[3] as string, ctimeNs: physical[4] as string });
       for (const line of completeLines(segment.bytes)) {
+        yield;
         if (!line.length) continue;
         const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line));
         if (segment.source === "generation" && parsed?.op === "prune") {
@@ -262,11 +267,13 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
       }
     }
     for (const source of special.values()) {
+      yield;
       if (presence.has(source.key.id)) fail();
       specialRows.set(placementKeyId(source.key), source);
     }
     sourceRowsByRealm.set(canonicalJSON(identity), [...presence.values()]);
     for (const source of presence.values()) {
+      yield;
       const key = { realm: identity, id: source.row.id, rowHash: hashJSON(source.row) };
       rows.set(placementKeyId(key), { key, row: source.row, sourcePlacement: source.placement,
         intrinsicLocal: source.row.op === "settle" || source.row.op === "note" && source.row.tier === "short" });
@@ -274,8 +281,9 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     const bindingHash = hashJSON(facts.slice(beforeFacts));
     realms.push({ ...identity, bindingHash });
   };
-  if (!selection || selection.some(item => item.scope === "user")) realm(join(home, "user"), { scope: "user" });
+  if (!selection || selection.some(item => item.scope === "user")) yield* realm(join(home, "user"), { scope: "user" });
   for (const name of listing(join(home, "projects"), true)) {
+    yield;
     if (!/^[a-f0-9]{16}$/.test(name)) fail();
     if (selection && !selection.some(item => item.scope === "project" && item.keyHash.slice(0,16) === name)) continue;
     const dir = join(home, "projects", name), project = json(join(dir, "project.json"));
@@ -284,7 +292,7 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
     if (!lstatSync(join(dir, "generation.json"), { throwIfNoEntry: false })) continue;
     const keyHash = digest(project.key);
     if (selection && !selection.some(item => item.scope === "project" && item.keyHash === keyHash)) fail();
-    realm(dir, { scope: "project", keyHash }, project.key);
+    yield* realm(dir, { scope: "project", keyHash }, project.key);
   }
   if (selection && realms.length !== selection.length) fail();
   const defaults = memoryPolicySnapshot({ names: DENY_NAMES, segments: DENY_SEGMENTS }); if (!defaults) fail();
@@ -306,6 +314,17 @@ function sourcePreview(homeInput: string, selected?: readonly PlacementRealm[], 
   };
   return { home, base: contextBase, assertSourcesUnchanged, ...(activeHead ? { activeHead } : {}), markerHash, markers,
     directories: directories.sort(), prefixes, rows, specialRows, sourceRowsByRealm };
+}
+/** The synchronous activation and preview APIs drain the identical source steps without scheduling changes. */
+function sourcePreview(home: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof, sourceOwner?: PlacementActivationOwner): PlacementSourcePreview {
+  const steps = sourcePreviewSteps(home, selected, pending, policyVersion, ownerProof, sourceOwner);
+  let next = steps.next(); while (!next.done) next = steps.next(); return next.value;
+}
+/** The transport releases its caller's event loop between bounded source collection steps. */
+async function sourcePreviewAsync(home: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string): Promise<PlacementSourcePreview> {
+  const steps = sourcePreviewSteps(home, selected, pending, policyVersion), pause = cooperativeYield();
+  let next = steps.next(); while (!next.done) { await pause(); next = steps.next(); }
+  next.value.assertSourcesUnchanged(); return next.value;
 }
 /** The homeHash a retained epoch (or an in-flight activation) already committed to, so a reboot-renumbered device keeps binding (#444). */
 function pinnedHomeHash(home: string, activeHead: string | undefined, activating: boolean): string | undefined {
@@ -335,9 +354,12 @@ function previewSources(home:string,owner?:PlacementActivationOwner):PlacementSo
 }
 function capture(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], ownerProof?: PlacementActivationCaptureProof): Omit<PlacementCapture, "assertCurrent"> {
   // All host callouts precede filesystem capture, including the final passive proof.
-  const attestation = memoryPolicySnapshot(port.attest()), policyVersion = port.policyVersion?.();
-  if (!attestation || port.policyVersion && typeof policyVersion !== "string") fail();
+  const attestation = memoryPolicySnapshot(port.attest()) ?? fail(), policyVersion = port.policyVersion?.();
+  if (port.policyVersion && typeof policyVersion !== "string") fail();
   const source = sourcePreview(home, selected, pending, policyVersion, ownerProof);
+  return captureFromSource(port, source, attestation, policyVersion);
+}
+function captureFromSource(port: PlacementCapturePort, source: PlacementSourcePreview, attestation: ReturnType<PlacementCapturePort["attest"]>, policyVersion: string | undefined): Omit<PlacementCapture, "assertCurrent"> {
   const context: SyncPlacementActivationContext = { ...source.base, writers: attestation.writers, legacySyncQuiesced: attestation.legacySyncQuiesced };
   const validated = planSyncPlacementActivation(context, "0".repeat(64));
   context.writers = validated.writers; context.realms = validated.realms;
@@ -359,8 +381,7 @@ function capture(home: string, port: PlacementCapturePort, selected?: readonly P
     prefixes: source.prefixes, rows: source.rows, specialRows: source.specialRows, sourceRowsByRealm: source.sourceRowsByRealm };
 }
 
-export function captureSyncPlacementContext(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pendingInput: readonly PlacementPendingSource[] = []): PlacementCapture {
-  try {
+function captureInput(selected: readonly PlacementRealm[] | undefined, pendingInput: readonly PlacementPendingSource[]) {
     const selection = selected === undefined ? undefined : memoryPolicySnapshot(selected);
     if (selected !== undefined && !selection) fail();
     if (!Array.isArray(pendingInput) || types.isProxy(pendingInput) || pendingInput.length > 20000) fail("bound");
@@ -374,16 +395,31 @@ export function captureSyncPlacementContext(home: string, port: PlacementCapture
         || typeof pathHash!=="string" || pathHash.length!==64 || !/^[a-f0-9]+$/.test(pathHash) || typeof prefixHash!=="string" || prefixHash.length!==64 || !/^[a-f0-9]+$/.test(prefixHash)) fail();
       return {realm,line,offset,pathHash,prefixHash};
     });
-    const before = capture(home, port, selection, pending);
-    return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
-  } catch (error) {
-    if (error && typeof error === "object" && !types.isProxy(error)) {
-      if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="staging"||code==="pending")throw new SharedWriterRevisionError(code);}
-      if (error instanceof SyncPlacementJournalError) throw error;
-      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
-    }
-    return fail();
+  return { selection, pending };
+}
+function captureFailure(error: unknown): never {
+  if (error && typeof error === "object" && !types.isProxy(error)) {
+    if(error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="staging"||code==="pending")throw new SharedWriterRevisionError(code);}
+    if (error instanceof SyncPlacementJournalError) throw error;
+    if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
   }
+  return fail();
+}
+export function captureSyncPlacementContext(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pendingInput: readonly PlacementPendingSource[] = []): PlacementCapture {
+  try {
+    const { selection, pending } = captureInput(selected, pendingInput), before = capture(home, port, selection, pending);
+    return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
+  } catch (error) { return captureFailure(error); }
+}
+/** Transport-only cooperative capture; host callbacks and the synchronous activation API remain unchanged. */
+export async function captureSyncPlacementContextAsync(home: string, port: PlacementCapturePort, selected?: readonly PlacementRealm[], pendingInput: readonly PlacementPendingSource[] = []): Promise<PlacementCapture> {
+  try {
+    const { selection, pending } = captureInput(selected, pendingInput), attestation = memoryPolicySnapshot(port.attest()) ?? fail(), policyVersion = port.policyVersion?.();
+    if (port.policyVersion && typeof policyVersion !== "string") fail();
+    const source = await sourcePreviewAsync(home, selection, pending, policyVersion);
+    const before = captureFromSource(port, source, attestation, policyVersion);
+    return { ...before, assertCurrent: () => { try { if (capture(home, port, selection, pending).fingerprint !== before.fingerprint) fail(); } catch { fail(); } } };
+  } catch (error) { return captureFailure(error); }
 }
 
 /** Internal initial-activation capture only. Tokens require the actual profile owner, live home mutation and exact durable intent. */

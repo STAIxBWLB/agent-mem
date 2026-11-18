@@ -4,14 +4,14 @@ import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, open
 import { join } from "node:path";
 import { canonicalJSON, hashJSON, readSelector } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
-import { generationSyncGit, generationSyncGitBytes, remoteVisibility, type SyncOptions, type SyncResult } from "./sync.ts";
+import { generationSyncGit, generationSyncGitBytes, remoteVisibility, type SyncFailureCause, type SyncOptions, type SyncResult } from "./sync.ts";
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { isLocalKey, PlacementRealmRefusal, resolveShardProfile } from "./shard.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { outboundPolicyEvaluator } from "./sync-screen.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
-import { captureSyncPlacementContext, placementCaptureContextHash, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
+import { captureSyncPlacementContextAsync, placementCaptureContextHash, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
 import { readEffectiveSyncPlacementWriters, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 import { types } from "node:util";
@@ -31,6 +31,7 @@ import { assertPublisherBoundary, ensurePublisherBoundary, publisherPruneLineage
 import type { MemoryStore } from "./store.ts";
 import type { PruneRow } from "./prune.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
+import { cooperativeYield, PLACEMENT_APPEND_SLICE, yieldTurn } from "./sync-placement-yield.ts";
 import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 import { PlacementSyncBoundError, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
@@ -79,6 +80,8 @@ class PlacementTransport {
   machineId = ""; url = ""; revision = ""; accepted = false; factual = false; attempted = false; lastPolicyCheckUnixMs?: number; lastPolicyHash?: string; policyCheckSource?: "live"|"durable-intent"; attemptHash?: string;
   evaluator?: ReturnType<typeof outboundPolicyEvaluator>; applications?: ShardSyncApplications; current?: Materialized; recovered = false;
   writerInventory?:EffectiveSyncPlacementWriters;
+  /** #462: a closed cause the catch block identified before `result` derives the rest. */
+  failureCause?: SyncFailureCause;
   readonly clock: () => number; readonly progress?: SyncProgress; provedAt?: number; bound?: PlacementSyncBound; capturedPolicyVersion?: string;
   readonly selected?: readonly MemoryStore[];
   constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase, testOnlyError?: (error:unknown)=>void, clock: () => number = () => performance.now(), selected?: readonly MemoryStore[]) { this.selected=selected; this.clock=clock; this.progress=opts.progress; this.testOnlyError=testOnlyError; this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
@@ -153,7 +156,9 @@ class PlacementTransport {
   async initialize(): Promise<void> {
     const markers = readPlacementRuntimeMarkers(this.home), active = readActivePlacementBinding(this.home, markers.profile, markers.shards);
     if (!active || this.store.profile.publicationFormat !== PLACEMENT_FORMAT || this.store.profile.placementHead !== active.profile.placementHead) refuse("epoch");
-    this.epochHash = active.profile.placementHead; this.machineId = active.shards.machine.id; this.revision = readSelector(this.home).revision; this.journal = readPlacementJournal(this.home, this.epochHash); this.writerInventory=readEffectiveSyncPlacementWriters(this.home);this.attest();
+    this.epochHash = active.profile.placementHead; this.machineId = active.shards.machine.id; this.revision = readSelector(this.home).revision; this.journal = readPlacementJournal(this.home, this.epochHash);
+    await yieldTurn(); // #462: no lock is held yet; each heavy read gets its own macrotask
+    this.writerInventory=readEffectiveSyncPlacementWriters(this.home);await yieldTurn();this.attest();
     // #450: an inventory driver passes at most two explicitly opened realms (one unchanged publication plan); otherwise the store's own pair.
     const opened = this.selected ?? this.store.openedSyncTargets();
     if (!opened.length || opened.length > 2 || !opened.includes(this.store) || opened.some(item => item.profile.home !== this.home || !item.profile.sharded || !item.profile.generation
@@ -173,7 +178,7 @@ class PlacementTransport {
     this.url = this.opts.remote ?? await this.required(["remote", "get-url", "origin"]);
     if (!this.url || this.url.length > 4096 || this.url.startsWith("-") || /[\r\n\0]/.test(this.url)) refuse("remote");
     if (await this.call(() => (this.opts.visibility ?? remoteVisibility)(this.url)) !== "private") refuse("remote");
-    this.prove(); // a host callout ends any reusable proof
+    await yieldTurn(); this.prove(); // a host callout ends any reusable proof
     if (!existsSync(this.root)) mkdirSync(this.root, { mode: 0o700 });
     const transport = acquireMutation(this.root); if (!transport) refuse("lock"); this.rootMutation=transport; this.releases.push(transport);
     const sync = generationSyncLock(this.root); if (!sync) refuse("lock"); this.releases.push(sync);
@@ -235,15 +240,15 @@ class PlacementTransport {
     }
     shardProvePrunes(this.targets);
   }
-  startCapture(): void {
+  async startCapture(): Promise<void> {
     const pending: PlacementPendingSource[] = this.targets.flatMap(target => target.pending.filter(item => !item.unclaimed).map(item => ({ realm: physical(target),
       pathHash: digest(`log/${item.row.machine}.jsonl`), offset: item.offset, prefixHash: item.prefixHash, line: item.line })));
     this.capturedPolicyVersion = this.opts.policyVersion?.();
-    this.capture = captureSyncPlacementContext(this.home, { attest: this.opts.placementAttestation!, ...(this.opts.policyVersion ? { policyVersion: this.opts.policyVersion } : {}) }, this.targets.map(physical), pending);
+    this.capture = await captureSyncPlacementContextAsync(this.home, { attest: this.opts.placementAttestation!, ...(this.opts.policyVersion ? { policyVersion: this.opts.policyVersion } : {}) }, this.targets.map(physical), pending);
     if (this.capture.activeHead !== this.epochHash || this.capture.context.homeHash !== this.journal.epoch.homeHash
       || canonicalJSON(this.capture.context.writers) !== canonicalJSON(this.writerInventory?.writers)
       || !!this.writerInventory?.revisionSequence&&this.capture.writerInventory?.revisionHash!==this.writerInventory.revisionHash) refuse("source-selection");
-    this.prove();
+    await yieldTurn(); this.prove(); // #462: the complete proof that closes capture runs in its own turn; it is the same proof
   }
   async applicationCoordinator(): Promise<ShardSyncApplications> {
     if (!this.homeMutation) refuse();
@@ -302,12 +307,17 @@ class PlacementTransport {
       sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,policyHash:capture.context.policyHash,remoteHash:digest(this.url),
       journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??this.lastPolicyCheckUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
     let bundle=planPlacementPublication(body,{sources:capture.prefixes,decisions,objects});
+    await yieldTurn(); // #462: planning is pure; each step gets its own turn
     let scheduled=this.events(bundle,projection,old);
+    await yieldTurn();
     if(!frozen&&body.journal.sequence+scheduled.events.length>PLACEMENT_JOURNAL_MAX_RECORDS)
       throw new PlacementSyncBoundError({phase:"publication-plan",kind:"journal-records",limit:PLACEMENT_JOURNAL_MAX_RECORDS,observed:body.journal.sequence+scheduled.events.length});
     let head=body.journal.headHash;
-    const lengths=scheduled.events.map((event,index)=>{const record=createPlacementRecord(this.epochHash,body.journal.sequence+index+1,head,event);head=record.seal;return publicationBytes(record).length;});
+    const lengths:number[]=[],pause=cooperativeYield();
+    for(const [index,event]of scheduled.events.entries()){await pause();const record=createPlacementRecord(this.epochHash,body.journal.sequence+index+1,head,event);head=record.seal;lengths.push(publicationBytes(record).length);}
+    await yieldTurn();
     bundle=planPlacementPublication({...body,reservedRecords:lengths.length,reservedRecordBytes:lengths},{sources:capture.prefixes,decisions,objects});
+    await yieldTurn();
     scheduled=this.events(bundle,projection,old);
     if(frozen&&canonicalJSON(bundle)!==canonicalJSON(frozen))refuse();
     return{bundle,decisions,projection,old,...scheduled,exported:scheduled.events.filter(event=>event.kind==="publication-ambiguous").length,withheld:decisions.filter(decision=>!decision.eligible).length};
@@ -350,25 +360,36 @@ class PlacementTransport {
     }
     return values;
   }
-  appendThrough(bundle:PlacementPublicationBundle,events:PlacementEvent[],count:number,factual=false):void{
+  async appendThrough(bundle:PlacementPublicationBundle,events:PlacementEvent[],count:number,factual=false):Promise<void>{
     const root=bundle.root;let read=readPlacementJournal(this.home,this.epochHash),head=root.journal.headHash;
-    const records:PlacementRecord[]=[];
+    const records:PlacementRecord[]=[],pause=cooperativeYield();
     for(const [index,event]of events.entries()){
+      await pause();
       const record=createPlacementRecord(this.epochHash,root.journal.sequence+index+1,head,event);head=record.seal;records.push(record);
     }
     this.enter(factual?"acknowledgment":"journal","records",count);
     const consumed=read.sequence-root.journal.sequence;
     if(consumed<0||consumed>root.reservedRecords)refuse();
-    for(let index=0;index<Math.min(consumed,records.length);index++)
+    for(let index=0;index<Math.min(consumed,records.length);index++){
+      await pause();
       if(canonicalJSON(read.records[root.journal.sequence+index])!==canonicalJSON(records[index]))refuse();
+    }
+    // #462: the journal this function compared must still be the journal it appends to after the yields above.
+    {const now=readPlacementJournal(this.home,this.epochHash);if(now.sequence!==read.sequence||now.headHash!==read.headHash||now.pending!==read.pending)refuse();read=now;}
     if(read.pendingBatch){
       const index=read.sequence-root.journal.sequence, end=index+read.pendingBatch.count;
       if(read.pendingBatch.attemptHash!==root.seal || end>count || end>events.length)refuse();
       appendPlacementEvents(this.home,this.epochHash,events.slice(index,end),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);
     }else if(read.pending&&!read.pendingRecord&&formatFloorAtLeast(this.home,"sync","0.28.0")){
       const index=read.sequence-root.journal.sequence;
-      try { appendPlacementEvents(this.home,this.epochHash,events.slice(index,count),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash); }
-      catch(error){ if(!(error instanceof SyncPlacementJournalError)||error.code!=="conflict")throw error; }
+      // The storage writer compares the saved bytes against the exact canonical intent before writing.
+      // Try the current bounded batch and the unsliced batch used by older writers, in that order. A torn intent
+      // precedes every record write, so a prefix shared by both can safely complete the first slice and continue.
+      const ends=[Math.min(count,index+PLACEMENT_APPEND_SLICE),count];
+      for(const end of new Set(ends)) {
+        try { appendPlacementEvents(this.home,this.epochHash,events.slice(index,end),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);break; }
+        catch(error){ if(!(error instanceof SyncPlacementJournalError)||error.code!=="conflict")throw error; }
+      }
     }
     if(read.pending){
       const sequence=read.pendingRecordSequence??read.sequence+1, index=sequence-root.journal.sequence-1;
@@ -379,9 +400,18 @@ class PlacementTransport {
     this.progress?.advance(Math.max(0,Math.min(count,read.sequence-root.journal.sequence)));
     const next=read.sequence-root.journal.sequence;
     if(next<count&&formatFloorAtLeast(this.home,"sync","0.28.0")){
-      appendPlacementEvents(this.home,this.epochHash,events.slice(next,count),read.headHash,this.storage(factual));this.progress?.advance(count-next);return;
+      // #462: the same records in order, as consecutive atomic batches with a macrotask turn between them. A crash between
+      // batches leaves a durable prefix, which the `consumed` path above already resumes exactly as recorded.
+      for(let at=next;at<count;at+=PLACEMENT_APPEND_SLICE){
+        if(at>next)await yieldTurn();
+        const end=Math.min(count,at+PLACEMENT_APPEND_SLICE),from=readPlacementJournal(this.home,this.epochHash);
+        if(from.sequence!==root.journal.sequence+at)refuse();
+        appendPlacementEvents(this.home,this.epochHash,events.slice(at,end),from.headHash,this.storage(factual));this.progress?.advance(end-at);
+      }
+      return;
     }
     for(let index=next;index<count;index++){
+      await pause();
       const record=records[index];if(!record)refuse();appendPlacementEvent(this.home,this.epochHash,events[index]!,record.previousHash,this.storage(factual));this.progress?.advance();
     }
   }
@@ -424,8 +454,8 @@ class PlacementTransport {
       const old=await this.frozenOld(read.bundle),schedule=this.events(read.bundle,projection,old);
       const sequence=before.pendingBatch ? before.sequence+before.pendingBatch.count : before.pendingRecordSequence??before.sequence+1;
       if(!before.pendingRecord&&schedule.events[sequence-root.journal.sequence-1]?.kind!=="hold")refuse();
-      this.appendThrough(read.bundle,schedule.events,Math.max(holds.length,sequence-root.journal.sequence),true);
-    }else this.appendThrough(read.bundle,holds,holds.length,true);
+      await this.appendThrough(read.bundle,schedule.events,Math.max(holds.length,sequence-root.journal.sequence),true);
+    }else await this.appendThrough(read.bundle,holds,holds.length,true);
     if(read.pendingPhase==="artifact-built"){
       const guard=await this.installedObjectGuard(read.bundle);guard();
       recordPlacementPublicationPhase(this.home,this.epochHash,root.seal,"artifact-built",{exportHash:hashJSON(root.targets.map(target=>target.exportSetHash))},this.storage(true));
@@ -456,7 +486,7 @@ class PlacementTransport {
   }
   async finish(material:Materialized,recovery=false):Promise<SyncResult>{
     this.factual=true;this.recovered=recovery;const root=material.bundle.root;
-    await this.observe("before-ack");this.appendThrough(material.bundle,material.events,material.events.length,true);await this.observe("acknowledged");this.metadata();
+    await this.observe("before-ack");await this.appendThrough(material.bundle,material.events,material.events.length,true);await this.observe("acknowledged");this.metadata();
     for (const [index,target] of this.targets.entries()) {
       const planned = root.targets[index]!;
       const head = planned.publish ? planned.commit : target.remote;
@@ -502,7 +532,10 @@ class PlacementTransport {
     });
   }
   result(ok:boolean,outcome:"committed"|"unknown"|"not-needed",error?:string):SyncResult{
-    return{ok,pushed:this.accepted&&(this.attempted||this.recovered&&!!this.current?.bundle.root.targets.some(target=>target.publish)),entries:this.current?.exported??0,...(error?{error}:{}),...(this.applications?{pruneApplication:{...this.applications.application}}:{}),
+    // #462: a closed cause on every failure; the most specific known fact wins.
+    const cause:SyncFailureCause|undefined=ok?undefined:this.opts.signal?.aborted?"stopped":this.bound?"bound":outcome==="unknown"?"unknown-outcome":this.failureCause??(this.refusal?"refusal":"unavailable");
+    return{ok,pushed:this.accepted&&(this.attempted||this.recovered&&!!this.current?.bundle.root.targets.some(target=>target.publish)),entries:this.current?.exported??0,...(error?{error}:{}),
+      ...(cause?{failure:{cause,...(cause==="refusal"&&this.refusal?{category:this.refusal}:{})}}:{}),...(this.applications?{pruneApplication:{...this.applications.application}}:{}),
       placementPublication:{...(this.attemptHash?{attemptHash:this.attemptHash}:{}),outcome,...(this.bound?{bound:this.bound}:{}),...(this.refusal?{refusal:{category:this.refusal,phase:this.phaseNow}}:{}),withheld:this.current?.withheld??0,exported:this.current?.exported??0,
         ...(this.lastPolicyHash?{lastPolicyHash:this.lastPolicyHash}:{}),...(this.lastPolicyCheckUnixMs!==undefined?{lastPolicyCheckUnixMs:this.lastPolicyCheckUnixMs,policyCheckSource:this.policyCheckSource??(this.recovered?"durable-intent" as const:"live" as const)}:{}),
         policyCeiling:"last-positive-check-before-in-flight-push",...(this.recovered?{recovered:true}:{})}};
@@ -539,7 +572,7 @@ class PlacementTransport {
         }
       }
       this.enter("source-capture");
-      try { this.preflight();for(const target of this.targets)if(existsSync(join(target.store.dir,"local",`publisher-boundary-${this.machineId}.json`)))assertPublisherBoundary(target.store.profile,target.mutation!);this.startCapture(); }
+      try { await yieldTurn();this.preflight();for(const target of this.targets)if(existsSync(join(target.store.dir,"local",`publisher-boundary-${this.machineId}.json`)))assertPublisherBoundary(target.store.profile,target.mutation!);await yieldTurn();await this.startCapture(); }
       catch(error) { if(retained)return await this.terminalUnknown(retained);if(placementSyncBoundReceipt(error))throw error;throw new PlacementSyncRefusal(placementRefusalCategoryOf(error)??classifyPlacementError(error)??"other"); }
       if(retained){
         const root=retained.bundle.root;
@@ -551,13 +584,13 @@ class PlacementTransport {
       const material=await this.materialize(retained?.bundle.root.createdUnixSeconds??Math.floor(Date.now()/1000),frontier,retained?.bundle);
       const changed=material.bundle.root.targets.some((target,index)=>target.publish&&target.commit!==(this.targets[index]!.remote??null));
       // Nothing durable exists for a fresh attempt yet: an epoch without room for this plan refuses here, typed.
-      if(!retained&&(material.events.length||changed))this.assertPlanCapacity(material.bundle);
+      await yieldTurn();if(!retained&&(material.events.length||changed))this.assertPlanCapacity(material.bundle);
       this.current=material;this.attemptHash=material.bundle.root.seal;
-      const applications=await this.applicationCoordinator();await applications.prepare();
+      await yieldTurn();const applications=await this.applicationCoordinator();await applications.prepare();
       if(!retained&&!material.events.length&&!changed&&!this.importsNeeded()){this.attemptHash=undefined;return this.result(true,"not-needed");}
-      if(!retained){await this.observe("before-plan-fsync");this.prove();preparePlacementPublication(this.home,material.bundle,this.storage());await this.observe("plan-fsynced");this.prove();}
+      if(!retained){await this.observe("before-plan-fsync");await yieldTurn();this.prove();preparePlacementPublication(this.home,material.bundle,this.storage());await this.observe("plan-fsynced");await yieldTurn();this.prove();}
       // One mutation batch: a complete proof on each side, fence checks (and at most 1 s of proof reuse) per record.
-      this.prove();this.appendThrough(material.bundle,material.events,material.preCount);this.prove();
+      this.prove();await this.appendThrough(material.bundle,material.events,material.preCount);this.prove();
       await this.materializeObjects(material.bundle);
       let read=readPlacementPublication(this.home,this.epochHash,material.bundle.root.seal);
       const artifact=read.facts.find(fact=>fact.phase==="artifact-built");if(!artifact)refuse();
@@ -579,13 +612,13 @@ class PlacementTransport {
       try { this.testOnlyError?.(error); } catch { /* Test observers never alter production results. */ }
       if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){
         const code=Object.getOwnPropertyDescriptor(error,"code")?.value;
-        if(code==="staging"||code==="pending")return this.result(false,this.attemptHash?"unknown":"not-needed",new SharedWriterRevisionError(code).message);
+        if(code==="staging"||code==="pending"){this.failureCause="writer-renewal";return this.result(false,this.attemptHash?"unknown":"not-needed",new SharedWriterRevisionError(code).message);}
       }
       // #419: an expected size refusal before any attempt exists keeps its phase, kind, limit and observed value.
       const bound=this.attemptHash||this.journal?.publicationReservation?undefined:placementSyncBoundReceipt(error);
       if(bound){this.bound=bound;return this.result(false,"not-needed",placementSyncBoundMessage(bound));}
       if(this.attemptHash)return this.result(false,"unknown","Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.");
-      if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementRealmRefusal && error.origin === "remote") return this.result(false, "not-needed", error.message);
+      if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementRealmRefusal && error.origin === "remote") { this.failureCause = "remote"; return this.result(false, "not-needed", error.message); }
       // #426: name the failing check by a fixed category and the phase; never the error's own text, which may carry a path.
       this.refusal=placementRefusalCategoryOf(error)??classifyPlacementError(error)??"other";
       return this.result(false,"not-needed",placementRefusalMessage(this.refusal,this.phaseNow));

@@ -135,12 +135,14 @@ let journalPrefix: { key: string; count: number; records: PlacementRecord[]; chu
 let journalTail: { key: string; name: string; bytes: Buffer; records: PlacementRecord[]; projection: PlacementProjection } | undefined;
 /** Whole snapshot for an unchanged inventory token (every file snapshot reads is in it). Callers get fresh arrays and a projection clone. */
 let journalSnapshot: { token: string; value: Snapshot } | undefined;
+/** #462: the validated batch intent by its exact bytes; a pure function of content, so a hit cannot change a result. */
+let batchIntentMemo: { key: string; value: PlacementBatchIntent } | undefined;
 /** Drop every decoded journal/publication memo; a sync calls this when it ends so a resident host never keeps a journal's records. */
-export function releasePlacementStorageCaches(): void { journalPrefix = undefined; journalTail = undefined; journalSnapshot = undefined; publicationBundle = undefined; reservationRoot = undefined; }
+export function releasePlacementStorageCaches(): void { journalPrefix = undefined; journalTail = undefined; journalSnapshot = undefined; publicationBundle = undefined; reservationRoot = undefined; batchIntentMemo = undefined; reservedNamesMemo = undefined; }
 // Records are frozen and shared (the bulk); every small mutable field is a fresh copy, so a caller's mutation never reaches the memo.
 const detachSnapshot = (value: Snapshot): Snapshot => ({ ...value, records: value.records.map(freeze), chunks: value.chunks.map(chunk => ({ ...chunk })), projection: value.projection.clone(),
   epoch: structuredClone(value.epoch), activation: structuredClone(value.activation),
-  ...(value.intent ? { intent: structuredClone(value.intent) } : {}), ...(value.batchIntent ? { batchIntent: structuredClone(value.batchIntent) } : {}), ...(value.pendingBatch ? { pendingBatch: { ...value.pendingBatch } } : {}), ...(value.pendingRecord ? { pendingRecord: structuredClone(value.pendingRecord) } : {}) });
+  ...(value.intent ? { intent: structuredClone(value.intent) } : {}), ...(value.batchIntent ? { batchIntent: freeze(value.batchIntent) } : {}), ...(value.pendingBatch ? { pendingBatch: { ...value.pendingBatch } } : {}), ...(value.pendingRecord ? { pendingRecord: structuredClone(value.pendingRecord) } : {}) });
 function snapshot(p: Paths): Snapshot {
   const before = inventory(p);
   if (journalSnapshot?.token === canonicalJSON([p.dir, before.token])) return detachSnapshot(journalSnapshot.value);
@@ -152,7 +154,11 @@ function snapshot(p: Paths): Snapshot {
   let pending: Intent | undefined, batch: PlacementBatchIntent | undefined;
   if (pendingBytes && !intentPending) {
     const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(pendingBytes)) as { schema?: unknown };
-    if (parsed?.schema === "agent-mem.sync-placement-append-intent/v2") batch = decode(pendingBytes, value => validatePlacementBatchIntent(value, p.hash));
+    if (parsed?.schema === "agent-mem.sync-placement-append-intent/v2") {
+      const key = canonicalJSON([p.hash, digest(pendingBytes)]);
+      batch = batchIntentMemo?.key === key ? batchIntentMemo.value : freeze(decode(pendingBytes, value => validatePlacementBatchIntent(value, p.hash)));
+      batchIntentMemo = { key, value: batch };
+    }
     else { if (pendingBytes.length > PLACEMENT_JOURNAL_ROOT_MAX_BYTES) fail("bound"); pending = decode(pendingBytes, value => intent(value, p.hash)); }
   }
   let projection = new PlacementProjection(epoch); const records: PlacementRecord[] = [], chunks: Chunk[] = [];
@@ -166,7 +172,9 @@ function snapshot(p: Paths): Snapshot {
   };
   const chunkNames = [...before.files.keys()].filter(name => /^records-\d{5}\.jsonl$/.test(name));
   const prefixKey = (count: number) => canonicalJSON([p.dir, stamp(before.files.get("epoch.json")!), chunkNames.slice(0, count).map(name => [name, stamp(before.files.get(name)!)])]);
-  const cached = !batch && journalPrefix && journalPrefix.count < chunkNames.length && journalPrefix.key === prefixKey(journalPrefix.count) ? journalPrefix : undefined;
+  // #462: a batch only touches its own chunks, so a prefix that ends before the batch's first chunk is still exact.
+  const batchStart = batch ? Number(batch.chunks[0]!.name.slice(8, 13)) : Infinity;
+  const cached = journalPrefix && journalPrefix.count < chunkNames.length && journalPrefix.count <= batchStart && journalPrefix.key === prefixKey(journalPrefix.count) ? journalPrefix : undefined;
   let batchPartial = false;
   let prefix: typeof journalPrefix, tail: typeof journalTail;
   if (cached) { projection = cached.projection.clone(); records.push(...cached.records); chunks.push(...cached.chunks); }
@@ -518,7 +526,16 @@ export function placementPublicationReservedJournalNames(root: PlacementPublicat
   if (consumed < root.reservedRecords) names.push("append-intent.json");
   return names;
 }
+/** #462: reserved names for one exact inventory token. Every input (roots, receipts, chunks, intent) lives under that token, the same trust journalSnapshot uses. */
+let reservedNamesMemo: { token: string; names: string[] } | undefined;
 function reservedPublicationJournalNames(p: Paths): string[] {
+  const token = canonicalJSON([p.dir, inventory(p).token]);
+  if (reservedNamesMemo?.token === token) return [...reservedNamesMemo.names];
+  const names = reservedPublicationJournalNamesUncached(p);
+  if (canonicalJSON([p.dir, inventory(p).token]) === token) reservedNamesMemo = { token, names: [...names] };
+  return names;
+}
+function reservedPublicationJournalNamesUncached(p: Paths): string[] {
   // A partial root has no acknowledgement and blocks append through checkPublicationAppend. Its exact preparer
   // passes its entire required-name reservation on every write. Complete roots enforce reservations globally.
   const complete = publicationRootsForReservation(p); if (!complete.length) return [];

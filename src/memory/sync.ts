@@ -22,7 +22,16 @@ import type { PlacementRefusalCategory } from "./sync-placement-refusal.ts";
  * machine's history never conflicts. Pull, then push; fail-open: a failure is a result with one reason, never a throw.
  */
 export type Visibility = "public" | "private" | "unknown";
+/**
+ * #462: the closed cause class of a placement sync that did not succeed, so a host can name the next step without
+ * parsing `error` text. `bound` carries its numbers in `placementPublication.bound`; `refusal` carries its fixed
+ * category; `unavailable` is any other refusal before an attempt (activation, inventory or I/O).
+ */
+export const SYNC_FAILURE_CAUSES = ["bound", "refusal", "unknown-outcome", "writer-renewal", "remote", "stopped", "unavailable"] as const;
+export type SyncFailureCause = typeof SYNC_FAILURE_CAUSES[number];
 export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
+  /** #462: set on every failed placement sync; absent on success and on the legacy transports. */
+  failure?: { cause: SyncFailureCause; category?: PlacementRefusalCategory };
   /** #450: per-realm outcomes of a whole-inventory placement sync, in run order (`user` or the full realm key hash). */
   placementRealms?: { realm: string; outcome: "committed" | "not-needed" | "unknown" | "failed" | "not-run" | "not-local" | "inactive"; publication?: number }[];
   placementPublication?: { attemptHash?: string; outcome: "committed" | "unknown" | "not-needed"; withheld: number; exported: number;
