@@ -1,5 +1,6 @@
 import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 import { assertPlacementViewAdvance } from "./sync-placement-active.ts";
+import { readEffectiveRealmInventoryFor } from "./sync-placement-realm-effective.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { types } from "node:util";
 import { randomBytes } from "node:crypto";
@@ -9,7 +10,7 @@ import { memoryPolicySnapshot } from "./policy.ts";
 import { outboundPolicyEvaluator, type RowScreen } from "./sync-screen.ts";
 import { assertPlacementRuntime } from "./sync-placement-guard.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
-import { planSyncPlacementActivation, validatePlacementPlan, validateSyncPlacementActivation, type SyncPlacementActivationPlan } from "./sync-placement-plan.ts";
+import { planSyncPlacementActivation, validatePlacementPlan, validateSyncPlacementActivation, type SyncPlacementActivationPlan, type SyncPlacementRealmBinding } from "./sync-placement-plan.ts";
 import { captureSyncPlacementContext, placementCaptureContextHash, type PlacementCapturePort, type PlacementCapture } from "./sync-placement-capture.ts";
 import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, placementKeyId, validatePlacementEpoch, validatePlacementKey, validatePlacementEvent,
   SyncPlacementJournalError, type PlacementEpoch, type PlacementKey, type PlacementCommittedOutcome, type PlacementAmbiguousOutcome } from "./sync-placement-journal-format.ts";
@@ -93,13 +94,21 @@ function active(home: string, input: PlacementEffectRequest, port: PlacementCapt
   if (capture.activeHead !== input.epochHash || journal.epoch.homeHash !== capture.context.homeHash
     || journal.epoch.generation !== (capture.context.profile as { generation: string }).generation
     || journal.activation.targetProfile.placementHead !== input.epochHash
-    || canonicalJSON(capture.context.writers) !== canonicalJSON(capture.writerInventory?.writers??journal.activation.writers)
-    || canonicalJSON(capture.context.realms.map(({ bindingHash: _hash, ...identity }) => identity))
-      !== canonicalJSON(journal.activation.realms.map(({ bindingHash: _hash, ...identity }) => identity))) fail("changed");
+    || canonicalJSON(capture.context.writers) !== canonicalJSON(capture.writerInventory?.writers??journal.activation.writers)) fail("changed");
   const markers = readPlacementRuntimeMarkers(capture.home), profile = validatePlacementProfile(markers.profile);
+  // #448: a capture holds the verified effective inventory, so a hold placed before an admission still validates after
+  // it, while an extension that no longer verifies closes the chain instead of widening what an effect may act on.
+  const inventory = readEffectiveRealmInventoryFor(capture.home, { epochHash: input.epochHash, activationHash: journal.activation.seal,
+    homeHash: journal.epoch.homeHash, generation: journal.epoch.generation, realms: journal.activation.realms });
+  // The two lists are ordered differently (an activation keeps `user` last, the inventory puts it first), so compare the
+  // realm identities as a set.
+  const identities = (value: readonly SyncPlacementRealmBinding[]): string[] => value
+    .map(item => canonicalJSON(item.scope === "user" ? { scope: "user" } : { scope: "project", keyHash: item.keyHash })).sort();
+  if (canonicalJSON(identities(capture.context.realms)) !== canonicalJSON(identities(inventory.realms))) fail("changed");
   assertPlacementViewAdvance(capture.home, journal.activation, profile, validatePlacementShards(markers.shards, profile));
   const projection = rebuildPlacementProjection(journal.epoch, journal.records);
   const source = capture.rows.get(placementKeyId(input.key)); if (!source) fail("changed");
+  inventory.assertCurrent();
   return { capture, journal, projection, source };
 }
 type Decision = { kind: "hold"; mode: "policy" | "person" } | { kind: "release" }

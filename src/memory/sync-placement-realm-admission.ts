@@ -27,7 +27,9 @@ import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readPlacementWriterJournalAnchors } from "./sync-placement-journal-storage.ts";
 import { createRealmExtension, REALM_EXTENSION_SCHEMA, RealmExtensionFormatError, type RealmExtension } from "./sync-placement-realm-extension-format.ts";
 import { readRealmExtensionHistory, type RealmExtensionBinding, type RealmExtensionHistory } from "./sync-placement-realm-extension-storage.ts";
-import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
+/** A zero-byte extension log is the pre-write state of a retained admission for this epoch, never an unknown chain. */
+const emptyLogAllowed = (home: string, binding: RealmExtensionBinding): boolean => retainedAdmissionCoversEmptyLog(home, binding.epochHash, binding.activationHash);
+import { readEffectiveRealmInventory, retainedAdmissionCoversEmptyLog } from "./sync-placement-realm-effective.ts";
 import { createRealmIntent, REALM_INTENT_SCHEMA, type RealmIntent } from "./sync-placement-realm-intent-format.ts";
 import { clearRealmIntent, clearRealmIntentStages, inspectRealmIntentStages, readRealmIntent, writeRealmIntent } from "./sync-placement-realm-intent-storage.ts";
 import { pendingRealmInventory } from "./sync-placement-realm-pending.ts";
@@ -128,7 +130,7 @@ function inspectRealmAdmission(home: string, project: string, owner?: PlacementA
   const curated = descriptor !== undefined && existsSync(join(shardDir(home, descriptor.key), "generation.json"));
   // Strict: an unattributed or torn chain is not something a preview or an intent may append over.
   let history: RealmExtensionHistory;
-  try { history = readRealmExtensionHistory(home, binding); } catch { return { realm, state: "unavailable" }; }
+  try { history = readRealmExtensionHistory(home, binding, { allowEmptyLog: emptyLogAllowed(home, binding) }); } catch { return { realm, state: "unavailable" }; }
   const source = owner ? previewOwnedSyncPlacementSources(home, owner) : previewSyncPlacementSources(home);
   const captured = source.base.realms.find(item => item.scope === "project" && item.keyHash === realm);
   if (curated !== (captured !== undefined)) return { realm, state: "unavailable" };
@@ -161,7 +163,7 @@ export function planRealmAbandon(homeInput: string, project: string): RealmAband
     const stages = inspectRealmIntentStages(home, realm);
     if (stages.length) {
       // A stage is independent of an installed intent or committed record; never discard an unattributed log tail.
-      readRealmExtensionHistory(home, binding, { attributeTorn: evidence => attributeTornRealmAppend(home, binding, evidence) });
+      readRealmExtensionHistory(home, binding, { allowEmptyLog: emptyLogAllowed(home, binding), attributeTorn: evidence => attributeTornRealmAppend(home, binding, evidence) });
       return { realm, state: "abandonable", staged: stages.length, discards: stages.reduce((sum, stage) => sum + stage.size, 0) };
     }
     if (!intent) return { realm, state: "none", nextStep: "no admission intent is retained for this realm" };
@@ -171,7 +173,7 @@ export function planRealmAbandon(homeInput: string, project: string): RealmAband
         if (!inspectRealmProofStage(home, intent)) return { realm, state: "unavailable", sequence: intent.sequence };
       } catch { return { realm, state: "unavailable", sequence: intent.sequence }; }
     }
-    const history = readRealmExtensionHistory(home, binding, { attributeTorn: () => true });
+    const history = readRealmExtensionHistory(home, binding, { allowEmptyLog: emptyLogAllowed(home, binding), attributeTorn: () => true });
     if (history.records.length + 1 > intent.sequence) return { realm, state: "committed", sequence: intent.sequence, nextStep: "amem migrate --sync-placement --admit <project> --resume" };
     if (history.records.length + 1 < intent.sequence || history.headHash !== intent.previousHash
       || history.logBytes.length !== intent.previousLogBytes || digest(history.logBytes) !== intent.previousLogHash)
@@ -202,7 +204,7 @@ function recordFor(intent: RealmIntent, capturedBinding: string, sourceHash: str
 /** The seal already occupying the intent's position, or undefined while that position is still free. */
 function installedSeal(home: string, binding: RealmExtensionBinding, intent: RealmIntent): string | undefined {
   let history: RealmExtensionHistory;
-  try { history = readRealmExtensionHistory(home, binding); } catch { return undefined; }
+  try { history = readRealmExtensionHistory(home, binding, { allowEmptyLog: emptyLogAllowed(home, binding) }); } catch { return undefined; }
   const existing = history.records[intent.sequence - 1];
   if (!existing) return undefined;
   if (existing.previousHash !== intent.previousHash || existing.realm.keyHash !== intent.keyHash) fail("committed");
@@ -235,7 +237,7 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
         const binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
         const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
         if (stages) {
-          readRealmExtensionHistory(home, binding, { attributeTorn: evidence => attributeTornRealmAppend(home, binding, evidence) });
+          readRealmExtensionHistory(home, binding, { allowEmptyLog: emptyLogAllowed(home, binding), attributeTorn: evidence => attributeTornRealmAppend(home, binding, evidence) });
           clearRealmIntentStages(home, realm, stages, proof);
           return { mode: "abandon" as const, state: "abandoned" as const, realm, staged: stages.length,
             discarded: stages.reduce((sum, stage) => sum + stage.size, 0), nextStep: intent

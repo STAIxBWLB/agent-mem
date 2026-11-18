@@ -11,6 +11,9 @@ import { readActivePlacementBinding } from "../src/memory/sync-placement-active.
 import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.ts";
 import { readEffectiveRealmInventory } from "../src/memory/sync-placement-realm-effective.ts";
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
+import { holdPlacementRow, readPlacementProjection, releasePlacementHold, type PlacementJournalPort } from "../src/memory/sync-placement-journal.ts";
+import { captureSyncPlacementContext } from "../src/memory/sync-placement-capture.ts";
+import { createPlacementAttestation } from "../src/sync-placement-writer-context.ts";
 import { REALM_EXTENSION_LOG, readRealmExtensionHistory } from "../src/memory/sync-placement-realm-extension-storage.ts";
 import { applyRealmAdmission, planRealmAbandon, previewRealmAdmission } from "../src/memory/sync-placement-realm-admission.ts";
 import { REALM_INTENT_PREFIX } from "../src/memory/sync-placement-realm-pending.ts";
@@ -417,3 +420,42 @@ test("#448 AC3: a realm outside B's inventory is refused and unpublished until B
   expect(git(remote, "rev-parse", ref)).toBe(published);
   expect((await syncA(a.opts(remote))).ok).toBe(true);
 }, 240_000);
+
+test("#448 review: a zero-byte extension log left by an interrupted append resumes under its retained intent", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/empty-extension-log";
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply", checkpoint: stage => {
+    if (stage === "after-intent") throw Error("fixture interruption");
+  } })).rejects.toThrow();
+  expect(intents(f.home)).toHaveLength(1);
+  // A stop between creating the log and its first append leaves exactly this file: not a damaged chain, the pre-write state.
+  writeFileSync(join(f.home, REALM_EXTENSION_LOG), Buffer.alloc(0), { mode: 0o600 });
+  expect(realmsOf(f.home)).toEqual(bindingOf(f.home).active.activation.realms);
+  await expect(applyRealmAdmission(f.home, realm, { mode: "resume" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+  expect(readRealmExtensionHistory(f.home, bindingOf(f.home).binding).records).toHaveLength(1);
+}, 240_000);
+
+test("#448 review: a zero-byte extension log with no retained intent stays a refusal", async () => {
+  const f = await inventoryFixture(1, undefined, true);
+  writeFileSync(join(f.home, REALM_EXTENSION_LOG), Buffer.alloc(0), { mode: 0o600 });
+  expect(() => readRealmExtensionHistory(f.home, bindingOf(f.home).binding)).toThrow();
+  expect(() => realmsOf(f.home)).toThrow();
+}, 240_000);
+
+test("#448 review: a person hold placed before an admission still releases after it, and a torn chain closes effect validation", async () => {
+  const f = await inventoryFixture(1, undefined, true), realm = "example.test/placement/hold-across-admission";
+  const port: PlacementJournalPort = { attest: createPlacementAttestation(f.home), policyVersion: () => "initial", authorize: () => true };
+  const capture = captureSyncPlacementContext(f.home, port);
+  const source = [...capture.rows.values()].find(value => value.key.realm.scope === "project")!;
+  const projection = () => readPlacementProjection(f.home, f.epochHash);
+  const held = () => projection().states.filter(state => state.held).length;
+  const request = (id: string) => ({ epochHash: f.epochHash, expectedHead: projection().headHash, requestId: id.repeat(64), key: source.key });
+  holdPlacementRow(f.home, request("a"), port, "person");
+  expect(held()).toBe(1);
+  // The admitted realm widens the capture; an effect opened before it must still validate against the effective inventory.
+  await expect(applyRealmAdmission(f.home, realm, { mode: "apply" })).resolves.toMatchObject({ state: "admitted", sequence: 1 });
+  releasePlacementHold(f.home, request("b"), port);
+  expect(held()).toBe(0);
+  // Widening must not become trusting: an extension that no longer verifies closes effect validation.
+  appendFileSync(join(f.home, REALM_EXTENSION_LOG), '{"schema":');
+  expect(() => holdPlacementRow(f.home, request("c"), port, "person")).toThrow();
+}, 300_000);

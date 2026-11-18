@@ -7,6 +7,7 @@ import { ensureShardDescriptor, shardDir } from "./shard.ts";
 import { attributeTornRealmAppend } from "./sync-placement-realm-attribution.ts";
 import { REALM_EXTENSION_LIMIT, REALM_EXTENSION_LOG_MAX_BYTES, RealmExtensionFormatError, type RealmExtension } from "./sync-placement-realm-extension-format.ts";
 import { readRealmExtensionHistory, REALM_EXTENSION_LOG, type RealmExtensionBinding } from "./sync-placement-realm-extension-storage.ts";
+import { retainedAdmissionCoversEmptyLog } from "./sync-placement-realm-effective.ts";
 import type { RealmIntent } from "./sync-placement-realm-intent-format.ts";
 import type { RealmIntentProof } from "./sync-placement-realm-intent-storage.ts";
 import { verifyTornRealmAppend } from "./sync-placement-realm-torn.ts";
@@ -55,7 +56,7 @@ export function ensureCuratedRealmMetadata(home: string, project: string, genera
  * Nothing else may occupy the next position: the prefix hash and length are the intent's own independent evidence.
  */
 export function appendRealmExtension(home: string, binding: RealmExtensionBinding, intent: RealmIntent, record: RealmExtension, options: RealmIntentProof): void {
-  const file = join(home, REALM_EXTENSION_LOG), history = readRealmExtensionHistory(home, binding, { attributeTorn: () => true });
+  const file = join(home, REALM_EXTENSION_LOG), history = readRealmExtensionHistory(home, binding, { allowEmptyLog: retainedAdmissionCoversEmptyLog(home, binding.epochHash, binding.activationHash), attributeTorn: () => true });
   const bytes = Buffer.concat([history.logBytes, history.torn]);
   if (history.records.length + 1 !== intent.sequence || history.headHash !== intent.previousHash) fail();
   let remainder: Buffer;
@@ -92,7 +93,7 @@ export function appendRealmExtension(home: string, binding: RealmExtensionBindin
  * cannot be attributed to this intent refuses instead of being removed.
  */
 export function discardRealmExtensionTail(home: string, binding: RealmExtensionBinding, intent: RealmIntent, options: RealmIntentProof): { discarded: number } {
-  const file = join(home, REALM_EXTENSION_LOG), history = readRealmExtensionHistory(home, binding, { attributeTorn: () => true });
+  const file = join(home, REALM_EXTENSION_LOG), history = readRealmExtensionHistory(home, binding, { allowEmptyLog: retainedAdmissionCoversEmptyLog(home, binding.epochHash, binding.activationHash), attributeTorn: () => true });
   if (history.records.length + 1 !== intent.sequence || history.headHash !== intent.previousHash
     || history.logBytes.length !== intent.previousLogBytes || digest(history.logBytes) !== intent.previousLogHash) fail();
   if (!history.torn.length) return { discarded: 0 };

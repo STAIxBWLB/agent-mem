@@ -12,7 +12,12 @@ export interface RealmExtensionBinding { epochHash: string; activationHash: stri
 export interface RealmExtensionHistory { records: readonly RealmExtension[]; headHash: string; torn: Buffer; logBytes: Buffer; assertCurrent(): void }
 /** A tail is attributed to the position it would occupy, so only evidence for that exact append can vouch for it. */
 export interface RealmTornEvidence { prefix: Buffer; tail: Buffer; sequence: number; headHash: string }
-export interface RealmExtensionOptions { attributeTorn?: (evidence: RealmTornEvidence) => boolean }
+export interface RealmExtensionOptions {
+  attributeTorn?: (evidence: RealmTornEvidence) => boolean;
+  /** A zero-byte log is the state a stop between creating the file and its first append leaves behind. It reads as the
+   * pre-write chain only while the intent that authorized that append is retained; without one it stays a refusal. */
+  allowEmptyLog?: boolean;
+}
 const fail = (): never => { throw new RealmExtensionFormatError(); };
 const stamp = (stat: BigIntStats) => [stat.dev, stat.ino, stat.uid, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].map(String).join(":");
 function owned(stat: BigIntStats, directory: boolean): void {
@@ -38,7 +43,13 @@ function readHistory(homeInput: string, binding: RealmExtensionBinding, options:
   } catch { fail(); } };
   const genesis = realmExtensionGenesis(binding.epochHash, binding.activationHash);
   if (!before) return { records: [], headHash: genesis, torn: Buffer.alloc(0), logBytes: Buffer.alloc(0), assertCurrent: checks };
-  owned(before, false); if (before.size <= 0n || before.size > BigInt(REALM_EXTENSION_LOG_MAX_BYTES)) return fail();
+  owned(before, false); if (before.size > BigInt(REALM_EXTENSION_LOG_MAX_BYTES)) return fail();
+  // A zero-byte log is the pre-write state of a retained admission, not a damaged chain: recover it instead of asking a
+  // person to delete a file. With no retained intent it is unknown evidence and still refuses.
+  if (before.size === 0n) {
+    if (!options.allowEmptyLog) return fail();
+    checks(); return { records: [], headHash: genesis, torn: Buffer.alloc(0), logBytes: Buffer.alloc(0), assertCurrent: checks };
+  }
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let bytes: Buffer;
   try {
