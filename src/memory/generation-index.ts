@@ -228,7 +228,8 @@ export class GenerationIndex {
     // both are skipped: nothing they derive from changed, so the tables stay exactly where rebuild() would put them.
     const mentioned = pruneInserted ? undefined : this.pruneMentionedIds();
     const reductionMoved = mentioned === undefined || [...touched].some(id => mentioned.has(id));
-    const foreignSatisfied = this.foreignBatchSatisfied([...touched]);
+    const resolved: { set: string | undefined } = { set: undefined };
+    const foreignSatisfied = this.foreignBatchSatisfied([...touched], resolved);
     // The target table holds the reduction and the proof's own targets together, so whatever re-proves the proof
     // also re-materializes the reduction: a moved stamp would otherwise leave the previous proof's targets behind.
     const recompute = reductionMoved || !foreignSatisfied;
@@ -239,10 +240,10 @@ export class GenerationIndex {
       db.run("DELETE FROM generation_targets");
       for (const id of [...reduced.targets].sort()) db.query("INSERT INTO generation_targets VALUES (?)").run(id);
     }
-    if (!foreignSatisfied) this.applyForeign(true);
-    // A recompute emptied the target table, so the proof's own targets are restored; its tables and every row hash
-    // were already proved under this stamp, so only that tail runs.
-    else if (recompute) this.applyForeign(false);
+    // Called on every batch, not only a recomputing one: the proof's files are the evidence a refusal rests on, so
+    // a deleted or altered one must still refuse an append that changes nothing. With an equal stamp this is the
+    // cached load() check plus one targets SELECT, the same work an unchanged refresh already pays.
+    this.applyForeign(!foreignSatisfied, resolved);
     this.pruned = new Set((db.query("SELECT id FROM generation_targets").all() as {id:string}[]).map(row => row.id));
   }
   /**
@@ -258,9 +259,10 @@ export class GenerationIndex {
     return ids;
   }
   /** True only when the committed proof already covers this batch, so re-proving every row would prove nothing new. */
-  private foreignBatchSatisfied(touched: readonly string[]): boolean {
+  private foreignBatchSatisfied(touched: readonly string[], resolved: { set: string | undefined }): boolean {
     if (!this.profile.foreignPruneFormat) return true;
-    if (this.foreignSet() !== this.foreignStamp) return false;
+    resolved.set = this.foreignSet();
+    if (resolved.set !== this.foreignStamp) return false;
     // A large batch is rare and costs more to mark than to re-prove; the bounded form keeps every call's work flat.
     if (touched.length > 64) return false;
     if (!touched.length) return true;

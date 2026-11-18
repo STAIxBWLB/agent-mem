@@ -5,14 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenerationIndex } from "../src/memory/generation-index.ts";
 import { indexFileName } from "../src/memory/index-file.ts";
-import { buildPublicPruneIndex, entryId, machineId, MemoryStore, openShardStore, type NoteInput } from "../src/memory/store.ts";
+import { buildPublicPruneIndex, entryId, machineId, MemoryStore, openShardStore, type Entry, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { advancePublicPruneView } from "../src/memory/public-prune-advance.ts";
-import { readSelector } from "../src/memory/generation.ts";
+import { canonicalJSON, readSelector } from "../src/memory/generation.ts";
 import { aliasedKeys, appendAlias, resolveShardProfile } from "../src/memory/shard.ts";
 import { acquireMutation, type MutationHandle } from "../src/memory/mutation.ts";
-import { applyPrune, planPrune } from "../src/memory/prune.ts";
+import { applyPrune, planPrune, pruneId, pruneRowHash, type PruneRow } from "../src/memory/prune.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { persistPublicPruneInput, preparePublicPruneInput } from "../src/memory/public-prune-inputs.ts";
 import type { PublicPruneViewV1 } from "../src/memory/public-prune-view.ts";
@@ -221,9 +221,56 @@ test("#466 AC3: a row the committed proof names is never skipped, while an unrel
     const foreign = (probe.query("SELECT id FROM generation_foreign_rows ORDER BY id LIMIT 1").get() as { id: string } | null)?.id;
     if (!foreign) throw new Error("the fixture committed no foreign row");
     const index = (store as unknown as { generationIndex: GenerationIndex }).generationIndex;
-    const satisfied = (id: string) => (index as unknown as { foreignBatchSatisfied(touched: readonly string[]): boolean }).foreignBatchSatisfied([id]);
+    const satisfied = (id: string) => (index as unknown as { foreignBatchSatisfied(touched: readonly string[], resolved: { set: string | undefined }): boolean }).foreignBatchSatisfied([id], { set: undefined });
     expect(satisfied(foreign)).toBe(false); // a re-proved hash of this row is still the only thing that can refuse it
     expect(satisfied("0".repeat(32))).toBe(true);
+  } finally { probe.close(); store.close(); }
+});
+
+test("#466 AC3: an append that moves nothing still refuses a damaged committed proof", async () => {
+  const f = await home(true), store = open(f.memoryDir), probe = new Database(join(f.profile.dir, indexFileName(true)));
+  const objects = join(f.profile.dir, "public-prune-objects"), damaged = join(f.root, "damaged-prune-object");
+  try {
+    expect(store.list({ project: PROJECT }).length).toBeGreaterThan(0);
+    const [object] = readdirSync(objects);
+    if (!object) throw new Error("the fixture committed no prune object");
+    // Written by hand rather than through note(): a write publishes curated briefs, and that path reads the proof
+    // too, which would refuse before the index was ever asked to.
+    const { line } = probe.query("SELECT line FROM generation_rows ORDER BY id LIMIT 1").get() as { line: string };
+    const body = JSON.parse(line) as Record<string, unknown>;
+    delete body.id; body.text = "one unrelated line written while the committed proof is damaged"; body.at = new Date(NOW - 500).toISOString();
+    const appended = canonicalJSON({ ...body, id: entryId(body as Parameters<typeof entryId>[0]) }) + "\n";
+    renameSync(join(objects, object), damaged);
+    try {
+      appendFileSync(join(f.profile.dir, "local", `${store.machine.id}.jsonl`), appended);
+      // The stamp still matches and the line names nothing the proof does, so the reduction and the row hashes are
+      // rightly skipped; the proof's own files are read anyway, and their loss refuses here as it does on an
+      // unchanged refresh and in rebuild().
+      expect(() => store.list({ project: PROJECT })).toThrow();
+    } finally { renameSync(damaged, join(objects, object)); }
+    expect(store.list({ project: PROJECT }).length).toBeGreaterThan(0); // the restored proof reads again
+  } finally { probe.close(); store.close(); }
+});
+
+test("#466 AC3: a prune waiting for its target row is reduced once that row arrives", async () => {
+  const f = await home(true), store = open(f.memoryDir), probe = new Database(join(f.profile.dir, indexFileName(true)));
+  const log = join(f.profile.dir, "local", `${store.machine.id}.jsonl`);
+  const targets = () => (probe.query("SELECT id FROM generation_targets ORDER BY id").all() as { id: string }[]).map(row => row.id);
+  try {
+    store.list({ project: PROJECT });
+    const { line } = probe.query("SELECT line FROM generation_rows ORDER BY id LIMIT 1").get() as { line: string };
+    const at = new Date(NOW).toISOString(), expiredAt = new Date(NOW - 1000).toISOString();
+    const body = JSON.parse(line) as Record<string, unknown>;
+    delete body.id; body.at = at; body.expires = expiredAt; body.text = "the row a prune waits for";
+    const entry = { ...body, id: entryId(body as Parameters<typeof entryId>[0]) } as unknown as Entry;
+    const rowHash = pruneRowHash(entry);
+    const prune: Omit<PruneRow, "id"> = { schema: "agent-mem.prune/v1", op: "prune", generation: f.profile.generation!, at, machine: store.machine.id, actor: "person", placement: "local", cutoff: at, targets: [{ id: entry.id, rowHash, expiredAt, basis: { kind: "note", id: entry.id, rowHash } }] };
+    appendFileSync(log, canonicalJSON({ ...prune, id: pruneId(prune) }) + "\n");
+    store.list({ project: PROJECT });
+    expect(targets()).not.toContain(entry.id); // the prune is pending: neither its target nor its basis is indexed yet
+    appendFileSync(log, canonicalJSON(entry) + "\n");
+    store.list({ project: PROJECT });
+    expect(targets()).toContain(entry.id); // the arriving row moved the reduction, so it was recomputed
   } finally { probe.close(); store.close(); }
 });
 
