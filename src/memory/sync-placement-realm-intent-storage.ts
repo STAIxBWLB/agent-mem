@@ -101,8 +101,8 @@ export function writeRealmIntent(home: string, value: RealmIntent, options: Real
     const fd = openSync(staging, "wx", 0o600);
     try { writeFileSync(fd, expected); fsyncSync(fd); } finally { closeSync(fd); }
   }
-  const stage = inspectRealmIntentStages(home, intent.keyHash).find(item => join(home, item.name) === staging);
-  if (!stage || stage.size !== Buffer.byteLength(expected) || stage.hash !== digest(Buffer.from(expected))) fail();
+  const stage = inspectRealmIntentStages(home, intent.keyHash).find(item => join(home, item.name) === staging) ?? fail();
+  if (stage.size !== Buffer.byteLength(expected) || stage.hash !== digest(Buffer.from(expected))) fail();
   proof(home, options);
   if (lstatSync(file, { throwIfNoEntry: false }) || stamp(lstatSync(staging, { bigint: true })) !== stage.stamp) fail();
   renameSync(staging, file); syncDirectory(home); proof(home, options);
