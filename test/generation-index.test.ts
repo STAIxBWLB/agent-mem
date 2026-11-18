@@ -162,25 +162,34 @@ test("#466 AC3: an unchanged refresh does not replay the foreign tables, while a
   } finally { probe.close(); store.close(); }
 });
 
-test("#466 AC2: a held writer does not fail or empty a read, and the next read catches up", async () => {
+test("#466 AC2: a held writer does not fail or empty a read, and the read marks itself stale as the legacy path does", async () => {
   const f = await home(true);
-  const store = open(f.memoryDir), sourceLog = join(store.dir, "log", `${store.machine.id}.jsonl`);
+  const diagnostics: string[] = [], store = open(f.memoryDir, { log: (line: string) => diagnostics.push(line) });
+  const sourceLog = join(store.dir, "log", `${store.machine.id}.jsonl`);
+  /** The flag `MemoryStore` sets on a read whose index update failed, and the shared-v1 path's own stale signal. */
+  const stale = () => (store as unknown as { stale: boolean }).stale;
   const lock = new Database(join(f.profile.dir, indexFileName(true)));
   lock.run("PRAGMA busy_timeout = 3000");
   try {
     store.note({ ...note("row that opens this shard's synced log"), tier: "long" });
     const before = store.list({ project: PROJECT }).map((row) => row.id);
     expect(before.length).toBeGreaterThan(0);
+    expect(stale()).toBe(false);
     lock.run("BEGIN IMMEDIATE");
     lock.query("INSERT INTO generation_targets VALUES ('probe-466-held')").run();
     // A durable row no index can take while the writer holds the lock, written out of band so one busy_timeout is spent.
     const { id: _id, ...rest } = JSON.parse(readFileSync(sourceLog, "utf8").trim().split("\n").find((line) => (JSON.parse(line) as { tier?: string }).tier === "long")!) as Record<string, unknown>;
     const added = entryId({ ...rest, text: "written while the writer held the lock" } as never);
     appendFileSync(sourceLog, `${JSON.stringify({ ...rest, text: "written while the writer held the lock", id: added })}\n`);
+    diagnostics.length = 0;
     let seen: string[] = [];
     expect(() => { seen = store.list({ project: PROJECT }).map((row) => row.id); }).not.toThrow();
-    expect(seen).toEqual(before); // stale, never empty and never an escalated lock error
+    expect(seen).toEqual(before); // stale rows, never empty and never an escalated lock error
+    expect(stale()).toBe(true); // the refusal is recorded, not swallowed into a read that looks current
+    expect(diagnostics.filter((line) => line.startsWith("hub memory index not updated yet:"))).toHaveLength(1);
     lock.run("ROLLBACK");
     expect(store.list({ project: PROJECT }).map((row) => row.id)).toContain(added); // the next read catches up
+    expect(stale()).toBe(false); // and the flag clears only on a read that took the index
   } finally { lock.close(); store.close(); }
-});
+}, 20000);
+
