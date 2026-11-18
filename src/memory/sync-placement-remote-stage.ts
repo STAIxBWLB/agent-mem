@@ -102,15 +102,25 @@ export function installRemoteAdoptionLog(homeInput: string, project: string, val
   if (!project || sha(project) !== plan.keyHash) fail();
   check(home, proof); if (canonicalJSON(readRemoteAdoption(home, plan.keyHash)) !== canonicalJSON(plan)) fail();
   const root = staging(home, plan), log = join(root, "log"), projectDir = shardDir(home, project), destination = join(projectDir, "log");
-  ownedDir(root); const source = ownedDir(log);
-  if (readdirSync(root).some(name => name !== "log") || canonicalJSON(readdirSync(log).sort()) !== canonicalJSON(plan.packs.map(pack => pack.name))) fail();
-  for (const pack of plan.packs) { const data = readOwned(join(log, pack.name), pack.bytes); if (!data || data.length !== pack.bytes || `sync-${sha(data)}.jsonl` !== pack.name) fail(); }
+  ownedDir(root);
+  const verifyLog = (dir: string) => {
+    ownedDir(dir); if (canonicalJSON(readdirSync(dir).sort()) !== canonicalJSON(plan.packs.map(pack => pack.name))) fail();
+    for (const pack of plan.packs) { const data = readOwned(join(dir, pack.name), pack.bytes); if (!data || data.length !== pack.bytes || `sync-${sha(data)}.jsonl` !== pack.name) fail(); }
+  };
+  // A crash after rename leaves the exact destination and an empty owned stage; never rename or truncate it again.
+  if (!lstatSync(log, { throwIfNoEntry: false })) {
+    if (readdirSync(root).length || lstatSync(join(projectDir, "generation.json"), { throwIfNoEntry: false })) fail();
+    assertCuratedShardLayout(home, { project }); ownedDir(projectDir); verifyLog(destination); check(home, proof); return;
+  }
+  const source = ownedDir(log);
+  if (readdirSync(root).some(name => name !== "log")) fail();
+  verifyLog(log);
   check(home, proof); assertCuratedShardLayout(home, { project });
   const projects = join(home, "projects"); ownedDir(projects);
   if (!lstatSync(projectDir, { throwIfNoEntry: false })) { mkdirSync(projectDir, { mode: 0o700 }); fsyncDirectory(projects); }
   const target = ownedDir(projectDir);
   for (const name of ["log", "local", "legacy", "legacy-main", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json"])
-    if (lstatSync(join(projectDir, name), { throwIfNoEntry: false })) fail();
+    if (lstatSync(join(projectDir, name), { throwIfNoEntry: false })) throw new Error(`Remote placement adoption cannot replace existing curated subpath: ${name}.`);
   ensureShardDescriptor(home, project); check(home, proof);
   if (source.dev !== target.dev || lstatSync(destination, { throwIfNoEntry: false })) fail();
   const currentTarget = ownedDir(projectDir);

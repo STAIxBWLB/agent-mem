@@ -36,6 +36,8 @@ test("stage and atomic log rename preserve existing work and capture", () => {
     const before = lstatSync(join(f.root, "log"), { bigint: true }), target = lstatSync(project, { bigint: true }); expect(before.dev).toBe(target.dev);
     installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof);
     const after = lstatSync(join(project, "log"), { bigint: true }); expect(after.ino).toBe(before.ino); expect(after.dev).toBe(before.dev);
+    installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof); // a crash after the atomic rename resumes without another write
+    expect(lstatSync(join(project, "log"), { bigint: true }).ino).toBe(after.ino);
     expect(readFileSync(join(project, "log", f.packs[0]!.name))).toEqual(f.packs[0]!.bytes);
     expect(readFileSync(join(project, "work", "keep"), "utf8")).toBe("work"); expect(readFileSync(join(project, "machine", "keep"), "utf8")).toBe("capture");
     expect(existsSync(join(project, "generation.json"))).toBe(false);
@@ -50,7 +52,7 @@ test("an existing curated subpath or redirected scaffold refuses before publicat
       if (kind === "existing") { mkdirSync(target, { mode: 0o700 }); writeFileSync(join(target, "keep"), "untouched", { mode: 0o600 }); }
       else symlinkSync(f.root, target);
       writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof);
-      expect(() => installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof)).toThrow();
+      expect(() => installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof)).toThrow(kind === "existing" ? /curated subpath: log/ : /path/);
       expect(existsSync(join(f.root, "log", f.packs[0]!.name))).toBe(true);
       if (kind === "existing") expect(readFileSync(join(target, "keep"), "utf8")).toBe("untouched");
       else expect(lstatSync(target).isSymbolicLink()).toBe(true);
