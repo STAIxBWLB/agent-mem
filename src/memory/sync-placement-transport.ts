@@ -19,7 +19,7 @@ import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
-import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, selectTornPlacementBatch, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
@@ -382,13 +382,10 @@ class PlacementTransport {
       appendPlacementEvents(this.home,this.epochHash,events.slice(index,end),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);
     }else if(read.pending&&!read.pendingRecord&&formatFloorAtLeast(this.home,"sync","0.28.0")){
       const index=read.sequence-root.journal.sequence;
-      // The storage writer compares the saved bytes against the exact canonical intent before writing.
-      // Try the current bounded batch and the unsliced batch used by older writers, in that order.
-      const ends=[Math.min(count,index+PLACEMENT_APPEND_SLICE),count];
-      for(const end of new Set(ends)) {
-        try { appendPlacementEvents(this.home,this.epochHash,events.slice(index,end),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);break; }
-        catch(error){ if(!(error instanceof SyncPlacementJournalError)||error.code!=="conflict")throw error; }
-      }
+      // A very short prefix can match both forms; only a uniquely matching intent is safe to complete.
+      const ends=[...new Set([Math.min(count,index+PLACEMENT_APPEND_SLICE),count])];
+      const candidates=ends.map(end=>events.slice(index,end)),selected=selectTornPlacementBatch(this.home,this.epochHash,candidates,read.headHash,this.storage(factual));
+      if(selected!==undefined){appendPlacementEvents(this.home,this.epochHash,candidates[selected]!,read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);}
     }
     if(read.pending){
       const sequence=read.pendingRecordSequence??read.sequence+1, index=sequence-root.journal.sequence-1;

@@ -544,7 +544,7 @@ function retainedPublication(f: Awaited<ReturnType<typeof fixture>>) {
   return publicationStorage.readPlacementPublication(f.home, f.epochHash, root.seal);
 }
 
-for (const legacy of [false, true]) test(`v2 resumes a torn ${legacy ? "legacy unsliced" : "50-record sliced"} intent with more pending events`, async () => {
+for (const mode of ["sliced", "legacy", "ambiguous"] as const) test(`v2 handles a torn ${mode} intent with more pending events`, async () => {
   const remote = bare(), f = await fixture({ seed(store) {
     const ids: Record<string, string> = {};
     for (let index = 0; index < 70; index++) ids[String(index)] = store.note(note(`torn intent ${index}`));
@@ -558,13 +558,13 @@ for (const legacy of [false, true]) test(`v2 resumes a torn ${legacy ? "legacy u
   const realAppend = journalStorage.appendPlacementEvents; let fired = false, frozen: PlacementRecord[] = [];
   const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epoch, events, head, options) => {
     // A previous writer wrote the full 70-event prepublication batch, rather than the new 50-event slice.
-    const batch = legacy && !fired ? captured.slice(-140, -70) : events;
+    const batch = mode === "legacy" && !fired ? captured.slice(-140, -70) : events;
     return realAppend(home, epoch, batch, head, { ...options, phase(stage) {
       options.phase?.(stage); if (fired || stage !== "intent-written") return;
       const file = join(home, "sync-placement", "epochs", epoch, "append-intent.json"), full = readFileSync(file);
       frozen = (JSON.parse(full.toString()) as { records: PlacementRecord[] }).records;
-      expect(frozen.length).toBe(legacy ? 70 : PLACEMENT_APPEND_SLICE);
-      persistCrashPrefix(file, full.subarray(0, Math.floor(full.length / 2)));
+      expect(frozen.length).toBe(mode === "legacy" ? 70 : PLACEMENT_APPEND_SLICE);
+      persistCrashPrefix(file, full.subarray(0, mode === "ambiguous" ? 1 : Math.floor(full.length / 2)));
       fired = true; throw Error("synthetic torn intent");
     } });
   });
@@ -572,7 +572,11 @@ for (const legacy of [false, true]) test(`v2 resumes a torn ${legacy ? "legacy u
     const first = await syncPlacementMemory(f.store, f.opts(remote));
     expect(fired).toBe(true); expect(first.ok).toBe(false); expect(refs(remote)).toEqual([]);
     fault.mockRestore(); records.mockRestore();
+    const intent = join(f.home, "sync-placement", "epochs", f.epochHash, "append-intent.json"), prefix = readFileSync(intent);
     const resumed = await syncPlacementMemory(f.store, f.opts(remote));
+    if (mode === "ambiguous") {
+      expect(resumed.ok).toBe(false); expect(readFileSync(intent)).toEqual(prefix); expect(refs(remote)).toEqual([]); return;
+    }
     expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
     const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
     expect(done.pending).toBe(false); expect(done.records.slice(0, frozen.length)).toEqual(frozen);
