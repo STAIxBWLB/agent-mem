@@ -123,6 +123,18 @@ export async function discoverRemotePlacementRealms(homeInput: string, opts: Rem
   } catch { throw new Error("Remote placement realm listing is unavailable; check the configured private sync remote and active inventory."); }
 }
 
+/** Recheck the reviewed head and configured remote immediately before staging publication. */
+export async function assertRemoteAdoptionCurrent(homeInput: string, project: string, plan: RemoteAdoption, opts: RemoteReadOptions = {}): Promise<void> {
+  try {
+    const ctx = await configuredRemoteContext(homeInput, opts), key = createHash("sha256").update(project).digest("hex");
+    if (key !== plan.keyHash || ctx.active.epoch.homeHash !== plan.homeHash || ctx.active.profile.placementHead !== plan.epochHash
+      || ctx.active.epoch.generation !== plan.generation || createHash("sha256").update(ctx.url).digest("hex") !== plan.remoteHash) return refuse("source-selection");
+    const ref = shardSyncRef({ scope: "project", key: project }), result = await generationSyncGitBytes(ctx.root,
+      ctx.args(["ls-remote", "--refs", ctx.url, ref]), opts.signal, undefined, 256);
+    ctx.check(); if (result.code !== 0 || new TextDecoder("utf-8", { fatal: true }).decode(result.out) !== `${plan.remoteHead}\t${ref}\n`) return refuse("remote");
+  } catch { throw new Error("Remote placement adoption changed; review the configured private sync remote and preview again."); }
+}
+
 export interface PreparedRemoteRealm { plan: RemoteAdoption; packs: RemoteStagedPack[] }
 /** Fetch and audit one explicitly named remote-only realm into the existing private cache, never the live shard. */
 export async function prepareRemotePlacementRealm(homeInput: string, project: string, opts: RemoteReadOptions = {}): Promise<PreparedRemoteRealm> {
@@ -132,7 +144,8 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
     if (!project || Buffer.byteLength(project) > 400 || /[\r\n\0]/.test(project)) return refuse("source-selection");
     context = await configuredRemoteContext(homeInput, opts);
     const ctx = context, keyHash = createHash("sha256").update(project).digest("hex");
-    if (ctx.inventory.realms.some(realm => realm.scope === "project" && realm.keyHash === keyHash)) return refuse("source-selection");
+    // Ref names use only 16 hex characters; a prefix already bound to another full key is never adopted as a new realm.
+    if (ctx.inventory.realms.some(realm => realm.scope === "project" && realm.keyHash.slice(0, 16) === keyHash.slice(0, 16))) return refuse("source-selection");
     const ref = shardSyncRef({ scope: "project", key: project }), source = previewSyncPlacementSources(ctx.home);
     const check = () => { ctx.check(); source.assertSourcesUnchanged(); ctx.check(); };
     check(); releaseRoot = acquireMutation(ctx.root); if (!releaseRoot) return refuse("lock");
@@ -157,7 +170,7 @@ export async function prepareRemotePlacementRealm(homeInput: string, project: st
     check();
     const plan = createRemoteAdoption({ schema: REMOTE_ADOPTION_SCHEMA, homeHash: ctx.active.epoch.homeHash, epochHash: ctx.active.profile.placementHead,
       generation: ctx.active.epoch.generation, keyHash, remoteHash: createHash("sha256").update(ctx.url).digest("hex"), remoteHead: head,
-      policyHash: source.base.policyHash, aliasesHash: source.base.aliasesHash, omitted: selection.omitted,
+      sourceHash: source.base.sourceHash, policyHash: source.base.policyHash, aliasesHash: source.base.aliasesHash, omitted: selection.omitted,
       packs: packs.map(pack => ({ name: pack.name, bytes: pack.bytes.length })) });
     check(); return { plan, packs };
   } catch { throw new Error("Remote placement realm preview is unavailable; check the configured private sync remote and complete realm proof."); }

@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
+import { memoryGitSync } from "../src/memory/platform.ts";
 import { syncMemory } from "../src/memory/sync.ts";
-import { discoverRemotePlacementRealms, prepareRemotePlacementRealm } from "../src/memory/sync-placement-transport.ts";
+import { assertRemoteAdoptionCurrent, discoverRemotePlacementRealms, prepareRemotePlacementRealm } from "../src/memory/sync-placement-transport.ts";
 import { bareRemote, closeInventoryFixtures, inventoryFixture } from "./fakes/sync-placement-inventory.ts";
 import { inspectionFilesystemSnapshot } from "./fakes/sync-placement-inspection.ts";
 
@@ -52,4 +53,9 @@ test("remote realm preview audits the frozen ref in the configured cache without
   expect(existsSync(target)).toBe(false);
   const receipt = JSON.stringify({ realm: prepared.plan.keyHash, head: prepared.plan.remoteHead, omitted: prepared.plan.omitted });
   expect(receipt).not.toContain(remoteOnly); expect(receipt).not.toContain(remote); expect(receipt).not.toContain(b.home);
+  await expect(assertRemoteAdoptionCurrent(b.home, remoteOnly, prepared.plan, { visibility: async () => "private" })).resolves.toBeUndefined();
+  const removed = memoryGitSync(["--git-dir", remote, "update-ref", "-d", `refs/heads/amem/p/${shardKeyHash(remoteOnly)}`], { encoding: "utf8" });
+  expect(removed.status).toBe(0);
+  await expect(assertRemoteAdoptionCurrent(b.home, remoteOnly, prepared.plan, { visibility: async () => "private" })).rejects.toThrow("changed");
+  expect(existsSync(target)).toBe(false);
 }, 120_000);
