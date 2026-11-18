@@ -114,6 +114,7 @@ export function inspectRealmProofStage(homeInput: string, raw: RealmIntent): boo
 export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: RealmIntentProof): void {
   const home = realPath(homeInput), intent = validateRealmIntent(raw), file = pathOf(home, intent);
   assertMutationHandle(proof.mutation, home); proof.assertCurrent();
+  const prior = readProof(home, intent);
   const staged = `${file}.pending`, beforeStage = lstatSync(staged, { bigint: true, throwIfNoEntry: false });
   if (beforeStage) {
     const inspected = readStage(home, intent) ?? fail(); if (stamp(inspected.stat) !== stamp(beforeStage)) fail();
@@ -122,7 +123,7 @@ export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: Real
     if (stamp(current.stat) !== stamp(beforeStage) || current.hash !== inspected.hash) fail();
     unlinkSync(staged); fsyncDirectory(home); proof.assertCurrent();
   }
-  const prior = readProof(home, intent); if (!prior) return;
+  if (!prior) return;
   const before = prior.stat; owned(before);
   proof.assertCurrent(); assertMutationHandle(proof.mutation, home);
   if (stamp(lstatSync(file, { bigint: true })) !== stamp(before)) fail();

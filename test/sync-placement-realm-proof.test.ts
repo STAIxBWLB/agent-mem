@@ -71,3 +71,14 @@ test("abandon removes only a private intent-bound staged proof prefix", () => {
     expect(readFileSync(`${f.file}.pending`, "utf8")).toBe("foreign");
   } finally { f.mutation(); }
 });
+
+test("abandon leaves a stage intact if the installed proof is invalid", () => {
+  const f = fixture();
+  try {
+    const staged = `${f.file}.pending`, bytes = Buffer.from(f.text).subarray(0, 80);
+    writeFileSync(staged, bytes, { mode: 0o600 });
+    writeFileSync(f.file, "{}\n", { mode: 0o600 });
+    expect(() => clearRealmProof(f.home, f.intent, f.proof)).toThrow();
+    expect(readFileSync(staged)).toEqual(bytes);
+  } finally { f.mutation(); }
+});
