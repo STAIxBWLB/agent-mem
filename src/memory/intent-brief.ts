@@ -133,16 +133,18 @@ export async function buildIntentBrief(source: IntentBriefSource, options: Inten
     const items: View[] = [], lines = [HEADER]; let bytes = Buffer.byteLength(HEADER);
     for (const view of candidates) {
       check();
-      // #316: a neighbour is screened when the walk reaches it, not before, so the pass stops as soon as the budget is full.
+      // #316: a neighbour is screened when the walk reaches it. Once the cap is spent an unscreened neighbour is skipped
+      // rather than ending the walk, because rows admitted before it still rank and still belong in the brief.
       if (!admitted.has(view.id)) {
-        if (asked === INTENT_BRIEF_SCREEN_LIMIT) { capped = true; break; }
+        if (asked === INTENT_BRIEF_SCREEN_LIMIT) { capped = true; continue; }
         asked++; if (!await policy.screen(view)) { check(); continue; } check(); admitted.add(view.id);
       }
       if (!live(view, context.project, current())) continue;
       if (items.length === rankedLimit) { truncated = true; break; }
       const row = lineOf(view, staleMarker(options, view), Math.min(768, ranked - bytes - 1)); check();
-      // The cap that decides a line's fit depends on `bytes` alone, so once one row cannot fit, no later row can.
-      if (!row) { truncated = true; break; }
+      // Skipped, not fatal: the smallest line a row can encode depends on its kind, its tier and its stale marker, so a
+      // plainer row after an unfittable one can still fit.
+      if (!row) { truncated = true; continue; }
       lines.push(row.line); bytes += Buffer.byteLength(row.line) + 1; items.push(view); truncated ||= row.clipped;
     }
     if (capped) truncated = true;
