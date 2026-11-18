@@ -61,6 +61,20 @@ test("an existing curated subpath or redirected scaffold refuses before publicat
   }
 });
 
+test("old indexes and prune-proof directories in a scaffold are never replaced or ignored", () => {
+  for (const name of ["index-v4.db", "index-v2-i4.db-wal", "search.db", "prune-plans", "public-prune-inputs"] as const) {
+    const f = fixture();
+    try {
+      ensureShardDescriptor(f.home, f.project); const project = shardDir(f.home, f.project), file = join(project, name);
+      if (name === "prune-plans" || name === "public-prune-inputs") mkdirSync(file, { mode: 0o700 });
+      else writeFileSync(file, "retain", { mode: 0o600 });
+      writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof);
+      expect(() => installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof)).toThrow(`curated subpath: ${name}`);
+      expect(existsSync(file)).toBe(true); expect(existsSync(join(project, "log"))).toBe(false);
+    } finally { f.close(); }
+  }
+});
+
 test("torn companion and pack prefixes finish exactly while conflicting bytes refuse", () => {
   const f = fixture();
   try {

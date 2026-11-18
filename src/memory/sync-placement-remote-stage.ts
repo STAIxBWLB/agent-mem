@@ -23,6 +23,16 @@ function ownedDir(dir: string): BigIntStats {
   if (!s.isDirectory() || s.isSymbolicLink() || s.uid !== BigInt(process.getuid?.() ?? -1) || (s.mode & 0o077n) !== 0n) fail();
   return s;
 }
+/** A not-local scaffold may hold work/capture, but no pre-existing curated state may be replaced. */
+function rejectExistingCurated(dir: string): void {
+  const fixed = new Set(["log", "local", "legacy", "legacy-main", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json",
+    "prune-translations.jsonl", "prune-plans", "public-prune-objects", "public-prune-inputs", "public-prune-input-sets"]);
+  for (const name of readdirSync(dir)) {
+    if (fixed.has(name) || /^index(?:-v[0-9]+(?:-i[0-9]+)?)?\.db(?:-wal|-shm|-journal)?$/.test(name)
+      || /^search\.db(?:-wal|-shm|-journal)?$/.test(name))
+      throw new Error(`Remote placement adoption cannot replace existing curated subpath: ${name}.`);
+  }
+}
 function check(home: string, proof: RealmIntentProof): void {
   assertMutationHandle(proof.mutation, home); proof.assertCurrent(); assertMutationHandle(proof.mutation, home);
 }
@@ -204,15 +214,12 @@ export function installRemoteAdoptionLog(homeInput: string, project: string, val
   check(home, proof);
   const projects = join(home, "projects"); ownedDir(projects);
   if (lstatSync(projectDir, { throwIfNoEntry: false })) {
-    ownedDir(projectDir);
-    for (const name of ["log", "local", "legacy", "legacy-main", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json"])
-      if (lstatSync(join(projectDir, name), { throwIfNoEntry: false })) throw new Error(`Remote placement adoption cannot replace existing curated subpath: ${name}.`);
+    ownedDir(projectDir); rejectExistingCurated(projectDir);
   }
   assertCuratedShardLayout(home, { project });
   if (!lstatSync(projectDir, { throwIfNoEntry: false })) { mkdirSync(projectDir, { mode: 0o700 }); fsyncDirectory(projects); }
   const target = ownedDir(projectDir);
-  for (const name of ["log", "local", "legacy", "legacy-main", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json"])
-    if (lstatSync(join(projectDir, name), { throwIfNoEntry: false })) throw new Error(`Remote placement adoption cannot replace existing curated subpath: ${name}.`);
+  rejectExistingCurated(projectDir);
   ensureShardDescriptor(home, project); check(home, proof);
   if (source.dev !== target.dev || lstatSync(destination, { throwIfNoEntry: false })) fail();
   const currentTarget = ownedDir(projectDir);
