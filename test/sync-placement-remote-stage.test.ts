@@ -8,7 +8,7 @@ import { acquireMutation } from "../src/memory/mutation.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
 import { createRemoteAdoption, REMOTE_ADOPTION_SCHEMA } from "../src/memory/sync-placement-remote-adoption-format.ts";
-import { clearRemoteAdoption, installRemoteAdoptionLog, readRemoteAdoption, stageRemoteAdoption, writeRemoteAdoption } from "../src/memory/sync-placement-remote-stage.ts";
+import { clearRemoteAdoption, clearRemoteAdoptionPending, discardRemoteInstalledLog, inspectRemoteAdoptionPending, installRemoteAdoptionLog, readRemoteAdoption, stageRemoteAdoption, writeRemoteAdoption } from "../src/memory/sync-placement-remote-stage.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -87,4 +87,32 @@ test("abandon removes only attributable private staging and never an installed l
       if (installed) expect(readFileSync(join(shardDir(f.home, f.project), "log", f.packs[0]!.name))).toEqual(f.packs[0]!.bytes);
     } finally { f.close(); }
   }
+});
+
+test("a torn unrelated companion stage refuses a new plan and is removed only after exact recheck", () => {
+  const f = fixture();
+  try {
+    const pending = join(f.home, `placement-remote-adoption-${f.plan.keyHash}.json.${"a".repeat(64)}.pending`);
+    writeFileSync(pending, "partial", { mode: 0o600 }); const inspected = inspectRemoteAdoptionPending(f.home, f.plan.keyHash);
+    expect(inspected).toHaveLength(1); expect(() => writeRemoteAdoption(f.home, f.plan, f.proof)).toThrow();
+    writeFileSync(pending, "changed", { mode: 0o600 });
+    expect(() => clearRemoteAdoptionPending(f.home, f.plan.keyHash, inspected, f.proof)).toThrow();
+    expect(readFileSync(pending, "utf8")).toBe("changed");
+    clearRemoteAdoptionPending(f.home, f.plan.keyHash, inspectRemoteAdoptionPending(f.home, f.plan.keyHash), f.proof);
+    expect(existsSync(pending)).toBe(false); writeRemoteAdoption(f.home, f.plan, f.proof);
+  } finally { f.close(); }
+});
+
+test("confirmed pre-admission cleanup removes only exact installed packs", () => {
+  const f = fixture();
+  try {
+    ensureShardDescriptor(f.home, f.project); const project = shardDir(f.home, f.project);
+    mkdirSync(join(project, "work"), { mode: 0o700 }); writeFileSync(join(project, "work", "keep"), "work", { mode: 0o600 });
+    writeRemoteAdoption(f.home, f.plan, f.proof); stageRemoteAdoption(f.home, f.plan, f.packs, f.proof); installRemoteAdoptionLog(f.home, f.project, f.plan, f.proof);
+    const pack = join(project, "log", f.packs[0]!.name); writeFileSync(pack, "changed", { mode: 0o600 });
+    expect(() => discardRemoteInstalledLog(f.home, f.project, f.plan, f.proof)).toThrow(); expect(readFileSync(pack, "utf8")).toBe("changed");
+    writeFileSync(pack, f.packs[0]!.bytes, { mode: 0o600 }); discardRemoteInstalledLog(f.home, f.project, f.plan, f.proof);
+    expect(existsSync(join(project, "log"))).toBe(false); expect(readFileSync(join(project, "work", "keep"), "utf8")).toBe("work");
+    clearRemoteAdoption(f.home, f.plan, f.packs, f.proof);
+  } finally { f.close(); }
 });

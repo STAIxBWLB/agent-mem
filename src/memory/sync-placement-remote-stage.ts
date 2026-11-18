@@ -1,6 +1,6 @@
 /** Private, fenced staging for remote placement adoption; never rewrites an existing curated log. */
 import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeSync, type BigIntStats } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, readdirSync, renameSync, rmdirSync, unlinkSync, writeSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, fsyncDirectory } from "./generation.ts";
 import { assertMutationHandle } from "./mutation.ts";
@@ -61,6 +61,36 @@ function ensureDir(home: string, dir: string, parent: string, proof: RealmIntent
   check(home, proof); if (!lstatSync(dir, { throwIfNoEntry: false })) { mkdirSync(dir, { mode: 0o700 }); fsyncDirectory(parent); }
   ownedDir(dir); check(home, proof);
 }
+export interface RemoteAdoptionPending { name: string; size: number; hash: string; stamp: string }
+/** A torn companion is private staging, not authority to materialize a realm. */
+export function inspectRemoteAdoptionPending(homeInput: string, keyHash: string): RemoteAdoptionPending[] {
+  const home = realPath(homeInput); if (!/^[a-f0-9]{64}$/.test(keyHash)) return fail();
+  const prefix = `placement-remote-adoption-${keyHash}.json.`, result: RemoteAdoptionPending[] = []; let count = 0;
+  const dir = opendirSync(home);
+  try {
+    for (;;) {
+      const entry = dir.readSync(); if (!entry) break; if (++count > 20_000) return fail();
+      if (!entry.name.startsWith(prefix)) continue;
+      if (!/^[a-f0-9]{64}\.pending$/.test(entry.name.slice(prefix.length)) || result.length >= 64) return fail();
+      const file = join(home, entry.name), before = lstatSync(file, { bigint: true }), bytes = readOwned(file, REMOTE_ADOPTION_MAX_BYTES);
+      if (!bytes || stamp(lstatSync(file, { bigint: true })) !== stamp(before)) return fail();
+      result.push({ name: entry.name, size: bytes.length, hash: sha(bytes), stamp: stamp(before) });
+    }
+  } finally { dir.closeSync(); }
+  return result.sort((a, b) => a.name.localeCompare(b.name));
+}
+/** Explicitly confirmed cleanup rechecks the exact staged files and never removes an installed companion. */
+export function clearRemoteAdoptionPending(homeInput: string, keyHash: string, expected: readonly RemoteAdoptionPending[], proof: RealmIntentProof): void {
+  const home = realPath(homeInput); check(home, proof);
+  if (canonicalJSON(inspectRemoteAdoptionPending(home, keyHash)) !== canonicalJSON(expected)) fail();
+  for (const stage of expected) {
+    const file = join(home, stage.name); check(home, proof);
+    const stat = lstatSync(file, { bigint: true }), bytes = readOwned(file, REMOTE_ADOPTION_MAX_BYTES);
+    if (!bytes || stamp(stat) !== stage.stamp || bytes.length !== stage.size || sha(bytes) !== stage.hash) fail();
+    unlinkSync(file); fsyncDirectory(home);
+  }
+  check(home, proof); if (inspectRemoteAdoptionPending(home, keyHash).length) fail();
+}
 export function readRemoteAdoption(homeInput: string, keyHash: string): RemoteAdoption | undefined {
   const home = realPath(homeInput);
   if (!/^[a-f0-9]{64}$/.test(keyHash)) return fail();
@@ -74,9 +104,9 @@ export function readRemoteAdoption(homeInput: string, keyHash: string): RemoteAd
 export function writeRemoteAdoption(homeInput: string, value: RemoteAdoption, proof: RealmIntentProof): void {
   const home = realPath(homeInput), plan = validateRemoteAdoption(value), expected = Buffer.from(canonicalJSON(plan) + "\n"), file = companion(home, plan);
   check(home, proof); ownedDir(home);
-  const prior = readRemoteAdoption(home, plan.keyHash);
-  if (prior) { if (canonicalJSON(prior) !== canonicalJSON(plan)) fail(); return; }
-  const pending = `${file}.${plan.seal}.pending`;
+  const prior = readRemoteAdoption(home, plan.keyHash), pending = `${file}.${plan.seal}.pending`, stages = inspectRemoteAdoptionPending(home, plan.keyHash);
+  if (prior) { if (stages.length || canonicalJSON(prior) !== canonicalJSON(plan)) fail(); return; }
+  if (stages.some(item => join(home, item.name) !== pending)) fail();
   complete(home, pending, expected, proof); check(home, proof);
   if (lstatSync(file, { throwIfNoEntry: false })) fail();
   renameSync(pending, file); fsyncDirectory(home); check(home, proof);
@@ -96,8 +126,41 @@ export function stageRemoteAdoption(homeInput: string, value: RemoteAdoption, pa
   for (const pack of packs) complete(home, join(log, pack.name), pack.bytes, proof);
   fsyncDirectory(log); fsyncDirectory(root); check(home, proof);
 }
+/** A missing staged log with an existing destination is a possible completed rename, subject to full verification. */
+export function remoteAdoptionLogMayBeInstalled(homeInput: string, project: string, value: RemoteAdoption): boolean {
+  const home = realPath(homeInput), plan = validateRemoteAdoption(value);
+  if (!project || sha(project) !== plan.keyHash) return fail();
+  const root = staging(home, plan), stage = lstatSync(root, { throwIfNoEntry: false });
+  return !!stage && !lstatSync(join(root, "log"), { throwIfNoEntry: false }) && !!lstatSync(join(shardDir(home, project), "log"), { throwIfNoEntry: false });
+}
+
+/** Confirmed pre-admission abandon removes only exact unpublished packs this companion installed. */
+export function discardRemoteInstalledLog(homeInput: string, project: string, value: RemoteAdoption, proof: RealmIntentProof): void {
+  const home = realPath(homeInput), plan = validateRemoteAdoption(value);
+  if (!project || sha(project) !== plan.keyHash) fail(); check(home, proof);
+  if (canonicalJSON(readRemoteAdoption(home, plan.keyHash)) !== canonicalJSON(plan)) fail();
+  const root = staging(home, plan), staged = join(root, "log"), projectDir = shardDir(home, project), log = join(projectDir, "log");
+  ownedDir(root); if (lstatSync(staged, { throwIfNoEntry: false })) return;
+  if (readdirSync(root).length) fail();
+  const before = ownedDir(log);
+  if (canonicalJSON(readdirSync(log).sort()) !== canonicalJSON(plan.packs.map(pack => pack.name))) fail();
+  const files = plan.packs.map(pack => {
+    const file = join(log, pack.name), bytes = readOwned(file, pack.bytes), stat = lstatSync(file, { bigint: true });
+    if (!bytes || bytes.length !== pack.bytes || `sync-${sha(bytes)}.jsonl` !== pack.name) return fail();
+    return { file, bytes, stamp: stamp(stat) };
+  });
+  for (const item of files) {
+    check(home, proof); if (stamp(lstatSync(item.file, { bigint: true })) !== item.stamp || !readOwned(item.file, item.bytes.length)?.equals(item.bytes)) fail();
+    unlinkSync(item.file);
+  }
+  fsyncDirectory(log); check(home, proof);
+  const current = ownedDir(log); if (current.dev !== before.dev || current.ino !== before.ino || readdirSync(log).length) fail();
+  // A completed #448 scaffold still needs its log directory, even if its extension was abandoned.
+  if (!lstatSync(join(projectDir, "generation.json"), { throwIfNoEntry: false })) rmdirSync(log);
+  fsyncDirectory(projectDir); check(home, proof);
+}
 /** Install the complete staged log as one same-filesystem rename; work and machine data stay in place. */
-export function installRemoteAdoptionLog(homeInput: string, project: string, value: RemoteAdoption, proof: RealmIntentProof): void {
+export function installRemoteAdoptionLog(homeInput: string, project: string, value: RemoteAdoption, proof: RealmIntentProof, allowRetainedMetadata = false): void {
   const home = realPath(homeInput), plan = validateRemoteAdoption(value);
   if (!project || sha(project) !== plan.keyHash) fail();
   check(home, proof); if (canonicalJSON(readRemoteAdoption(home, plan.keyHash)) !== canonicalJSON(plan)) fail();
@@ -109,7 +172,7 @@ export function installRemoteAdoptionLog(homeInput: string, project: string, val
   };
   // A crash after rename leaves the exact destination and an empty owned stage; never rename or truncate it again.
   if (!lstatSync(log, { throwIfNoEntry: false })) {
-    if (readdirSync(root).length || lstatSync(join(projectDir, "generation.json"), { throwIfNoEntry: false })) fail();
+    if (readdirSync(root).length || !allowRetainedMetadata && lstatSync(join(projectDir, "generation.json"), { throwIfNoEntry: false })) fail();
     assertCuratedShardLayout(home, { project }); ownedDir(projectDir); verifyLog(destination); check(home, proof); return;
   }
   const source = ownedDir(log);
