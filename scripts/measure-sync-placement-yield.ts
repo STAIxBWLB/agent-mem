@@ -98,7 +98,7 @@ try {
     rows: ROWS, realmBytes, elapsedMs: Math.round(performance.now() - started), elapsedPhase: phase, maximumGapMs: Math.round(maximum * 100) / 100, gapsOver250Ms: gaps,
     maximumInstallMeasureMs: attestMs.length ? Math.round(Math.max(...attestMs) * 100) / 100 : null,
     maximumSegmentReadMs: segmentMs.length ? Math.round(Math.max(...segmentMs) * 100) / 100 : null,
-    result: { ok: result.ok, cause: result.failure?.cause ?? null, bound: result.placementPublication?.bound ?? null } }, null, 2));
+    result: { ok: result.ok, cause: result.failure?.cause ?? null, bound: result.placementPublication?.bound ?? null, journalObjects: result.placementPublication?.journalObjects ?? null } }, null, 2));
   if (gapsOut) {
     writeFileSync(gapsOut, JSON.stringify({ rows: ROWS, realmBytes, gaps }, null, 2) + "\n", { mode: 0o600 });
     console.log(`attribution: ${gaps.length} gap window(s) written to ${gapsOut}`);

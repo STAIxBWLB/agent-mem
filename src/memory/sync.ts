@@ -13,6 +13,7 @@ import { memoryHome } from "./home.ts";
 import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } from "./sync-screen.ts";
 import { shardSyncBinding } from "./sync-binding.ts";
 import type { PlacementSyncBound } from "./sync-placement-bound.ts";
+import type { PlacementJournalObjectComposition } from "./sync-placement-journal-storage.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
 import type { PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 
@@ -38,6 +39,8 @@ export interface SyncResult { ok: boolean; pushed: boolean; entries: number; war
     lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCheckSource?: "live" | "durable-intent"; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean;
     /** #419: an expected size refusal before any publication attempt; numbers only. */
     bound?: PlacementSyncBound;
+    /** #288 step 1: what held the whole epoch's objects when the journal-objects bound was measured; numbers only. */
+    journalObjects?: PlacementJournalObjectComposition;
     /** #426: the fixed category and phase of a refusal before any publication attempt; no path, row or secret. */
     refusal?: { category: PlacementRefusalCategory; phase: SyncProgressPhase } };
   pruneApplication?: {transport:"durable"|"unconfirmed";proofComplete:number;projectionActive:number|null;nativeApplied:number|null;held:number;phase:"preflight"|"prepared"|"active"|"complete"};

@@ -544,6 +544,44 @@ function reservedPublicationJournalNamesUncached(p: Paths): string[] {
   for (const root of complete) names.push(...placementPublicationReservedJournalNames(root, read, sizes));
   return names;
 }
+/** #288 step 1: which holders fill the journal-objects bound. Counts only, never a name, path or row. */
+export interface PlacementJournalObjectComposition {
+  epochFixed:number; writerHistory:number; journalChunks:number;
+  completedPublications:{ count:number; objects:number };
+  newPlan:{ chunks:number; slots:number; reservedJournalChunks:number } | null;
+}
+/**
+ * Splits the objects `assertPlanCapacity` counts, over exactly the inputs it counts: the epoch directory's names, one
+ * planned publication and the journal names that plan reserves. Every counted name lands in one class, so the parts
+ * always sum to the counted total, and a name outside the known families counts as fixed - `inventory()` has already
+ * refused an unknown epoch member, so the remainder is the epoch's own fixed set rather than a silent fifth holder.
+ * `plan` is absent where nothing is planned yet (the renewal preview), which reports `newPlan: null`.
+ */
+export function placementJournalObjectComposition(input:{ names:readonly string[]; plan?:{ root:PlacementPublicationRoot; reserved:readonly string[] } }):PlacementJournalObjectComposition {
+  const planned = new Set(input.plan ? publicationFileNames(input.plan.root) : []), reserved = new Set(input.plan?.reserved ?? []);
+  // One global active.json slot is always reserved, whether that fence exists yet or not: the counted total's `+ 1`.
+  const composition:PlacementJournalObjectComposition = { epochFixed:1, writerHistory:0, journalChunks:0, completedPublications:{ count:0, objects:0 },
+    newPlan:input.plan ? { chunks:input.plan.root.chunks.length, slots:planned.size, reservedJournalChunks:reserved.size } : null };
+  const sealed = new Set<string>();
+  for (const name of new Set([...input.names, ...planned, ...reserved])) {
+    if (reserved.has(name) || planned.has(name)) continue; // counted in newPlan, whether or not the file already exists
+    if (writerHistoryFileLimit(name) !== undefined) { composition.writerHistory++; continue; }
+    if (/^records-\d{5}\.jsonl$/.test(name)) { composition.journalChunks++; continue; }
+    const attempt = publicationName(name) ? publicationPattern.exec(name)![1]! : undefined;
+    if (attempt) { sealed.add(attempt); composition.completedPublications.objects++; continue; }
+    composition.epochFixed++; // epoch.json, activation.json and a pending append-intent.json
+  }
+  composition.completedPublications.count = sealed.size;
+  return composition;
+}
+/** The composition as one numbers-only clause for a refusal or a preview, in the counted total's own order. */
+export function placementJournalObjectCompositionText(composition:PlacementJournalObjectComposition):string {
+  const plan = composition.newPlan ? `, new plan ${composition.newPlan.chunks} chunks/${composition.newPlan.slots} slots/${composition.newPlan.reservedJournalChunks} reserved journal chunks` : "";
+  const sum = composition.epochFixed + composition.writerHistory + composition.journalChunks + composition.completedPublications.objects
+    + (composition.newPlan ? composition.newPlan.slots + composition.newPlan.reservedJournalChunks : 0);
+  return `Objects by holder (${sum}): epoch fixed ${composition.epochFixed}, writer history ${composition.writerHistory}, journal chunks ${composition.journalChunks}, `
+    + `completed publications ${composition.completedPublications.count} (${composition.completedPublications.objects} objects)${plan}.`;
+}
 /** A complete (newline-terminated) root is immutable: keep the last decoded one by its stat stamp (#420), same ceiling as journalPrefix. */
 let reservationRoot: { key: string; root: PlacementPublicationRoot } | undefined;
 function publicationRootsForReservation(p: Paths): PlacementPublicationRoot[] {

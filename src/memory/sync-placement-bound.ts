@@ -23,7 +23,10 @@ export function placementSyncBoundMessage(bound: PlacementSyncBound): string {
 }
 /** Expected input refusal before a publication attempt exists. Code stays "bound" for existing callers. */
 export class PlacementSyncBoundError extends SyncPlacementJournalError {
-  constructor(readonly bound: PlacementSyncBound) { super("bound"); this.message = placementSyncBoundMessage(bound); this.name = "PlacementSyncBoundError"; }
+  /** `detail` is an optional numbers-only clause about the same measurement; the receipt never carries it. */
+  constructor(readonly bound: PlacementSyncBound, detail?: string) {
+    super("bound"); this.message = placementSyncBoundMessage(bound) + (detail ? ` ${detail}` : ""); this.name = "PlacementSyncBoundError";
+  }
 }
 /** Only allowlisted own data properties of a journal bound error become a receipt; any other exception yields none. */
 export function placementSyncBoundReceipt(error: unknown): PlacementSyncBound | undefined {

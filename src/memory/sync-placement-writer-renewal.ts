@@ -10,7 +10,7 @@ import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
 import { readInitialSyncPlacementWriterLocator } from "./sync-placement-writer-roots.ts";
 import { readEffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
-import { readPlacementJournal, readPlacementWriterJournalAnchors, writerRenewalCapacity } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, readPlacementWriterJournalAnchors, writerRenewalCapacity, readPlacementPublicationMetadata, placementJournalObjectComposition, type PlacementJournalObjectComposition } from "./sync-placement-journal-storage.ts";
 import { readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appendWriterCommit, clearWriterRenewalIntent, abandonWriterRenewal, abandonUnpublishedWriterStaging, type WriterHistoryPhase, type WriterHistoryRead } from "./sync-placement-writer-history.ts";
 import { createWriterRevision, createWriterCommit, createWriterRenewalIntent, writerRevisionWriters, WRITER_REVISION_SCHEMA, WRITER_RENEWAL_INTENT_SCHEMA, WRITER_REVISION_LIMIT, WRITER_COMMIT_LOG, SharedWriterRevisionError, type WriterRenewalIntent } from "./sync-placement-writer-revision-format.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
@@ -107,12 +107,16 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
   if(options.mode==="dry-run"){
     if(history.pending)return{mode:options.mode,active:true,renewalSupported:true,pending:true,commitStarted:history.appendStarted,abandonable:!history.appendStarted,sequence:history.sequence,remainingRevisions:WRITER_REVISION_LIMIT-history.sequence};
     const expected=readEffectiveSyncPlacementWriters(home);let floorReady=true;try{requireWriterRenewalHomeFloor(home);}catch{floorReady=false;}
-    let recoveryReady=true,objectSlotsRemaining:number|undefined;
-    try{journalClear(home,b.epochHash);pendingSources(home);objectSlotsRemaining=256-readPlacementJournal(home,b.epochHash).objects;}catch{recoveryReady=false;}
+    let recoveryReady=true,objectSlotsRemaining:number|undefined,journalObjects:PlacementJournalObjectComposition|undefined;
+    // The preview's own composition (#288 step 1), read without a plan: `newPlan` is null here, and the epoch's one
+    // active.json slot is included exactly as the counted total includes it. A pending renewal intent lives outside the
+    // epoch directory, so `objectSlotsRemaining` can be smaller than the composition suggests.
+    try{journalClear(home,b.epochHash);pendingSources(home);objectSlotsRemaining=256-readPlacementJournal(home,b.epochHash).objects;
+      journalObjects=readPlacementPublicationMetadata(home,b.epochHash,io=>placementJournalObjectComposition({names:io.names()}));}catch{recoveryReady=false;}
     const writers=previewActivePlacementWriters(home,options.ownRoot,options.writerRoots),remaining=WRITER_REVISION_LIMIT-history.sequence;
     return{mode:options.mode,active:true,renewalSupported:true,forwardOnly:true,sequence:history.sequence,revisionHash:history.headHash,remainingRevisions:WRITER_REVISION_LIMIT-history.sequence,
       quiescence:"deferred-to-apply",floorReady,requiredHomeFloor:"0.22.0",recoveryReady,...(recoveryReady?{}:{nextStep:new WriterRenewalError("pending").message}),
-      ...(objectSlotsRemaining===undefined?{}:{objectSlotsRemaining}),...(remaining<=4?{capacityNotice:`${remaining} renewals remain before the 64-revision ceiling; the shared object budget may refuse earlier. Archival/checkpointing requires a separate reviewed protocol.`}:{}),
+      ...(objectSlotsRemaining===undefined?{}:{objectSlotsRemaining}),...(journalObjects?{journalObjects}:{}),...(remaining<=4?{capacityNotice:`${remaining} renewals remain before the 64-revision ceiling; the shared object budget may refuse earlier. Archival/checkpointing requires a separate reviewed protocol.`}:{}),
       writers,candidateMinimumVersion:"0.22.0",candidatesSupported:writers.complete&&writers.roots.every(r=>supported(r.version)),expectedWriterCount:expected.writers.length};
   }
   requireWriterRenewalHomeFloor(home);
