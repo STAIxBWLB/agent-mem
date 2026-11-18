@@ -24,9 +24,20 @@ export function placementSyncBoundMessage(bound: PlacementSyncBound): string {
 /** Expected input refusal before a publication attempt exists. Code stays "bound" for existing callers. */
 export class PlacementSyncBoundError extends SyncPlacementJournalError {
   /** `detail` is an optional numbers-only clause about the same measurement; the receipt never carries it. */
-  constructor(readonly bound: PlacementSyncBound, detail?: string) {
+  constructor(readonly bound: PlacementSyncBound, readonly detail?: string) {
     super("bound"); this.message = placementSyncBoundMessage(bound) + (detail ? ` ${detail}` : ""); this.name = "PlacementSyncBoundError";
   }
+}
+/**
+ * #288 step 1: the thrown error's own clause, so a caller that rebuilds the message from the receipt still reports it.
+ * Only this class' allowlisted `detail` is read; the receipt stays four fields and no raw caught text is exposed.
+ */
+export function placementSyncBoundDetail(error: unknown): string | undefined {
+  try {
+    if (!error || typeof error !== "object" || types.isProxy(error) || !(error instanceof PlacementSyncBoundError)) return undefined;
+    const detail = Object.getOwnPropertyDescriptor(error, "detail")?.value;
+    return typeof detail === "string" && detail.length > 0 && detail.length <= 512 ? detail : undefined;
+  } catch { return undefined; }
 }
 /** Only allowlisted own data properties of a journal bound error become a receipt; any other exception yields none. */
 export function placementSyncBoundReceipt(error: unknown): PlacementSyncBound | undefined {

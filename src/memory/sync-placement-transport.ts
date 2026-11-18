@@ -33,7 +33,7 @@ import type { PruneRow } from "./prune.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
 import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_APPEND_SLICE, yieldTurn, type CooperativeYield } from "./sync-placement-yield.ts";
 import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
-import { PlacementSyncBoundError, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
+import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
 import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
@@ -636,7 +636,9 @@ class PlacementTransport {
       }
       // #419: an expected size refusal before any attempt exists keeps its phase, kind, limit and observed value.
       const bound=this.attemptHash||this.journal?.publicationReservation?undefined:placementSyncBoundReceipt(error);
-      if(bound){this.bound=bound;return this.result(false,"not-needed",placementSyncBoundMessage(bound));}
+      // #288 step 1: the bound's own numbers-only clause is rebuilt from the receipt for the receipt's fields, so the
+      // thrown error's detail is carried over explicitly; the result's error is what the person reads.
+      if(bound){this.bound=bound;const detail=placementSyncBoundDetail(error);return this.result(false,"not-needed",placementSyncBoundMessage(bound)+(detail?` ${detail}`:""));}
       if(this.attemptHash)return this.result(false,"unknown","Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.");
       if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementRealmRefusal && error.origin === "remote") { this.failureCause = "remote"; return this.result(false, "not-needed", error.message); }
       // #426: name the failing check by a fixed category and the phase; never the error's own text, which may carry a path.

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition } from "../src/memory/sync-placement-journal-storage.ts";
-import { PlacementSyncBoundError, placementSyncBoundReceipt } from "../src/memory/sync-placement-bound.ts";
+import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundReceipt } from "../src/memory/sync-placement-bound.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { renewSyncPlacementWriters } from "../src/memory/sync-placement-writer-renewal.ts";
 import { publicationFileNames, type PlacementPublicationRoot } from "../src/memory/sync-placement-publication-plan.ts";
@@ -52,9 +52,14 @@ test("#288: a real home's preview reports the composition the journal counts, wi
 
 test("#288: the refusal's composition clause stays out of the bound receipt", () => {
   const bound = { phase: "publication-plan", kind: "journal-objects", limit: 256, observed: 312 } as const;
-  const error = new PlacementSyncBoundError(bound, placementJournalObjectCompositionText(placementJournalObjectComposition({ names: ["epoch.json"] })));
+  const text = placementJournalObjectCompositionText(placementJournalObjectComposition({ names: ["epoch.json"] }));
+  const error = new PlacementSyncBoundError(bound, text);
   expect(error.message).toStartWith("Placement sync refused before any publication attempt: publication planning exceeds its supported journal-objects bound (observed 312, limit 256).");
   expect(error.message).toContain("Objects by holder (2): epoch fixed 2");
   // The receipt is still exactly the allowlisted four fields, so no caller learns a composition it did not ask for.
   expect(placementSyncBoundReceipt(error)).toEqual(bound);
+  // The clause is read back only from this class, so a plain error's own text never becomes a bound message.
+  expect(placementSyncBoundDetail(error)).toBe(text);
+  expect(placementSyncBoundDetail(new PlacementSyncBoundError(bound))).toBeUndefined();
+  expect(placementSyncBoundDetail(new Error(text))).toBeUndefined();
 });
