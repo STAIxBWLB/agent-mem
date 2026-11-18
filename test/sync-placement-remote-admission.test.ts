@@ -181,3 +181,17 @@ test("new resume survives an older confirmed abandon after shard metadata", asyn
     }
   } finally { rmSync(oldRoot, { recursive: true, force: true }); }
 }, 240_000);
+
+test("a concurrent admission after remote preview returns already-admitted without creating a companion", async () => {
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const { applyRealmAdmission } = await import("../src/memory/sync-placement-realm-admission.ts");
+  const shared = "example.test/adoption-preview-race/shared", target = "example.test/adoption-preview-race/target";
+  const a = await inventoryFixture(2, [shared, target], true), b = await inventoryFixture(1, [shared], true), remote = bareRemote();
+  expect((await sync(a.home, a.opts(remote))).ok).toBe(true); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+  const result = await remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: async stage => {
+    if (stage === "after-preview") expect(await applyRealmAdmission(b.home, target, { mode: "apply" })).toMatchObject({ state: "admitted" });
+  } });
+  expect(result).toMatchObject({ state: "already-admitted", nextStep: "amem sync" });
+  expect(readdirSync(b.home).filter(name => name.includes("placement-remote-adoption-")).length).toBe(0);
+  expect(readFileSync(join(b.home, "placement-realm-extensions.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+}, 120_000);

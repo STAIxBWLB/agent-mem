@@ -26,7 +26,7 @@ export type RemoteAdmissionMode = "dry-run" | "apply" | "resume" | "abandon";
 export interface RemoteAdmissionOptions extends Pick<SyncOptions, "signal" | "visibility"> {
   mode: RemoteAdmissionMode; confirm?: boolean;
   /** Internal crash seam; never supplied by the CLI. */
-  checkpoint?(stage: "after-companion" | "after-stage" | "after-install" | "after-intent" | "after-metadata" | "after-proof" | "after-append" | "after-admission"): void | Promise<void>;
+  checkpoint?(stage: "after-preview" | "after-companion" | "after-stage" | "after-install" | "after-intent" | "after-metadata" | "after-proof" | "after-append" | "after-admission"): void | Promise<void>;
 }
 export interface RemoteAdmissionResult {
   state: "preview" | "admitted" | "already-admitted" | "retained" | "abandoned";
@@ -71,15 +71,27 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
   if (options.mode === "abandon" && !plan) return { state: admitted() ? "already-admitted" : "abandoned", realm, nextStep: admitted() ? nextSync : "preview admission" };
   if (options.mode === "abandon" && plan && !options.confirm) return { state: "retained", realm, nextStep: "confirm abandon" };
   if (options.mode === "apply" && (plan || staged.length) && !admitted()) return unavailable();
-  if (!plan && !staged.length && admitted()) return { state: "already-admitted", realm, nextStep: nextSync };
+  if (!plan && admitted()) {
+    if (staged.length) await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
+      clearRemoteAdoptionPending(home, realm, staged, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
+    });
+    return { state: "already-admitted", realm, nextStep: nextSync };
+  }
   if (options.mode === "resume" && !plan && !staged.length) return admitted() ? { state: "already-admitted", realm, nextStep: nextSync } : unavailable();
 
   let packs = plan ? await recoverRemoteStagedPacks(home, project, plan) : undefined;
   // A torn first companion can be completed only if the exact plan is reconstructed; a changed head refuses.
   if (!plan) {
-    const prepared = await prepareRemotePlacementRealm(home, project, transport); plan = prepared.plan; packs = prepared.packs;
+    const prepared = await prepareRemotePlacementRealm(home, project, transport); plan = prepared.plan; packs = prepared.packs; await options.checkpoint?.("after-preview");
   }
   const frozen: RemoteAdoption = plan, files = packs!;
+  const clearOwn = async () => {
+    await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
+      const current = readRemoteAdoption(home, realm); if (!current) return;
+      if (current.seal !== frozen.seal) return unavailable();
+      clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
+    });
+  };
   if (options.mode === "abandon") {
     const oldIntent = readRealmIntent(home, realm);
     if (oldIntent) {
@@ -100,9 +112,7 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
   }
   if (admitted()) {
     if (readRealmIntent(home, realm)) await applyRealmAdmission(home, project, { mode: "resume" });
-    await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
-      clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
-    });
+    await clearOwn();
     return { state: "already-admitted", realm, nextStep: nextSync };
   }
   await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
@@ -123,17 +133,13 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
     installRemoteAdoptionLog(home, project, frozen, proof, !!retained || completeMetadata); await options.checkpoint?.("after-install");
   });
   if (admitted()) {
-    await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
-      clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
-    });
+    await clearOwn();
     return { state: "already-admitted", realm, nextStep: nextSync };
   }
   const existing = readRealmIntent(home, realm);
   const result = await applyRealmAdmission(home, project, { mode: existing ? "resume" : "apply",
     ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}) });
   await options.checkpoint?.("after-admission");
-  await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
-    clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
-  });
+  await clearOwn();
   return { state: result.state === "already-admitted" ? "already-admitted" : "admitted", realm, omitted: frozen.omitted, nextStep: nextSync };
 }
