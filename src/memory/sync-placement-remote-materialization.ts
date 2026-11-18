@@ -1,10 +1,13 @@
 /** Select only a safe pre-admission subset from an already audited remote history. */
 import { canonicalJSON, hashJSON } from "./generation.ts";
+import { createHash } from "node:crypto";
 import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS } from "./sync-placement-bound.ts";
 import type { Entry } from "./store.ts";
 import type { ShardHistory } from "./shard-sync-history.ts";
+import { encodeShardPacks } from "./shard-sync-format.ts";
 
 export interface RemoteMaterializationSelection { rows: Entry[]; omitted: number }
+export interface RemoteStagedPack { name: string; bytes: Buffer }
 const unavailable = (): never => { throw new Error("Remote placement realm cannot be materialized from complete verified proof within the source bounds."); };
 
 /** Never stage a prune row or its target before the existing sync path activates the witness. */
@@ -30,4 +33,17 @@ export function selectRemoteMaterialization(history: ShardHistory): RemoteMateri
     rows.push(row);
   }
   return { rows, omitted };
+}
+
+/** Use the same canonical immutable pack encoding as sync, but keep it detached until publication. */
+export function remoteStagedPacks(selection: RemoteMaterializationSelection): RemoteStagedPack[] {
+  if (!Number.isSafeInteger(selection.omitted) || selection.omitted < 0 || selection.rows.length > PLACEMENT_SOURCE_MAX_ROWS) return unavailable();
+  const packs = new Map<string, Buffer>(); let total = 0;
+  for (const bytes of encodeShardPacks(selection.rows).values()) {
+    total += bytes.length; if (total > PLACEMENT_SOURCE_MAX_BYTES) return unavailable();
+    const name = `sync-${createHash("sha256").update(bytes).digest("hex")}.jsonl`, previous = packs.get(name);
+    if (previous && !previous.equals(bytes)) return unavailable();
+    packs.set(name, Buffer.from(bytes));
+  }
+  return [...packs].sort(([a], [b]) => a.localeCompare(b)).map(([name, bytes]) => ({ name, bytes }));
 }
