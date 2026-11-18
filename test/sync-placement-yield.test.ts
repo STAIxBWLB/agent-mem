@@ -6,6 +6,7 @@ import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { entryId } from "../src/memory/store.ts";
 import { syncMemory, SYNC_FAILURE_CAUSES } from "../src/memory/sync.ts";
 import { PlacementSyncBoundError } from "../src/memory/sync-placement-bound.ts";
+import { placementJournalObjectComposition, placementJournalObjectCompositionText } from "../src/memory/sync-placement-journal-storage.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES } from "../src/memory/sync-placement-journal-format.ts";
 import { PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, planPlacementPublicationAsync, publicationBytes, validatePlacementPublicationChunk, type PlacementPublicationChunk } from "../src/memory/sync-placement-publication-plan.ts";
 import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_SLICE_MS } from "../src/memory/sync-placement-yield.ts";
@@ -121,11 +122,15 @@ test("#462 AC2: a failed placement sync names a closed cause instead of leaving 
   expect([...SYNC_FAILURE_CAUSES].sort()).toEqual(["bound", "refusal", "remote", "stopped", "unavailable", "unknown-outcome", "writer-renewal"]);
   const f = await largeFixture(3);
   const materialize = await import("../src/memory/sync-placement-materialize.ts");
-  const spy = spyOn(materialize, "materializePlacementRows").mockImplementation(async () => { throw new PlacementSyncBoundError({ phase: "publication-plan", kind: "journal-objects", limit: 256, observed: 280 }); });
+  // #288 step 1: the clause the refusal throws must survive into the result a person reads, not only the receipt.
+  const detail = placementJournalObjectCompositionText(placementJournalObjectComposition({ names: ["epoch.json", "activation.json"] }));
+  const spy = spyOn(materialize, "materializePlacementRows").mockImplementation(async () => { throw new PlacementSyncBoundError({ phase: "publication-plan", kind: "journal-objects", limit: 256, observed: 280 }, detail); });
   try {
     const bound = await syncMemory(f.store, f.opts());
     expect(bound.ok).toBe(false); expect(bound.failure).toEqual({ cause: "bound" });
     expect(bound.placementPublication?.bound).toEqual({ phase: "publication-plan", kind: "journal-objects", limit: 256, observed: 280 });
+    expect(bound.error).toStartWith("Placement sync refused before any publication attempt: publication planning exceeds its supported journal-objects bound (observed 280, limit 256).");
+    expect(bound.error).toContain("Objects by holder (3): epoch fixed 3, writer history 0, journal chunks 0, completed publications 0 (0 objects).");
   } finally { spy.mockRestore(); }
   const refused = await syncMemory(f.store, { ...f.opts(), visibility: async () => "public" });
   expect(refused.ok).toBe(false); expect(refused.failure).toEqual({ cause: "refusal", category: "remote" });

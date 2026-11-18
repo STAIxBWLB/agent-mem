@@ -19,7 +19,7 @@ import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
-import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
@@ -33,7 +33,7 @@ import type { PruneRow } from "./prune.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
 import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_APPEND_SLICE, yieldTurn, type CooperativeYield } from "./sync-placement-yield.ts";
 import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
-import { PlacementSyncBoundError, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
+import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
 import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
@@ -83,6 +83,8 @@ class PlacementTransport {
   /** #462: a closed cause the catch block identified before `result` derives the rest. */
   failureCause?: SyncFailureCause;
   readonly clock: () => number; readonly progress?: SyncProgress; provedAt?: number; bound?: PlacementSyncBound; capturedPolicyVersion?: string;
+  /** #288 step 1: the journal-objects bound's own composition, numbers only, set where the bound is measured. */
+  journalObjects?: PlacementJournalObjectComposition;
   readonly selected?: readonly MemoryStore[];
   constructor(store: MemoryStore, opts: SyncOptions, phase?: Phase, testOnlyError?: (error:unknown)=>void, clock: () => number = () => performance.now(), selected?: readonly MemoryStore[]) { this.selected=selected; this.clock=clock; this.progress=opts.progress; this.testOnlyError=testOnlyError; this.store = store; this.opts = opts; this.phase = phase; this.home = store.profile.home; this.root = join(this.home, "shard-sync-placement"); this.cache = join(this.root, "objects.git"); }
   attest(): void {
@@ -546,7 +548,7 @@ class PlacementTransport {
     const cause:SyncFailureCause|undefined=ok?undefined:this.opts.signal?.aborted?"stopped":this.bound?"bound":outcome==="unknown"?"unknown-outcome":this.failureCause??(this.refusal?"refusal":"unavailable");
     return{ok,pushed:this.accepted&&(this.attempted||this.recovered&&!!this.current?.bundle.root.targets.some(target=>target.publish)),entries:this.current?.exported??0,...(error?{error}:{}),
       ...(cause?{failure:{cause,...(cause==="refusal"&&this.refusal?{category:this.refusal}:{})}}:{}),...(this.applications?{pruneApplication:{...this.applications.application}}:{}),
-      placementPublication:{...(this.attemptHash?{attemptHash:this.attemptHash}:{}),outcome,...(this.bound?{bound:this.bound}:{}),...(this.refusal?{refusal:{category:this.refusal,phase:this.phaseNow}}:{}),withheld:this.current?.withheld??0,exported:this.current?.exported??0,
+      placementPublication:{...(this.attemptHash?{attemptHash:this.attemptHash}:{}),outcome,...(this.bound?{bound:this.bound}:{}),...(this.journalObjects?{journalObjects:this.journalObjects}:{}),...(this.refusal?{refusal:{category:this.refusal,phase:this.phaseNow}}:{}),withheld:this.current?.withheld??0,exported:this.current?.exported??0,
         ...(this.lastPolicyHash?{lastPolicyHash:this.lastPolicyHash}:{}),...(this.lastPolicyCheckUnixMs!==undefined?{lastPolicyCheckUnixMs:this.lastPolicyCheckUnixMs,policyCheckSource:this.policyCheckSource??(this.recovered?"durable-intent" as const:"live" as const)}:{}),
         policyCeiling:"last-positive-check-before-in-flight-push",...(this.recovered?{recovered:true}:{})}};
   }
@@ -561,8 +563,16 @@ class PlacementTransport {
   }
   /** Object slots the plan and its reserved journal chunks need, checked before the first durable plan byte. */
   assertPlanCapacity(bundle:PlacementPublicationBundle):void{
-    const objects=readPlacementPublicationMetadata(this.home,this.epochHash,io=>new Set([...io.names(),...publicationFileNames(bundle.root),...io.reservedJournalNames(bundle.root)]).size+1);
-    if(objects>PLACEMENT_JOURNAL_MAX_OBJECTS)throw new PlacementSyncBoundError({phase:"publication-plan",kind:"journal-objects",limit:PLACEMENT_JOURNAL_MAX_OBJECTS,observed:objects});
+    // The refusal's own report (#288 step 1): the same inputs the count uses, split by what holds each object.
+    let composition:PlacementJournalObjectComposition|undefined;
+    const objects=readPlacementPublicationMetadata(this.home,this.epochHash,io=>{
+      const planned=publicationFileNames(bundle.root),reserved=io.reservedJournalNames(bundle.root),names=io.names();
+      composition=placementJournalObjectComposition({names:[...names,...planned,...reserved],plan:{root:bundle.root,reserved}});
+      return new Set([...names,...planned,...reserved]).size+1;
+    });
+    if(composition)this.journalObjects=composition;
+    if(objects>PLACEMENT_JOURNAL_MAX_OBJECTS)throw new PlacementSyncBoundError({phase:"publication-plan",kind:"journal-objects",limit:PLACEMENT_JOURNAL_MAX_OBJECTS,observed:objects},
+      composition&&placementJournalObjectCompositionText(composition));
   }
   async execute():Promise<SyncResult>{
     try{
@@ -626,7 +636,9 @@ class PlacementTransport {
       }
       // #419: an expected size refusal before any attempt exists keeps its phase, kind, limit and observed value.
       const bound=this.attemptHash||this.journal?.publicationReservation?undefined:placementSyncBoundReceipt(error);
-      if(bound){this.bound=bound;return this.result(false,"not-needed",placementSyncBoundMessage(bound));}
+      // #288 step 1: the bound's own numbers-only clause is rebuilt from the receipt for the receipt's fields, so the
+      // thrown error's detail is carried over explicitly; the result's error is what the person reads.
+      if(bound){this.bound=bound;const detail=placementSyncBoundDetail(error);return this.result(false,"not-needed",placementSyncBoundMessage(bound)+(detail?` ${detail}`:""));}
       if(this.attemptHash)return this.result(false,"unknown","Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.");
       if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementRealmRefusal && error.origin === "remote") { this.failureCause = "remote"; return this.result(false, "not-needed", error.message); }
       // #426: name the failing check by a fixed category and the phase; never the error's own text, which may carry a path.
