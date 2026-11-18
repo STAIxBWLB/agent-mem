@@ -21,3 +21,24 @@ test("remote-only listing refuses malformed, duplicate, truncated, oversized and
   const collision = [...inventory, { scope: "project" as const, keyHash: "1".repeat(16) + "2".repeat(48), bindingHash: "d".repeat(64) }];
   expect(() => remoteOnlyPlacementRealms(Buffer.alloc(0), collision)).toThrow();
 });
+
+// Baseline 0.29 admission ignores any future sidecar: an older resume can commit before a new protocol imports data.
+test("baseline admission resumes without consulting an unknown adoption companion", async () => {
+  const { inventoryFixture, closeInventoryFixtures, digest } = await import("./fakes/sync-placement-inventory.ts");
+  const { applyRealmAdmission } = await import("../src/memory/sync-placement-realm-admission.ts");
+  const { shardDir } = await import("../src/memory/shard.ts");
+  const { existsSync, readdirSync, readFileSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const f = await inventoryFixture(1, undefined, true), project = "example.test/remote-admission/n1";
+  try {
+    await expect(applyRealmAdmission(f.home, project, { mode: "apply", checkpoint: stage => {
+      if (stage === "after-intent") throw Error("synthetic interruption before remote materialization");
+    } })).rejects.toThrow();
+    const companion = join(f.home, `placement-remote-adoption-${digest(project)}.json`), marker = "pending remote materialization\n";
+    writeFileSync(companion, marker, { mode: 0o600 });
+    await expect(applyRealmAdmission(f.home, project, { mode: "resume" })).resolves.toMatchObject({ state: "admitted" });
+    expect(existsSync(companion)).toBe(true);
+    expect(readFileSync(companion, "utf8")).toBe(marker);
+    expect(readdirSync(join(shardDir(f.home, project), "log"))).toEqual([]);
+  } finally { closeInventoryFixtures(); }
+}, 240_000);
