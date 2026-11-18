@@ -132,3 +132,21 @@ test("a torn remote companion previews and confirms cleanup without changing oth
   expect(await remoteRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned", staged: 1 });
   expect(existsSync(file)).toBe(false); expect(existsSync(join(shardDir(b.home, target), "generation.json"))).toBe(false);
 }, 120_000);
+
+test("the standard admission commands recognize a retained remote operation", async () => {
+  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
+  const shared = "example.test/adoption-cli/shared", target = "example.test/adoption-cli/target";
+  const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote(); expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
+  for (const action of ["resume", "abandon"] as const) {
+    const b = await inventoryFixture(1, [shared], true); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+    await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: stage => {
+      if (stage === "after-stage") throw Error("fixture interruption");
+    } })).rejects.toThrow();
+    const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = b.home;
+    try {
+      const args = ["migrate", "--sync-placement", "--admit", target, `--${action}`, ...(action === "abandon" ? ["--confirm"] : []), "--json"];
+      const output = await runCli(args, { cwd: b.root, env: {}, visibility: privateVisibility }), result = JSON.parse(output);
+      expect(result.state).toBe(action === "resume" ? "admitted" : "abandoned"); expect(output).not.toContain(target); expect(output).not.toContain(remote);
+    } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
+  }
+}, 120_000);
