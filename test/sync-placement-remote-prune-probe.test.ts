@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { openShardStore } from "../src/memory/store.ts";
-import { canonicalJSON } from "../src/memory/generation.ts";
 import { applyPrune, planPrune } from "../src/memory/prune.ts";
 import { syncMemory } from "../src/memory/sync.ts";
+import { prepareRemotePlacementRealm } from "../src/memory/sync-placement-transport.ts";
 import { bareRemote, closeInventoryFixtures, inventoryFixture, note } from "./fakes/sync-placement-inventory.ts";
 
 const BASELINE = "57a4ace57bdf5c4fc12996146c76843de4ee21cc";
@@ -40,11 +39,14 @@ for (const reader of ["baseline", "current"] as const) test(`a strict staged sub
       expect(plan.rows).toHaveLength(1); expect(plan.rows[0]!.placement).toBe("synced");
       expect(applyPrune(source.prunePort(), plan, auth).completed).toContain(plan.rows[0]!.payload.id);
       await publish();
-      const sourceLog = join(source.dir, "log"), rows = readdirSync(sourceLog).filter(name => name.endsWith(".jsonl")).flatMap(name => readFileSync(join(sourceLog, name), "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as { id: string }));
-      const safeRow = rows.find(row => row.id === safe); expect(safeRow).toBeDefined();
-      const bytes = Buffer.from(canonicalJSON(safeRow) + "\n"), hash = createHash("sha256").update(bytes).digest("hex");
+      const existing = oldStore.openShardStore({ memoryDir: b.home, user: true, deferPromotions: true });
+      try { const result = await oldSync.syncMemory(existing, b.opts(remote)); expect(result.ok, JSON.stringify(result)).toBe(true); } finally { existing.close(); }
+      const preview = await prepareRemotePlacementRealm(b.home, target, { visibility: async () => "private" });
+      expect(preview.plan.omitted).toBeGreaterThanOrEqual(2);
+      const staged = preview.packs.flatMap(pack => pack.bytes.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line) as { id: string }));
+      expect(staged.some(row => row.id === safe)).toBe(true); expect(staged.some(row => row.id === masked)).toBe(false);
       oldShard.ensureShardDescriptor(b.home, target); const log = join(oldShard.shardDir(b.home, target), "log"); mkdirSync(log, { recursive: true, mode: 0o700 });
-      writeFileSync(join(log, `sync-${hash}.jsonl`), bytes, { mode: 0o600 });
+      for (const pack of preview.packs) writeFileSync(join(log, pack.name), pack.bytes, { mode: 0o600 });
       const admission = reader === "baseline" ? oldAdmission : await import("../src/memory/sync-placement-realm-admission.ts");
       expect(await admission.applyRealmAdmission(b.home, target, { mode: "apply" })).toMatchObject({ state: "admitted" });
       const before = oldStore.openShardStore({ memoryDir: b.home, project: target, deferPromotions: true, now: () => start });
