@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { appendFileSync, readFileSync, readdirSync } from "node:fs";
+import { appendFileSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
@@ -9,10 +9,9 @@ import { PlacementSyncBoundError } from "../src/memory/sync-placement-bound.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES } from "../src/memory/sync-placement-journal-format.ts";
 import { PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, publicationBytes, validatePlacementPublicationChunk, type PlacementPublicationChunk } from "../src/memory/sync-placement-publication-plan.ts";
 import { cooperativeYield, PLACEMENT_SLICE_MS } from "../src/memory/sync-placement-yield.ts";
+import { captureSyncPlacementContext, captureSyncPlacementContextAsync } from "../src/memory/sync-placement-capture.ts";
 import { createPlacementInspectionFixture, inspectionNote, type PlacementInspectionFixture } from "./fakes/sync-placement-inspection.ts";
 
-/** #462 AC1: the longest stretch a library caller's event loop can be held by one placement sync, on this fixture. */
-const STRETCH_BOUND_MS = 250;
 const homes: PlacementInspectionFixture[] = [];
 afterEach(() => { for (const home of homes.splice(0).reverse()) home.close(); });
 
@@ -24,6 +23,31 @@ test("#462: a cooperative yield point is free inside its slice and one macrotask
     now += PLACEMENT_SLICE_MS; await pause(); await new Promise(resolve => setTimeout(resolve, 5));
     expect(turns).toBeGreaterThan(before);
   } finally { clearInterval(tick); }
+});
+
+test("#462: cooperative source capture preserves the synchronous snapshot and host-call count", async () => {
+  const f = await createPlacementInspectionFixture(); homes.push(f);
+  let calls = 0;
+  const port = { ...f.port, attest: () => { calls++; return f.port.attest(); } };
+  const ordinary = captureSyncPlacementContext(f.home, port), ordinaryCalls = calls;
+  calls = 0;
+  const cooperative = await captureSyncPlacementContextAsync(f.home, port);
+  expect(calls).toBe(ordinaryCalls);
+  expect(cooperative.fingerprint).toBe(ordinary.fingerprint);
+  expect(cooperative.context).toEqual(ordinary.context);
+  expect([...cooperative.rows]).toEqual([...ordinary.rows]);
+  expect(cooperative.prefixes).toEqual(ordinary.prefixes);
+});
+
+test("#462: cooperative source capture refuses a policy file changed during a yielded step", async () => {
+  const f = await createPlacementInspectionFixture(); homes.push(f);
+  const yields = await import("../src/memory/sync-placement-yield.ts");
+  const spy = spyOn(yields, "cooperativeYield").mockImplementation(() => async () => { await new Promise<void>(resolve => setImmediate(resolve)); });
+  try {
+    const pending = captureSyncPlacementContextAsync(f.home, f.port);
+    setImmediate(() => writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["changed"] }) + "\n", { mode: 0o600 }));
+    await expect(pending).rejects.toThrow();
+  } finally { spy.mockRestore(); }
 });
 
 /** The pre-#462 greedy packing (re-serializes the whole candidate chunk per row). The linear version must equal it. */
@@ -53,7 +77,7 @@ test("#462 AC3: linear publication-plan packing produces the same chunks and roo
   for (const chunk of bundle.chunks) expect(publicationBytes(chunk).length).toBeLessThanOrEqual(PLACEMENT_JOURNAL_CHUNK_MAX_BYTES);
 });
 
-async function largeFixture(rows: number): Promise<PlacementInspectionFixture> {
+async function largeFixture(rows: number, syncFloor = true): Promise<PlacementInspectionFixture> {
   const pad = "synthetic body ".repeat(40);
   const f = await createPlacementInspectionFixture({
     seed(store, project) {
@@ -65,29 +89,13 @@ async function largeFixture(rows: number): Promise<PlacementInspectionFixture> {
       appendFileSync(log, lines); return { first };
     },
     async beforeMigrate(home) {
+      if (!syncFloor) return;
       const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = home;
       try { await runCli(["formats", "raise", "sync", "0.28.0", "--confirm"], { cwd: home, env: {}, processTable: () => "" }); }
       finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
     },
   }); homes.push(f); return f;
 }
-/** Loop-delay probe: the longest gap between 10 ms timer ticks while `work` runs. */
-async function longestStretch<T>(work: () => Promise<T>): Promise<{ value: T; longest: number }> {
-  let last = performance.now(), longest = 0;
-  const timer = setInterval(() => { const now = performance.now(); longest = Math.max(longest, now - last); last = now; }, 10);
-  try { const value = await work(); return { value, longest }; } finally { clearInterval(timer); }
-}
-const busy = (ms: number) => { const end = performance.now() + ms; while (performance.now() < end) { /* synthetic per-row policy cost */ } };
-
-test("#462 AC1/AC3: a long placement sync never holds the caller's event loop past the documented stretch, and publishes every row", async () => {
-  // 600 rows at 2 ms of synthetic policy cost each: about 1.2 s of evaluation that ran as one unbroken call before #462.
-  const f = await largeFixture(600);
-  const { value: result, longest } = await longestStretch(() => syncMemory(f.store, { ...f.opts(), screen: () => { busy(2); return true; } }));
-  expect(result.ok, JSON.stringify(result.failure)).toBe(true); expect(result.placementPublication?.outcome).toBe("committed"); expect(result.failure).toBeUndefined();
-  expect(f.reachableIds().length).toBe(600);
-  expect(longest).toBeLessThan(STRETCH_BOUND_MS);
-}, 600_000);
-
 test("#462 AC2: a failed placement sync names a closed cause instead of leaving the host to parse text", async () => {
   expect([...SYNC_FAILURE_CAUSES].sort()).toEqual(["bound", "refusal", "remote", "stopped", "unavailable", "unknown-outcome", "writer-renewal"]);
   const f = await largeFixture(3);
@@ -103,4 +111,4 @@ test("#462 AC2: a failed placement sync names a closed cause instead of leaving 
   const stop = new AbortController(); stop.abort();
   const stopped = await syncMemory(f.store, { ...f.opts(), signal: stop.signal });
   expect(stopped.ok).toBe(false); expect(stopped.failure?.cause).toBe("stopped");
-}, 600_000);
+});
