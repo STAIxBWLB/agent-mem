@@ -80,10 +80,11 @@ function action(causeClass: RealmAdmissionError["causeClass"]): string {
   return "Close cooperating readers and writers, then run amem migrate --sync-placement --admit <project> --dry-run.";
 }
 function fail(causeClass: RealmAdmissionError["causeClass"]): never { throw new RealmAdmissionError(causeClass); }
-function assertNoPendingAdmission(home: string): void {
+function assertNoPendingAdmission(home: string, ownRealm?: string): void {
   const pending = pendingRealmInventory(home);
   if (pending.unknown) fail("pending");
-  if (pending.hashes.length) throw new RealmAdmissionError("pending", pending.hashes[0]);
+  const other = pending.hashes.find(key => key !== ownRealm);
+  if (other) throw new RealmAdmissionError("pending", other);
 }
 function rethrow(error: unknown): never {
   if (error instanceof RealmAdmissionError || error instanceof RealmExtensionFormatError) throw error;
@@ -276,6 +277,7 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
   return withPlacementActivationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
     try {
       if (options.mode === "apply") assertNoPendingAdmission(home);
+      if (options.mode === "resume") assertNoPendingAdmission(home, realm);
       const binding = realmBinding(activeBinding(home));
       const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
       let intent = readRealmIntent(home, realm);

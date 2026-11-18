@@ -87,6 +87,7 @@ test("#448: abandoning one torn intent stage preserves another realm's retained 
   const retained = join(f.home, `${REALM_INTENT_PREFIX}${digest(first)}.json`), before = readFileSync(retained);
   const staged = join(f.home, `${REALM_INTENT_PREFIX}${digest(second)}.json.pending-${"c".repeat(64)}`);
   writeFileSync(staged, "partial", { mode: 0o600 });
+  await expect(applyRealmAdmission(f.home, first, { mode: "resume" })).rejects.toMatchObject({ causeClass: "pending", retainedRealm: digest(second) });
   await expect(applyRealmAdmission(f.home, second, { mode: "abandon", confirm: true })).resolves.toMatchObject({ state: "abandoned", staged: 1 });
   expect(readFileSync(retained)).toEqual(before);
   expect(existsSync(staged)).toBe(false);
