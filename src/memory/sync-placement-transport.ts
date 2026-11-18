@@ -90,13 +90,14 @@ async function configuredRemoteContext(homeInput: string, opts: RemoteReadOption
   const rootStamp = placementCacheRootStamp(home), configStamp = placementCacheConfigStamp(cache), initial = lstatSync(cache, { bigint: true });
   if (!initial.isDirectory() || initial.isSymbolicLink() || initial.uid !== BigInt(process.getuid?.() ?? -1) || (initial.mode & 0o077n) !== 0n) return refuse("remote");
   if (!placementCacheTreePrivate(cache)) return refuse("remote");
-  for (const name of ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"])
-    if (existsSync(join(cache, name))) return refuse("remote");
+  const forbidden = ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"];
+  if (forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) return refuse("remote");
   const check = () => {
     const stat = lstatSync(cache, { bigint: true }), nowMarkers = readPlacementRuntimeMarkers(home), now = readActivePlacementBinding(home, nowMarkers.profile, nowMarkers.shards);
     if (!now || canonicalJSON(now.profile) !== canonicalJSON(active.profile) || canonicalJSON(now.shards) !== canonicalJSON(active.shards)
     || !stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== initial.dev || stat.ino !== initial.ino
-    || placementCacheRootStamp(home) !== rootStamp || placementCacheConfigStamp(cache) !== configStamp) return refuse("remote");
+      || placementCacheRootStamp(home) !== rootStamp || placementCacheConfigStamp(cache) !== configStamp
+      || forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) return refuse("remote");
     inventory.assertCurrent();
   };
   const args = (values: string[]) => ["--no-replace-objects", "--git-dir", cache, "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.commitGraph=false", ...values];
