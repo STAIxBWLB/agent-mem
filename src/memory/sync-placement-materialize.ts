@@ -4,8 +4,8 @@ import { canonicalJSON, hashJSON } from "./generation.ts";
 import type { OutboundVerdict } from "./sync-screen.ts";
 import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS, PlacementSyncBoundError } from "./sync-placement-bound.ts";
 import type { PlacementCapture } from "./sync-placement-capture.ts";
-import { compilePlacementDependencies, type DependencySource, type VerifiedDependencyEndpoint } from "./sync-placement-dependencies.ts";
-import { compilePlacementGitObjects, type PlannedGitObject } from "./sync-placement-git.ts";
+import { compilePlacementDependenciesAsync, type DependencySource, type VerifiedDependencyEndpoint } from "./sync-placement-dependencies.ts";
+import { compilePlacementGitObjectsAsync, type PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_DESCRIPTOR_SCHEMA, PLACEMENT_FORMAT } from "./sync-placement-format.ts";
 import { placementKeyId, type PlacementKey, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { PlacementProjection } from "./sync-placement-projection.ts";
@@ -65,7 +65,9 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     // (and its writer proofs), so an unsupported source set refuses before any expensive per-row work (#419).
     const admitted: Omit<DependencySource, "policy">[] = [], seenSources = new Set<string>();
     const prunedByTarget = new Map(workTargets.map(target => [target, target.pruned]));
+    let collected = 0;
     for (const source of capture.rows.values()) {
+      if (++collected % 256 === 0) await pause();
       const target = workTargets.find(target => sameRealm(physical(target), source.key.realm)); if (!target) refuse();
       const pruned = prunedByTarget.get(target)!.has(source.key.id) && !target.fetched.has(source.key.id);
       if (pruned) blocked.add(placementKeyId(source.key));
@@ -78,12 +80,14 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     // Incoming verified occurrences are selected immutable originals too. Classify them before import so a private
     // remote goal cannot temporarily authorize a new dependent, and exposure/holds are durable in this same attempt.
     for(const [index,target]of workTargets.entries())for(const row of old[index]?.rows.values()??[])if(row.op!=="prune"||row.generation===target.generation){
+      if (++collected % 256 === 0) await pause();
       const key=keyFor(target,row),id=placementKeyId(key);if(seenSources.has(id))continue;seenSources.add(id);
       admitted.push({key,row,sourcePlacement:"synced",held:!!projection.get(key)?.held});
     }
     // Source size, not outbound size: local and declined rows count too, because their decisions are bound in the plan.
     if (admitted.length > PLACEMENT_SOURCE_MAX_ROWS) throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-rows", limit: PLACEMENT_SOURCE_MAX_ROWS, observed: admitted.length });
-    let sourceBytes = 0; for (const source of admitted) sourceBytes += Buffer.byteLength(canonicalJSON(source.row));
+    let sourceBytes = 0;
+    for (const [at, source] of admitted.entries()) { if (at % 256 === 0) await pause(); sourceBytes += Buffer.byteLength(canonicalJSON(source.row)); }
     if (sourceBytes > PLACEMENT_SOURCE_MAX_BYTES) throw new PlacementSyncBoundError({ phase: "materialization", kind: "source-bytes", limit: PLACEMENT_SOURCE_MAX_BYTES, observed: sourceBytes });
     input.progress?.phase("policy-evaluation", "rows", admitted.length);
     for (const source of admitted) { await pause(); sources.push({ ...source, policy: input.evaluate(source.row) }); input.progress?.advance(); }
@@ -107,15 +111,18 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
     let decisions: PlacementPublicationDecision[] = [];
     for (let pass = 0; pass < 2; pass++) {
       await pause();
-      decisions = compilePlacementDependencies({ generation: input.generation, selectedRealms: workTargets.map(physical), rows:sources, publicEndpoints:endpoints,
-        verifiedPrunes:sources.filter(source => verified.has(placementKeyId(source.key))).map(source => source.key) }).map(decision => {
-          const source = sourceMap.get(placementKeyId(decision.key))!;
-          const index=workTargets.findIndex(target=>sameRealm(physical(target),decision.key.realm));
-          const original=old[index]?.rows.get(decision.key.id), published=!!original&&hashJSON(original)===decision.key.rowHash;
-          const reason=blocked.has(placementKeyId(decision.key)) && !projection.get(decision.key)?.held ? "related-local" : decision.reason ?? null;
-          return { ...decision, sourcePlacement:source.sourcePlacement, reason,
-            hold:!decision.eligible&&(reason!=="source-local"||published)&&!projection.get(decision.key)?.held };
-        });
+      const compiled = await compilePlacementDependenciesAsync({ generation: input.generation, selectedRealms: workTargets.map(physical), rows:sources, publicEndpoints:endpoints,
+        verifiedPrunes:sources.filter(source => verified.has(placementKeyId(source.key))).map(source => source.key) }, pause);
+      decisions = [];
+      for (const [at, decision] of compiled.entries()) {
+        if (at % 256 === 0) await pause();
+        const source = sourceMap.get(placementKeyId(decision.key))!;
+        const index=workTargets.findIndex(target=>sameRealm(physical(target),decision.key.realm));
+        const original=old[index]?.rows.get(decision.key.id), published=!!original&&hashJSON(original)===decision.key.rowHash;
+        const reason=blocked.has(placementKeyId(decision.key)) && !projection.get(decision.key)?.held ? "related-local" : decision.reason ?? null;
+        decisions.push({ ...decision, sourcePlacement:source.sourcePlacement, reason,
+          hold:!decision.eligible&&(reason!=="source-local"||published)&&!projection.get(decision.key)?.held });
+      }
       let rejected = false;
       for (const [index,target] of workTargets.entries()) {
         await pause();
@@ -150,7 +157,7 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
         if(pass===0&&index===0)input.progress?.phase("artifact-construction");
         if(publish){
           const previous=old[index]&&target.remote?{tree:await input.readTree(index,frozen?.root.targets[index]?.expectedRemoteHead??target.remote!),commit:frozen?.root.targets[index]?.expectedRemoteHead??target.remote!}:undefined;
-          const objects=compilePlacementGitObjects(files,frozen?.root.targets[index]?.expectedRemoteHead??target.remote??null,createdUnixSeconds,previous);target.objects=objects.objects;target.commit=objects.commit;
+          const objects=await compilePlacementGitObjectsAsync(files,frozen?.root.targets[index]?.expectedRemoteHead??target.remote??null,createdUnixSeconds,previous,pause);target.objects=objects.objects;target.commit=objects.commit;
           for(const [path,manifest]of manifests)if(manifest.commit==="0".repeat(40))manifests.set(path,{...manifest,commit:objects.commit});
         }else target.commit=target.remote;
         const rows=new Map(old[index]?.rows);for(const row of additions)rows.set(row.id,row);

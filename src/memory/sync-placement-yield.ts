@@ -28,3 +28,17 @@ export const yieldTurn = (): Promise<void> => new Promise<void>(resolve => setIm
 
 /** Journal records per atomic batch append before the next turn; the on-disk layout is the same as one batch (greedy chunk fill). */
 export const PLACEMENT_APPEND_SLICE = 50;
+
+/**
+ * #470: a heavy pure function is written once as a step generator and driven two ways, so the synchronous API keeps its
+ * signature and the placement sync awaits a turn between steps. `drainSteps` ignores the step boundaries;
+ * `drainStepsAsync` hands the caller's loop back at each one. A fence or proof inside the function runs in the same order
+ * either way, because only the scheduling between steps differs.
+ */
+export function drainSteps<T>(steps: Generator<void, T, void>): T {
+  let next = steps.next(); while (!next.done) next = steps.next(); return next.value;
+}
+
+export async function drainStepsAsync<T>(steps: Generator<void, T, void>, pause: CooperativeYield = cooperativeYield()): Promise<T> {
+  let next = steps.next(); while (!next.done) { await pause(); next = steps.next(); } return next.value;
+}

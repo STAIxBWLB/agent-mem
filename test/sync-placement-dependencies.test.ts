@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { entryId } from "../src/memory/store.ts";
 import { hashJSON, vaultLinkId } from "../src/memory/generation.ts";
 import { pruneId, type PruneRow } from "../src/memory/prune.ts";
-import { compilePlacementDependencies, PlacementDependencyInputError, type DependencySource,
+import { compilePlacementDependencies, compilePlacementDependenciesAsync, PlacementDependencyInputError, type DependencySource,
   type PlacementDependencyInput, type VerifiedDependencyEndpoint } from "../src/memory/sync-placement-dependencies.ts";
 import { type PlacementKey, type PlacementRealm } from "../src/memory/sync-placement-journal-format.ts";
 
@@ -207,4 +207,16 @@ test("physical row/realm/byte bounds refuse before traversing later source gette
   const huge = note({ text: "x".repeat(8 * 1024 * 1024) });
   expect(() => decisions([source(huge)])).toThrow(PlacementDependencyInputError);
   expect(calls).toBe(0);
+});
+
+test("#470: the async compiler returns exactly the synchronous decisions and yields between row chunks", async () => {
+  const gate = goal(), dependent = goal([gate.id as string]);
+  const rows = [...Array.from({ length: 600 }, () => source(note())), source(gate), source(dependent)];
+  let boundaries = 0;
+  const cooperative = await compilePlacementDependenciesAsync(input(rows), async () => { boundaries++; });
+  expect(cooperative).toEqual(decisions(rows));
+  expect(boundaries).toBeGreaterThan(1); // 603 rows over the 256-row step
+  let refused = 0;
+  await expect(compilePlacementDependenciesAsync(input([note() as never]), async () => { refused++; })).rejects.toThrow(PlacementDependencyInputError);
+  expect(refused).toBe(0); // a refusal before the first chunk is the same refusal, not a partial result
 });

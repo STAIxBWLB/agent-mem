@@ -6,6 +6,7 @@ import { validatePruneRow } from "./prune.ts";
 import { SUGGESTED } from "./store.ts";
 import { placementKeyId, validatePlacementKey, type PlacementKey, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { OutboundVerdict, SyncPolicyCategory } from "./sync-screen.ts";
+import { drainSteps, drainStepsAsync, type CooperativeYield } from "./sync-placement-yield.ts";
 import { PLACEMENT_SOURCE_MAX_BYTES, PLACEMENT_SOURCE_MAX_ROWS } from "./sync-placement-bound.ts";
 
 export interface DependencySource {
@@ -154,9 +155,15 @@ function visible(from: Node, to: Node): boolean {
 /** Pure, body-free dependency decisions. The caller supplies authoritative coalesced physical rows and
  * mandatory policy/journal verdicts; this function performs no screening, hydration, I/O or publication. */
 export function compilePlacementDependencies(raw: PlacementDependencyInput): DependencyDecision[] {
-  try { return compile(raw); } catch (error) { if (error instanceof PlacementDependencyInputError) throw error; return fail(); }
+  try { return drainSteps(compileSteps(raw)); } catch (error) { if (error instanceof PlacementDependencyInputError) throw error; return fail(); }
 }
-function compile(raw: PlacementDependencyInput): DependencyDecision[] {
+/** #470: the same decisions, awaiting the caller's event loop between row chunks; the checks and their order are identical. */
+export async function compilePlacementDependenciesAsync(raw: PlacementDependencyInput, yieldPoint?: CooperativeYield): Promise<DependencyDecision[]> {
+  try { return await drainStepsAsync(compileSteps(raw), yieldPoint); } catch (error) { if (error instanceof PlacementDependencyInputError) throw error; return fail(); }
+}
+/** Rows (and decisions) between step boundaries: at most 256 canonicalizations per uninterrupted stretch. */
+const STEP_ROWS = 256;
+function* compileSteps(raw: PlacementDependencyInput): Generator<void, DependencyDecision[], void> {
   preflight(raw);
   const input = object(copyInput(raw)); keys(input, ["generation", "selectedRealms", "rows"], ["publicEndpoints", "verifiedPrunes"]);
   if (!fullId(input.generation) || !Array.isArray(input.selectedRealms) || input.selectedRealms.length > 256 || !Array.isArray(input.rows)
@@ -184,9 +191,10 @@ function compile(raw: PlacementDependencyInput): DependencyDecision[] {
       held: output ? item.held as boolean : false, public: !output, syntaxValid: false, refs: [] };
     nodes.push(node); byKey.set(id, node); byId.set(key.id, [...(byId.get(key.id) ?? []), node]);
   };
-  for (const value of input.rows) add(value, true);
+  let stepped = 0;
+  for (const value of input.rows) { add(value, true); if (++stepped >= STEP_ROWS) { stepped = 0; yield; } }
   const endpoints = input.publicEndpoints as unknown[] | undefined;
-  if ((endpoints?.length ?? 0) > 20000) fail(); for (const value of endpoints ?? []) add(value, false);
+  if ((endpoints?.length ?? 0) > 20000) fail(); for (const value of endpoints ?? []) { add(value, false); if (++stepped >= STEP_ROWS) { stepped = 0; yield; } }
   const proofs = input.verifiedPrunes as unknown[] | undefined;
   if ((proofs?.length ?? 0) > 20000) fail();
   const verified = new Set((proofs ?? []).map(value => { const key = validatePlacementKey(value); if (!selected.has(realmId(key.realm))) fail(); return placementKeyId(key); }));
@@ -199,6 +207,7 @@ function compile(raw: PlacementDependencyInput): DependencyDecision[] {
   };
   for (const node of nodes) {
     const row = node.row;
+    if (++stepped >= STEP_ROWS) { stepped = 0; yield; }
     node.syntaxValid = syntax(node, input.generation);
     if (!node.syntaxValid) { node.reason = "unsupported-reference"; continue; }
     if (node.sourcePlacement === "local" || row.op === "settle" || row.op === "vault_link" || row.op === "note" && row.tier === "short") node.reason = "source-local";
@@ -240,18 +249,30 @@ function compile(raw: PlacementDependencyInput): DependencyDecision[] {
     return !heldIds.has(to.key.id) && !policyHolds.has(to.key.id) && !to.reason;
   });
   const reverse = new Map<string, Set<Node>>();
-  for (const node of nodes) for (const ref of node.refs) {
-    let dependents = reverse.get(ref.id); if (!dependents) reverse.set(ref.id, dependents = new Set()); dependents.add(node);
+  for (const node of nodes) {
+    for (const ref of node.refs) {
+      let dependents = reverse.get(ref.id); if (!dependents) reverse.set(ref.id, dependents = new Set()); dependents.add(node);
+    }
+    if (++stepped >= STEP_ROWS) { stepped = 0; yield; }
   }
   const queue = [...nodes];
   for (let at = 0; at < queue.length; at++) {
+    if (++stepped >= STEP_ROWS) { stepped = 0; yield; }
     const node = queue[at]!; if (node.reason) continue;
     const endpoints = node.refs.map(ref => usable(node, ref));
     let good = endpoints.every(Boolean);
     if (good && node.row.op === "supersede") good = endpoints[0]!.row.scope !== "shared" || endpoints[1]!.row.scope === "shared";
     if (!good) { node.reason = "related-local"; for (const dependent of reverse.get(node.key.id) ?? []) queue.push(dependent); }
   }
-  return nodes.filter(node => node.output).map(node => ({ key: validatePlacementKey(node.key), eligible: !node.reason,
-    ...(node.reason ? { reason: node.reason } : {}), dependencies: [...new Map(node.refs.flatMap(ref => candidates(node, ref).map(to => [placementKeyId(to.key), to.key] as const))).values()].sort((a,b) => placementKeyId(a).localeCompare(placementKeyId(b))).map(validatePlacementKey) }))
-    .sort((a,b) => placementKeyId(a.key).localeCompare(placementKeyId(b.key)));
+  const decisions: DependencyDecision[] = [];
+  for (const node of nodes) {
+    if (!node.output) continue;
+    if (++stepped >= STEP_ROWS) { stepped = 0; yield; }
+    decisions.push({ key: validatePlacementKey(node.key), eligible: !node.reason,
+      ...(node.reason ? { reason: node.reason } : {}),
+      dependencies: [...new Map(node.refs.flatMap(ref => candidates(node, ref).map(to => [placementKeyId(to.key), to.key] as const))).values()]
+        .sort((a,b) => placementKeyId(a).localeCompare(placementKeyId(b))).map(validatePlacementKey) });
+  }
+  decisions.sort((a,b) => placementKeyId(a.key).localeCompare(placementKeyId(b.key)));
+  return decisions;
 }

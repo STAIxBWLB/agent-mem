@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { PUBLIC_PRUNE_REPLAY_MAX_BYTES } from "./public-prune-input-chain.ts";
 import { decodePlacementTransportDescriptor, decodeShardManifest, isShardManifestPath, SHARD_PACK_MAX_BYTES, type ShardSyncRealm } from "./shard-sync-format.ts";
+import { drainSteps, drainStepsAsync, type CooperativeYield } from "./sync-placement-yield.ts";
 
 export interface PlannedGitObject { type: "blob" | "tree" | "commit"; oid: string; bytes: Buffer; path: string | null }
 export interface PlacementGitObjects { objects: PlannedGitObject[]; tree: string; commit: string }
@@ -27,10 +28,17 @@ function object(type: PlannedGitObject["type"], bytes: Buffer, path: string | nu
  * Retained public bytes share the existing replay bound; new source's separate 8MiB allowance is the caller's proof. */
 export function compilePlacementGitObjects(files: ReadonlyMap<string, Uint8Array>, parent: string | null, createdUnixSeconds: number,
   previous?: { tree: string; commit: string }): PlacementGitObjects {
-  try { return compile(files, parent, createdUnixSeconds, previous); } catch { return fail(); }
+  try { return drainSteps(compileSteps(files, parent, createdUnixSeconds, previous)); } catch { return fail(); }
 }
-function compile(files: ReadonlyMap<string, Uint8Array>, parent: string | null, createdUnixSeconds: number,
-  previous?: { tree: string; commit: string }): PlacementGitObjects {
+/** #470: the same objects, awaiting the caller's event loop between entries and tree nodes; bytes and ids are identical. */
+export async function compilePlacementGitObjectsAsync(files: ReadonlyMap<string, Uint8Array>, parent: string | null, createdUnixSeconds: number,
+  previous?: { tree: string; commit: string }, yieldPoint?: CooperativeYield): Promise<PlacementGitObjects> {
+  try { return await drainStepsAsync(compileSteps(files, parent, createdUnixSeconds, previous), yieldPoint); } catch { return fail(); }
+}
+/** Objects between step boundaries: at most 128 blob hashes per uninterrupted stretch. */
+const STEP_OBJECTS = 128;
+function* compileSteps(files: ReadonlyMap<string, Uint8Array>, parent: string | null, createdUnixSeconds: number,
+  previous?: { tree: string; commit: string }): Generator<void, PlacementGitObjects, void> {
   if (!files || typeof files !== "object" || types.isProxy(files) || Object.getPrototypeOf(files) !== Map.prototype
     || !Number.isSafeInteger(createdUnixSeconds) || createdUnixSeconds < 0 || parent !== null && !oid(parent)) return fail();
   const count = mapSize.call(files);
@@ -42,9 +50,10 @@ function compile(files: ReadonlyMap<string, Uint8Array>, parent: string | null, 
       || !oid(fields.tree.value) || !oid(fields.commit.value)) return fail();
     previous = { tree: fields.tree.value, commit: fields.commit.value };
   }
-  const entries: { path: string; bytes: Buffer }[] = []; let total = 0;
+  const entries: { path: string; bytes: Buffer }[] = []; let total = 0, stepped = 0;
   for (const [path, value] of Map.prototype.entries.call(files) as Iterable<[unknown, unknown]>) {
     if (typeof path !== "string" || types.isProxy(value) || !(value instanceof Uint8Array)) return fail();
+    if (++stepped >= STEP_OBJECTS) { stepped = 0; yield; }
     const pack = PACK.exec(path), validPack = pack?.[0] === path;
     if (path !== "shard.json" && !validPack && !isShardManifestPath(path)) return fail();
     const length = getLength.call(value) as number, maximum = validPack ? SHARD_PACK_MAX_BYTES : 64 * 1024;
@@ -70,10 +79,11 @@ function compile(files: ReadonlyMap<string, Uint8Array>, parent: string | null, 
     for (const name of parts.slice(0, -1)) { if (target.blobs.has(name)) return fail(); let next = target.directories.get(name); if (!next) target.directories.set(name, next = node()); target = next; }
     const name = parts.at(-1)!; if (target.directories.has(name) || target.blobs.has(name)) return fail(); target.blobs.set(name, blob.oid);
   }
-  const buildTree = (tree: TreeNode, path: string): string => {
+  const buildTree = function* (tree: TreeNode, path: string): Generator<void, string, void> {
     const children: { name: string; oid: string; directory: boolean }[] = [...tree.blobs].map(([name, id]) => ({ name, oid: id, directory: false }));
+    if (++stepped >= STEP_OBJECTS) { stepped = 0; yield; }
     for (const [name, directory] of [...tree.directories].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0))
-      children.push({ name, oid: buildTree(directory, path ? `${path}/${name}` : name), directory: true });
+      children.push({ name, oid: yield* buildTree(directory, path ? `${path}/${name}` : name), directory: true });
     children.sort((a,b) => Buffer.compare(Buffer.from(a.name + (a.directory ? "/" : "")), Buffer.from(b.name + (b.directory ? "/" : ""))));
     let length = 0; const chunks: Buffer[] = [];
     for (const child of children) {
@@ -82,7 +92,7 @@ function compile(files: ReadonlyMap<string, Uint8Array>, parent: string | null, 
     }
     const result = object("tree", Buffer.concat(chunks, length), path); trees.push(result); return result.oid;
   };
-  const tree = buildTree(root, "");
+  const tree = yield* buildTree(root, "");
   trees.sort((a,b) => (b.path ? b.path.split("/").length : 0) - (a.path ? a.path.split("/").length : 0)
     || (a.path! < b.path! ? -1 : a.path! > b.path! ? 1 : 0));
   objects.push(...trees);
