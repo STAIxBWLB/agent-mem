@@ -42,3 +42,21 @@ test("baseline admission resumes without consulting an unknown adoption companio
     expect(readdirSync(join(shardDir(f.home, project), "log"))).toEqual([]);
   } finally { closeInventoryFixtures(); }
 }, 240_000);
+
+test("baseline admission can apply an empty realm while an unknown remote adoption is staged", async () => {
+  const { inventoryFixture, closeInventoryFixtures, digest } = await import("./fakes/sync-placement-inventory.ts");
+  const { applyRealmAdmission } = await import("../src/memory/sync-placement-realm-admission.ts");
+  const { shardDir } = await import("../src/memory/shard.ts");
+  const { mkdirSync, readFileSync, readdirSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const f = await inventoryFixture(1, undefined, true), project = "example.test/remote-admission/staging-n1";
+  try {
+    const staged = join(f.root, "remote-adoption-stage"), companion = join(f.home, `placement-remote-adoption-${digest(project)}.json`);
+    mkdirSync(staged, { mode: 0o700 }); writeFileSync(join(staged, "pending"), "remote data", { mode: 0o600 });
+    writeFileSync(companion, "pending\n", { mode: 0o600 });
+    await expect(applyRealmAdmission(f.home, project, { mode: "apply" })).resolves.toMatchObject({ state: "admitted" });
+    expect(readdirSync(join(shardDir(f.home, project), "log"))).toEqual([]);
+    expect(readFileSync(companion, "utf8")).toBe("pending\n");
+    expect(readFileSync(join(staged, "pending"), "utf8")).toBe("remote data");
+  } finally { closeInventoryFixtures(); }
+}, 240_000);
