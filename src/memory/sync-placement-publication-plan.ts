@@ -181,7 +181,8 @@ function* planSteps(input: Omit<PlacementPublicationRoot, "schema" | "chunks" | 
     flush();
   }
   const body = { ...object(input, ["epochHash", "generation", "homeHash", "contextHash", "markerHash", "sourceHash", "aliasesHash", "policyHash", "remoteHash", "journal", "reservedRecords", "reservedRecordBytes", "createdUnixSeconds", "policySnapshotUnixMs", "targets"]), schema: PLACEMENT_PUBLICATION_PLAN_SCHEMA,
-    chunks: chunks.map(c => ({ kind: c.kind, index: c.index, hash: publicationHash(publicationBytes(c)), count: c.items.length, bytes: publicationBytes(c).length })) };
+    // #470: each chunk is serialized once here; the descriptor only needs its hash and length.
+    chunks: chunks.map(c => { const bytes = publicationBytes(c); return { kind: c.kind, index: c.index, hash: publicationHash(bytes), count: c.items.length, bytes: bytes.length }; }) };
   const { seal: _seal, ...safeBody } = normalizedRoot({ ...body, seal: "0".repeat(64) }, false);
   return validatePlacementPublicationBundle({ root: { ...safeBody, seal: hashJSON(safeBody) }, chunks });
 }

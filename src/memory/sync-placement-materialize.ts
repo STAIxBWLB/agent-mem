@@ -11,7 +11,7 @@ import { placementKeyId, type PlacementKey, type PlacementRealm } from "./sync-p
 import type { PlacementProjection } from "./sync-placement-projection.ts";
 import type { PlacementPublicationBundle, PlacementPublicationDecision, PlacementPublicationObject, PlacementPublicationTarget } from "./sync-placement-publication-plan.ts";
 import type { ShardHistory } from "./shard-sync-history.ts";
-import { decodeShardPack, encodeShardPacks, encodeShardManifest, shardSyncRef, type ShardSyncRow, type ShardSyncRealm } from "./shard-sync-format.ts";
+import { decodeShardPack, encodeShardPacksAsync, encodeShardManifest, shardSyncRef, type ShardSyncRow, type ShardSyncRealm } from "./shard-sync-format.ts";
 import { cooperativeYield, type CooperativeYield } from "./sync-placement-yield.ts";
 import { verifyPublicPruneWitness, type PublicPruneWitnessV1, type PublicPruneLineage } from "./public-prune-witness.ts";
 import type { Entry } from "./store.ts";
@@ -130,7 +130,7 @@ export async function materializePlacementRows(input: PlacementMaterializeInput)
         const publish = descriptorVerdicts[index]!.ok && (!!old[index] || eligible.size > 0); publishes[index] = publish;
         if (publish) files.set("shard.json", Buffer.from(canonicalJSON({schema:PLACEMENT_DESCRIPTOR_SCHEMA,...target.realm,publicationFormat:PLACEMENT_FORMAT})+"\n"));
         const additions = sources.filter(source => sameRealm(source.key.realm,physical(target)) && eligible.has(source.key.id) && !old[index]?.rows.has(source.key.id)).map(source => source.row as ShardSyncRow);
-        for (const [path,bytes] of encodeShardPacks(additions)) { const prior = files.get(path); if (prior && !prior.equals(bytes)) refuse(); files.set(path,bytes); }
+        for (const [path,bytes] of await encodeShardPacksAsync(additions,pause)) { const prior = files.get(path); if (prior && !prior.equals(bytes)) refuse(); files.set(path,bytes); }
         const manifests = new Map(old[index]?.manifests), occurrences = new Map<string,{pack:string;blob:string}>();
         for (const [path,bytes] of files) if (path.startsWith("rows/")) {
           // #462: one Git blob id per pack, not one per row in it (was quadratic in pack size); same value.

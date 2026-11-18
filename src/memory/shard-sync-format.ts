@@ -6,6 +6,7 @@ import { canonicalJSON, validGeneration } from "./generation.ts";
 import { validatePruneRow, type PruneRow } from "./prune.ts";
 import { shardKeyHash } from "./shard.ts";
 import { validatePublicPruneWitness, type PublicPruneWitnessV1 } from "./public-prune-witness.ts";
+import { drainSteps, drainStepsAsync, type CooperativeYield } from "./sync-placement-yield.ts";
 import type { Entry } from "./store.ts";
 
 export type ShardSyncRealm = { scope: "project"; key: string } | { scope: "user" };
@@ -105,9 +106,23 @@ function collision(seen: Map<string, string>, row: ShardSyncRow, line: string, l
 
 /** Content-addressed immutable packs retain original attribution, ids and even repeated identical input rows. */
 export function encodeShardPacks(rows: readonly ShardSyncRow[]): Map<string, Buffer> {
+  return drainSteps(encodeShardPacksSteps(rows));
+}
+
+/** #470: the same packs, handing the caller's event loop back between row chunks; pack paths and bytes are identical. */
+export async function encodeShardPacksAsync(rows: readonly ShardSyncRow[], yieldPoint?: CooperativeYield): Promise<Map<string, Buffer>> {
+  return await drainStepsAsync(encodeShardPacksSteps(rows), yieldPoint);
+}
+
+/** Rows between step boundaries: one row's own canonicalization and id check is the floor of an uninterrupted stretch. */
+const SHARD_PACK_STEP_ROWS = 64;
+
+function* encodeShardPacksSteps(rows: readonly ShardSyncRow[]): Generator<void, Map<string, Buffer>, void> {
   const groups = new Map<string, { id: string; line: string }[]>(), seen = new Map<string, string>();
   const label = "shard pack";
+  let stepped = 0;
   for (const input of rows) {
+    if (++stepped >= SHARD_PACK_STEP_ROWS) { stepped = 0; yield; }
     let line: string;
     if (!input || typeof input !== "object" || Array.isArray(input) || typeof input.id !== "string") throw new ShardSyncFormatError(label, "invalid public row");
     try { line = canonicalJSON(input); } catch { throw new ShardSyncFormatError(label, "invalid public row"); }
@@ -120,6 +135,7 @@ export function encodeShardPacks(rows: readonly ShardSyncRow[]): Map<string, Buf
   }
   const packs = new Map<string, Buffer>();
   for (const machine of [...groups.keys()].sort()) {
+    yield;
     const group = groups.get(machine)!; group.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     let parts: string[] = [], bytes = 0;
     const publish = () => {
@@ -130,6 +146,7 @@ export function encodeShardPacks(rows: readonly ShardSyncRow[]): Map<string, Buf
       packs.set(path, body); parts = []; bytes = 0;
     };
     for (const row of group) {
+      if (++stepped >= SHARD_PACK_STEP_ROWS) { stepped = 0; yield; }
       const size = Buffer.byteLength(row.line);
       if (bytes + size > SHARD_PACK_MAX_BYTES) publish();
       parts.push(row.line); bytes += size;
