@@ -26,7 +26,7 @@ export type RemoteAdmissionMode = "dry-run" | "apply" | "resume" | "abandon";
 export interface RemoteAdmissionOptions extends Pick<SyncOptions, "signal" | "visibility"> {
   mode: RemoteAdmissionMode; confirm?: boolean;
   /** Internal crash seam; never supplied by the CLI. */
-  checkpoint?(stage: "after-companion" | "after-stage" | "after-install" | "after-admission"): void | Promise<void>;
+  checkpoint?(stage: "after-companion" | "after-stage" | "after-install" | "after-intent" | "after-metadata" | "after-proof" | "after-append" | "after-admission"): void | Promise<void>;
 }
 export interface RemoteAdmissionResult {
   state: "preview" | "admitted" | "already-admitted" | "retained" | "abandoned";
@@ -82,9 +82,12 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
   const frozen: RemoteAdoption = plan, files = packs!;
   if (options.mode === "abandon") {
     const oldIntent = readRealmIntent(home, realm);
-    if (oldIntent && !admitted()) {
-      if (planRealmAbandon(home, project).state !== "abandonable") return unavailable();
-      await applyRealmAdmission(home, project, { mode: "abandon", confirm: true });
+    if (oldIntent) {
+      if (admitted()) await applyRealmAdmission(home, project, { mode: "resume" });
+      else {
+        if (planRealmAbandon(home, project).state !== "abandonable") return unavailable();
+        await applyRealmAdmission(home, project, { mode: "abandon", confirm: true });
+      }
     }
     await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
       const current = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); };
@@ -125,7 +128,8 @@ export async function remoteRealmAdmission(homeInput: string, project: string, o
     return { state: "already-admitted", realm, nextStep: nextSync };
   }
   const existing = readRealmIntent(home, realm);
-  const result = await applyRealmAdmission(home, project, { mode: existing ? "resume" : "apply" });
+  const result = await applyRealmAdmission(home, project, { mode: existing ? "resume" : "apply",
+    ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}) });
   await options.checkpoint?.("after-admission");
   await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
     clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
