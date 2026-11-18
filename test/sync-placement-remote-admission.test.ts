@@ -8,6 +8,7 @@ import { openShardStore } from "../src/memory/store.ts";
 import { shardDir, shardKeyHash } from "../src/memory/shard.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 import { syncMemory } from "../src/memory/sync.ts";
+import { memoryGitSync } from "../src/memory/platform.ts";
 import { bareRemote, closeInventoryFixtures, inventoryFixture } from "./fakes/sync-placement-inventory.ts";
 
 afterEach(closeInventoryFixtures);
@@ -21,7 +22,10 @@ test("remote-only realm is explicitly previewed and admitted without changing ex
   const shared = "example.test/adoption/shared", target = "example.test/adoption/target";
   const a = await inventoryFixture(2, [shared, target], true), b = await inventoryFixture(1, [shared], true), remote = bareRemote();
   expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
+  const targetRef = `refs/heads/amem/p/${shardKeyHash(target)}`, head = () => memoryGitSync(["--git-dir", remote, "rev-parse", targetRef], { encoding: "utf8" }).stdout.trim();
+  const beforeHead = head(); expect(beforeHead).toMatch(/^[a-f0-9]{40}$/); expect(existsSync(shardDir(b.home, target))).toBe(false);
   expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
+  expect(head()).toBe(beforeHead); expect(existsSync(shardDir(b.home, target))).toBe(false);
   const work = new WorkListStore({ base: b.home, project: target, policy: () => true });
   try { await work.write("existing", { task: "preserved local work" }); } finally { work.close(); }
   const project = shardDir(b.home, target), before = readFileSync(join(project, "project.json")), prior = process.env.AMEM_HOME; process.env.AMEM_HOME = b.home;
