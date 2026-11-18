@@ -382,8 +382,13 @@ class PlacementTransport {
       appendPlacementEvents(this.home,this.epochHash,events.slice(index,end),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);
     }else if(read.pending&&!read.pendingRecord&&formatFloorAtLeast(this.home,"sync","0.28.0")){
       const index=read.sequence-root.journal.sequence;
-      try { appendPlacementEvents(this.home,this.epochHash,events.slice(index,count),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash); }
-      catch(error){ if(!(error instanceof SyncPlacementJournalError)||error.code!=="conflict")throw error; }
+      // The storage writer compares the saved bytes against the exact canonical intent before writing.
+      // Try the current bounded batch and the unsliced batch used by older writers, in that order.
+      const ends=[Math.min(count,index+PLACEMENT_APPEND_SLICE),count];
+      for(const end of new Set(ends)) {
+        try { appendPlacementEvents(this.home,this.epochHash,events.slice(index,end),read.headHash,this.storage(factual));read=readPlacementJournal(this.home,this.epochHash);break; }
+        catch(error){ if(!(error instanceof SyncPlacementJournalError)||error.code!=="conflict")throw error; }
+      }
     }
     if(read.pending){
       const sequence=read.pendingRecordSequence??read.sequence+1, index=sequence-root.journal.sequence-1;

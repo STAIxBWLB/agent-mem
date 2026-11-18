@@ -21,6 +21,8 @@ import { runCli } from "../src/cli.ts";
 import * as publicationStorage from "../src/memory/sync-placement-publication-storage.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_SHARDS_SCHEMA } from "../src/memory/sync-placement-format.ts";
 import type { PlacementRecord } from "../src/memory/sync-placement-journal-format.ts";
+import * as journalFormat from "../src/memory/sync-placement-journal-format.ts";
+import type { PlacementEvent } from "../src/memory/sync-placement-journal-format.ts";
 import { applyPrune, planPrune, validatePrunePlan, type PrunePlan, type PruneRow } from "../src/memory/prune.ts";
 import { shardKeyHash } from "../src/memory/shard.ts";
 import type { PublicPruneWitnessV1 } from "../src/memory/public-prune-witness.ts";
@@ -541,6 +543,45 @@ function retainedPublication(f: Awaited<ReturnType<typeof fixture>>) {
   const root = JSON.parse(readFileSync(join(f.home, "sync-placement", "epochs", f.epochHash, names[0]!), "utf8")) as { seal: string };
   return publicationStorage.readPlacementPublication(f.home, f.epochHash, root.seal);
 }
+
+for (const legacy of [false, true]) test(`v2 resumes a torn ${legacy ? "legacy unsliced" : "50-record sliced"} intent with more pending events`, async () => {
+  const remote = bare(), f = await fixture({ seed(store) {
+    const ids: Record<string, string> = {};
+    for (let index = 0; index < 70; index++) ids[String(index)] = store.note(note(`torn intent ${index}`));
+    return ids;
+  } });
+  const floor = spyOn(formats, "formatFloorAtLeast").mockReturnValue(true);
+  const captured: PlacementEvent[] = [], realRecord = journalFormat.createPlacementRecord;
+  const records = spyOn(journalFormat, "createPlacementRecord").mockImplementation((epoch, sequence, previous, event) => {
+    captured.push(event); return realRecord(epoch, sequence, previous, event);
+  });
+  const realAppend = journalStorage.appendPlacementEvents; let fired = false, frozen: PlacementRecord[] = [];
+  const fault = spyOn(journalStorage, "appendPlacementEvents").mockImplementation((home, epoch, events, head, options) => {
+    // A previous writer wrote the full 70-event prepublication batch, rather than the new 50-event slice.
+    const batch = legacy && !fired ? captured.slice(-140, -70) : events;
+    return realAppend(home, epoch, batch, head, { ...options, phase(stage) {
+      options.phase?.(stage); if (fired || stage !== "intent-written") return;
+      const file = join(home, "sync-placement", "epochs", epoch, "append-intent.json"), full = readFileSync(file);
+      frozen = (JSON.parse(full.toString()) as { records: PlacementRecord[] }).records;
+      expect(frozen.length).toBe(legacy ? 70 : PLACEMENT_APPEND_SLICE);
+      persistCrashPrefix(file, full.subarray(0, Math.floor(full.length / 2)));
+      fired = true; throw Error("synthetic torn intent");
+    } });
+  });
+  try {
+    const first = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(fired).toBe(true); expect(first.ok).toBe(false); expect(refs(remote)).toEqual([]);
+    fault.mockRestore(); records.mockRestore();
+    const resumed = await syncPlacementMemory(f.store, f.opts(remote));
+    expect(resumed.ok, JSON.stringify(resumed)).toBe(true);
+    const done = journalStorage.readPlacementJournal(f.home, f.epochHash);
+    expect(done.pending).toBe(false); expect(done.records.slice(0, frozen.length)).toEqual(frozen);
+    expect(new Set(done.records.map(record => record.requestId)).size).toBe(done.records.length);
+    const publicRows = verifiedPublicRows(remote);
+    for (const id of Object.values(f.ids)) expect(publicRows.has(id)).toBe(true);
+    expect(publicRows.size).toBe(70);
+  } finally { fault.mockRestore(); records.mockRestore(); floor.mockRestore(); }
+}, 120_000);
 
 test("v2 publication batch hides a torn chunk and resumes the exact records once", async () => {
   const remote = bare(), f = await fixture({ seed(store) {
