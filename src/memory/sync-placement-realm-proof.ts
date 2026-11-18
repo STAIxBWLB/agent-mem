@@ -116,10 +116,10 @@ export function clearRealmProof(homeInput: string, raw: RealmIntent, proof: Real
   assertMutationHandle(proof.mutation, home); proof.assertCurrent();
   const staged = `${file}.pending`, beforeStage = lstatSync(staged, { bigint: true, throwIfNoEntry: false });
   if (beforeStage) {
-    const inspected = readStage(home, intent); if (!inspected || stamp(inspected.stat) !== stamp(beforeStage)) fail();
+    const inspected = readStage(home, intent) ?? fail(); if (stamp(inspected.stat) !== stamp(beforeStage)) fail();
     proof.assertCurrent(); assertMutationHandle(proof.mutation, home);
-    const current = readStage(home, intent);
-    if (!current || stamp(current.stat) !== stamp(beforeStage) || current.hash !== inspected.hash) fail();
+    const current = readStage(home, intent) ?? fail();
+    if (stamp(current.stat) !== stamp(beforeStage) || current.hash !== inspected.hash) fail();
     unlinkSync(staged); fsyncDirectory(home); proof.assertCurrent();
   }
   const prior = readProof(home, intent); if (!prior) return;
