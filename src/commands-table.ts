@@ -124,6 +124,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--list-remote": flag("List remote placement project refs outside the active inventory by hash"),
     "--abandon": flag("Person-only: discard an interrupted sync-placement attempt only before either v3 marker is installed"),
     "--admit": text("Admit one curated project realm that appeared after activation into the same epoch; previews without --apply"),
+    "--from-remote": flag("Admit the named remote-only realm using the configured placement sync remote"),
     "--confirm": flag("Confirm the previewed realm admission abandonment"),
     "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
   } },
