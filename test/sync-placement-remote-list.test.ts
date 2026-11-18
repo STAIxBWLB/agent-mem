@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { openShardStore } from "../src/memory/store.ts";
@@ -33,6 +33,8 @@ test("configured private remote listing is hash-only and does not change the hom
   const trace = join(b.root, "must-not-write-trace"), priorTrace = process.env.GIT_TRACE; process.env.GIT_TRACE = trace;
   try { await expect(discoverRemotePlacementRealms(b.home, { visibility })).rejects.toThrow("unavailable"); expect(existsSync(trace)).toBe(false); }
   finally { if (priorTrace === undefined) delete process.env.GIT_TRACE; else process.env.GIT_TRACE = priorTrace; }
+  const link = join(b.home, "shard-sync-placement", "objects.git", "objects", "unsafe-link"); symlinkSync(b.root, link);
+  try { await expect(discoverRemotePlacementRealms(b.home, { visibility })).rejects.toThrow("unavailable"); } finally { rmSync(link); }
   expect(readFileSync(join(b.home, "sync-placement", "active.json")).length).toBeGreaterThan(0);
 }, 120_000);
 

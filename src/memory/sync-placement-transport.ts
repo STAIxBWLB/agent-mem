@@ -32,7 +32,7 @@ import type { MemoryStore } from "./store.ts";
 import type { PruneRow } from "./prune.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
 import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_APPEND_SLICE, yieldTurn, type CooperativeYield } from "./sync-placement-yield.ts";
-import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
+import { placementCacheConfigStamp, placementCacheRootStamp, placementCacheTreePrivate, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
 import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
@@ -89,6 +89,7 @@ async function configuredRemoteContext(homeInput: string, opts: RemoteReadOption
   const inventory = readEffectiveRealmInventory(home, active), root = join(home, "shard-sync-placement"), cache = join(root, "objects.git");
   const rootStamp = placementCacheRootStamp(home), configStamp = placementCacheConfigStamp(cache), initial = lstatSync(cache, { bigint: true });
   if (!initial.isDirectory() || initial.isSymbolicLink() || initial.uid !== BigInt(process.getuid?.() ?? -1) || (initial.mode & 0o077n) !== 0n) return refuse("remote");
+  if (!placementCacheTreePrivate(cache)) return refuse("remote");
   for (const name of ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"])
     if (existsSync(join(cache, name))) return refuse("remote");
   const check = () => {
@@ -98,7 +99,7 @@ async function configuredRemoteContext(homeInput: string, opts: RemoteReadOption
     || placementCacheRootStamp(home) !== rootStamp || placementCacheConfigStamp(cache) !== configStamp) return refuse("remote");
     inventory.assertCurrent();
   };
-  const args = (values: string[]) => ["--git-dir", cache, ...values];
+  const args = (values: string[]) => ["--no-replace-objects", "--git-dir", cache, "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.commitGraph=false", ...values];
   check();
   const config = await generationSyncGitBytes(root, args(["config", "--local", "--no-includes", "--null", "--list"]), opts.signal, undefined, 65536);
   check(); if (config.code !== 0) return refuse("remote");
@@ -240,7 +241,7 @@ class PlacementTransport {
   }
   async independent(): Promise<boolean> {
     if (!existsSync(this.cache)) return false; directory(this.cache); const initial=lstatSync(this.cache);
-    const walk = (dir: string): void => { for (const name of readdirSync(dir)) { const file = join(dir, name), s = lstatSync(file); if (s.isSymbolicLink() || s.uid !== process.getuid?.() || !s.isFile() && !s.isDirectory() || s.isFile() && s.nlink !== 1 || name.endsWith(".promisor")) refuse(); if (s.isDirectory()) {directory(file);walk(file);} } }; walk(this.cache);
+    if (!placementCacheTreePrivate(this.cache)) refuse();
     if (existsSync(join(this.cache, "commondir")) || existsSync(join(this.cache, "objects", "info", "http-alternates")) || existsSync(join(this.cache, "objects", "info", "alternates")) || existsSync(join(this.cache, "shallow")) || existsSync(join(this.cache, "info", "grafts"))) refuse();
     if (await this.required(["rev-parse", "--is-bare-repository"]) !== "true" || await this.required(["rev-parse", "--show-object-format"]) !== "sha1" || (await this.git(["config", "--get", "core.worktree"])).code !== 1) refuse();
     if((await this.git(["config","--get","extensions.partialClone"])).code !== 1
