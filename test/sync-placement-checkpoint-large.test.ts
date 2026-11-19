@@ -52,5 +52,8 @@ test.skipIf(process.env.AMEM_CHECKPOINT_LARGE !== "1")("#288: an actual oversize
     expect(actual.failure?.cause).toBe("bound");
     expect(actual.placementPublication?.bound?.kind).toBe("journal-objects");
     expect(actual.placementPublication?.journalObjects?.newPlan?.slots).toBe(slots);
+    expect(reserved!).toBeGreaterThanOrEqual(actual.placementPublication?.journalObjects?.newPlan?.reservedJournalChunks ?? 0);
+    console.log(JSON.stringify({ fixture: "isolated 8000-row prospective", required, live, renewal, slots, reserved, shortfall,
+      actual: actual.placementPublication?.journalObjects?.newPlan }));
   } finally { f.close(); }
 }, 900_000);
