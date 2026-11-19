@@ -43,7 +43,13 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   projects: { description: "List the project shards of this memory home (#15 D3)", options: { ...json, "--all": flag("Include forgotten projects (archived ones are always listed)") } },
   usage: { description: "Totals and the largest project shards", options: { ...json, "--limit": text("Largest shards to list (1..100)"), "--all": flag("Include forgotten projects") } },
   eval: { description: "Replay a local question set against ranked store.search and report recall@k and MRR (no model, no network; the built-in synthetic set without --set, `--set ko` for the built-in Korean one)", options: { ...json,
-    "--set": { description: "`ko` (the built-in Korean set) or a question set file (amem.eval/v1); with entries it is self-contained, without them its ids name entries of this project", value: "path" }, "--k": text("Cutoffs, comma separated (default 1,5,10; each 1..100)") } },
+    "--set": { description: "`ko` (the built-in Korean set) or a question set file (amem.eval/v1); with entries it is self-contained, without them its ids name entries of this project", value: "path" }, "--k": text("Cutoffs, comma separated (default 1,5,10; each 1..100)") }, commands: {
+    audit: { description: "Audit whether stored notes are still right (#326): sample a private sheet, judge it outside amem, then score it (no model, no network)", options: json, commands: {
+      sample: { description: "Draw a seeded, stratified sample of this project's curated notes into a private 0600 sheet with anchor status and empty judge columns", options: { ...json,
+        "--project": text("The project key to audit (default: this directory's project)"), "--n": text("Notes to draw (1..200, default 40)"), "--seed": text("Required: 1..64 letters, digits, '.', '_' or '-' - the same seed and store draw the same sample"),
+        "--out": { description: "Sheet path (default: this home's eval/ directory); never overwritten, always 0600", value: "path" } } },
+      score: { description: "Score a filled sheet into content-free counts, per kind/age/anchor, and Cohen's kappa; refuses any leak of note text or a path", options: json, args: [{ name: "sheet" }] },
+    } } } },
   spool: { description: "Off-hook hook-spool maintenance (#217)", options: json, commands: {
     replay: { description: "Preview (read-only, no record bodies) or apply a replay of orphaned or parked hook records; --apply takes the saved preview", mutates: "apply", options: { ...json,
       "--source": { description: "Absolute path of a private parked directory to read instead of this home's hook spool", value: "path" },

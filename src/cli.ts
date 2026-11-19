@@ -950,6 +950,29 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if (sub === "eval") {
     // F13: read-only. A set with entries is scored against a throwaway store seeded with them (touches no memory home); one without scores the bound project's real entries.
+    if (parsed.path[1] === "audit") {
+      // #326: a private local sheet plus a content-free score. Judging happens outside amem, so nothing on this path calls a model or the network.
+      const audit = await import("./memory/eval-audit.ts"), { MAX_AUDIT_NOTES } = await import("./memory/eval.ts");
+      if (parsed.path[2] === "sample") {
+        const n = options["--n"] === undefined ? 40 : Number(options["--n"]), seed = typeof options["--seed"] === "string" ? options["--seed"] : "";
+        if (!Number.isInteger(n) || n < 1 || n > MAX_AUDIT_NOTES) throw new Error(`--n must be an integer from 1 to ${MAX_AUDIT_NOTES}`);
+        if (!/^[A-Za-z0-9._-]{1,64}$/.test(seed)) throw new Error("--seed is required: 1 to 64 letters, digits, '.', '_' or '-', so the same seed and store draw the same sample");
+        const project = options["--project"] === undefined ? boundProject() : resolveAlias(memoryHome(), String(options["--project"])), root = audit.auditRoot(context.cwd ?? process.cwd());
+        const store = curatedStore(project, { deferPromotions: true });
+        let sheet;
+        try { sheet = audit.auditSample({ store, project, n, seed, root }); } finally { store.close(); }
+        const out = typeof options["--out"] === "string" ? options["--out"] : join(memoryHome(), "eval", `audit-${project.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80)}-${seed}.json`);
+        const file = audit.writeAuditSheet(out, sheet);
+        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn }, null, 2) : audit.auditSheetText(sheet, file);
+      }
+      if (parsed.path[2] === "score") {
+        const [sheet] = parsed.positionals;
+        if (!sheet) throw new Error("usage: amem eval audit score <sheet> (the file `amem eval audit sample` wrote)");
+        const score = audit.auditScore(audit.readAuditSheet(sheet));
+        return options["--json"] === true ? JSON.stringify(score, null, 2) : audit.auditScoreText(score);
+      }
+      throw new Error("usage: amem eval audit sample --seed <s> [--n <n>] [--project <key>] | amem eval audit score <sheet>");
+    }
     const ks = parseKs(typeof options["--k"] === "string" ? options["--k"] : undefined);
     const file = typeof options["--set"] === "string" ? options["--set"] : undefined;
     const builtin = file === undefined ? undefined : builtinSet(file);

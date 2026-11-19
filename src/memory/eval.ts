@@ -12,6 +12,31 @@ export const MAX_QUESTIONS = 500, MAX_ENTRIES = 200, MAX_QUESTION_CHARS = 500, M
 export const DEFAULT_KS: readonly number[] = [1, 5, 10];
 
 export const EVAL_KINDS = ["decision", "finding", "contract", "fail"] as const;
+
+/**
+ * #326: the correctness audit's closed vocabulary. A label is a judge's verdict on one sampled note, never a number: `unverifiable` says no source was
+ * available, which is a different thing from `wrong`. The rubric travels with the sheet so the person filling it and the score agree on each word.
+ * `EVAL_KINDS` above is also the audit's kind frame: `preference` (#370) stays out, and `docs/bench/audit.md` records why.
+ */
+export const AUDIT_SCHEMA = "amem.audit/v1";
+export const AUDIT_LABELS = ["correct", "stale", "wrong", "unverifiable"] as const;
+export type AuditLabel = (typeof AUDIT_LABELS)[number];
+/** The spec's <30, 30-90 and >90 day buckets, named so a sheet and its score agree without keeping the clock that made them. */
+export const AUDIT_AGE_BUCKETS = ["lt30", "d30to90", "gt90"] as const;
+export type AuditAgeBucket = (typeof AUDIT_AGE_BUCKETS)[number];
+/** `none` is a note that names no path anchor, so no anchor check applies to it. */
+export const AUDIT_ANCHOR_STATUSES = ["present", "changed", "missing", "none"] as const;
+export type AuditAnchorStatus = (typeof AUDIT_ANCHOR_STATUSES)[number];
+export const MAX_AUDIT_NOTES = 200, MAX_AUDIT_ANCHORS = 8, MAX_AUDIT_SHEET_BYTES = 4 * 1024 * 1024;
+/**
+ * The audit's kind frame. It names the same four kinds the recall sets do, so widening the eval-set schema cannot silently widen what gets audited: adding
+ * `preference` here is the one-line change that samples it (docs/bench/audit.md records why it stays out today).
+ */
+export const AUDIT_KINDS: readonly string[] = EVAL_KINDS;
+export const AUDIT_RUBRIC: Readonly<Record<AuditLabel, string>> = {
+  correct: "true now, and true when it was written", stale: "once true, no longer true", wrong: "never true", unverifiable: "no source available",
+};
+const AUDIT_DAY = 86400_000;
 export interface EvalEntry { key: string; title?: string; text: string; kind?: (typeof EVAL_KINDS)[number]; tier?: "short" | "long"; about?: string[]; /** Explicit seed date; absent keeps the legacy positional day. */ at?: string }
 /** `tag` is an optional label for what a question probes (a test counts them); it never changes the scoring. */
 export interface EvalQuestion { q: string; expect: string[]; tag?: string }
@@ -77,6 +102,38 @@ export function parseKs(value: string | undefined): number[] {
   const ks = parts.map(part => /^[0-9]{1,3}$/.test(part) ? Number(part) : NaN);
   if (!ks.length || ks.some(k => !Number.isInteger(k) || k < 1 || k > MAX_K)) throw new Error(`--k must be a comma-separated list of integers from 1 to ${MAX_K}`);
   return [...new Set(ks)].sort((a, b) => a - b);
+}
+
+/** The spec's age bucket for one note: <30 days, 30-90 days, >90 days, measured from `now` to the note's own timestamp. */
+export function auditAge(at: string, now: number): AuditAgeBucket | undefined {
+  const written = Date.parse(at);
+  if (!Number.isFinite(written)) return undefined;
+  const days = Math.floor((now - written) / AUDIT_DAY);
+  return days < 30 ? "lt30" : days <= 90 ? "d30to90" : "gt90";
+}
+
+/** One note's anchor verdict from its per-path values: a missing path outranks a changed one, and no anchor at all is `none`. */
+export function foldAnchorStatus(statuses: readonly Exclude<AuditAnchorStatus, "none">[]): AuditAnchorStatus {
+  if (!statuses.length) return "none";
+  return statuses.includes("missing") ? "missing" : statuses.includes("changed") ? "changed" : "present";
+}
+
+/**
+ * Cohen's kappa for two judges over the closed label set: the observed agreement corrected for what chance alone would give. Null, never 0, when there
+ * is nothing to measure - no pair at all, or both judges used one single label throughout, where the chance term is 1 and kappa is undefined.
+ */
+export function cohenKappa(pairs: readonly (readonly [string, string])[], vocabulary: readonly string[]): number | null {
+  const total = pairs.length;
+  if (!total) return null;
+  const left = new Map<string, number>(), right = new Map<string, number>();
+  let agreed = 0;
+  for (const [a, b] of pairs) {
+    left.set(a, (left.get(a) ?? 0) + 1); right.set(b, (right.get(b) ?? 0) + 1);
+    if (a === b) agreed++;
+  }
+  const chance = vocabulary.reduce((sum, label) => sum + (left.get(label) ?? 0) * (right.get(label) ?? 0), 0) / (total * total);
+  if (chance >= 1) return null;
+  return Math.round(((agreed / total) - chance) / (1 - chance) * 10_000) / 10_000;
 }
 
 export interface EvalQuestionResult {

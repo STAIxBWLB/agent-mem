@@ -69,6 +69,8 @@ const MARKED_READ_INVENTORY: readonly MarkedReadInventoryRow[] = [
   { path: "status", mode: "migration, policy, and candidate status", outcome: "refused", detail: "administrative status outside MCP" },
   { path: "doctor", mode: "health and policy report", outcome: "refused", detail: "administrative diagnostics outside MCP" },
   { path: "eval", mode: "local evaluation and ranking report", outcome: "refused", detail: "project read outside MCP" },
+  { path: "eval audit sample", mode: "seeded stratified sheet with note text and anchor status", outcome: "refused", detail: "copies project note text into a private sheet, outside the MCP surface" },
+  { path: "eval audit score", mode: "score a filled sheet into content-free counts", outcome: "static", detail: "reads only the sheet the person names, never the memory home; its output is content-free by a leak check" },
   { path: "goal list", mode: "default/list", outcome: "refused", detail: "goal records outside MCP" },
   { path: "goal show", mode: "one goal", outcome: "refused", detail: "goal records outside MCP" },
   { path: "suggestions", mode: "pending suggestions", outcome: "refused", detail: "suggestion metadata outside MCP" },
