@@ -206,6 +206,8 @@ export type PromotionScreen = (v: View) => "promote" | "keep" | "skip";
  * went) wait for a process that has one; a person's explicit promote goes through.
  */
 export interface StoreOptions { home?: string; memoryDir?: string; ttlMs?: number; now?: () => number; log?: (line: string) => void; screen?: PromotionScreen; deferPromotions?: boolean; profile?: ProfileInput;
+  /** A trusted host's processSignature(process.pid) for this process, measured outside a sandbox that cannot run ps. */
+  readerLeaseSignature?: string;
   /** #15 T5: `openShardStore` refuses a project the person archived or forgot unless the caller says `ignore` (the catalog, `--include-archived` reads and export do, on purpose). */
   lifecycle?: "enforce" | "ignore";
   /** #27: read the `aliases` keys' curated rows as part of the `canonical` project (CLI and MCP only); the library default reads the raw key. Rows are presented under `canonical`. */
@@ -279,7 +281,7 @@ export class MemoryStore {
     this.screen = opts.screen;
     this.deferPromotions = opts.deferPromotions ?? false;
     // Announce before opening derived handles or reading rows; failed admission leaks no database handles.
-    if (!bootstrap || bootstrap.authoring === true) this.releaseReaderLease = registerReaderLease(this.profile.home, this.profile.sharded ? {scope:"shard"} : {});
+    if (!bootstrap || bootstrap.authoring === true) this.releaseReaderLease = registerReaderLease(this.profile.home, { ...(this.profile.sharded ? { scope: "shard" as const } : {}), ...(opts.readerLeaseSignature === undefined ? {} : { signature: opts.readerLeaseSignature }) });
     let openedDb: Database | undefined, openedMutation: Database | undefined, openedSearch: SearchIndex | undefined;
     try {
       const indexFile = join(this.dir, indexFileName(!!this.profile.foreignPruneFormat));
@@ -1950,7 +1952,7 @@ export function openShardStore(opts: StoreOptions & { project?: string; user?: b
   // Lifecycle refusal must remain before admission creates any lease/fence file.
   if (opts.user !== true && opts.lifecycle !== "ignore") assertProjectActive(home, opts.project!);
   readShardedSelection(home); // validate the floor before any lazy shard initialization
-  const admission = registerReaderLease(home, {scope:"shard"});
+  const admission = registerReaderLease(home, {scope:"shard", ...(opts.readerLeaseSignature === undefined ? {} : { signature: opts.readerLeaseSignature })});
   try {
   const dir = opts.user === true ? userShardDir(home) : shardDir(home, opts.project!);
   const missing = !existsSync(join(dir, "generation.json"));
