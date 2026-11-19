@@ -132,6 +132,28 @@ test("#485 AC4: a sample holds no query text, arguments, ids or paths", async ()
   for (const secret of [CANARY, f.id, f.project, PATH_CANARY, f.root]) expect(text).not.toContain(secret);
 }, 30_000);
 
+test("#485 review: the sample's wall time covers the recall preparation the caller waits for", async () => {
+  const f = seeded(), mcp = session(f), delay = 250;
+  const original = MemoryStore.prototype.beginRecallRead;
+  let prepared = 0;
+  // The seam the finding names: `beginRecallRead()` refreshes the index and prunes rows before the tool body runs, so its
+  // cost is work the caller waits for. Making that preparation deliberately expensive proves the clock starts before it
+  // instead of after the guarded result it reaches.
+  MemoryStore.prototype.beginRecallRead = function (this: MemoryStore) {
+    prepared += 1; Bun.sleepSync(delay);
+    return original.call(this);
+  };
+  try {
+    const result = await mcp.tools.amem_search({ query: "telemetry" });
+    // The timed work produced the answer the call returned, so the span measured is the span that served it.
+    expect(JSON.stringify(result)).toContain("ordinary note for read-tool telemetry");
+  } finally { MemoryStore.prototype.beginRecallRead = original; }
+  expect(prepared).toBe(1);
+  const rows = await settled(f.memory, 1);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.wallMs).toBeGreaterThanOrEqual(delay);
+}, 30_000);
+
 test("#485 review: a trim races another process's appends without tearing a line", async () => {
   const f = seeded(), file = metricsPath(f.memory), script = join(f.root, "append-loop.ts");
   const ready = join(f.root, "writer-ready"), stop = join(f.root, "writer-stop");
