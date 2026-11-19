@@ -16,7 +16,6 @@ export const EVAL_KINDS = ["decision", "finding", "contract", "fail"] as const;
 /**
  * #326: the correctness audit's closed vocabulary. A label is a judge's verdict on one sampled note, never a number: `unverifiable` says no source was
  * available, which is a different thing from `wrong`. The rubric travels with the sheet so the person filling it and the score agree on each word.
- * `EVAL_KINDS` above is also the audit's kind frame: `preference` (#370) stays out, and `docs/bench/audit.md` records why.
  */
 export const AUDIT_SCHEMA = "amem.audit/v1";
 export const AUDIT_LABELS = ["correct", "stale", "wrong", "unverifiable"] as const;
@@ -32,10 +31,10 @@ export const AUDIT_ANCHOR_STATUSES = ["present", "changed", "missing", "unavaila
 export type AuditAnchorStatus = (typeof AUDIT_ANCHOR_STATUSES)[number];
 export const MAX_AUDIT_NOTES = 200, MAX_AUDIT_ANCHORS = 8, MAX_AUDIT_SHEET_BYTES = 4 * 1024 * 1024;
 /**
- * The audit's kind frame. It names the same four kinds the recall sets do, so widening the eval-set schema cannot silently widen what gets audited: adding
+ * The audit's kind frame, written out rather than aliased to `EVAL_KINDS`: widening the eval-set schema must not silently widen what gets audited, and adding
  * `preference` here is the one-line change that samples it (docs/bench/audit.md records why it stays out today).
  */
-export const AUDIT_KINDS: readonly string[] = EVAL_KINDS;
+export const AUDIT_KINDS: readonly string[] = ["decision", "finding", "contract", "fail"];
 export const AUDIT_RUBRIC: Readonly<Record<AuditLabel, string>> = {
   correct: "true now, and true when it was written", stale: "once true, no longer true", wrong: "never true", unverifiable: "no source available",
 };

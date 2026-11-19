@@ -47,6 +47,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     audit: { description: "Audit whether stored notes are still right (#326): sample a private sheet, judge it outside amem, then score it (no model, no network)", options: json, commands: {
       sample: { description: "Draw a seeded, stratified sample of this project's curated notes into a private 0600 sheet with anchor status and empty judge columns", options: { ...json,
         "--project": text("The project key to audit (default: this directory's project)"), "--n": text("Notes to draw (1..200, default 40)"), "--seed": text("Required: 1..64 letters, digits, '.', '_' or '-' - the same seed and store draw the same sample"),
+        "--as-of": text("The instant the notes' ages are measured at (canonical UTC date or timestamp; default: now), recorded in the sheet so the same seed and as-of draw the same sample"),
         "--out": { description: "Sheet path (default: this home's eval/ directory); never overwritten, always 0600", value: "path" } } },
       score: { description: "Score a filled sheet into content-free counts, per kind/age/anchor, and Cohen's kappa; refuses any leak of note text or a path", options: json, args: [{ name: "sheet" }] },
     } } } },

@@ -26,7 +26,12 @@ export interface AuditNote {
   judge_a: "" | AuditLabel; judge_b: "" | AuditLabel;
 }
 export interface AuditSheet {
-  schema: typeof AUDIT_SCHEMA; project: string; seed: string; drawnAt: string;
+  schema: typeof AUDIT_SCHEMA; project: string; seed: string;
+  /**
+   * The instant the age buckets were measured at - `--as-of` when it was given, this run's clock otherwise - recorded so the same store, seed and as-of draw the
+   * same sample instead of reaching the wall clock silently.
+   */
+  asOf: string;
   /** The git work tree the anchors were checked in; anchors are repository-relative, so the sheet is only re-scoreable, never re-checkable, elsewhere. */
   root: string; frame: number; drawn: number;
   /** True when the store's listing bound cut the frame, so `frame` is a floor rather than the project's live note count. */
@@ -37,7 +42,9 @@ export interface AuditSheet {
   notes: AuditNote[];
 }
 export interface AuditSampleOptions {
-  store: MemoryStore; project: string; n: number; seed: string; root: string; now?: number;
+  store: MemoryStore; project: string; n: number; seed: string; root: string;
+  /** The instant the age buckets are measured at; the CLI passes `--as-of` or its own clock, and the sheet records whichever it was. */
+  asOf?: number;
   /** Screens one frame member before it can enter the sheet; `false` withholds it. The CLI passes the configured standalone policy. */
   screen?: (note: { kind: string; at: string; text: string; title?: string; about: readonly string[] }) => boolean;
 }
@@ -60,6 +67,11 @@ function exact(row: Record<string, unknown>, allowed: readonly string[], what: s
 const string = (value: unknown, what: string, max: number): string => typeof value === "string" && value.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value) ? value : fail(`${what} must be a string of at most ${max} characters without control characters`);
 const oneOf = <T extends string>(value: unknown, vocabulary: readonly T[], what: string): T => vocabulary.includes(value as T) ? value as T : fail(`${what} must be one of ${vocabulary.join(", ")}`);
 const seedValue = (value: unknown): string => typeof value === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(value) ? value : fail("seed must be 1 to 64 letters, digits, '.', '_' or '-', the alphabet `sample` draws with");
+/** A canonical UTC instant - the one clock value a sheet and its score carry - so a hand-edited sheet cannot park free text in it. */
+const stamp = (value: unknown): string => {
+  const at = typeof value === "string" && /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/.test(value) ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(at) && new Date(at).toISOString() === value ? value as string : fail("asOf must be a canonical UTC instant such as 2026-02-01T00:00:00.000Z, the one the age buckets were measured at");
+};
 const bool = (value: unknown, what: string): boolean => typeof value === "boolean" ? value : fail(`${what} must be true or false`);
 
 /** SHA-256 of the seed with a stratum and its ordinal, so one seed gives one order on every machine and runtime (no `Math.random`, no clock). */
@@ -147,22 +159,39 @@ export function auditRoot(cwd: string): string {
   return realPath(root);
 }
 
+/**
+ * The instant `--as-of` names, normalized to one canonical UTC stamp: a date alone is midnight UTC of that day, and anything else must already be canonical.
+ * A future instant is refused, because it would measure ages that have not happened and quietly drop notes out of every bucket.
+ */
+export function auditAsOf(value: string, present: number): number {
+  const iso = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value) ? `${value}T00:00:00.000Z` : value, at = Date.parse(iso);
+  if (!Number.isFinite(at) || new Date(at).toISOString() !== iso) {
+    throw new Error(`--as-of must be a canonical UTC date or timestamp (2026-01-31 or 2026-01-31T00:00:00.000Z), and "${value.slice(0, 40)}" is not; it is the instant the notes' ages are measured at, and the sheet records it so the same seed draws the same sample again`);
+  }
+  if (at > present) throw new Error(`--as-of ${iso} is in the future, and the audit measures how old the notes are at that instant; pass today or an earlier date`);
+  return at;
+}
+
 /** Draw the sample and describe it. Nothing is written here: the caller chooses the private path. */
 export function auditSample(opts: AuditSampleOptions): AuditSheet {
   if (!Number.isInteger(opts.n) || opts.n < 1 || opts.n > MAX_AUDIT_NOTES) throw new Error(`the audit draws 1 to ${MAX_AUDIT_NOTES} notes, not ${opts.n}`);
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(opts.seed)) throw new Error("the audit seed is 1 to 64 letters, digits, '.', '_' or '-', so the same seed and store draw the same sample");
-  const now = opts.now ?? Date.now(), kinds = new Set<string>(AUDIT_KINDS), candidates: Candidate[] = [];
+  const asOf = opts.asOf ?? Date.now(), kinds = new Set<string>(AUDIT_KINDS), candidates: Candidate[] = [];
   const listed = opts.store.list({ project: opts.project, limit: AUDIT_LIST_CAP });
   let withheld = 0;
   for (const view of listed) {
     if (!kinds.has(view.kind)) continue;
-    const age = auditAge(view.at, now);
+    const age = auditAge(view.at, asOf);
     if (age === undefined) continue;
     // The policy runs before anything is written: a note it refuses is not copied into the sheet, and the sheet only reports how many were withheld.
     if (opts.screen && !opts.screen({ kind: view.kind, at: view.at, text: view.text, ...(view.title === null ? {} : { title: view.title }), about: view.about })) { withheld++; continue; }
     candidates.push({ view, age });
   }
   const drawn = draw(candidates, opts.n, opts.seed);
+  // A sheet with no notes cannot be judged and its own parser refuses it, so an empty frame is a refusal with the cause and the next step, not a file.
+  if (!drawn.length) throw new Error(withheld
+    ? `the audit drew no notes: the configured policy withheld all ${withheld} candidate note(s), so nothing could be sampled; adjust the policy or sample from the project that holds the notes`
+    : `the audit drew no notes: ${opts.project} has no live decision, finding, contract or fail note in the frame this work tree covers; record curated notes and sample again`);
   const notes = drawn.map(({ view, age }): AuditNote => {
     const anchors = auditAnchorPaths(view).map(path => ({ path, status: anchorStatus(opts.root, view.at, path) }));
     return {
@@ -171,7 +200,7 @@ export function auditSample(opts: AuditSampleOptions): AuditSheet {
     };
   });
   return {
-    schema: AUDIT_SCHEMA, project: opts.project, seed: opts.seed, drawnAt: new Date(now).toISOString(), root: opts.root,
+    schema: AUDIT_SCHEMA, project: opts.project, seed: opts.seed, asOf: new Date(asOf).toISOString(), root: opts.root,
     frame: candidates.length, drawn: notes.length, truncated: listed.length >= AUDIT_LIST_CAP, withheld, rubric: { ...AUDIT_RUBRIC }, notes,
   };
 }
@@ -180,13 +209,18 @@ export function auditSample(opts: AuditSampleOptions): AuditSheet {
 export function writeAuditSheet(path: string, sheet: AuditSheet): string {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const file = join(realPath(dirname(path)), basename(path));
-  writeFileSync(file, JSON.stringify(sheet, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+  try {
+    writeFileSync(file, JSON.stringify(sheet, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    throw new Error(`an audit sheet is never overwritten and ${file} exists; keep it and pass \`--out <another path>\`, or sample again with a new --seed`);
+  }
   return file;
 }
 
 /** A bounded read of an untrusted file: a regular file within the sheet bound, with the size and the bytes read bound together. */
 export function readAuditSheet(path: string): AuditSheet {
-  const tooBig = () => new Error(`invalid audit sheet: ${path} is not a regular file within ${MAX_AUDIT_SHEET_BYTES} bytes`);
+  const tooBig = () => new Error(`invalid audit sheet: ${path} is not a regular file within ${MAX_AUDIT_SHEET_BYTES} bytes; score the sheet \`amem eval audit sample\` wrote instead of a directory or a larger file`);
   const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
   let bytes: Buffer;
   try {
@@ -204,20 +238,22 @@ export function readAuditSheet(path: string): AuditSheet {
     bytes = buffer.subarray(0, length);
   } finally { closeSync(fd); }
   let raw: unknown;
-  try { raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { throw new Error("invalid audit sheet: not valid JSON"); }
+  try { raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+  catch { throw new Error(`invalid audit sheet: ${path} is not valid JSON; re-open the sheet \`amem eval audit sample\` wrote, fill only judge_a and judge_b, and save it whole`); }
   return parseAuditSheet(raw);
 }
 
 /**
  * Strict parse of a filled sheet. Unknown keys are refused rather than ignored: the sheet holds note text, and a key the score does not know is exactly how
- * free text would reach the content-free output. A judge cell holds one of the four labels or stays empty, a kind is one of the audit's four, and the seed is
- * the alphabet `sample` accepts - every value the score copies or turns into a bucket name is a closed set, not a string from the file.
+ * free text would reach the content-free output. A judge cell holds one of the four labels or stays empty, a kind is one of the audit's four, the as-of instant
+ * is a canonical UTC stamp, and the seed is the alphabet `sample` accepts - every value the score copies or turns into a bucket name is a closed set, not a
+ * string from the file.
  */
 export function parseAuditSheet(raw: unknown): AuditSheet {
   const root = object(raw, "the sheet");
-  exact(root, ["schema", "project", "seed", "drawnAt", "root", "frame", "drawn", "truncated", "withheld", "rubric", "notes"], "the sheet");
+  exact(root, ["schema", "project", "seed", "asOf", "root", "frame", "drawn", "truncated", "withheld", "rubric", "notes"], "the sheet");
   if (root.schema !== AUDIT_SCHEMA) fail(`schema must be "${AUDIT_SCHEMA}"`);
-  if (!Array.isArray(root.notes) || !root.notes.length || root.notes.length > MAX_AUDIT_NOTES) fail(`notes must hold 1 to ${MAX_AUDIT_NOTES} items`);
+  if (!Array.isArray(root.notes) || !root.notes.length || root.notes.length > MAX_AUDIT_NOTES) fail(`notes must hold 1 to ${MAX_AUDIT_NOTES} items, and \`amem eval audit sample\` writes a sheet of at least one note`);
   const notes = (root.notes as unknown[]).map((item, index): AuditNote => {
     const row = object(item, `notes[${index}]`), what = `notes[${index}]`;
     exact(row, ["id", "kind", "at", "age", "anchor", "anchors", "title", "text", "judge_a", "judge_b"], what);
@@ -239,7 +275,7 @@ export function parseAuditSheet(raw: unknown): AuditSheet {
   const rubric = object(root.rubric, "the sheet's rubric");
   return {
     schema: AUDIT_SCHEMA, project: string(root.project, "project", 200), seed: seedValue(root.seed),
-    drawnAt: string(root.drawnAt, "drawnAt", 40), root: string(root.root, "root", 1_000),
+    asOf: stamp(root.asOf), root: string(root.root, "root", 1_000),
     frame: typeof root.frame === "number" && Number.isInteger(root.frame) && root.frame >= 0 ? root.frame : fail("frame must be a non-negative integer"),
     drawn: typeof root.drawn === "number" && Number.isInteger(root.drawn) && root.drawn >= 0 ? root.drawn : fail("drawn must be a non-negative integer"),
     truncated: bool(root.truncated, "truncated"),
@@ -256,7 +292,9 @@ export interface AuditScore {
   schema: "amem.audit.score/v1";
   /** A SHA-256 prefix of the sheet's project key, never the key: a key can be derived from a local checkout path, and the score is the part meant to be shared. */
   project: string;
-  seed: string; frame: number; drawn: number; truncated: boolean; withheld: number;
+  /** The instant the age buckets were measured at, so a shared coefficient travels with the buckets that produced it. */
+  asOf: string;
+  frame: number; drawn: number; truncated: boolean; withheld: number;
   labelled: number; unlabelled: number;
   byLabel: Record<AuditLabel, number>;
   /** The spec's joint cross-tab (label x kind x age bucket x anchor status) as its non-zero cells, sorted; the marginals below cannot rebuild it. */
@@ -273,17 +311,23 @@ function projectDigest(project: string): string {
 }
 
 /**
- * The score is content-free because no note field is copied into it: the project becomes a digest, and every other string it emits is a schema or field literal,
- * the seed the sheet already names, or a member of the four closed vocabularies. This check makes the last part true for a sheet handed in directly rather than
- * through the strict parse: a kind, age bucket or anchor status outside its vocabulary would become a key in `byKind`, `byAge`, `byAnchor` or `cells`, and a
- * seed outside `sample`'s alphabet would be copied, so both refuse the score instead. Note text, title and anchor paths are never read by the score at all,
- * which is why a note of any length - a three-character text no substring scan could tell from an ordinary word - cannot reach the output.
+ * The score is content-free because no note field is copied into it: the project becomes a digest, the clock becomes the canonical stamp the sheet recorded,
+ * and every other string it emits is a schema or field literal or a member of the four closed vocabularies. The seed is not in the score at all, so no note
+ * text - not even a three-character text no substring scan could tell from an ordinary word - can collide with one. This check makes the rest true for a sheet
+ * handed in directly rather than through the strict parse: a kind, age bucket or anchor status outside its vocabulary would become a key in `byKind`, `byAge`,
+ * `byAnchor` or `cells`, and a judge cell outside the four labels would become a key in the tallies, so all of them refuse the score instead. Note text, title
+ * and anchor paths are never read by the score at all.
  */
 function assertClosedInputs(sheet: AuditSheet): void {
-  if (!/^[A-Za-z0-9._-]{1,64}$/.test(sheet.seed)) throw new Error("the audit score would copy a seed that is not the alphabet `sample` draws with; it is refused, because the score is content-free by contract");
+  stamp(sheet.asOf);
   for (const note of sheet.notes) {
     if (!AUDIT_KINDS.includes(note.kind) || !AUDIT_AGE_BUCKETS.includes(note.age) || !AUDIT_ANCHOR_STATUSES.includes(note.anchor)) {
       throw new Error("the audit score would carry a kind, age bucket or anchor status outside its closed vocabulary; it is refused, because the score is content-free by contract");
+    }
+    for (const judge of [note.judge_a, note.judge_b]) {
+      if (judge !== "" && !AUDIT_LABELS.includes(judge)) {
+        throw new Error("the audit score would carry a judge cell outside the four labels; it is refused, because the score is content-free by contract");
+      }
     }
   }
 }
@@ -313,7 +357,7 @@ export function auditScore(sheet: AuditSheet): AuditScore {
     else joint.set(key, { kind: note.kind, age: note.age, anchor: note.anchor, label, count: 1 });
   }
   const score: AuditScore = {
-    schema: "amem.audit.score/v1", project: projectDigest(sheet.project), seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn,
+    schema: "amem.audit.score/v1", project: projectDigest(sheet.project), asOf: sheet.asOf, frame: sheet.frame, drawn: sheet.drawn,
     truncated: sheet.truncated, withheld: sheet.withheld, labelled: labelled.length, unlabelled: sheet.notes.length - labelled.length,
     byLabel: Object.fromEntries(AUDIT_LABELS.map(label => [label, labelled.filter(note => note.judge_a === label).length])) as Record<AuditLabel, number>,
     cells: [...joint.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, cell]) => cell),
@@ -328,7 +372,7 @@ export function auditSheetText(sheet: AuditSheet, file: string): string {
   const cells = new Set(sheet.notes.map(note => `${note.kind}/${note.age}`));
   const frame = `${sheet.frame}${sheet.truncated ? "+ (the store listing hit its cap, so the frame is a floor)" : ""}`;
   return [
-    `audit sample: ${sheet.drawn} of ${frame} ${sheet.project} notes, seed "${sheet.seed}", ${cells.size} kind/age cells, anchors checked in ${sheet.root}${sheet.withheld ? `, ${sheet.withheld} withheld by the configured policy` : ""}`,
+    `audit sample: ${sheet.drawn} of ${frame} ${sheet.project} notes, seed "${sheet.seed}" as of ${sheet.asOf}, ${cells.size} kind/age cells, anchors checked in ${sheet.root}${sheet.withheld ? `, ${sheet.withheld} withheld by the configured policy` : ""}`,
     `sheet: ${file} (0600, local only; never synced and never committed)`,
     `fill judge_a and judge_b with ${AUDIT_LABELS.join(", ")} (rubric in the sheet header), then run \`amem eval audit score ${file}\``,
   ].join("\n");
@@ -339,7 +383,7 @@ export function auditScoreText(score: AuditScore): string {
   const row = (label: string, counts: Partial<Record<AuditLabel, number>>) => `${label.padEnd(10)} ${AUDIT_LABELS.map(name => String(counts[name] ?? 0).padStart(4)).join(" ")}`;
   const frame = `${score.frame}${score.truncated ? "+ (the store listing hit its cap, so the frame is a floor)" : ""}`;
   const withheld = score.withheld ? `, ${score.withheld} withheld by the configured policy` : "";
-  const head = `audit score: project ${score.project}, ${score.drawn} of ${frame} notes, seed "${score.seed}", ${score.labelled} labelled, ${score.unlabelled} not${withheld}`;
+  const head = `audit score: project ${score.project}, ${score.drawn} of ${frame} notes as of ${score.asOf}, ${score.labelled} labelled, ${score.unlabelled} not${withheld}`;
   // The joint cells are printed as one line per kind/age/anchor stratum, so a reader sees which label fills each intersection instead of three marginals.
   const strata = new Map<string, Partial<Record<AuditLabel, number>>>();
   for (const cell of score.cells) {

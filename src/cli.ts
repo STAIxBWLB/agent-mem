@@ -963,15 +963,17 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const project = options["--project"] === undefined ? bound : resolveAlias(home, String(options["--project"]));
         if (project !== bound && !aliasedKeys(home, bound).includes(project)) throw new Error(`the audit checks note anchors against the git work tree of ${cwd}, so it samples only the project bound there (${bound}); run \`amem eval audit sample\` from that project's checkout to audit that project`);
         const root = audit.auditRoot(cwd);
+        // The age buckets the draw stratifies by are measured at one explicit instant, recorded in the sheet: the same seed, store and as-of draw the same sample.
+        const asOf = options["--as-of"] === undefined ? Date.now() : audit.auditAsOf(String(options["--as-of"]), Date.now());
         const store = curatedStore(project, { deferPromotions: true });
         let sheet;
         // The configured policy screens each frame member before the sheet's first write, for a person and an agent-marked session alike (like `project export`).
         // It is read once: the screen runs per frame member, and the policy reads the config files when it is built.
         const screen = policyOf();
-        try { sheet = audit.auditSample({ store, project, n, seed, root, screen: note => screen.screenStandalone(note) }); } finally { store.close(); }
+        try { sheet = audit.auditSample({ store, project, n, seed, root, asOf, screen: note => screen.screenStandalone(note) }); } finally { store.close(); }
         const out = typeof options["--out"] === "string" ? options["--out"] : join(memoryHome(), "eval", `audit-${project.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80)}-${seed}.json`);
         const file = audit.writeAuditSheet(out, sheet);
-        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated, withheld: sheet.withheld }, null, 2) : audit.auditSheetText(sheet, file);
+        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, asOf: sheet.asOf, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated, withheld: sheet.withheld }, null, 2) : audit.auditSheetText(sheet, file);
       }
       if (parsed.path[2] === "score") {
         const [sheet] = parsed.positionals;

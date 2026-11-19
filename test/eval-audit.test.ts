@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { AUDIT_KINDS, AUDIT_LABELS, MAX_AUDIT_NOTES, auditAge, cohenKappa, foldAnchorStatus } from "../src/memory/eval.ts";
 import { appendAlias } from "../src/memory/aliases.ts";
-import { auditSample, auditScore, auditScoreText, readAuditSheet, writeAuditSheet, type AuditNote, type AuditSheet } from "../src/memory/eval-audit.ts";
+import { auditAsOf, auditSample, auditScore, auditScoreText, readAuditSheet, writeAuditSheet, type AuditNote, type AuditSheet } from "../src/memory/eval-audit.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { MemoryStore, type Kind, type View } from "../src/memory/store.ts";
@@ -49,7 +49,7 @@ function seeded(r: ReturnType<typeof rig>, seeds: readonly Seed[]): MemoryStore 
   }
   return store;
 }
-const sample = (r: ReturnType<typeof rig>, store: MemoryStore, seed: string, n = 6, now = NOW) => auditSample({ store, project: r.project, n, seed, root: r.repo, now });
+const sample = (r: ReturnType<typeof rig>, store: MemoryStore, seed: string, n = 6, asOf = NOW) => auditSample({ store, project: r.project, n, seed, root: r.repo, asOf });
 
 test("AC1: the same seed and store draw the same stratified sample, and a different seed draws another one", () => {
   const r = rig(), kinds: Kind[] = ["decision", "finding", "contract", "fail"], ages = [5, 50, 120];
@@ -117,7 +117,7 @@ test("#326: an anchor the audit cannot check is `unavailable`, never `present` -
   ]);
   try {
     // `r.root` is not a git work tree, so the history read fails: claiming `present` there would say "no commit touched it" about a check that never ran.
-    const unreadable = auditSample({ store, project: r.project, n: 2, seed: "unreadable", root: r.root, now: NOW });
+    const unreadable = auditSample({ store, project: r.project, n: 2, seed: "unreadable", root: r.root, asOf: NOW });
     const failed = unreadable.notes.find(note => note.text.includes("src/present.ts"))!;
     expect(failed.anchors).toEqual([{ path: "repo/src/present.ts", status: "unavailable" }]); expect(failed.anchor).toBe("unavailable");
     // A symlink inside the repository can point anywhere: an anchor that resolves outside the tree is not probed and not called present.
@@ -129,19 +129,27 @@ test("#326: an anchor the audit cannot check is `unavailable`, never `present` -
   } finally { store.close(); }
 });
 
-test("AC1: the draw's one clock input is the age bucket, measured from the draw instant the sheet records", () => {
+test("AC1: the draw's one clock input is an explicit as-of the sheet records, not the wall clock", () => {
   const r = rig();
   const store = seeded(r, [{ text: "note 29 about the parcel router", at: NOW - 29 * DAY }, { text: "note 89 about the parcel router", at: NOW - 89 * DAY }]);
   try {
     const before = sample(r, store, "clock", 2, NOW), after = sample(r, store, "clock", 2, NOW + 2 * DAY);
     const ageOf = (sheet: AuditSheet, text: string) => sheet.notes.find(note => note.text === text)!.age;
-    // Two days later the same notes have crossed bucket boundaries: the bucket is a property of the note at draw time, so the clock is an input to the draw.
+    // Two days later the same notes have crossed bucket boundaries: the bucket is a property of the note at the drawn instant, so that instant is an input.
     expect(ageOf(before, "note 29 about the parcel router")).toBe("lt30");
     expect(ageOf(after, "note 29 about the parcel router")).toBe("d30to90");
     expect(ageOf(before, "note 89 about the parcel router")).toBe("d30to90");
     expect(ageOf(after, "note 89 about the parcel router")).toBe("gt90");
-    // The sheet names the instant, so a result is reproducible against the clock it was drawn at rather than a silent wall clock.
-    expect(before.drawnAt).toBe(new Date(NOW).toISOString()); expect(after.drawnAt).toBe(new Date(NOW + 2 * DAY).toISOString());
+    // The sheet records that instant, so the same seed and store reproduce the sample against it instead of against a silent wall clock.
+    expect(before.asOf).toBe(new Date(NOW).toISOString()); expect(after.asOf).toBe(new Date(NOW + 2 * DAY).toISOString());
+    // Nothing else about the sheet moves with the clock: two draws at one as-of are the same bytes.
+    expect(JSON.stringify(sample(r, store, "clock", 2, NOW))).toBe(JSON.stringify(before));
+    // A date alone is midnight UTC, a canonical stamp is taken as is, and a non-canonical or future instant is refused rather than reinterpreted.
+    expect(auditAsOf("2026-02-01", NOW)).toBe(NOW);
+    expect(auditAsOf("2026-02-01T00:00:00.000Z", NOW)).toBe(NOW);
+    expect(() => auditAsOf("2026-02-01T00:00:00Z", NOW)).toThrow("--as-of must be a canonical UTC date or timestamp");
+    expect(() => auditAsOf("2026-02-31", NOW)).toThrow("--as-of must be a canonical UTC date or timestamp");
+    expect(() => auditAsOf("2026-02-02", NOW)).toThrow("--as-of 2026-02-02T00:00:00.000Z is in the future");
   } finally { store.close(); }
 });
 
@@ -168,7 +176,7 @@ test("AC2: the score carries counts and kappa only - no note text, title, anchor
   } finally { store.close(); }
 });
 
-test("AC2: no note content reaches the score at any length - the seed is the one free string it emits", () => {
+test("AC2: no note content reaches the score at any length - the seed is not in the score at all", () => {
   const r = rig(), store = seeded(r, [
     { text: "abc", about: [] },
     { text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:src/present.ts"] },
@@ -178,12 +186,14 @@ test("AC2: no note content reaches the score at any length - the seed is the one
     const sheet = sample(r, store, "q7", 2);
     for (const note of sheet.notes) note.judge_a = "correct";
     expect(JSON.stringify({ ...auditScore(sheet), project: "" })).not.toContain("abc");
-    // With the seed equal to that text the one copy is the seed the sheet already names: drop the seed and no note content remains.
+    // The seed is the string a short note could collide with, so the score carries none: the sheet keeps it, and the score names the as-of instead.
     const same = sample(r, store, "abc", 2);
     for (const note of same.notes) note.judge_a = "correct";
     const twice = auditScore(same);
-    expect(twice.seed).toBe("abc");
-    expect(JSON.stringify({ ...twice, seed: "", project: "" })).not.toContain("abc");
+    expect(Object.hasOwn(twice, "seed")).toBe(false);
+    expect(JSON.stringify({ ...twice, project: "" })).not.toContain("abc");
+    expect(auditScoreText(twice)).not.toContain("abc");
+    expect(twice.asOf).toBe(new Date(NOW).toISOString());
   } finally { store.close(); }
 });
 
@@ -201,13 +211,15 @@ test("AC2: a sheet that would leak free text is refused, whether in a judge cell
     extra.notes[0]!.comment = "the parcel router keeps its retry budget in src/present.ts";
     writeFileSync(file, JSON.stringify(extra));
     expect(() => readAuditSheet(file)).toThrow('has an unknown key "comment"');
-    // A kind becomes a `byKind` key and the seed is copied into the score, so both are the closed sets `sample` draws with, not free strings from the file.
+    // A kind becomes a `byKind` key, an as-of is copied into the score and the seed is the sheet's own alphabet: all three are closed sets, not free strings from the file.
     const oddKind = JSON.parse(JSON.stringify(sheet)) as { notes: { kind: string }[] };
     oddKind.notes[0]!.kind = "the parcel router keeps its retry budget";
     writeFileSync(file, JSON.stringify(oddKind));
     expect(() => readAuditSheet(file)).toThrow("kind must be one of decision, finding, contract, fail");
     writeFileSync(file, JSON.stringify({ ...sheet, seed: "my seed" }));
     expect(() => readAuditSheet(file)).toThrow("seed must be 1 to 64 letters, digits");
+    writeFileSync(file, JSON.stringify({ ...sheet, asOf: "the parcel router keeps its retry budget" }));
+    expect(() => readAuditSheet(file)).toThrow("asOf must be a canonical UTC instant");
     writeFileSync(file, JSON.stringify({ ...sheet, truncated: "yes" }));
     expect(() => readAuditSheet(file)).toThrow("truncated must be true or false");
     // The project key stays in the sheet: the score names the project only by digest, because a key can be built from a local checkout path.
@@ -215,9 +227,13 @@ test("AC2: a sheet that would leak free text is refused, whether in a judge cell
     const scored = auditScore(polluted);
     expect(scored.project).toBe(`sha256:${createHash("sha256").update(polluted.project).digest("hex").slice(0, 16)}`);
     expect(JSON.stringify(scored)).not.toContain(polluted.project);
-    // The guard is a whitelist over every string the score emits, not a search for long note text: a kind that is a sentence cannot become a `byKind` key.
+    // The guard is a whitelist over every string the score emits, not a search for long note text: a kind or a judge cell that is a sentence cannot become a key.
     const foreign = { ...sheet, notes: [{ ...sheet.notes[0]!, kind: "the parcel router keeps its retry budget" }] } as AuditSheet;
     expect(() => auditScore(foreign)).toThrow("content-free");
+    const verdict = { ...sheet, notes: [{ ...sheet.notes[0]!, judge_a: "the parcel router keeps its retry budget" }] } as unknown as AuditSheet;
+    expect(() => auditScore(verdict)).toThrow("judge cell outside the four labels");
+    const unstamped = { ...sheet, asOf: "the parcel router keeps its retry budget" } as unknown as AuditSheet;
+    expect(() => auditScore(unstamped)).toThrow("asOf must be a canonical UTC instant");
     // And the honest sheet scores.
     expect(auditScore(sheet).labelled).toBe(0);
   } finally { store.close(); }
@@ -239,7 +255,7 @@ test("AC3: kappa matches a hand-worked fixture", () => {
     id: String(index).padStart(32, "0"), kind: "finding", at: new Date(NOTE).toISOString(), age: "lt30", anchor: "present", anchors: [{ path: `src/${index}.ts`, status: "present" }],
     text: `synthetic note ${index}`, judge_a: judge_a as AuditNote["judge_a"], judge_b: judge_b as AuditNote["judge_b"],
   }));
-  const score = auditScore({ schema: "amem.audit/v1", project: "fixture/project", seed: "s", drawnAt: new Date(NOW).toISOString(), root: "/fixture", frame: 10, drawn: 10, truncated: false, withheld: 0, rubric: { correct: "c", stale: "s", wrong: "w", unverifiable: "u" }, notes });
+  const score = auditScore({ schema: "amem.audit/v1", project: "fixture/project", seed: "s", asOf: new Date(NOW).toISOString(), root: "/fixture", frame: 10, drawn: 10, truncated: false, withheld: 0, rubric: { correct: "c", stale: "s", wrong: "w", unverifiable: "u" }, notes });
   expect(score.byLabel).toEqual({ correct: 6, stale: 2, wrong: 2, unverifiable: 0 });
   expect(score.agreement).toEqual({ pairs: 10, agreed: 8, kappa: 0.6875 });
   expect(score.byAge).toEqual({ lt30: { correct: 6, stale: 2, wrong: 2 } });
@@ -277,13 +293,16 @@ test("#326: the sheet file is private, never overwritten, and scores from disk",
     const sheet = sample(r, store, "file", 1), file = join(r.memory, "eval", "audit.json");
     expect(writeAuditSheet(file, sheet)).toBe(file);
     expect(statSync(file).mode & 0o777).toBe(0o600);
-    expect(() => writeAuditSheet(file, sheet)).toThrow();
+    // A sheet is never overwritten: the refusal keeps the file that is there and names the flag that writes elsewhere.
+    expect(() => writeAuditSheet(file, sheet)).toThrow("never overwritten");
+    expect(() => writeAuditSheet(file, sheet)).toThrow("pass `--out <another path>`");
     const reread = readAuditSheet(file);
     expect(reread.notes.map(note => note.id)).toEqual(sheet.notes.map(note => note.id));
     expect(reread.notes[0]!.judge_a).toBe("");
-    // Not JSON, a directory and an oversized file are refused by the bounded reader.
-    expect(() => readAuditSheet(r.memory)).toThrow("regular file within");
-    writeFileSync(join(r.memory, "bad.json"), "{ not json"); expect(() => readAuditSheet(join(r.memory, "bad.json"))).toThrow("not valid JSON");
+    // Not JSON, a directory and an oversized file are refused by the bounded reader, each naming what to score instead.
+    expect(() => readAuditSheet(r.memory)).toThrow("score the sheet `amem eval audit sample` wrote");
+    writeFileSync(join(r.memory, "bad.json"), "{ not json");
+    expect(() => readAuditSheet(join(r.memory, "bad.json"))).toThrow("fill only judge_a and judge_b");
     writeFileSync(join(r.memory, "big.json"), "x".repeat(4 * 1024 * 1024 + 1)); expect(() => readAuditSheet(join(r.memory, "big.json"))).toThrow("regular file within");
   } finally { store.close(); }
 });
@@ -291,13 +310,31 @@ test("#326: the sheet file is private, never overwritten, and scores from disk",
 test("#326: a frame cut by the store's listing bound says so rather than reporting the bound as the whole frame", () => {
   const r = rig();
   // The bound is 20,000 rows, so a synthetic listing reaches it without writing that many notes.
-  const views = Array.from({ length: 20_000 }, (_, index) => ({ id: String(index).padStart(32, "0"), kind: "finding", at: "not a date", about: [], text: "", title: null }) as unknown as View);
-  const sheet = auditSample({ store: { list: () => views } as unknown as MemoryStore, project: "fixture/project", n: 1, seed: "cap", root: r.repo, now: NOW });
-  expect(sheet.truncated).toBe(true); expect(sheet.frame).toBe(0);
+  const views = Array.from({ length: 20_000 }, (_, index) => ({ id: String(index).padStart(32, "0"), kind: "finding", at: new Date(NOW).toISOString(), about: [], text: "", title: null }) as unknown as View);
+  const sheet = auditSample({ store: { list: () => views } as unknown as MemoryStore, project: "fixture/project", n: 1, seed: "cap", root: r.repo, asOf: NOW });
+  expect(sheet.truncated).toBe(true); expect(sheet.frame).toBe(20_000);
   const score = auditScore(sheet);
   expect(score.truncated).toBe(true);
   expect(auditScoreText(score)).toContain("the store listing hit its cap, so the frame is a floor");
 });
+
+test("#326: a frame with nothing to draw is a refusal with the cause and the next step, never a zero-note sheet", async () => {
+  const r = rig();
+  // Only `preference` notes, which the frame leaves out: a sheet of no notes is one the score's own parser refuses, so the sample refuses instead.
+  writeFileSync(join(r.memory, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "0.25.0", since: "fixture" }]), { mode: 0o600 });
+  const store = seeded(r, [{ text: "the parcel router prefers a short label", kind: "preference" }]);
+  try {
+    expect(() => sample(r, store, "empty", 3)).toThrow("has no live decision, finding, contract or fail note in the frame this work tree covers; record curated notes and sample again");
+  } finally { store.close(); }
+  // Through the command too, and no file is left behind for `score` to choke on.
+  await expect(cli(r, ["eval", "audit", "sample", "--seed", "empty", "--n", "3", "--out", join(r.root, "empty.json")])).rejects.toThrow("has no live decision");
+  expect(existsSync(join(r.root, "empty.json"))).toBe(false);
+  // Everything the configured policy refuses is the other cause: the count is known, and the next step is the policy.
+  const denied = seeded(r, [{ text: "the parcel router keeps NEVER_PUBLIC_ in its header" }]);
+  try {
+    expect(() => auditSample({ store: denied, project: r.project, n: 3, seed: "empty", root: r.repo, asOf: NOW, screen: () => false })).toThrow("the configured policy withheld all 1 candidate note(s)");
+  } finally { denied.close(); }
+}, 60_000);
 
 test("AC4: the audit adds no model or network surface, and `preference` stays out of the frame", async () => {
   const source = readFileSync(new URL("../src/memory/eval-audit.ts", import.meta.url), "utf8") + readFileSync(new URL("../src/memory/eval.ts", import.meta.url), "utf8");
@@ -306,6 +343,8 @@ test("AC4: the audit adds no model or network surface, and `preference` stays ou
   expect(source).toContain("memoryGitSync("); expect(source).toContain("readOnlyDiagnostic: true");
   expect(AUDIT_KINDS).toEqual(["decision", "finding", "contract", "fail"]);
   expect(AUDIT_KINDS.includes("preference")).toBe(false);
+  // The frame is its own literal, never an alias of the eval-set schema's kinds: widening that schema must not widen what is audited behind a doc's back.
+  expect(source.split("\n").find(line => line.includes("export const AUDIT_KINDS"))).toBe('export const AUDIT_KINDS: readonly string[] = ["decision", "finding", "contract", "fail"];');
   // A model or network call would have to go through fetch; a run with fetch poisoned still audits and scores.
   const r = rig(), store = seeded(r, [{ text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:src/present.ts"] }]);
   const fetchBefore = globalThis.fetch;
@@ -362,6 +401,22 @@ test("#326: `eval audit sample --project` refuses a project the cwd's work tree 
   expect(aliased.project).toBe(r.project);
 }, 60_000);
 
+test("#326: `eval audit sample --as-of` measures the ages at that instant and records it, and a future or malformed one is refused", async () => {
+  const r = rig();
+  const store = seeded(r, [{ text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:src/present.ts"] }]);
+  store.close();
+  const first = join(r.root, "as-of.json"), later = join(r.root, "as-of-later.json");
+  const json = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "asof", "--n", "1", "--as-of", "2026-02-01", "--out", first, "--json"])) as { file: string; asOf: string };
+  expect(json.asOf).toBe("2026-02-01T00:00:00.000Z");
+  expect(readAuditSheet(json.file).asOf).toBe("2026-02-01T00:00:00.000Z");
+  // The note is from 2026-01-05: 27 days old at the first as-of and far past 90 at the second, so the bucket follows the flag rather than this run's clock.
+  expect(readAuditSheet(first).notes[0]!.age).toBe("lt30");
+  await cli(r, ["eval", "audit", "sample", "--seed", "asof", "--n", "1", "--as-of", "2026-08-01", "--out", later]);
+  expect(readAuditSheet(later).notes[0]!.age).toBe("gt90");
+  await expect(cli(r, ["eval", "audit", "sample", "--seed", "asof", "--n", "1", "--as-of", "2999-01-01"])).rejects.toThrow("is in the future");
+  await expect(cli(r, ["eval", "audit", "sample", "--seed", "asof", "--n", "1", "--as-of", "yesterday"])).rejects.toThrow("--as-of must be a canonical UTC date or timestamp");
+}, 60_000);
+
 test("#326: a note the configured policy denies never reaches the sheet, in a marked session and in a person's run alike", async () => {
   const r = rig();
   writeFileSync(join(r.memory, "amem.config.json"), JSON.stringify({ piiPatterns: ["never_public_"] }));
@@ -390,7 +445,7 @@ test("#326: the audit command refuses a missing seed, an out-of-range n and a mi
   // A sheet whose judge cell holds a sentence is refused before any score is printed.
   const store = seeded(r, [{ text: "a note about the parcel router" }]);
   try {
-    const sheet = auditSample({ store, project: r.project, n: 1, seed: "s", root: r.repo, now: NOW });
+    const sheet = auditSample({ store, project: r.project, n: 1, seed: "s", root: r.repo, asOf: NOW });
     const bad = JSON.parse(JSON.stringify(sheet)) as { notes: { judge_a: string }[] }; bad.notes[0]!.judge_a = "mostly right";
     writeFileSync(join(r.root, "bad.json"), JSON.stringify(bad));
     await expect(cli(r, ["eval", "audit", "score", join(r.root, "bad.json")])).rejects.toThrow("judge_a must be one of");
