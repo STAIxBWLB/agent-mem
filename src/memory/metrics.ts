@@ -1,4 +1,5 @@
 import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdir as mkdirAsync, open as openAsync, readFile as readFileAsync, rename as renameAsync, stat as statAsync, unlink as unlinkAsync, writeFile as writeFileAsync } from "node:fs/promises";
 import type { RecordIntakeRefusal } from "../hook-record.ts";
 import { processImageRssKB, type HookRssSources } from "../hook-resources.ts";
 import type { HookTranscriptStopReason } from "../hook-contract.ts";
@@ -129,20 +130,68 @@ export function metricsPath(base: string): string {
  * one; a sample that raced the rename is lost, which telemetry allows.
  */
 let trimGeneration = 0;
-function trimMetrics(file: string): void {
+/** The kept text of a trim: torn lines dropped, the newest METRICS_KEEP of each kind kept, oldest first. */
+function trimmedText(text: string): string {
   const rows: { line: string; kind: string }[] = [];
-  for (const line of readFileSync(file, "utf8").split("\n")) {
+  for (const line of text.split("\n")) {
     if (!line) continue;
     // A line the read caught mid-append is dropped, never copied into the replacement.
     try { const kind = (JSON.parse(line) as { kind?: unknown }).kind; rows.push({ line, kind: typeof kind === "string" ? kind : "other" }); } catch { /* torn tail */ }
   }
-  const kept = newestPerKind(rows, METRICS_KEEP, row => row.kind).map(row => row.line);
+  return newestPerKind(rows, METRICS_KEEP, row => row.kind).map(row => row.line).join("\n") + "\n";
+}
+
+function trimMetrics(file: string): void {
+  const kept = trimmedText(readFileSync(file, "utf8"));
   const temp = `${file}.${process.pid}.${++trimGeneration}.tmp`;
   try {
-    writeFileSync(temp, kept.join("\n") + "\n", { mode: 0o600 });
+    writeFileSync(temp, kept, { mode: 0o600 });
     renameSync(temp, file);
   } catch (error) {
     try { unlinkSync(temp); } catch { /* the sibling was never written, so there is nothing to remove */ }
+    throw error;
+  }
+}
+
+/**
+ * #485: the read path records its sample after the response is already queued, and every disk call it makes is
+ * asynchronous: a stalled or non-regular `metrics.jsonl` must not hold a completed read or its server. The open is
+ * non-blocking, so a FIFO without a reader fails it instead of waiting for one, and anything that is not a plain file
+ * is refused before a byte is written. One worker drains the hand-offs in call order, so the file keeps the order the
+ * calls completed in; a sample still in flight when the process exits is simply lost.
+ */
+const pending: { base: string; samples: MetricSample[] }[] = [];
+let draining = false;
+export function appendMetricsLater(base: string, samples: MetricSample[]): void {
+  pending.push({ base, samples });
+  if (draining) return;
+  draining = true;
+  setImmediate(() => { void drainPending(); });
+}
+
+async function drainPending(): Promise<void> {
+  while (pending.length) {
+    const next = pending.shift()!;
+    try { await writeSamplesLater(next.base, next.samples); } catch { /* a lost sample is never a failed call */ }
+  }
+  draining = false;
+}
+
+async function writeSamplesLater(base: string, samples: MetricSample[]): Promise<void> {
+  await mkdirAsync(base, { recursive: true, mode: 0o700 });
+  const file = metricsPath(base), payload = Buffer.from(samples.map(sample => JSON.stringify(sample)).join("\n") + "\n");
+  const handle = await openAsync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  try {
+    if (!(await handle.stat()).isFile()) return;
+    for (let written = 0; written < payload.length;) written += (await handle.write(payload.subarray(written))).bytesWritten;
+  } finally { await handle.close(); }
+  if ((await statAsync(file)).size <= METRICS_MAX_BYTES) return;
+  const temp = `${file}.${process.pid}.${++trimGeneration}.tmp`;
+  try {
+    await writeFileAsync(temp, trimmedText(await readFileAsync(file, "utf8")), { mode: 0o600 });
+    await renameAsync(temp, file);
+  } catch (error) {
+    try { await unlinkAsync(temp); } catch { /* the sibling was never written, so there is nothing to remove */ }
     throw error;
   }
 }

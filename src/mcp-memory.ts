@@ -14,7 +14,7 @@ import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
 import { hashJSON, readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
-import { appendMetrics, createPeakTracker } from "./memory/metrics.ts";
+import { appendMetricsLater, createPeakTracker } from "./memory/metrics.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
@@ -354,13 +354,14 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       let window: ReturnType<typeof peaks.begin> | undefined;
       try { window = peaks.begin(); } catch { /* telemetry is an observation, never a precondition */ }
       // One bounded sample per completed call: the tool name, the wall time and the process peak. Never the arguments,
-      // the query text, an id or a result, and telemetry can neither fail, refuse nor delay a completed call.
+      // the query text, an id or a result. It is handed off, not written: the response is queued first and the write is
+      // asynchronous, so telemetry can neither fail, refuse, delay nor block a completed call on disk.
       const recorded = (): void => {
         try {
           const ended = window === undefined ? undefined : peaks.end(window);
           window = undefined;
           if (ended?.peakKB === undefined) return;
-          appendMetrics(base, [{ at: new Date().toISOString(), kind: "search", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
+          appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "search", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
         } catch { /* a lost telemetry sample is never a failed call */ }
       };
       try {
