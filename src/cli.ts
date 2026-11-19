@@ -5,7 +5,7 @@ import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
 import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
 import { AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
 import { proposeConsolidation } from "./memory/consolidate.ts";
@@ -41,6 +41,7 @@ import { COMMANDS, commandHelp, parseCommand } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
+import { RemoteRealmRefusal } from "./memory/sync-placement-remote-refusal.ts";
 import { hashJSON, readSelector, resolveProfile } from "./memory/generation.ts";
 import { migrate, migrationText } from "./memory/migrate.ts";
 import { migrateShards, shardMigrationStatus, shardMigrationText } from "./memory/shard-migration.ts";
@@ -334,6 +335,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     }
     // Data-free errors (decided before any store or file is opened) keep their own message.
     if (marked && error instanceof AgentUsageError) throw error;
+    if (marked && error instanceof RemoteRealmRefusal) throw error;
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
     if (marked) {
       // parseCommand is pure: when it rejects argv, the error it raised is a usage error, not memory data.
@@ -408,13 +410,17 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const modes = ["--dry-run","--apply","--resume","--abandon","--deactivate"].filter(key=>options[key]===true);
     if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
       throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
+    if (options["--list-remote"] === true && (modes.length || options["--admit"] !== undefined || options["--from-remote"] === true || options["--writer-root"] !== undefined || options["--confirm"] === true))
+      throw new AgentUsageError("Remote realm listing uses only --sync-placement --list-remote and optional --json.");
+    if (options["--from-remote"] === true && options["--admit"] === undefined)
+      throw new AgentUsageError("--from-remote requires --sync-placement --admit <project>.");
     if (options["--admit"] !== undefined) {
       if (options["--writer-root"] !== undefined || options["--confirm"] === true && options["--abandon"] !== true)
         throw new AgentUsageError("Admitting one realm uses only --sync-placement --admit <project> with --dry-run, --apply, --resume or --abandon --confirm; writer roots belong to initial activation.");
     } else if (options["--confirm"] === true) {
       throw new AgentUsageError("--confirm applies only to --sync-placement --admit <project> --abandon; other placement modes keep their own confirmation.");
     }
-  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined)) {
+  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined)) {
     throw new AgentUsageError("--writer-root, --abandon and --admit apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "setup") {
@@ -518,9 +524,27 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
     if (options["--sync-placement"] === true) {
+      if (options["--list-remote"] === true) {
+        const { discoverRemotePlacementRealms } = await import("./memory/sync-placement-transport.ts");
+        const realms = await discoverRemotePlacementRealms(memoryHome(), { ...(context.visibility ? { visibility: context.visibility } : {}) });
+        const nextStep = "amem migrate --sync-placement --admit <project> --from-remote --dry-run";
+        return options["--json"] === true ? JSON.stringify({ realms, nextStep }, null, 2) : `${realms.map(realm => `scope=${realm.scope} keyHash=${realm.keyHash}; next ${nextStep}`).join("\n") || "no remote-only placement realms"}`;
+      }
       if (options["--admit"] !== undefined) {
         const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");
         const project = String(options["--admit"]);
+        const { readRemoteAdoption, inspectRemoteAdoptionPending, pendingRemoteAdoptions } = await import("./memory/sync-placement-remote-stage.ts");
+        const realm = createHash("sha256").update(project).digest("hex"), recovery = options["--resume"] === true || options["--abandon"] === true;
+        const pending = recovery ? pendingRemoteAdoptions(memoryHome()) : undefined;
+        const remotePending = recovery && (!!readRemoteAdoption(memoryHome(), realm) || inspectRemoteAdoptionPending(memoryHome(), realm).length > 0 || !!pending?.unknown || !!pending?.hashes.includes(realm));
+        if (options["--from-remote"] === true || remotePending) {
+          const { remoteRealmAdmission } = await import("./memory/sync-placement-remote-admission.ts");
+          const result = await remoteRealmAdmission(memoryHome(), project, { mode: options["--apply"] === true ? "apply" : options["--resume"] === true ? "resume" : options["--abandon"] === true ? "abandon" : "dry-run",
+            ...(options["--confirm"] === true ? { confirm: true } : {}), ...(context.visibility ? { visibility: context.visibility } : {}) });
+          if (result.state === "preview") result.nextStep = "amem migrate --sync-placement --admit <project> --from-remote --apply";
+          if (options["--json"] === true) return JSON.stringify(result, null, 2);
+          return `sync placement remote admission: ${result.state}; realm ${result.realm}${result.remoteHead ? `; remote head ${result.remoteHead}` : ""}${result.omitted !== undefined ? `; omitted ${result.omitted}` : ""}${result.nextStep ? `; next ${result.nextStep}` : ""}\n`;
+        }
         const result = options["--apply"] === true ? await applyRealmAdmission(memoryHome(), project, { mode: "apply" })
           : options["--resume"] === true ? await applyRealmAdmission(memoryHome(), project, { mode: "resume" })
           : options["--abandon"] === true ? options["--confirm"] === true ? await applyRealmAdmission(memoryHome(), project, { mode: "abandon", confirm: true })

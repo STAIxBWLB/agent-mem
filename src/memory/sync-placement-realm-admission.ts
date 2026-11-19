@@ -61,6 +61,8 @@ export type RealmAdmissionMode = "apply" | "resume" | "abandon";
 export type RealmAdmissionStage = "after-intent" | "after-metadata" | "after-proof" | "after-append";
 export interface RealmAdmissionOptions {
   mode: RealmAdmissionMode; confirm?: boolean;
+  /** Internal remote-adoption anchors; callers without a staged remote retain the existing flow. */
+  expectedRemoteAnchors?: { writerHash: string; inventoryHead: string; journalSequence: number; journalHead: string };
   /** Internal fault seam between durable steps; the CLI never supplies it. */
   checkpoint?(stage: RealmAdmissionStage): void | Promise<void>;
 }
@@ -271,6 +273,9 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
       const binding = realmBinding(activeBinding(home));
       const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
       let intent = readRealmIntent(home, realm);
+      const expected = options.expectedRemoteAnchors;
+      if (intent && expected && (intent.writerHash !== expected.writerHash || intent.previousHash !== expected.inventoryHead
+        || intent.journal.sequence !== expected.journalSequence || intent.journal.headHash !== expected.journalHead)) fail("changed");
       if (intent && options.mode === "apply") fail("pending");
       if (!intent && options.mode === "resume") {
         if (inForce(home, realm)) return { mode: options.mode, state: "already-admitted" as const, realm };
@@ -295,6 +300,8 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
         const fixed = inspectRealmAdmission(home, project, owner);
         if (fixed.state === "already-admitted") return { mode: options.mode, state: "already-admitted" as const, realm };
         if (!fixed.next) fail("metadata");
+        if (expected && (fixed.next.writerHash !== expected.writerHash || fixed.next.previousHash !== expected.inventoryHead
+          || fixed.next.journal.sequence !== expected.journalSequence || fixed.next.journal.headHash !== expected.journalHead)) fail("changed");
         intent = intentFor(home, project, fixed.next, binding);
         writeRealmIntent(home, intent, { mutation, assertCurrent: current });
         await options.checkpoint?.("after-intent");

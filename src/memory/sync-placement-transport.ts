@@ -1,6 +1,6 @@
 /** Activated placement transport. The public sync entrypoint owns dispatch; this module never activates a profile. */
 import { createHash, randomBytes } from "node:crypto";
-import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync, writeSync } from "node:fs";
+import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, rmSync, writeSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, hashJSON, readSelector } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
@@ -11,15 +11,16 @@ import { memoryPolicySnapshot } from "./policy.ts";
 import { outboundPolicyEvaluator } from "./sync-screen.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
-import { captureSyncPlacementContextAsync, placementCaptureContextHash, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
+import { captureSyncPlacementContextAsync, placementCaptureContextHash, previewSyncPlacementSources, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
 import { readEffectiveSyncPlacementWriters, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
 import { types } from "node:util";
+import { RemoteRealmRefusal, type RemoteRealmCause } from "./sync-placement-remote-refusal.ts";
 import type { PlannedGitObject } from "./sync-placement-git.ts";
-import { PLACEMENT_FORMAT } from "./sync-placement-format.ts";
+import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, SyncPlacementFormatError } from "./sync-placement-format.ts";
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
-import { readPlacementJournal, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, readPlacementWriterJournalAnchors, placementWriterJournalToken, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
@@ -32,11 +33,16 @@ import type { MemoryStore } from "./store.ts";
 import type { PruneRow } from "./prune.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
 import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_APPEND_SLICE, yieldTurn, type CooperativeYield } from "./sync-placement-yield.ts";
-import { placementCacheConfigStamp, placementCacheRootStamp, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
+import { placementCacheConfigStamp, placementCacheRootStamp, placementCacheTreePrivate, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
 import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
+import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
+import { listRemotePlacementRealms, REMOTE_REALM_ADVERTISEMENT_BYTES, type RemoteOnlyRealm } from "./sync-placement-realm-discovery.ts";
+import { realPath } from "./platform.ts";
+import { createRemoteAdoption, REMOTE_ADOPTION_SCHEMA, validateRemoteAdoption, type RemoteAdoption } from "./sync-placement-remote-adoption-format.ts";
+import { remoteStagedPacks, selectRemoteMaterialization, type RemoteStagedPack } from "./sync-placement-remote-materialization.ts";
 
 /**
  * #417 proof scope. A complete proof (full writer-install measurement, source, policy and selector recheck) is taken
@@ -55,6 +61,15 @@ const oid = (v: unknown): v is string => typeof v === "string" && v.length === 4
 const sameRealm = (a: PlacementRealm, b: PlacementRealm) => canonicalJSON(a) === canonicalJSON(b);
 const physical = (target: Target): PlacementRealm => target.realm.scope === "user" ? { scope: "user" } : { scope: "project", keyHash: digest(target.realm.key) };
 function refuse(category: PlacementRefusalCategory = "other"): never { throw new PlacementSyncRefusal(category); }
+function remoteRefusal(error: unknown, fallback: RemoteRealmCause = "other"): never {
+  if (error instanceof RemoteRealmRefusal) throw error;
+  if (error instanceof SyncPlacementFormatError || error instanceof Error && error.message === "sync placement activation metadata unavailable or changed; inspect the retained activation before continuing") throw new RemoteRealmRefusal("epoch");
+  const category = placementRefusalCategoryOf(error) ?? classifyPlacementError(error);
+  const cause: RemoteRealmCause = category === "lock" ? "lock" : category === "epoch" ? "epoch"
+    : category === "remote" ? "remote" : category === "size-bound" ? "bound"
+    : category === "source-selection" || category === "policy" || category === "writer-pin" ? "drift" : fallback;
+  throw new RemoteRealmRefusal(cause);
+}
 /** #426: map a foreign error to a category by its class and allowlisted code only, never by its message text. */
 export function classifyPlacementError(error: unknown): PlacementRefusalCategory | undefined {
   try {
@@ -72,6 +87,145 @@ function emptyHistory(): ShardHistory { return { rows: new Map(), files: new Map
 /** Internal phase observer is a fault seam, not part of SyncOptions or the package barrel. */
 export async function syncPlacementMemory(store: MemoryStore, opts: SyncOptions = {}, phase?: Phase, testOnlyError?: (error:unknown)=>void, testOnlyClock?: () => number, targets?: readonly MemoryStore[]): Promise<SyncResult> {
   return new PlacementTransport(store, opts, phase, testOnlyError, testOnlyClock, targets).run();
+}
+
+type RemoteReadOptions = Pick<SyncOptions, "signal" | "visibility">;
+/** Shared configured-remote proof for discovery and audited read-only preview. */
+async function configuredRemoteContext(homeInput: string, opts: RemoteReadOptions, requireVisibility = true) {
+  // Git tracing can write an arbitrary file outside the sync cache, which a read-only listing must not do.
+  if (Object.entries(process.env).some(([name, value]) => name.startsWith("GIT_TRACE") && !!value)) throw new RemoteRealmRefusal("environment");
+  const home = realPath(homeInput), markers = readPlacementRuntimeMarkers(home);
+  if (!markers.profile || typeof markers.profile !== "object" || Object.getOwnPropertyDescriptor(markers.profile, "schema")?.value !== PLACEMENT_PROFILE_SCHEMA) return refuse("epoch");
+  const active = readActivePlacementBinding(home, markers.profile, markers.shards);
+  if (!active) return refuse("epoch");
+  const inventory = readEffectiveRealmInventory(home, active), root = join(home, "shard-sync-placement"), cache = join(root, "objects.git");
+  let rootStamp: string, configStamp: string, initial: BigIntStats;
+  try { rootStamp = placementCacheRootStamp(home); configStamp = placementCacheConfigStamp(cache); initial = lstatSync(cache, { bigint: true }); }
+  catch { throw new RemoteRealmRefusal("cache"); }
+  if (!initial.isDirectory() || initial.isSymbolicLink() || initial.uid !== BigInt(process.getuid?.() ?? -1) || (initial.mode & 0o077n) !== 0n) throw new RemoteRealmRefusal("cache");
+  if (!placementCacheTreePrivate(cache)) throw new RemoteRealmRefusal("cache");
+  const forbidden = ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"];
+  try { if (forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined)) throw new RemoteRealmRefusal("cache"); }
+  catch { throw new RemoteRealmRefusal("cache"); }
+  const check = () => {
+    let stat: BigIntStats; try { stat = lstatSync(cache, { bigint: true }); } catch { throw new RemoteRealmRefusal("cache"); }
+    const nowMarkers = readPlacementRuntimeMarkers(home), now = readActivePlacementBinding(home, nowMarkers.profile, nowMarkers.shards);
+    if (!now || canonicalJSON(now.profile) !== canonicalJSON(active.profile) || canonicalJSON(now.shards) !== canonicalJSON(active.shards)) return refuse("source-selection");
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== initial.dev || stat.ino !== initial.ino
+      || !cacheUnchanged()) throw new RemoteRealmRefusal("cache");
+    try { inventory.assertCurrent(); } catch { return refuse("source-selection"); }
+  };
+  const cacheUnchanged = () => { try { return placementCacheRootStamp(home) === rootStamp && placementCacheConfigStamp(cache) === configStamp && !forbidden.some(name => lstatSync(join(cache, name), { throwIfNoEntry: false }) !== undefined); } catch { return false; } };
+  const args = (values: string[]) => ["--no-replace-objects", "--git-dir", cache, "-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "core.commitGraph=false", ...values];
+  check();
+  const config = await generationSyncGitBytes(root, args(["config", "--local", "--no-includes", "--null", "--list"]), opts.signal, undefined, 65536);
+  check(); if (config.code !== 0) throw new RemoteRealmRefusal("cache");
+  let settings: ReadonlyMap<string, string>; try { settings = validatePlacementCacheConfig(new TextDecoder("utf-8", { fatal: true }).decode(config.out)); } catch { throw new RemoteRealmRefusal("cache"); }
+  const url = settings.get("remote.origin.url");
+  if (settings.get("core.bare") !== "true" || settings.has("remote.origin.pushurl") && settings.get("remote.origin.pushurl") !== url) throw new RemoteRealmRefusal("cache");
+  if (!url || url.length > 4096 || url.startsWith("-") || /[\r\n\0]/.test(url)) return refuse("remote");
+  if (requireVisibility && await (opts.visibility ?? remoteVisibility)(url) !== "private") return refuse("remote");
+  check();
+  return { home, active, inventory, root, cache, url, args, check };
+}
+
+/** Read only the configured placement remote; discovery never initializes a cache or adopts a realm. */
+export async function discoverRemotePlacementRealms(homeInput: string, opts: RemoteReadOptions = {}): Promise<RemoteOnlyRealm[]> {
+  try {
+    const context = await configuredRemoteContext(homeInput, opts);
+    const realms = await listRemotePlacementRealms(context.inventory, async () => {
+      const advertised = await generationSyncGitBytes(context.root, context.args(["ls-remote", "--refs", context.url, "refs/heads/amem/p/*"]), opts.signal, undefined, REMOTE_REALM_ADVERTISEMENT_BYTES);
+      context.check(); if (advertised.code !== 0) return refuse("remote");
+      return advertised.out;
+    });
+    context.check(); return realms;
+  } catch (error) { return remoteRefusal(error); }
+}
+
+/** Recheck the reviewed head and configured remote immediately before staging publication. */
+export async function assertRemoteAdoptionCurrent(homeInput: string, project: string, plan: RemoteAdoption, opts: RemoteReadOptions = {}): Promise<void> {
+  try {
+    plan = validateRemoteAdoption(plan);
+    const ctx = await configuredRemoteContext(homeInput, opts), key = createHash("sha256").update(project).digest("hex");
+    if (key !== plan.keyHash || ctx.active.epoch.homeHash !== plan.homeHash || ctx.active.profile.placementHead !== plan.epochHash
+      || ctx.active.epoch.generation !== plan.generation || createHash("sha256").update(ctx.url).digest("hex") !== plan.remoteHash) return refuse("source-selection");
+    const ref = shardSyncRef({ scope: "project", key: project }), result = await generationSyncGitBytes(ctx.root,
+      ctx.args(["ls-remote", "--refs", ctx.url, ref]), opts.signal, undefined, 256);
+    ctx.check(); if (result.code !== 0 || new TextDecoder("utf-8", { fatal: true }).decode(result.out) !== `${plan.remoteHead}\t${ref}\n`) return refuse("remote");
+  } catch (error) { return remoteRefusal(error); }
+}
+
+export interface PreparedRemoteRealm { plan: RemoteAdoption; packs: RemoteStagedPack[] }
+async function auditRemoteHistory(ctx: Awaited<ReturnType<typeof configuredRemoteContext>>, project: string, head: string, opts: RemoteReadOptions): Promise<ShardHistory> {
+  const gitBytes = async (args: string[], max: number) => { ctx.check(); const result = await generationSyncGitBytes(ctx.root, ctx.args(args), opts.signal, undefined, max); ctx.check(); if (result.code !== 0) return refuse("remote"); return Buffer.from(result.out); };
+  const auditor = new ShardHistoryAuditor({ realm: { scope: "project", key: project }, generation: ctx.active.epoch.generation, placement: true, publicPrune: true,
+    git: async args => { ctx.check(); const result = await generationSyncGit(ctx.root, ctx.args(args), opts.signal); ctx.check(); if (result.code !== 0) return refuse("remote"); return result.out; },
+    blob: async (oid, path) => gitBytes(["cat-file", "blob", oid], path === "shard.json" || path.startsWith("prune-witnesses/") ? 65536 : SHARD_PACK_MAX_BYTES),
+    object: async (oid, type) => {
+      const bytes = await gitBytes(["cat-file", type, oid], type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES);
+      if (createHash("sha1").update(`${type} ${bytes.length}\0`).update(bytes).digest("hex") !== oid) return refuse("remote"); return bytes;
+    },
+  });
+  return auditor.history(head);
+}
+
+/** Reconstruct frozen pack bytes from the existing cache without contacting the remote. */
+export async function recoverRemoteStagedPacks(homeInput: string, project: string, plan: RemoteAdoption): Promise<RemoteStagedPack[]> {
+  try {
+    plan = validateRemoteAdoption(plan);
+    const ctx = await configuredRemoteContext(homeInput, {}, false), key = createHash("sha256").update(project).digest("hex");
+    if (key !== plan.keyHash || ctx.active.epoch.homeHash !== plan.homeHash || ctx.active.profile.placementHead !== plan.epochHash
+      || ctx.active.epoch.generation !== plan.generation || createHash("sha256").update(ctx.url).digest("hex") !== plan.remoteHash) return refuse("source-selection");
+    const selection = selectRemoteMaterialization(await auditRemoteHistory(ctx, project, plan.remoteHead, {})), packs = remoteStagedPacks(selection);
+    if (selection.omitted !== plan.omitted || canonicalJSON(packs.map(pack => ({ name: pack.name, bytes: pack.bytes.length }))) !== canonicalJSON(plan.packs)) return refuse("source-selection");
+    ctx.check(); return packs;
+  } catch (error) { return remoteRefusal(error, "staging"); }
+}
+/** Fetch and audit one explicitly named remote-only realm into the existing private cache, never the live shard. */
+export async function prepareRemotePlacementRealm(homeInput: string, project: string, opts: RemoteReadOptions = {}): Promise<PreparedRemoteRealm> {
+  let releaseRoot: (() => void) | undefined, releaseSync: (() => void) | undefined, incoming: string | undefined;
+  let context: Awaited<ReturnType<typeof configuredRemoteContext>> | undefined;
+  try {
+    if (!project || Buffer.byteLength(project) > 400 || /[\r\n\0]/.test(project)) return refuse("source-selection");
+    context = await configuredRemoteContext(homeInput, opts);
+    const ctx = context, keyHash = createHash("sha256").update(project).digest("hex");
+    // Ref names use only 16 hex characters; a prefix already bound to another full key is never adopted as a new realm.
+    if (ctx.inventory.realms.some(realm => realm.scope === "project" && realm.keyHash.slice(0, 16) === keyHash.slice(0, 16))) return refuse("source-selection");
+    const ref = shardSyncRef({ scope: "project", key: project }), source = previewSyncPlacementSources(ctx.home);
+    const writers = readEffectiveSyncPlacementWriters(ctx.home), journalToken = placementWriterJournalToken(ctx.home, ctx.active.profile.placementHead);
+    const journal = readPlacementWriterJournalAnchors(ctx.home, ctx.active.profile.placementHead);
+    const journalHead = journal.sequence ? journal.records[journal.sequence - 1]!.seal : ctx.active.profile.placementHead;
+    const check = () => {
+      ctx.check();
+      try { writers.assertCurrent(); if (placementWriterJournalToken(ctx.home, ctx.active.profile.placementHead) !== journalToken) return refuse("source-selection"); source.assertSourcesUnchanged(); }
+      catch { return refuse("source-selection"); }
+      ctx.check();
+    };
+    check(); releaseRoot = acquireMutation(ctx.root); if (!releaseRoot) return refuse("lock");
+    releaseSync = generationSyncLock(ctx.root); if (!releaseSync) return refuse("lock");
+    const gitBytes = async (args: string[], max: number) => { check(); const result = await generationSyncGitBytes(ctx.root, ctx.args(args), opts.signal, undefined, max); check(); if (result.code !== 0) return refuse("remote"); return Buffer.from(result.out); };
+    const advertised = await gitBytes(["ls-remote", "--refs", ctx.url, ref], 256);
+    const match = /^([a-f0-9]{40})\t([^\n]+)\n$/.exec(advertised.toString("utf8"));
+    if (!match || match[2] !== ref) return refuse("remote");
+    const head = match[1]!; incoming = `refs/amem/placement-incoming/${randomBytes(16).toString("hex")}`;
+    await gitBytes(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", ctx.url, `${ref}:${incoming}`], 65536);
+    const fetched = (await gitBytes(["rev-parse", "--verify", incoming], 128)).toString("utf8").trim(); if (fetched !== head) return refuse("remote");
+    const history = await auditRemoteHistory(ctx, project, head, opts), selection = selectRemoteMaterialization(history), packs = remoteStagedPacks(selection);
+    if (!(await gitBytes(["ls-remote", "--refs", ctx.url, ref], 256)).equals(advertised)) return refuse("remote");
+    check();
+    const plan = createRemoteAdoption({ schema: REMOTE_ADOPTION_SCHEMA, homeHash: ctx.active.epoch.homeHash, epochHash: ctx.active.profile.placementHead,
+      generation: ctx.active.epoch.generation, keyHash, remoteHash: createHash("sha256").update(ctx.url).digest("hex"), remoteHead: head,
+      sourceHash: source.base.sourceHash, policyHash: source.base.policyHash, aliasesHash: source.base.aliasesHash,
+      writerHash: writers.revisionHash, inventoryHead: ctx.inventory.extensionHead, journalSequence: journal.sequence, journalHead, omitted: selection.omitted,
+      packs: packs.map(pack => ({ name: pack.name, bytes: pack.bytes.length })) });
+    check(); return { plan, packs };
+  } catch (error) { return remoteRefusal(error); }
+  finally {
+    if (context && incoming) try {
+      context.check(); await generationSyncGit(context.root, context.args(["update-ref", "--no-deref", "-d", incoming]), undefined);
+    } catch { /* no authoritative state uses this private cache ref */ }
+    releaseSync?.(); releaseRoot?.();
+  }
 }
 class PlacementTransport {
   readonly store: MemoryStore; readonly opts: SyncOptions; readonly phase?: Phase; readonly testOnlyError?: (error:unknown)=>void; readonly home: string; readonly root: string; readonly cache: string;
@@ -148,7 +302,7 @@ class PlacementTransport {
   }
   async independent(): Promise<boolean> {
     if (!existsSync(this.cache)) return false; directory(this.cache); const initial=lstatSync(this.cache);
-    const walk = (dir: string): void => { for (const name of readdirSync(dir)) { const file = join(dir, name), s = lstatSync(file); if (s.isSymbolicLink() || s.uid !== process.getuid?.() || !s.isFile() && !s.isDirectory() || s.isFile() && s.nlink !== 1 || name.endsWith(".promisor")) refuse(); if (s.isDirectory()) {directory(file);walk(file);} } }; walk(this.cache);
+    if (!placementCacheTreePrivate(this.cache)) refuse();
     if (existsSync(join(this.cache, "commondir")) || existsSync(join(this.cache, "objects", "info", "http-alternates")) || existsSync(join(this.cache, "objects", "info", "alternates")) || existsSync(join(this.cache, "shallow")) || existsSync(join(this.cache, "info", "grafts"))) refuse();
     if (await this.required(["rev-parse", "--is-bare-repository"]) !== "true" || await this.required(["rev-parse", "--show-object-format"]) !== "sha1" || (await this.git(["config", "--get", "core.worktree"])).code !== 1) refuse();
     if((await this.git(["config","--get","extensions.partialClone"])).code !== 1

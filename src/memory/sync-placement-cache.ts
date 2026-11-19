@@ -1,10 +1,25 @@
 /** Shared private cache metadata validation. These checks never initialize, repair or publish a repository. */
-import { lstatSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON } from "./generation.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 
 function fail(): never { throw new SyncPlacementJournalError("corrupt"); }
+/** The placement transport never follows cache links or accepts foreign-owned or promisor objects. */
+export function placementCacheTreePrivate(cache: string): boolean {
+  try {
+    const walk = (dir: string): void => {
+      const parent = lstatSync(dir);
+      if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== process.getuid?.() || (parent.mode & 0o077) !== 0) fail();
+      for (const name of readdirSync(dir)) {
+        const file = join(dir, name), stat = lstatSync(file);
+        if (stat.isSymbolicLink() || stat.uid !== process.getuid?.() || !stat.isFile() && !stat.isDirectory() || stat.isFile() && stat.nlink !== 1 || name.endsWith(".promisor")) fail();
+        if (stat.isDirectory()) walk(file);
+      }
+    };
+    walk(cache); return true;
+  } catch { return false; }
+}
 export function placementCacheRootStamp(home: string): string {
   const stat = lstatSync(join(home, "shard-sync-placement"), { bigint: true });
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n) fail();

@@ -38,7 +38,7 @@ export const bareRemote = () => { const dir = temp(); git(dir, "init", "--bare",
 let generations = 900;
 
 /** One activated home with the user realm and `count` project realms, prepared through the real APIs (like the transport fixture). */
-export async function inventoryFixture(count: number, names?: readonly string[], realWriters = false) {
+export async function inventoryFixture(count: number, names?: readonly string[], realWriters = false, additionalWriterRoots: readonly string[] = []) {
   const root = temp(), home = join(root, "memory"),
     projects = names ? [...names] : Array.from({ length: count }, (_, index) => `example.test/placement/inventory-${String(index).padStart(2, "0")}`);
   const seed = new MemoryStore({ memoryDir: home, deferPromotions: true });
@@ -58,7 +58,7 @@ export async function inventoryFixture(count: number, names?: readonly string[],
     writeFileSync(join(extraWriterRoot, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.22.0" }), { mode: 0o644 });
     writeFileSync(join(extraWriterRoot, "src", "index.ts"), "// isolated measured writer\n", { mode: 0o644 });
     writeFileSync(join(extraWriterRoot, "bin", "amem.js"), "// isolated measured writer\n", { mode: 0o755 });
-    const activated = await activateSyncPlacement({ memoryDir: home, mode: "apply", writerRoots: [ownRoot, extraWriterRoot], ownRoot, authorize: () => true });
+    const activated = await activateSyncPlacement({ memoryDir: home, mode: "apply", writerRoots: [ownRoot, extraWriterRoot, ...additionalWriterRoots], ownRoot, authorize: () => true });
     if (!activated.active || !("epochHash" in activated) || typeof activated.epochHash !== "string") throw Error("fixture activation unavailable");
     const epochHash = activated.epochHash, attest = createPlacementAttestation(home);
     const opts = (remote: string): SyncOptions => ({ remote, visibility: async () => "private", placementAttestation: attest, policyVersion: () => "initial" });
