@@ -968,9 +968,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const store = curatedStore(project, { deferPromotions: true });
         let sheet;
         // The configured policy screens each frame member before the sheet's first write, for a person and an agent-marked session alike (like `project export`).
+        // It screens the complete view, not the fields the sheet copies: a denied pattern in `task`, `peer` or `source` is a denial of that note.
         // It is read once: the screen runs per frame member, and the policy reads the config files when it is built.
         const screen = policyOf();
-        try { sheet = audit.auditSample({ store, project, n, seed, root, asOf, screen: note => screen.screenStandalone(note) }); } finally { store.close(); }
+        try { sheet = audit.auditSample({ store, project, n, seed, root, asOf, screen: view => screen.screenStandalone(view) }); } finally { store.close(); }
         const out = typeof options["--out"] === "string" ? options["--out"] : join(memoryHome(), "eval", `audit-${project.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80)}-${seed}.json`);
         const file = audit.writeAuditSheet(out, sheet);
         return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, asOf: sheet.asOf, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated, withheld: sheet.withheld }, null, 2) : audit.auditSheetText(sheet, file);

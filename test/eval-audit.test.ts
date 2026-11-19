@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { AUDIT_KINDS, AUDIT_LABELS, MAX_AUDIT_NOTES, auditAge, cohenKappa, foldAnchorStatus } from "../src/memory/eval.ts";
 import { appendAlias } from "../src/memory/aliases.ts";
-import { auditAsOf, auditSample, auditScore, auditScoreText, readAuditSheet, writeAuditSheet, type AuditNote, type AuditSheet } from "../src/memory/eval-audit.ts";
+import { auditAsOf, auditSample, auditScore, auditScoreText, parseAuditSheet, readAuditSheet, writeAuditSheet, type AuditNote, type AuditSheet } from "../src/memory/eval-audit.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { MemoryStore, type Kind, type View } from "../src/memory/store.ts";
@@ -37,7 +37,7 @@ function rig() {
   return { root, repo, memory, project: memoryProjectKey(repo) };
 }
 
-interface Seed { text: string; kind?: Kind; at?: number; about?: string[]; title?: string }
+interface Seed { text: string; kind?: Kind; at?: number; about?: string[]; title?: string; task?: string }
 
 /** Curated notes written at a fixed clock, so every id and age is the fixture's, not the run's. */
 function seeded(r: ReturnType<typeof rig>, seeds: readonly Seed[]): MemoryStore {
@@ -45,7 +45,7 @@ function seeded(r: ReturnType<typeof rig>, seeds: readonly Seed[]): MemoryStore 
   const store = new MemoryStore({ memoryDir: r.memory, now: () => current, screen: () => "keep" });
   for (const seed of seeds) {
     current = seed.at ?? NOTE;
-    store.note({ op: "note", project: r.project, scope: "project", tier: "long", kind: seed.kind ?? "finding", peer: "fixture", source: "person", text: seed.text, about: seed.about ?? [], ...(seed.title ? { title: seed.title } : {}) });
+    store.note({ op: "note", project: r.project, scope: "project", tier: "long", kind: seed.kind ?? "finding", peer: "fixture", source: "person", text: seed.text, about: seed.about ?? [], ...(seed.title ? { title: seed.title } : {}), ...(seed.task ? { task: seed.task } : {}) });
   }
   return store;
 }
@@ -111,18 +111,29 @@ test("#326: an anchor the audit cannot check is `unavailable`, never `present` -
   const r = rig(), outside = temp();
   writeFileSync(join(outside, "passwd"), "root:x:0:0\n");
   symlinkSync(outside, join(r.repo, "escape"));
+  // A link that stays inside the tree still resolves, so containment is what decides the status - not the mere presence of a symlink.
+  symlinkSync(join(r.repo, "src", "present.ts"), join(r.repo, "inside.ts"));
   const store = seeded(r, [
     { text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:repo/src/present.ts"] },
     { text: "the parcel router follows an escape symlink out of its work tree", about: ["path:escape/passwd"] },
+    // The same link with a target that does not exist: an external target's existence must not be readable from the status.
+    { text: "the parcel router follows an escape symlink to a name that is not there", about: ["path:escape/absent.txt"] },
+    { text: "the parcel router links to a file inside its own work tree", about: ["path:inside.ts"] },
   ]);
   try {
     // `r.root` is not a git work tree, so the history read fails: claiming `present` there would say "no commit touched it" about a check that never ran.
-    const unreadable = auditSample({ store, project: r.project, n: 2, seed: "unreadable", root: r.root, asOf: NOW });
+    const unreadable = auditSample({ store, project: r.project, n: 4, seed: "unreadable", root: r.root, asOf: NOW });
     const failed = unreadable.notes.find(note => note.text.includes("src/present.ts"))!;
     expect(failed.anchors).toEqual([{ path: "repo/src/present.ts", status: "unavailable" }]); expect(failed.anchor).toBe("unavailable");
     // A symlink inside the repository can point anywhere: an anchor that resolves outside the tree is not probed and not called present.
-    const sheet = sample(r, store, "escaping", 2), escaping = sheet.notes.find(note => note.text.includes("escape symlink"))!;
+    const sheet = sample(r, store, "escaping", 4), escaping = sheet.notes.find(note => note.text.includes("follows an escape symlink out"))!;
     expect(escaping.anchors).toEqual([{ path: "escape/passwd", status: "unavailable" }]); expect(escaping.anchor).toBe("unavailable");
+    // Existing and missing external targets are indistinguishable: the walk reads no component outside the tree, so neither status can confirm one.
+    const absent = sheet.notes.find(note => note.text.includes("name that is not there"))!;
+    expect(absent.anchors).toEqual([{ path: "escape/absent.txt", status: "unavailable" }]); expect(absent.anchor).toBe("unavailable");
+    // And a link whose target is inside the tree is resolved rather than refused.
+    const inside = sheet.notes.find(note => note.text.includes("inside its own work tree"))!;
+    expect(inside.anchors).toEqual([{ path: "inside.ts", status: "present" }]); expect(inside.anchor).toBe("present");
     // `unavailable` is a sheet value the strict parse accepts, so a drawn sheet round-trips.
     const file = join(r.memory, "eval", "unavailable.json"), reread = readAuditSheet(writeAuditSheet(file, sheet));
     expect(reread.notes.find(note => note.text.includes("escape symlink"))!.anchor).toBe("unavailable");
@@ -176,23 +187,27 @@ test("AC2: the score carries counts and kappa only - no note text, title, anchor
   } finally { store.close(); }
 });
 
-test("AC2: no note content reaches the score at any length - the seed is not in the score at all", () => {
+test("AC2: the seed is echoed verbatim and is the only free string the score carries (owner ruling 2026-11-20)", () => {
   const r = rig(), store = seeded(r, [
     { text: "abc", about: [] },
     { text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:src/present.ts"] },
   ]);
   try {
-    // A three-character note is shorter than any substring scan could tell apart from an ordinary word in the output.
+    // A three-character note is shorter than any substring scan could tell apart from an ordinary word in the output, so the arm that matters is
+    // that no field but the seed can carry it.
     const sheet = sample(r, store, "q7", 2);
     for (const note of sheet.notes) note.judge_a = "correct";
     expect(JSON.stringify({ ...auditScore(sheet), project: "" })).not.toContain("abc");
-    // The seed is the string a short note could collide with, so the score carries none: the sheet keeps it, and the score names the as-of instead.
+    // The seed is the person's own input in the closed sample alphabet, not note content: the score echoes it verbatim even when a note's text equals it,
+    // and with that one field emptied nothing of the note remains (the owner ruled this settled on 2026-11-20; docs/bench/audit.md states the boundary).
     const same = sample(r, store, "abc", 2);
     for (const note of same.notes) note.judge_a = "correct";
     const twice = auditScore(same);
-    expect(Object.hasOwn(twice, "seed")).toBe(false);
-    expect(JSON.stringify({ ...twice, project: "" })).not.toContain("abc");
-    expect(auditScoreText(twice)).not.toContain("abc");
+    expect(twice.seed).toBe("abc");
+    expect(JSON.stringify({ ...twice, seed: "", project: "" })).not.toContain("abc");
+    expect(auditScoreText(twice)).toContain('seed "abc"');
+    // Verbatim is still a closed string: the score refuses a seed outside the alphabet `sample` draws with.
+    expect(() => auditScore({ ...same, seed: "the parcel router keeps its retry budget" })).toThrow("must stay in the alphabet");
     expect(twice.asOf).toBe(new Date(NOW).toISOString());
   } finally { store.close(); }
 });
@@ -334,6 +349,10 @@ test("#326: a frame with nothing to draw is a refusal with the cause and the nex
   try {
     expect(() => auditSample({ store: denied, project: r.project, n: 3, seed: "empty", root: r.repo, asOf: NOW, screen: () => false })).toThrow("the configured policy withheld all 1 candidate note(s)");
   } finally { denied.close(); }
+  // And the two sides agree by construction: `sample` refuses, so a zero-note sheet never exists, and the parser refuses one handed in by hand with a
+  // message that points back at `sample`. The rejected alternative - writing a sheet `score` cannot read - is the pair this arm exists to prevent.
+  const filled = sample(r, seeded(r, [{ text: "the parcel router keeps a label map" }]), "zero", 1);
+  expect(() => parseAuditSheet({ ...filled, notes: [], drawn: 0, frame: 0 })).toThrow("`amem eval audit sample` writes a sheet of at least one note");
 }, 60_000);
 
 test("AC4: the audit adds no model or network surface, and `preference` stays out of the frame", async () => {
@@ -423,16 +442,18 @@ test("#326: a note the configured policy denies never reaches the sheet, in a ma
   const store = seeded(r, [
     { text: "the parcel router keeps NEVER_PUBLIC_ in its header", about: ["path:src/present.ts"] },
     { text: "the parcel router rejects a duplicate consignment", about: [] },
+    // The marker sits only in a view field the sheet never copies, with innocuous text: the policy contract screens every field, so this note is denied too.
+    { text: "the parcel sorter groups labels by depot", task: "ship NEVER_PUBLIC_ by Friday" },
   ]);
   store.close();
   // A marked session runs the person handler (#431): the policy screens the sampled rows before the sheet's first write instead of refusing the command.
-  const marked = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "policy", "--n", "2", "--json"], { CODEX_THREAD_ID: "fixture" })) as { file: string; frame: number; drawn: number; withheld: number };
-  expect(marked).toMatchObject({ frame: 1, drawn: 1, withheld: 1 });
+  const marked = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "policy", "--n", "3", "--json"], { CODEX_THREAD_ID: "fixture" })) as { file: string; frame: number; drawn: number; withheld: number };
+  expect(marked).toMatchObject({ frame: 1, drawn: 1, withheld: 2 });
   const bytes = readFileSync(marked.file, "utf8");
   expect(bytes).not.toContain("NEVER_PUBLIC_"); expect(bytes).toContain("duplicate consignment");
   // Not an actor gate: the unmarked run withholds the same note, because the sheet is a copy out of the home either way.
-  const person = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "policy-2", "--n", "2", "--out", join(r.root, "person.json"), "--json"])) as { withheld: number };
-  expect(person.withheld).toBe(1);
+  const person = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "policy-2", "--n", "3", "--out", join(r.root, "person.json"), "--json"])) as { withheld: number };
+  expect(person.withheld).toBe(2);
   expect(readFileSync(join(r.root, "person.json"), "utf8")).not.toContain("NEVER_PUBLIC_");
 }, 60_000);
 

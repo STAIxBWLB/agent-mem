@@ -7,8 +7,8 @@
  * judgement never depends on a model this package vendors or on a key it would have to hold.
  */
 import { createHash } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readlinkSync, readSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
   AUDIT_AGE_BUCKETS, AUDIT_ANCHOR_STATUSES, AUDIT_KINDS, AUDIT_LABELS, AUDIT_RUBRIC, AUDIT_SCHEMA, MAX_AUDIT_ANCHORS, MAX_AUDIT_NOTES, MAX_AUDIT_SHEET_BYTES,
   auditAge, cohenKappa, foldAnchorStatus, type AuditAgeBucket, type AuditAnchorStatus, type AuditLabel,
@@ -45,8 +45,11 @@ export interface AuditSampleOptions {
   store: MemoryStore; project: string; n: number; seed: string; root: string;
   /** The instant the age buckets are measured at; the CLI passes `--as-of` or its own clock, and the sheet records whichever it was. */
   asOf?: number;
-  /** Screens one frame member before it can enter the sheet; `false` withholds it. The CLI passes the configured standalone policy. */
-  screen?: (note: { kind: string; at: string; text: string; title?: string; about: readonly string[] }) => boolean;
+  /**
+   * Screens one frame member before it can enter the sheet; `false` withholds it. The CLI passes the configured standalone policy over the complete `View`, not
+   * the fields the sheet copies, so a denied pattern in `task`, `peer` or `source` withholds the note just as one in its text does.
+   */
+  screen?: (view: View) => boolean;
 }
 
 /** One frame member before the draw: the view plus the bucket the sheet will name. */
@@ -133,17 +136,48 @@ export function auditAnchorPaths(view: View): string[] {
 const PATH_STATUSES = AUDIT_ANCHOR_STATUSES.filter((status): status is Exclude<AuditAnchorStatus, "none"> => status !== "none");
 
 /**
+ * Where an anchor path lands without ever reading outside the work tree. Each component is `lstat`ed, which does not follow a link, and a link is resolved by
+ * `readlink` plus a lexical join - so an escaping anchor is recognised before anything at its target is stat'ed, and an external target's existence can never
+ * show up in the status. `absent` means the walk stayed inside the tree and found no such entry; `outside` means the anchor leaves the tree, loops, or cannot be
+ * resolved without a read the audit is not allowed to make.
+ */
+export function resolveAnchor(root: string, path: string): { kind: "inside"; path: string } | { kind: "absent" } | { kind: "outside" } {
+  let walk = path;
+  for (let hops = 0; hops <= 40; hops++) {
+    const parts = walk.split("/").filter(part => part !== "" && part !== ".");
+    let at = root, restart: string | undefined;
+    for (const [index, part] of parts.entries()) {
+      const next = join(at, part);
+      let info;
+      try { info = lstatSync(next); } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        return code === "ENOENT" || code === "ENOTDIR" ? { kind: "absent" } : { kind: "outside" };
+      }
+      if (!info.isSymbolicLink()) { at = next; continue; }
+      let target: string;
+      try { target = readlinkSync(next); } catch { return { kind: "outside" }; }
+      const resolved = resolve(dirname(next), target);
+      if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) return { kind: "outside" };
+      // The link's target is inside the tree, so the walk continues there: a link may lead to another link, and a hop bound stops a cycle.
+      restart = [relative(root, resolved), ...parts.slice(index + 1)].filter(Boolean).join("/");
+      break;
+    }
+    if (restart === undefined) return { kind: "inside", path: at };
+    walk = restart;
+  }
+  return { kind: "outside" };
+}
+
+/**
  * Where one anchor stands today. A path that is gone is `missing`; one with a commit touching it since the note was written is `changed since note time`;
  * anything else is `present`. Two shapes are `unavailable` instead, because claiming `present` would say "no commit touched it" about a check that never ran:
  * a path that resolves outside the work tree (a symlink inside the repository can point anywhere, and the audit reads only this repository), and a history
  * read that fails or times out. The read itself runs through the hardened runner: read-only diagnostics, no lazy fetch.
  */
 function anchorStatus(root: string, at: string, path: string): AuditAnchor["status"] {
-  const full = join(root, path);
-  if (!existsSync(full)) return "missing";
-  let real: string;
-  try { real = realPath(full); } catch { return "unavailable"; }
-  if (real !== root && !real.startsWith(`${root}${sep}`)) return "unavailable";
+  const found = resolveAnchor(root, path);
+  if (found.kind === "outside") return "unavailable";
+  if (found.kind === "absent") return "missing";
   const log = memoryGitSync(["-C", root, "log", "-n", "1", "--format=%H", "--since", at, "--", path], {
     encoding: "utf8", env: memoryGitEnv(process.env, { readOnlyDiagnostic: true }), timeout: 8_000, maxBuffer: 64 * 1024,
   });
@@ -183,8 +217,8 @@ export function auditSample(opts: AuditSampleOptions): AuditSheet {
     if (!kinds.has(view.kind)) continue;
     const age = auditAge(view.at, asOf);
     if (age === undefined) continue;
-    // The policy runs before anything is written: a note it refuses is not copied into the sheet, and the sheet only reports how many were withheld.
-    if (opts.screen && !opts.screen({ kind: view.kind, at: view.at, text: view.text, ...(view.title === null ? {} : { title: view.title }), about: view.about })) { withheld++; continue; }
+    // The policy runs over the whole view before anything is written: a note it refuses is not copied into the sheet, and the sheet only reports the count.
+    if (opts.screen && !opts.screen(view)) { withheld++; continue; }
     candidates.push({ view, age });
   }
   const drawn = draw(candidates, opts.n, opts.seed);
@@ -294,6 +328,8 @@ export interface AuditScore {
   project: string;
   /** The instant the age buckets were measured at, so a shared coefficient travels with the buckets that produced it. */
   asOf: string;
+  /** Echoed verbatim: the seed is the person's own input in the closed sample alphabet, not note content (owner ruling 2026-11-20). */
+  seed: string;
   frame: number; drawn: number; truncated: boolean; withheld: number;
   labelled: number; unlabelled: number;
   byLabel: Record<AuditLabel, number>;
@@ -311,15 +347,17 @@ function projectDigest(project: string): string {
 }
 
 /**
- * The score is content-free because no note field is copied into it: the project becomes a digest, the clock becomes the canonical stamp the sheet recorded,
- * and every other string it emits is a schema or field literal or a member of the four closed vocabularies. The seed is not in the score at all, so no note
- * text - not even a three-character text no substring scan could tell from an ordinary word - can collide with one. This check makes the rest true for a sheet
- * handed in directly rather than through the strict parse: a kind, age bucket or anchor status outside its vocabulary would become a key in `byKind`, `byAge`,
- * `byAnchor` or `cells`, and a judge cell outside the four labels would become a key in the tallies, so all of them refuse the score instead. Note text, title
- * and anchor paths are never read by the score at all.
+ * The score is content-free because no note field is copied into it: the project becomes a digest, the clock becomes the canonical stamp the sheet recorded, and
+ * every other string it emits is a schema or field literal, a member of the four closed vocabularies, or the seed. The seed is echoed verbatim - the person
+ * chose it in the closed alphabet `sample` draws with, and it is not note content, so a note whose text happens to equal the seed is not a leak (owner ruling
+ * 2026-11-20, docs/bench/audit.md). This check makes the rest true for a sheet handed in directly rather than through the strict parse: a kind, age bucket or
+ * anchor status outside its vocabulary would become a key in `byKind`, `byAge`, `byAnchor` or `cells`, a judge cell outside the four labels would become a key in
+ * the tallies, and a seed outside the alphabet would be copied verbatim, so all of them refuse the score instead. Note text, title and anchor paths are never
+ * read by the score at all.
  */
 function assertClosedInputs(sheet: AuditSheet): void {
   stamp(sheet.asOf);
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(sheet.seed)) throw new Error("the audit score echoes the seed verbatim, so it must stay in the alphabet `sample` draws with; a seed outside it is refused, because the score carries only closed strings besides note-free literals");
   for (const note of sheet.notes) {
     if (!AUDIT_KINDS.includes(note.kind) || !AUDIT_AGE_BUCKETS.includes(note.age) || !AUDIT_ANCHOR_STATUSES.includes(note.anchor)) {
       throw new Error("the audit score would carry a kind, age bucket or anchor status outside its closed vocabulary; it is refused, because the score is content-free by contract");
@@ -357,7 +395,7 @@ export function auditScore(sheet: AuditSheet): AuditScore {
     else joint.set(key, { kind: note.kind, age: note.age, anchor: note.anchor, label, count: 1 });
   }
   const score: AuditScore = {
-    schema: "amem.audit.score/v1", project: projectDigest(sheet.project), asOf: sheet.asOf, frame: sheet.frame, drawn: sheet.drawn,
+    schema: "amem.audit.score/v1", project: projectDigest(sheet.project), asOf: sheet.asOf, seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn,
     truncated: sheet.truncated, withheld: sheet.withheld, labelled: labelled.length, unlabelled: sheet.notes.length - labelled.length,
     byLabel: Object.fromEntries(AUDIT_LABELS.map(label => [label, labelled.filter(note => note.judge_a === label).length])) as Record<AuditLabel, number>,
     cells: [...joint.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, cell]) => cell),
@@ -383,7 +421,7 @@ export function auditScoreText(score: AuditScore): string {
   const row = (label: string, counts: Partial<Record<AuditLabel, number>>) => `${label.padEnd(10)} ${AUDIT_LABELS.map(name => String(counts[name] ?? 0).padStart(4)).join(" ")}`;
   const frame = `${score.frame}${score.truncated ? "+ (the store listing hit its cap, so the frame is a floor)" : ""}`;
   const withheld = score.withheld ? `, ${score.withheld} withheld by the configured policy` : "";
-  const head = `audit score: project ${score.project}, ${score.drawn} of ${frame} notes as of ${score.asOf}, ${score.labelled} labelled, ${score.unlabelled} not${withheld}`;
+  const head = `audit score: project ${score.project}, ${score.drawn} of ${frame} notes, seed "${score.seed}" as of ${score.asOf}, ${score.labelled} labelled, ${score.unlabelled} not${withheld}`;
   // The joint cells are printed as one line per kind/age/anchor stratum, so a reader sees which label fills each intersection instead of three marginals.
   const strata = new Map<string, Partial<Record<AuditLabel, number>>>();
   for (const cell of score.cells) {
