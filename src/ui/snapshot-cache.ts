@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 type Data = Record<string, unknown>;
+export const FRESH_SNAPSHOT_CURSOR_BASE = 2 ** 52;
 interface Entry { sampledAt: number; generation: number; epoch: number; data: Data; revision: string; cursor: number; until: number; bytes: number; validate?: () => void }
 export interface SnapshotValue { data: Data; until: number; validate?: () => void; validationBytes?: number }
 interface Reading extends SnapshotValue { sampledAt: number; generation: number; entry?: Entry }
@@ -14,7 +15,7 @@ export class SnapshotCache {
   private epoch = 0;
   private reuseUnavailable = false;
   // Cached digests occupy the lower 52 bits; fresh replies have distinct safe-integer cursors above them.
-  private freshCursor = 2 ** 52;
+  private freshCursor = FRESH_SNAPSHOT_CURSOR_BASE;
   private bytes = 0;
   private closed = false;
   constructor(private readonly revision: () => string, private readonly now: () => number = Date.now) {}

@@ -5,7 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import { InboxCache } from "./inbox-cache.ts";
-import { SnapshotCache } from "./snapshot-cache.ts";
+import { FRESH_SNAPSHOT_CURSOR_BASE, SnapshotCache } from "./snapshot-cache.ts";
 import { snapshotRevision } from "./snapshot-revision.ts";
 import { canonicalJSON, readSelector } from "../memory/generation.ts";
 import { candidateText, candidateTargets as targetsOf, visibleCandidate as visible } from "./inbox.ts";
@@ -491,7 +491,7 @@ export const plugin = {
         };
         const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection, reason => { if (input.panel === "recap") noteMiss(reason); }) : await snapshots.fresh(projection);
         // ponytail: one fresh selection after a successful copy retry whose initial revision drifted. This cannot loop.
-        if (retryCache && sourceRetried && selection.cacheable && !diagnostic.unavailable && typeof result.cursor === "number" && result.cursor > 2 ** 52)
+        if (retryCache && sourceRetried && selection.cacheable && !diagnostic.unavailable && typeof result.cursor === "number" && result.cursor > FRESH_SNAPSHOT_CURSOR_BASE)
           return await snapshot(input, false, diagnostic);
         return result;
       } catch (e) {

@@ -28,6 +28,7 @@ import { plugin } from "../src/ui/plugin.ts";
 import * as briefModule from "../src/session-brief.ts";
 import { configuredPolicyOptions } from "../src/memory/config.ts";
 import { withBriefSnapshot } from "../src/memory/doctor.ts";
+import { realPath } from "../src/memory/platform.ts";
 
 // The local contract copy in src/ui/plugin.ts must satisfy the real api 1 contract.
 const typed: ConsolePlugin = plugin;
@@ -138,7 +139,7 @@ test("Recap invalidates when a copied input omitted from the broad revision chan
 
 for (const interruptions of [1, 3]) test(`Recap retries ${interruptions} concurrent copy change(s) with a bounded remedy`, async () => {
   const f = fixture(), logs: string[] = [], provider = await plugin.open({ home: f.family, log: line => logs.push(line) }); providers.add(provider);
-  const source = join(f.base, "log", readdirSync(join(f.base, "log")).find(name => name.endsWith(".jsonl"))!);
+  const source = realPath(join(f.base, "log", readdirSync(join(f.base, "log")).find(name => name.endsWith(".jsonl"))!));
   const original = fs.copyFileSync; let injected = 0;
   const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
     original(from, to, flags);
@@ -191,7 +192,7 @@ test("Recap logs one content-free reason when selected candidate timing is unava
 
 test("Recap reports a directory that keeps changing after the retry bound", async () => {
   const f = fixture(), provider = await open(f.family), directory = join(f.base, "log");
-  const source = join(directory, readdirSync(directory).find(name => name.endsWith(".jsonl"))!);
+  const source = realPath(join(directory, readdirSync(directory).find(name => name.endsWith(".jsonl"))!));
   const original = fs.copyFileSync; let injected = 0;
   const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
     original(from, to, flags);
@@ -206,9 +207,10 @@ test("Recap reports a directory that keeps changing after the retry bound", asyn
 
 test("Recap retries a file removed while it is being copied", async () => {
   const f = fixture(), file = join(f.base, "log", "transient-input.bin"); writeFileSync(file, "fixture");
+  const source = realPath(file);
   const provider = await open(f.family), original = fs.copyFileSync; let removed = false;
   const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
-    if (!removed && String(from) === file) { removed = true; rmSync(file); }
+    if (!removed && String(from) === source) { removed = true; rmSync(source); }
     return original(from, to, flags);
   });
   try {
