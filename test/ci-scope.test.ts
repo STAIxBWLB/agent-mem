@@ -244,7 +244,7 @@ test('workflow retains required names, conservative job conditions and install-f
   }
   type Matrix = { os: string[]; shard?: number[]; total?: number[] };
   expect(tests!.strategy!.matrix as Matrix).toEqual({ os: ['ubuntu-latest'], shard: [1, 2, 3, 4], total: [4] });
-  expect(testsMac.strategy!.matrix as Matrix).toEqual({ os: ['macos-latest'], shard: [1, 2], total: [2] });
+  expect(testsMac.strategy!.matrix as Matrix).toEqual({ os: ['macos-latest'], shard: [1, 2, 3], total: [3] });
   expect(measure!.strategy!.matrix.os).toEqual(['ubuntu-latest']);
   expect(measureMac.strategy!.matrix.os).toEqual(['macos-latest']);
   expect(testsMac.steps).toEqual(tests!.steps);
