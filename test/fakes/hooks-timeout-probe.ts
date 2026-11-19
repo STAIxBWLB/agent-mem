@@ -125,7 +125,7 @@ export function timeoutProbeBranch(input: {
 
 /** One fixture, two callers: bun test uses the explicit host deadline, the dedicated
  * budget step uses the published executable with its unchanged real deadline. */
-export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean, invocation={run:1,logicalRun:1}) {
+export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event: "SessionStart" | "PreToolUse" | "Stop", functional: boolean, invocation={run:1,logicalRun:1}, nativeDeadlineMs?: number) {
   // Required for every real-deadline sample, on both OSes. This calls the same
   // published bin bootstrap through hookMain's existing explicit host seam; never
   // resets the bin/amem.js clock below. Failure is fatal, with no added retries or advisory.
@@ -136,8 +136,8 @@ export async function hookTimeoutProbe(f: ReturnType<typeof hookFixture>, event:
   }
   const observer = hookProcessObserver(f.root, true, undefined, true, true), payload = { hook_event_name: event, cwd: f.cwd, prompt: "public timeout fixture" };
   const controlLoaded = join(f.root, "timeout-control-loaded");
-  if (functional) {
-    // Change only the explicit host argument in this control's in-memory bootstrap.
+  if (functional || nativeDeadlineMs !== undefined) {
+    // Change only the explicit host argument in this fixture's in-memory bootstrap.
     // The published entrypoint, stdin, imports, started clock and product are intact.
     appendFileSync(observer.preload, `
 Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filter:/[/]bin[/]amem[.]js$/},({path})=>{
@@ -145,7 +145,7 @@ Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filte
  const source=readFileSync(path,'utf8'),anchor='await hookMain(args.slice(1), started)';
  if(source.split(anchor).length!==2)throw Error('timeout control host seam anchor changed');
  writeFileSync(${JSON.stringify(controlLoaded)},'loaded',{mode:0o600});
- return {loader:'js',contents:source.replace(anchor,'await hookMain(args.slice(1), started, {deadlineMs:2000})')};
+ return {loader:'js',contents:source.replace(anchor,'await hookMain(args.slice(1), started, {deadlineMs:${functional ? 2000 : nativeDeadlineMs}})')};
 });}});
 `);
   }
@@ -153,7 +153,7 @@ Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filte
   try {
     const start = performance.now();
     const result = f.run(event, payload, { BUN_OPTIONS: `--preload=${observer.preload}` });
-    check(!functional || existsSync(controlLoaded), "timeout control did not load the published executable host seam");
+    check(!(functional || nativeDeadlineMs !== undefined) || existsSync(controlLoaded), "timeout fixture did not load the published executable host seam");
     const wallMs = performance.now() - start, workers = observer.read();
     const diagnostic = () => hookProcessDiagnostic({ event, ...invocation, parentPid: result.pid, variant: functional ? "timeout-functional" : "timeout-native",
       expectedOwnedChildren: functional ? (event === "SessionStart" ? 3 : 2) : null, expectation: functional ? "fixture-contract" : "observed-spawn-attempts", workers, evidence: observer.evidence(), lifecycle: observer.lifecycle(result.pid),
