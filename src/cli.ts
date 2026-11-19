@@ -554,12 +554,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           const r = await person.confirmPlacementCheckpoint(memoryHome(), saved, { writerRoots, ownRoot });
           return options["--json"] === true ? JSON.stringify(r, null, 2) : `sync placement checkpoint: committed window ${r.window} with one writer renewal (plan ${r.planHash})\nnext: ${r.nextStep}\n`;
         }
-        const preview = person.previewPlacementCheckpoint(memoryHome(), { writerRoots, ownRoot });
+        const preview = await person.previewPlacementCheckpoint(memoryHome(), { writerRoots, ownRoot });
         if (options["--json"] === true) return JSON.stringify(preview, null, 2);
         const { placementJournalObjectCompositionText } = await import("./memory/sync-placement-journal-storage.ts"), h = preview.headroom;
         // Counts and hashes only; the sealed plan itself is in --json for the confirm step.
         return `sync placement checkpoint preview: window ${preview.window} -> ${preview.nextWindow}; ${preview.currentObjects} of ${h.limit} live objects now\n`
           + `${placementJournalObjectCompositionText(preview.journalObjects)}\n`
+          + `completed plan: ${h.completedPlan.slots} slots + ${h.completedPlan.reservedJournalChunks} reserved journal chunks; prospective plan: ${h.prospectivePlan.state === "cache-only" ? `${h.prospectivePlan.slots} slots + ${h.prospectivePlan.reservedJournalChunks} reserved journal chunks (cache-only; remote may have changed)` : h.prospectivePlan.state === "none" ? "none" : "unavailable without current remote evidence; using completed history"}\n`
           + `headroom after checkpoint: ${h.remaining} of ${h.limit} (live ${h.liveAfter}, next renewal ${h.nextRenewal}, largest plan ${h.largestPlan.slots} + ${h.largestPlan.reservedJournalChunks} reserved journal chunks)\n`
           + `home floor ${preview.requiredHomeFloor}: ${preview.floorReady ? "ready" : `missing; preview amem formats raise home ${preview.requiredHomeFloor}, then --confirm it`}; writers ${preview.writers}; plan ${preview.planHash}\n`
           + `next: save this preview with --json, then ${preview.nextStep}\n`;

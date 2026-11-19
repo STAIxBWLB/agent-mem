@@ -23,6 +23,7 @@ import { withPlacementActivationFences } from "./sync-placement-activation-locks
 import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
 import { initialPlacementWriterContext } from "../sync-placement-writer-context.ts";
+import { checkpointProspective, type CheckpointProspective } from "./sync-placement-checkpoint-prospective.ts";
 
 export const CHECKPOINT_PREVIEW = PLACEMENT_CHECKPOINT_COMMAND;
 const RESUME = `${CHECKPOINT_PREVIEW} --resume`, ABANDON = `${CHECKPOINT_PREVIEW} --abandon`;
@@ -42,7 +43,7 @@ const MESSAGES: Record<PlacementCheckpointCause, string> = {
 /** A person-facing checkpoint refusal with one cause class and its next step; never a path, row or project name. */
 export class PlacementCheckpointError extends Error {
   constructor(readonly causeClass: PlacementCheckpointCause, detail = "") {
-    super(causeClass === "headroom" ? `The checkpoint would not leave room for the next sync: ${detail} Nothing was written; report this bound (a bounded multi-plan publication is the follow-up).` : MESSAGES[causeClass] + (detail ? ` ${detail}` : ""));
+    super(causeClass === "headroom" ? `The checkpoint would not leave room for the next sync: ${detail} A single checkpoint cannot unblock this plan; the deferred multi-plan split in #288 design item 5 is the open path. Nothing was written.` : MESSAGES[causeClass] + (detail ? ` ${detail}` : ""));
     this.name = "PlacementCheckpointError";
   }
 }
@@ -76,7 +77,8 @@ function freshReservedChunks(reservedRecordBytes: readonly number[]): number {
   return count + (reservedRecordBytes.length ? 1 : 0); // + append-intent.json while the reservation is open
 }
 export interface PlacementCheckpointHeadroom {
-  limit: number; liveAfter: number; nextRenewal: number; largestPlan: { slots: number; reservedJournalChunks: number }; required: number; remaining: number;
+  limit: number; liveAfter: number; nextRenewal: number; completedPlan: { slots: number; reservedJournalChunks: number }; prospectivePlan: CheckpointProspective;
+  largestPlan: { slots: number; reservedJournalChunks: number }; required: number; remaining: number;
 }
 export interface PlacementCheckpointPreview {
   mode: "checkpoint-preview"; window: number; nextWindow: number; journalObjects: PlacementJournalObjectComposition; currentObjects: number;
@@ -87,28 +89,41 @@ export interface PlacementCheckpointPreview {
  * headroom after the checkpoint. The headroom covers one next renewal plus the largest observed plan and its reserved journal
  * chunks; a checkpoint that cannot unblock the next sync refuses with the exact shortfall.
  */
-export function previewPlacementCheckpoint(homeInput: string, opts: { writerRoots: readonly string[]; ownRoot: string; minReader?: string }): PlacementCheckpointPreview {
+export async function previewPlacementCheckpoint(homeInput: string, opts: { writerRoots: readonly string[]; ownRoot: string; minReader?: string }): Promise<PlacementCheckpointPreview> {
   const home = realPath(homeInput), a = active(home), epochHash = a.profile.placementHead;
   const roots = measured(home, opts.writerRoots, opts.ownRoot), intent = plan(home, epochHash, input(home, a, roots, randomBytes(32).toString("hex")));
   const journal = readPlacementJournal(home, epochHash), window = resolvePlacementWindow(home, epochHash);
-  let largest = { slots: 0, reservedJournalChunks: 0 }, journalObjects!: PlacementJournalObjectComposition;
+  const { headroom, journalObjects, assertCurrent } = await checkpointHeadroom(home, intent);
+  assertCurrent();
+  const minReader = opts.minReader ?? PLACEMENT_CHECKPOINT_MIN_READER;
+  return { mode: "checkpoint-preview", window: window.window, nextWindow: intent.window, journalObjects, currentObjects: journal.objects, headroom,
+    floorReady: formatFloorAtLeast(home, "sync", minReader), requiredHomeFloor: minReader, writers: roots.length, planHash: intent.seal, plan: intent,
+    nextStep: `${CHECKPOINT_PREVIEW} --confirm --plan <saved preview JSON> --writer-root <install root> (repeat for every install)` };
+}
+async function checkpointHeadroom(home: string, intent: CheckpointIntent): Promise<{ headroom: PlacementCheckpointHeadroom; journalObjects: PlacementJournalObjectComposition; assertCurrent(): void }> {
+  const epochHash = intent.epochHash, prospective = await checkpointProspective(home);
+  let completed = { slots: 0, reservedJournalChunks: 0 }, journalObjects!: PlacementJournalObjectComposition;
   readPlacementPublicationMetadata(home, epochHash, io => {
     journalObjects = placementJournalObjectComposition({ names: io.names() });
     const attempts = new Set([...io.names().flatMap(name => /^publication-([a-f0-9]{64})-root\.json$/.exec(name)?.[1] ?? []), ...io.archivedPublications()]);
     for (const attempt of attempts) {
       const root = io.publication(attempt).bundle.root, candidate = { slots: publicationFileNames(root).length, reservedJournalChunks: freshReservedChunks(root.reservedRecordBytes) };
-      if (candidate.slots + candidate.reservedJournalChunks > largest.slots + largest.reservedJournalChunks) largest = candidate;
+      if (candidate.slots + candidate.reservedJournalChunks > completed.slots + completed.reservedJournalChunks) completed = candidate;
     }
   });
-  // The new live window holds the staged closure (catalog pages, projection, (W, 1) revision, its log, manifest) plus the active.json slot.
-  const liveAfter = intent.pages.length + 5 + 1, nextRenewal = 1, required = liveAfter + nextRenewal + largest.slots + largest.reservedJournalChunks;
-  const headroom: PlacementCheckpointHeadroom = { limit: PLACEMENT_JOURNAL_MAX_OBJECTS, liveAfter, nextRenewal, largestPlan: largest, required, remaining: PLACEMENT_JOURNAL_MAX_OBJECTS - required };
-  if (headroom.remaining < 0) throw new PlacementCheckpointError("headroom",
-    `the new window needs ${required} of ${PLACEMENT_JOURNAL_MAX_OBJECTS} objects (${liveAfter} after the checkpoint, ${nextRenewal} for the next renewal, ${largest.slots} for the largest observed plan and ${largest.reservedJournalChunks} for its reserved journal chunks), ${-headroom.remaining} over the limit.`);
-  const minReader = opts.minReader ?? PLACEMENT_CHECKPOINT_MIN_READER;
-  return { mode: "checkpoint-preview", window: window.window, nextWindow: intent.window, journalObjects, currentObjects: journal.objects, headroom,
-    floorReady: formatFloorAtLeast(home, "sync", minReader), requiredHomeFloor: minReader, writers: roots.length, planHash: intent.seal, plan: intent,
-    nextStep: `${CHECKPOINT_PREVIEW} --confirm --plan <saved preview JSON> --writer-root <install root> (repeat for every install)` };
+  const headroom = checkpointHeadroomFor(intent.pages.length, completed, prospective.value);
+  return { headroom, journalObjects, assertCurrent: prospective.assertCurrent };
+}
+/** Shared arithmetic for both offline preview and confirm revalidation; never invent a missing plan. */
+export function checkpointHeadroomFor(pages: number, completed: { slots: number; reservedJournalChunks: number }, prospective: CheckpointProspective): PlacementCheckpointHeadroom {
+  const largest = prospective.state === "cache-only" && prospective.slots + prospective.reservedJournalChunks > completed.slots + completed.reservedJournalChunks
+    ? { slots: prospective.slots, reservedJournalChunks: prospective.reservedJournalChunks } : completed;
+  const liveAfter = pages + 5 + 1, nextRenewal = 1, required = liveAfter + nextRenewal + largest.slots + largest.reservedJournalChunks;
+  const result: PlacementCheckpointHeadroom = { limit: PLACEMENT_JOURNAL_MAX_OBJECTS, liveAfter, nextRenewal, completedPlan: completed, prospectivePlan: prospective,
+    largestPlan: largest, required, remaining: PLACEMENT_JOURNAL_MAX_OBJECTS - required };
+  if (result.remaining < 0) throw new PlacementCheckpointError("headroom",
+    `the new window needs ${required} of ${PLACEMENT_JOURNAL_MAX_OBJECTS} objects (${liveAfter} after the checkpoint, ${nextRenewal} for the next renewal, ${largest.slots} for the largest observed plan and ${largest.reservedJournalChunks} for its reserved journal chunks), ${-result.remaining} over the limit.`);
+  return result;
 }
 /** The saved preview (or its bare plan): only the sealed intent is read, and it is validated before use. */
 export function checkpointPlanFrom(value: unknown): CheckpointIntent {
@@ -134,9 +149,11 @@ export async function confirmPlacementCheckpoint(homeInput: string, value: unkno
   const home = realPath(homeInput), intent = checkpointPlanFrom(value), a = active(home), minReader = opts.minReader ?? PLACEMENT_CHECKPOINT_MIN_READER;
   if (intent.epochHash !== a.profile.placementHead) throw new PlacementCheckpointError("changed");
   checkFloor(home, undefined, minReader); checkFloor(home, measured(home, opts.writerRoots, opts.ownRoot), minReader);
+  const prospective = await checkpointHeadroom(home, intent);
   return withPlacementActivationFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
     const now = active(home), roots = measured(home, opts.writerRoots, opts.ownRoot);
     if (canonicalJSON(now) !== canonicalJSON(a)) throw new PlacementCheckpointError("changed");
+    prospective.assertCurrent();
     checkFloor(home, roots, minReader);
     if (placementCheckpointPending(home, intent.epochHash)) throw new PlacementCheckpointError("pending");
     const value = input(home, now, roots, intent.writerRevision.requestId);

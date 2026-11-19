@@ -10,7 +10,7 @@ import { activePlacementWriterContext } from "../src/sync-placement-writer-conte
 import { readPlacementJournal, releasePlacementStorageCaches } from "../src/memory/sync-placement-journal-storage.ts";
 import { resolvePlacementWindow, PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "../src/memory/sync-placement-checkpoint-storage.ts";
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
-import { abandonPlacementCheckpointPerson, confirmPlacementCheckpoint, previewPlacementCheckpoint, resumePlacementCheckpointPerson, PlacementCheckpointError } from "../src/memory/sync-placement-checkpoint-person.ts";
+import { abandonPlacementCheckpointPerson, confirmPlacementCheckpoint, previewPlacementCheckpoint, resumePlacementCheckpointPerson, checkpointHeadroomFor, PlacementCheckpointError } from "../src/memory/sync-placement-checkpoint-person.ts";
 import { placementSyncBoundMessage } from "../src/memory/sync-placement-bound.ts";
 import { createInspectionRemote } from "./fakes/sync-placement-inspection.ts";
 import { runCli } from "../src/cli.ts";
@@ -52,10 +52,35 @@ const withHome = async <T>(home: string, work: () => Promise<T>): Promise<T> => 
   try { return await work(); } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
 };
 
-test("#288 step 3: preview is readonly and reports composition, headroom and the exact confirm step", async () => {
+test("#288: headroom compares both inputs, reports unknown cache, and rejects a plan too large for one checkpoint", () => {
+  const completed = { slots: 12, reservedJournalChunks: 2 };
+  expect(checkpointHeadroomFor(0, completed, { state: "none" }).largestPlan).toEqual(completed);
+  const unknown = checkpointHeadroomFor(0, completed, { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" });
+  expect(unknown.prospectivePlan.state).toBe("unavailable"); expect(unknown.largestPlan).toEqual(completed);
+  const pending = checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 20, reservedJournalChunks: 4 });
+  expect(pending.largestPlan).toEqual({ slots: 20, reservedJournalChunks: 4 });
+  expect(() => checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 250, reservedJournalChunks: 10 })).toThrow("11 over the limit");
+  expect(() => checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 250, reservedJournalChunks: 10 })).toThrow("multi-plan split");
+});
+
+test("#288: offline prospective plan uses cache and pending source without modifying home bytes", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
+  const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
+  try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "new checkpoint prospective row", about: [] }); }
+  finally { store.close(); }
+  const before = tree(f.base), preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  expect(tree(f.base)).toEqual(before);
+  expect(preview.headroom.prospectivePlan.state).toBe("cache-only");
+  if (preview.headroom.prospectivePlan.state === "cache-only") expect(preview.headroom.prospectivePlan.slots).toBeGreaterThan(0);
+}, 240_000);
+
+test("#288 step 3: preview is readonly and reports composition, headroom and the exact confirm step", async () => {
+  const f = await fixture();
+  const noCache = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  expect(noCache.headroom.prospectivePlan.state).toBe("unavailable");
+  expect((await f.sync()).ok).toBe(true);
   const before = tree(f.base);
-  const preview = previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
   expect(tree(f.base)).toEqual(before);
   expect(existsSync(f.checkpoints)).toBe(false);
   expect(preview).toMatchObject({ mode: "checkpoint-preview", window: 0, nextWindow: 1, floorReady: true, writers: 1 });
@@ -65,14 +90,14 @@ test("#288 step 3: preview is readonly and reports composition, headroom and the
   expect(preview.headroom.largestPlan.slots).toBeGreaterThan(0);
   expect(preview.nextStep).toContain("amem migrate --sync-placement --checkpoint --confirm --plan");
   // The real 0.30.0 floor is missing here: preview says so and does not refuse.
-  expect(previewPlacementCheckpoint(f.base, f.opts).floorReady).toBe(false);
+  expect((await previewPlacementCheckpoint(f.base, f.opts)).floorReady).toBe(false);
   // Without a writer inventory there is nothing to renew into (W, 1).
   expect(await cause(() => previewPlacementCheckpoint(f.base, { ...f.opts, writerRoots: [] }))).toBe("candidate");
 }, 180_000);
 
 test("#288 step 3: confirm refuses below the person floor, never writes it, then commits the sealed plan with one renewal", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
-  const preview = previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR }), frozen = tree(f.epochDir), formats = readFileSync(join(f.base, "formats.json"));
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR }), frozen = tree(f.epochDir), formats = readFileSync(join(f.base, "formats.json"));
   // The CLI's real floor is 0.30.0: a 0.22.0 home floor refuses with the formats raise next step, and nothing is written.
   const refused = await confirmPlacementCheckpoint(f.base, preview, f.opts).catch(error => error as PlacementCheckpointError);
   expect(refused).toBeInstanceOf(PlacementCheckpointError); expect((refused as PlacementCheckpointError).causeClass).toBe("floor");
@@ -98,7 +123,7 @@ test("#288 step 3: confirm refuses below the person floor, never writes it, then
 test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon before the commit byte, resume after it", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
   const records = readPlacementJournal(f.base, f.epochHash).records, frozen = tree(f.epochDir);
-  const preview = previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
   await expect(confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR, phase: phase => { if (phase === "staged-fsync") throw Error("isolated interruption after staging"); } })).rejects.toThrow();
   releasePlacementStorageCaches();
   // Journal effects and the host writer adapter name the checkpoint, rather than an unrelated renewal transaction.
@@ -132,7 +157,7 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
   expect(tree(f.epochDir)).toEqual(frozen); expect(readPlacementJournal(f.base, f.epochHash).records).toEqual(records);
   expect(await abandonPlacementCheckpointPerson(f.base)).toMatchObject({ abandoned: false, removed: 0 });
   // After the first commit byte: abandon refuses and names resume; resume finishes the frozen bytes once.
-  const again = previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const again = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
   await expect(confirmPlacementCheckpoint(f.base, again, { ...f.opts, minReader: FLOOR, phase: phase => { if (phase === "commit-started") throw Error("isolated interruption inside the commit line"); } })).rejects.toThrow();
   releasePlacementStorageCaches();
   const refused = await abandonPlacementCheckpointPerson(f.base).then(() => { throw Error("expected a refusal"); }, error => error as PlacementCheckpointError);
