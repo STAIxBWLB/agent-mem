@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON } from "../src/memory/generation.ts";
 import { openShardStore } from "../src/memory/store.ts";
@@ -9,6 +9,8 @@ import { readPlacementRuntimeMarkers } from "../src/memory/sync-placement-guard.
 import { createRealmExtension, realmExtensionGenesis, REALM_EXTENSION_SCHEMA } from "../src/memory/sync-placement-realm-extension-format.ts";
 import { writerInventoryGenesis } from "../src/memory/sync-placement-writer-revision-format.ts";
 import { syncMemory } from "../src/memory/sync.ts";
+import { readPlacementJournal } from "../src/memory/sync-placement-journal-storage.ts";
+import { SyncPlacementJournalError } from "../src/memory/sync-placement-journal-format.ts";
 import { placementInventory, placementInventoryBatches, syncPlacementInventory } from "../src/memory/sync-placement-inventory.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
 import { validatePlacementPublicationRoot } from "../src/memory/sync-placement-publication-plan.ts";
@@ -143,3 +145,24 @@ test("#448 AC3: a realm admitted after activation joins the inventory, is openab
   const bound = readActivePlacementBinding(f.home, readPlacementRuntimeMarkers(f.home).profile, readPlacementRuntimeMarkers(f.home).shards)!;
   expect(bound.activation.seal).toBe(active.activation.seal); expect(bound.activation.realms).toEqual(active.activation.realms);
 }, 240_000);
+
+test("#492 an unknown epoch member is the run's own failure result, not a throw, and it changes nothing", async () => {
+  const f = await inventoryFixture(2), remote = bare(), epochs = join(f.home, "sync-placement", "epochs", f.epochHash);
+  const before = readdirSync(epochs).sort(), refsBefore = refs(remote), epochBytes = readFileSync(join(epochs, "epoch.json"), "utf8");
+  // One retained-epoch member a newer version could write, which this runtime must refuse rather than guess at.
+  writeFileSync(join(epochs, "future-placement-history-v99.json"), "{}", { mode: 0o600 });
+  try {
+    // The journal read itself still refuses: only the sync's answer moves from a throw to its own result shape.
+    expect(() => readPlacementJournal(f.home, f.epochHash)).toThrow(SyncPlacementJournalError);
+    const result = await syncMemory(f.entry(), f.opts(remote));
+    expect(result).toMatchObject({ ok: false, pushed: false, entries: 0, failure: { cause: "unavailable" } });
+    expect(result.placementRealms).toEqual([]);
+    // The cause names the next step without parsing text; the text is the journal's own fixed refusal message.
+    expect(result.error).toContain("restore the exact retained evidence before continuing");
+    // Effect-free, as the refusal was before: no ref reached the remote, no epoch byte or member changed, nothing cached.
+    expect(refs(remote)).toEqual(refsBefore);
+    expect(readdirSync(epochs).sort()).toEqual([...before, "future-placement-history-v99.json"].sort());
+    expect(readFileSync(join(epochs, "epoch.json"), "utf8")).toBe(epochBytes);
+    expect(existsSync(join(f.home, "shard-sync-placement"))).toBe(false);
+  } finally { rmSync(join(epochs, "future-placement-history-v99.json"), { force: true }); }
+}, 120_000);

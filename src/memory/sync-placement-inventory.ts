@@ -20,7 +20,7 @@ import { readPlacementPublication } from "./sync-placement-publication-storage.t
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { readShardDescriptor, shardDir, userShardDir } from "./shard.ts";
 import { projectState } from "./lifecycle.ts";
-import type { PlacementRealm } from "./sync-placement-journal-format.ts";
+import { SyncPlacementJournalError, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { SyncOptions, SyncResult } from "./sync.ts";
 import type { MemoryStore } from "./store.ts";
 
@@ -86,21 +86,39 @@ function retainedRealms(home: string): string[] | undefined {
   return readPlacementPublication(home, active.profile.placementHead, reservation.attemptHash).bundle.root.targets.map(target => label(target.realm));
 }
 
+/** #492: one retained-journal refusal reads as the run's own failure. `unavailable` is the closed vocabulary's term for
+ * a refusal before an attempt (activation, inventory or I/O); a checkpoint's own cause keeps it, as it already does above.
+ */
+function journalRefusal(error: unknown): (SyncResult & { placementRealms: PlacementRealmResult[] }) | undefined {
+  if (!error || typeof error !== "object" || !(error instanceof SyncPlacementJournalError)) return undefined;
+  const code = Object.getOwnPropertyDescriptor(error, "code")?.value;
+  return { ok: false, pushed: false, entries: 0, error: error.message,
+    failure: { cause: code === "checkpoint-pending" ? "checkpoint-pending" : "unavailable" }, placementRealms: [] };
+}
+
 export async function syncPlacementInventory(home: string, opts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
-  // #288 step 3: a started checkpoint pauses every placement effect before any journal read, with its own cause and next step.
-  const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home, markers.profile, markers.shards);
-  if (binding && placementCheckpointPending(home, binding.profile.placementHead))
-    return { ok: false, pushed: false, entries: 0, error: PLACEMENT_CHECKPOINT_PENDING_MESSAGE, failure: { cause: "checkpoint-pending" }, placementRealms: [] };
-  const { local, missing, inactive } = placementInventory(home);
-  const retained = retainedRealms(home);
-  let order = local;
-  if (retained) {
-    // The retained plan names its own realms; it runs first, exactly as recorded, then the rest in the usual order.
-    const first = retained.map(name => local.find(realm => label(realm) === name));
-    if (first.some(realm => !realm)) throw new Error("a retained placement publication names a realm without a local curated shard; inspect it before continuing");
-    order = [...first as InventoryRealm[], ...local.filter(realm => !retained.includes(label(realm)))];
+  let local: InventoryRealm[], missing: string[], inactive: string[], retained: string[] | undefined;
+  try {
+    // #288 step 3: a started checkpoint pauses every placement effect before any journal read, with its own cause and next step.
+    const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home, markers.profile, markers.shards);
+    if (binding && placementCheckpointPending(home, binding.profile.placementHead))
+      return { ok: false, pushed: false, entries: 0, error: PLACEMENT_CHECKPOINT_PENDING_MESSAGE, failure: { cause: "checkpoint-pending" }, placementRealms: [] };
+    ({ local, missing, inactive } = placementInventory(home));
+    retained = retainedRealms(home);
+  } catch (error) {
+    // #492: the inventory is the retained epoch's first reader, so its refusal there (an unknown epoch member, a torn
+    // chunk) is answered as this run's own failure before any effect, never thrown past the caller's result shape.
+    const refused = journalRefusal(error); if (refused) return refused; throw error;
   }
-  const batches = retained ? [order.slice(0, retained.length), ...placementInventoryBatches(order.slice(retained.length))] : placementInventoryBatches(order);
+  let order = local;
+  const resumed = retained;
+  if (resumed) {
+    // The retained plan names its own realms; it runs first, exactly as recorded, then the rest in the usual order.
+    const first = resumed.map(name => local.find(realm => label(realm) === name));
+    if (first.some(realm => !realm)) throw new Error("a retained placement publication names a realm without a local curated shard; inspect it before continuing");
+    order = [...first as InventoryRealm[], ...local.filter(realm => !resumed.includes(label(realm)))];
+  }
+  const batches = resumed ? [order.slice(0, resumed.length), ...placementInventoryBatches(order.slice(resumed.length))] : placementInventoryBatches(order);
   const realms: PlacementRealmResult[] = [...missing.map(realm => ({ realm, outcome: "not-local" as const })), ...inactive.map(realm => ({ realm, outcome: "inactive" as const }))];
   const progress = opts.progress, total = batches.filter(batch => batch.length).length;
   // One reporter for the whole run: each publication reports its phases, but only this driver reports the terminal state.
