@@ -44,11 +44,16 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
   const checkInventory = () => { effective.assertCurrent(); if (hashJSON(placementInventory(home)) !== inventoryHash) throw new Error("placement inventory changed"); };
   if (!batches.length) return { value: { state: "none" }, assertCurrent: checkInventory };
   const cache = join(home, "shard-sync-placement", "objects.git");
-  if (!existsSync(cache)) return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
+  if (!existsSync(cache)) return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" },
+    assertCurrent: () => { checkInventory(); if (existsSync(cache)) throw new Error("placement cache changed"); } };
   const journal = captureInspectionJournal(home, active.profile.placementHead);
   let objects: PlacementInspectionObjects;
   try { objects = new PlacementInspectionObjects(home, () => { checkInventory(); journal.assertCurrent(); }); }
-  catch { return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory }; }
+  catch {
+    // A changed journal or inventory is not a missing remote: never turn a concurrent drift into the fallback.
+    checkInventory(); journal.assertCurrent();
+    return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: () => { checkInventory(); journal.assertCurrent(); } };
+  }
   const view = readPublicPruneViewForActivation(home, active.profile.pruneInputSetHash, active.profile.generation);
   let largest: { slots: number; reservedJournalChunks: number } | undefined;
   for (const batch of batches) {
@@ -58,7 +63,8 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
     try { heads = targets.map(target => objects.ref(target.realm)); }
     catch (error) {
       if (error instanceof SyncPlacementJournalError && (error.code === "corrupt" || error.code === "bound"))
-        return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
+        return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" },
+        assertCurrent: () => { checkInventory(); source.assertSourcesUnchanged(); journal.assertCurrent(); } };
       throw error;
     }
     // A missing cache ref is usable only when the latest retained completed publication for this remote and realm
@@ -71,17 +77,20 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
       const last = matching.at(-1); return !!last && !last.publish && last.expectedRemoteHead === null && last.commit === null;
     };
     if (heads.some((head, index) => head === undefined && !knownEmpty(selected[index]!)))
-      return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
+      return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" },
+        assertCurrent: () => { checkInventory(); source.assertSourcesUnchanged(); journal.assertCurrent(); } };
     // A mutable cache ref is not a remote receipt: retain only the head verified through the publication journal.
     let histories: Awaited<ReturnType<typeof inspectRetainedPublicationHistories>>;
     try { histories = await inspectRetainedPublicationHistories(journal, targets.map(target => ({ realm: target.realm, generation: active.profile.generation })), objects); }
     catch (error) {
       if (error instanceof SyncPlacementJournalError && (error.code === "corrupt" || error.code === "bound"))
-        return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
+        return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" },
+        assertCurrent: () => { checkInventory(); source.assertSourcesUnchanged(); journal.assertCurrent(); } };
       throw error;
     }
     if (heads.some((head, index) => head !== histories.tips[index]))
-      return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
+      return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" },
+        assertCurrent: () => { checkInventory(); source.assertSourcesUnchanged(); journal.assertCurrent(); } };
     const old = histories.old;
     const planned = targets.map((target, index) => {
       const identity = selected[index]!, id = canonicalJSON(identity), sources = source.sourceRowsByRealm.get(id);
