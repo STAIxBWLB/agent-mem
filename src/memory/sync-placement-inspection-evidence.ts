@@ -29,7 +29,7 @@ export function captureInspectionJournal(home: string, epochHash: string): Inspe
   const captured = capturePlacementPublicationMetadata(home, epochHash, io => {
     const journal = io.journal();
     if (journal.pending) throw new SyncPlacementJournalError("pending");
-    const attempts = new Set<string>();
+    const attempts = new Set<string>(io.archivedPublications());
     for (const name of io.names()) {
       const match = /^publication-([a-f0-9]{64})-/.exec(name);
       if (match) attempts.add(match[1]!);
