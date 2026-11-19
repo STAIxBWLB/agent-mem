@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import type { RecordIntakeRefusal } from "../hook-record.ts";
 import { processImageRssKB, type HookRssSources } from "../hook-resources.ts";
 import type { HookTranscriptStopReason } from "../hook-contract.ts";
@@ -68,11 +68,83 @@ function newestPerKind<T>(items: readonly T[], limit: number, kindOf: (item: T) 
   return kept.reverse();
 }
 
-/** #485: the process peak on the same basis as `scripts/budget-rss.ts` `peakRssKB` (VmHWM on Linux, rusage maxRSS elsewhere). */
-export function processPeakRssKB(): number { return processImageRssKB("self") ?? process.resourceUsage().maxRSS; }
+/**
+ * #485: the process peak on the same basis as `scripts/budget-rss.ts` `peakRssKB` (VmHWM on Linux, rusage maxRSS
+ * elsewhere). `undefined` when this host cannot answer, so a read that only wanted a telemetry sample still completes.
+ */
+export function processPeakRssKB(): number | undefined {
+  try { return processImageRssKB("self") ?? process.resourceUsage().maxRSS; } catch { return undefined; }
+}
+
+/** #485: one read-tool call's window; `alone` goes false as soon as another read call shares any part of it. */
+export interface PeakWindow { alone: boolean }
+
+/** A host that cannot report its peak must not turn a read into a failure, so a throwing read is `undefined`. */
+const peekOnce = (read: () => number | undefined): number | undefined => { try { return read(); } catch { return undefined; } };
+
+/**
+ * #485: peak attribution for the read-tool wrapper. The process peak is monotonic, so a sample that observes a peak
+ * above every earlier one is the sample that set it — but only when no other read call was in flight in the same
+ * window, because then either call could have raised it. Such a call records `false` and the peak still advances, so a
+ * later call is compared with what actually happened.
+ */
+export function createPeakTracker(read: () => number | undefined = processPeakRssKB) {
+  const windows = new Set<PeakWindow>();
+  let observed = peekOnce(read);
+  const peek = () => peekOnce(read);
+  const advance = (peakKB: number) => { observed = observed === undefined ? peakKB : Math.max(observed, peakKB); };
+  return {
+    begin(): PeakWindow {
+      const window: PeakWindow = { alone: windows.size === 0 };
+      for (const other of windows) other.alone = false;
+      windows.add(window);
+      return window;
+    },
+    /** The call completed: report whether it may be credited with the peak, and the peak to record with its sample. */
+    end(window: PeakWindow): { peakKB?: number; raised: boolean } {
+      windows.delete(window);
+      const peakKB = peek();
+      if (peakKB === undefined) return { raised: false };
+      const raised = window.alone && (observed === undefined || peakKB > observed);
+      advance(peakKB);
+      return { peakKB, raised };
+    },
+    /** The call refused or threw: it records nothing, but the peak still advances so a later call is not miscredited. */
+    abort(window: PeakWindow): void {
+      windows.delete(window);
+      const peakKB = peek();
+      if (peakKB !== undefined) advance(peakKB);
+    },
+  };
+}
 
 export function metricsPath(base: string): string {
   return join(base, "metrics.jsonl");
+}
+
+/**
+ * #485: the trim replaces the file with a rename of a fully written sibling. A long-lived `amem mcp` process appends
+ * to this file while a hook trims it, and truncating in place let a concurrent append interleave with the rewrite
+ * (observed malformed JSON). A rename is atomic, so a reader sees the old file or the new one, never a half-written
+ * one; a sample that raced the rename is lost, which telemetry allows.
+ */
+let trimGeneration = 0;
+function trimMetrics(file: string): void {
+  const rows: { line: string; kind: string }[] = [];
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    if (!line) continue;
+    // A line the read caught mid-append is dropped, never copied into the replacement.
+    try { const kind = (JSON.parse(line) as { kind?: unknown }).kind; rows.push({ line, kind: typeof kind === "string" ? kind : "other" }); } catch { /* torn tail */ }
+  }
+  const kept = newestPerKind(rows, METRICS_KEEP, row => row.kind).map(row => row.line);
+  const temp = `${file}.${process.pid}.${++trimGeneration}.tmp`;
+  try {
+    writeFileSync(temp, kept.join("\n") + "\n", { mode: 0o600 });
+    renameSync(temp, file);
+  } catch (error) {
+    try { unlinkSync(temp); } catch { /* the sibling was never written, so there is nothing to remove */ }
+    throw error;
+  }
 }
 
 /** Append samples, trimming the rolling file when it outgrows its bound; the newest METRICS_KEEP of each kind win (#485). */
@@ -82,9 +154,7 @@ export function appendMetrics(base: string, samples: MetricSample[]): void {
   appendFileSync(file, samples.map((s) => JSON.stringify(s)).join("\n") + "\n", { mode: 0o600 });
   try {
     if (statSync(file).size <= METRICS_MAX_BYTES) return;
-    const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
-    const kept = newestPerKind(lines, METRICS_KEEP, line => { try { const kind = (JSON.parse(line) as { kind?: unknown }).kind; return typeof kind === "string" ? kind : "other"; } catch { return "other"; } });
-    writeFileSync(file, kept.join("\n") + "\n", { mode: 0o600 });
+    trimMetrics(file);
   } catch { /* a trim failure loses nothing: the file simply stays larger, and a lost sample is acceptable telemetry */ }
 }
 

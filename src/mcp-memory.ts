@@ -14,7 +14,7 @@ import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
 import { hashJSON, readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
-import { appendMetrics, processPeakRssKB } from "./memory/metrics.ts";
+import { appendMetrics, createPeakTracker } from "./memory/metrics.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
@@ -342,28 +342,41 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     };
     const exposed = { ...tools };
     const readTools = ["amem_search", "amem_evidence", "amem_show", "amem_timeline", "amem_graph", "amem_brief", "amem_vault_candidates"] as const;
-    // #485: the process peak is monotonic, so the call that raised it is the one where it grew past every earlier sample.
-    let observedPeakKB = processPeakRssKB();
+    // #485: the process peak is monotonic, so a call can be credited with raising it only when no other read call was
+    // in flight while it grew; the tracker owns that rule and the observed baseline.
+    const peaks = createPeakTracker();
     for (const name of readTools) exposed[name] = async args => {
       fullGuard();
       const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
       const sourceCurrent = store.beginRecallRead();
       if (policyKey(policyOptions()) !== revision) return unavailable();
       const started = performance.now();
-      const result = await calls.run({ policy: snapshot, revision, configured }, async () => {
-        const value = await tools[name](args);
-        fullGuard(); sourceCurrent();
-        if (policyKey(policyOptions()) !== revision) return unavailable();
-        return value;
-      });
+      let window: ReturnType<typeof peaks.begin> | undefined;
+      try { window = peaks.begin(); } catch { /* telemetry is an observation, never a precondition */ }
       // One bounded sample per completed call: the tool name, the wall time and the process peak. Never the arguments,
-      // the query text, an id or a result, and telemetry can neither fail nor delay a completed call.
-      const peakKB = processPeakRssKB();
+      // the query text, an id or a result, and telemetry can neither fail, refuse nor delay a completed call.
+      const recorded = (): void => {
+        try {
+          const ended = window === undefined ? undefined : peaks.end(window);
+          window = undefined;
+          if (ended?.peakKB === undefined) return;
+          appendMetrics(base, [{ at: new Date().toISOString(), kind: "search", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
+        } catch { /* a lost telemetry sample is never a failed call */ }
+      };
       try {
-        appendMetrics(base, [{ at: new Date().toISOString(), kind: "search", tool: name, wallMs: performance.now() - started, rssMB: peakKB / 1024, peakRaised: peakKB > observedPeakKB }]);
-      } catch { /* a lost telemetry sample is never a failed call */ }
-      observedPeakKB = Math.max(observedPeakKB, peakKB);
-      return result;
+        const result = await calls.run({ policy: snapshot, revision, configured }, async () => {
+          const value = await tools[name](args);
+          fullGuard(); sourceCurrent();
+          if (policyKey(policyOptions()) !== revision) return unavailable();
+          return value;
+        });
+        recorded();
+        return result;
+      } catch (error) {
+        // A refused or failed call records nothing, but the peak it may have raised still advances the baseline.
+        try { if (window !== undefined) peaks.abort(window); } catch { /* nothing recorded, nothing to correct */ }
+        throw error;
+      }
     };
     return { tools: exposed, close, onEmitted };
   } catch (error) { close(); throw error; }
