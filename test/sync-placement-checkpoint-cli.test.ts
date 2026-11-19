@@ -99,6 +99,10 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
   const preview = previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
   await expect(confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR, phase: phase => { if (phase === "staged-fsync") throw Error("isolated interruption after staging"); } })).rejects.toThrow();
   releasePlacementStorageCaches();
+  // Journal effects and the host writer adapter name the checkpoint, rather than an unrelated renewal transaction.
+  expect(() => readPlacementJournal(f.base, f.epochHash)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  expect(() => readEffectiveSyncPlacementWriters(f.base)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  expect(() => activePlacementWriterContext(f.base, activationOwnRoot)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   const paused = await f.sync();
   expect(paused.ok).toBe(false); expect(paused.failure?.cause).toBe("checkpoint-pending"); expect(paused.error).toBe(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   expect(await cause(() => previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR }))).toBe("pending");

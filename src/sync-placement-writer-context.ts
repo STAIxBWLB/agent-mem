@@ -18,8 +18,8 @@ const failureDetails:Record<SyncPlacementWriterFailureDetail,string>={
   "invalid-version":"package version is not a supported plain release", "invalid-inventory":"root inventory is invalid or duplicated", "unsafe-runtime":"runtime files have unsafe types or symlinks",
   "missing-runtime":"required bin/amem.js or src/index.ts is missing",bound:"inventory exceeds a supported bound",changed:"install changed during measurement",
 };
-function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable",phase:PlacementWriterContextPhase,detail?:SyncPlacementWriterFailureDetail,renewalState?:"pending"|"staging"):string {
-  if(category==="writer renewal")return new SharedWriterRevisionError(renewalState==="staging"?"staging":"pending").message;
+function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable",phase:PlacementWriterContextPhase,detail?:SyncPlacementWriterFailureDetail,renewalState?:"pending"|"staging"|"checkpoint-pending"):string {
+  if(category==="writer renewal")return new SharedWriterRevisionError(renewalState==="staging"?"staging":renewalState==="checkpoint-pending"?"checkpoint-pending":"pending").message;
   if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); have the person inspect sync-placement-writer-roots.json and the matching activation metadata with a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
   if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); have the person inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
   const cause=detail?`; ${failureDetails[detail]}`:"";
@@ -27,13 +27,13 @@ function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"m
   return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or have the person run amem migrate --sync-placement --dry-run and --apply with the complete --writer-root inventory after installing the required 0.22.0 home floor.`;
 }
 export class PlacementWriterContextError extends Error {
-  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail,readonly renewalState?:"pending"|"staging") {
+  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail,readonly renewalState?:"pending"|"staging"|"checkpoint-pending") {
     super(writerContextMessage(category,causeClass,phase,detail,renewalState)); this.name = "PlacementWriterContextError";
   }
 }
 function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase:PlacementWriterContextPhase="active"): PlacementWriterContextError {
   if (error && typeof error === "object" && !types.isProxy(error) && (error instanceof PlacementHomeFloorError || error instanceof FormatFloorError)) return new PlacementWriterContextError("home floor","unavailable",phase);
-  if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="pending"||code==="staging")return new PlacementWriterContextError("writer renewal","unavailable",phase,undefined,code);}
+  if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){const code=Object.getOwnPropertyDescriptor(error,"code")?.value;if(code==="pending"||code==="staging"||code==="checkpoint-pending")return new PlacementWriterContextError("writer renewal","unavailable",phase,undefined,code);}
   if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementWriterContextError) {
     const fields=Object.getOwnPropertyDescriptors(error),root=fields.category,cause=fields.causeClass,detail=fields.detail;
     const category:unknown=root&&"value"in root?root.value:undefined,causeClass:unknown=cause&&"value"in cause?cause.value:undefined;
@@ -41,7 +41,7 @@ function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase
       && typeof causeClass==="string" && ["missing","changed","unavailable"].includes(causeClass)) {
       const ownDetail=detail&&"value"in detail&&typeof detail.value==="string"&&Object.hasOwn(failureDetails,detail.value)?detail.value as SyncPlacementWriterFailureDetail:undefined;
       const state=fields.renewalState?.value;
-      return new PlacementWriterContextError(category as PlacementWriterRootCategory,causeClass as PlacementWriterContextError["causeClass"],phase,ownDetail,state==="staging"||state==="pending"?state:undefined);
+      return new PlacementWriterContextError(category as PlacementWriterRootCategory,causeClass as PlacementWriterContextError["causeClass"],phase,ownDetail,state==="staging"||state==="pending"||state==="checkpoint-pending"?state:undefined);
     }
   }
   return new PlacementWriterContextError(category,"unavailable",phase);

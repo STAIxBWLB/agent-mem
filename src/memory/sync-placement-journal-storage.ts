@@ -189,7 +189,7 @@ function epochMetadataStamp(p: Paths): string {
 }
 function snapshot(p: Paths): Snapshot {
   // #288: a started checkpoint owns the window until resume or abandon; no journal reader treats it as settled.
-  if (p.window.pending) fail("pending");
+  if (p.window.pending) fail("checkpoint-pending");
   const before = inventory(p);
   if (journalSnapshot?.token === canonicalJSON([p.dir, before.token])) return detachSnapshot(journalSnapshot.value);
   const epoch = decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
@@ -338,7 +338,7 @@ function current(p: Paths, opts: PlacementStorageOptions, required: readonly str
   try { opts.assertCurrent(); } catch (error) { if (knownError(error)) throw error; return fail("changed"); }
   try { assertMutationHandle(opts.mutation, p.home); } catch { return fail("busy"); }
   // #288: a started checkpoint refuses every placement effect until it is resumed or abandoned; a committed one moved the window.
-  if (p.window.pending) fail("pending");
+  if (p.window.pending) fail("checkpoint-pending");
   if (placementWindowToken(p.home, p.hash) !== p.window.token) fail("changed");
   const found = inventory(p), names = new Set([...found.files.keys(), ...required, ...reservedPublicationJournalNames(p)]);
   if(found.renewalObjects)fail("pending");

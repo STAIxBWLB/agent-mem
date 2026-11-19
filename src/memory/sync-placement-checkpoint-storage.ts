@@ -210,10 +210,7 @@ export function placementWindowToken(home: string, epochHash: string): string {
   if (windowsStat) { rows.push(stamp(windowsStat)); for (const name of list(windows, PLACEMENT_CHECKPOINT_LIMIT + 1)) { const s = state(join(windows, name), true); if (!s) fail("changed"); rows.push([name, String(s.dev), String(s.ino)]); } }
   return canonicalJSON(["checkpoint", rows]);
 }
-/** The checkpoint preview command; refusals name it as their next step. */
-export const PLACEMENT_CHECKPOINT_COMMAND = "amem migrate --sync-placement --checkpoint";
-/** The one 'checkpoint pending' refusal every placement effect shares while a checkpoint intent or torn commit line exists (#288 step 3). */
-export const PLACEMENT_CHECKPOINT_PENDING_MESSAGE = `A placement checkpoint is pending; placement effects are paused until it finishes. Run ${PLACEMENT_CHECKPOINT_COMMAND} --resume to complete its recorded bytes, or ${PLACEMENT_CHECKPOINT_COMMAND} --abandon if its commit line has not started.`;
+export { PLACEMENT_CHECKPOINT_COMMAND, PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./sync-placement-journal-format.ts";
 /** True while a checkpoint is started and not finished; any other resolver failure is left to the caller's own read. */
 export function placementCheckpointPending(home: string, epochHash: string): boolean {
   try { return resolvePlacementWindow(home, epochHash).pending; }

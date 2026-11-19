@@ -8,13 +8,16 @@ export const PLACEMENT_RECORD_SCHEMA = "agent-mem.sync-placement-record/v1";
 export const PLACEMENT_ACTIVE_FENCE_SCHEMA = "agent-mem.sync-placement-fence/v1";
 export const PLACEMENT_JOURNAL_MAX_RECORDS = 20_000, PLACEMENT_JOURNAL_MAX_OBJECTS = 256;
 export const PLACEMENT_JOURNAL_CHUNK_MAX_BYTES = 64 * 1024, PLACEMENT_JOURNAL_ROOT_MAX_BYTES = 256 * 1024;
-export type SyncPlacementJournalErrorCode = "invalid" | "corrupt" | "bound" | "conflict" | "pending" | "changed" | "authorization" | "policy" | "local" | "busy";
+export type SyncPlacementJournalErrorCode = "invalid" | "corrupt" | "bound" | "conflict" | "pending" | "checkpoint-pending" | "changed" | "authorization" | "policy" | "local" | "busy";
+export const PLACEMENT_CHECKPOINT_COMMAND = "amem migrate --sync-placement --checkpoint";
+export const PLACEMENT_CHECKPOINT_PENDING_MESSAGE = `A placement checkpoint is pending; placement effects are paused until it finishes. Run ${PLACEMENT_CHECKPOINT_COMMAND} --resume to complete its recorded bytes, or ${PLACEMENT_CHECKPOINT_COMMAND} --abandon if its commit line has not started.`;
 const messages: Record<SyncPlacementJournalErrorCode, string> = {
   invalid: "Sync placement journal data is invalid or unsupported; inspect the retained state and use a compatible runtime.",
   corrupt: "Sync placement journal evidence is incomplete or inconsistent; restore the exact retained evidence before continuing.",
   bound: "Sync placement journal exceeds its supported bounds; a person-reviewed bounded epoch transition is required.",
   conflict: "Sync placement journal identity or request conflicts with retained evidence; inspect the exact request before retrying.",
   pending: "Sync placement journal has an unfinished transaction; resume its exact recorded request before continuing.",
+  "checkpoint-pending": PLACEMENT_CHECKPOINT_PENDING_MESSAGE,
   changed: "Sync placement journal or source bindings changed; capture and review a fresh request before continuing.",
   authorization: "Sync placement change requires explicit person authorization of the exact reviewed request.",
   policy: "Current mandatory policy refuses this sync placement change; inspect its safe policy classification.",
