@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
@@ -160,6 +160,33 @@ test("#288 step 3: confirm refuses below the person floor, never writes it, then
   expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR }))).toBe("changed");
   expect((await f.sync()).ok).toBe(true);
 }, 240_000);
+
+test("#288: a sync-only floor cannot authorize a checkpoint", async () => {
+  const f = await fixture();
+  const file = join(f.base, "formats.json");
+  writeFileSync(file, JSON.stringify([{ surface: "home", minReader: "0.21.0", since: "2026-11-19" }, { surface: "sync", minReader: FLOOR, since: "2026-11-19" }]) + "\n", { mode: 0o600 });
+  const before = readFileSync(file);
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  expect(preview.floorReady).toBe(false);
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR }))).toBe("floor");
+  expect(readFileSync(file)).toEqual(before);
+  expect(existsSync(f.checkpoints)).toBe(false);
+}, 180_000);
+
+test("#288: every candidate writer must meet the actual home floor, including a floor above the checkpoint minimum", async () => {
+  const f = await fixture();
+  const old = join(f.root, "older candidate writer");
+  mkdirSync(old, { mode: 0o755 }); mkdirSync(join(old, "src"), { mode: 0o755 }); mkdirSync(join(old, "bin"), { mode: 0o755 });
+  writeFileSync(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.22.0" }), { mode: 0o644 });
+  writeFileSync(join(old, "src", "index.ts"), "// isolated writer\n", { mode: 0o644 });
+  writeFileSync(join(old, "bin", "amem.js"), "// isolated writer\n", { mode: 0o755 });
+  f.floor("0.22.1");
+  const opts = { ...f.opts, writerRoots: [activationOwnRoot, old], minReader: FLOOR };
+  const preview = await previewPlacementCheckpoint(f.base, opts);
+  expect(preview.floorReady).toBe(true);
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, opts))).toBe("writer-below-floor");
+  expect(existsSync(f.checkpoints)).toBe(false);
+}, 180_000);
 
 test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon before the commit byte, resume after it", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);

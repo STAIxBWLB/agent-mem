@@ -6,6 +6,9 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Added
 
+- Checkpoint placement history into a new window with a person-reviewed combined writer renewal, preserving the frozen history and its publication evidence. Preview reports headroom; interrupted checkpoints resume their frozen bytes or can be abandoned before the first commit byte. Refs #288.
+- Compatibility with N-1 (0.29.0), checkpoint CLI and private placement state: raising the home floor to 0.30.0 makes the older reader refuse before store or sync effects. The floor is the guard: an old v1 reader that ignores it still sees a complete frozen window 0 and could operate on stale history. Non-checkpointed homes retain their existing behavior. Refs #288.
+- Compatibility with N-1 (0.29.0), shared data and host API: curated logs, capture schema, index version, transport row bytes and host attestation API are unchanged. Refs #288.
 - Record one content-free telemetry sample per completed `amem mcp` read-tool call: the tool name, that call's wall time, the process peak on the `scripts/budget-rss.ts` basis and whether the call raised that peak, so `amem capacity` reports live `searchP95Ms` and `searchRssMB` readings for `amem_search`. The rolling `metrics.jsonl` window keeps the newest 200 hook and 200 search samples, so one kind never evicts the other, and a sample never holds query text, arguments, result content, an id or a path. Refs #485.
 - List remote-only placement project refs by key hash, and explicitly stage a remote realm through `migrate --sync-placement --admit <project> --from-remote`. A verified prune-safe subset is installed before the existing admission; the next normal sync brings omitted pruned history and witnesses. Refs #461.
 - Compatibility with N-1 (0.29.0), remote listing CLI: the older CLI refuses the new options before effects; existing sync behavior is unchanged. Refs #461.

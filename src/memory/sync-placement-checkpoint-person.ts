@@ -8,7 +8,7 @@ import { types } from "node:util";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { realPath } from "./platform.ts";
 import { canonicalJSON } from "./generation.ts";
-import { assertFormatFloor, formatFloorAtLeast } from "./formats.ts";
+import { assertFormatFloor, readFormatFloors } from "./formats.ts";
 import { installVersion, versionBelow } from "./formats-raise.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_MAX_OBJECTS } from "./sync-placement-journal-format.ts";
@@ -29,13 +29,15 @@ import { checkpointProspective, type CheckpointProspective } from "./sync-placem
 
 export const CHECKPOINT_PREVIEW = PLACEMENT_CHECKPOINT_COMMAND;
 const RESUME = `${CHECKPOINT_PREVIEW} --resume`, ABANDON = `${CHECKPOINT_PREVIEW} --abandon`;
+const homeFloorAtLeast = (home: string, minimum: string): boolean =>
+  (readFormatFloors(home) ?? []).some(floor => floor.surface === "home" && !versionBelow(floor.minReader, minimum));
 
 export type PlacementCheckpointCause = "pending" | "commit-started" | "floor" | "writer-below-floor" | "headroom" | "obligation" | "changed" | "inactive" | "candidate";
 const MESSAGES: Record<PlacementCheckpointCause, string> = {
   pending: PLACEMENT_CHECKPOINT_PENDING_MESSAGE,
   "commit-started": `The placement checkpoint's commit line has started, so it can no longer be abandoned; run ${RESUME} to complete it.`,
-  floor: `Confirming a placement checkpoint requires the person-written home or sync floor of ${PLACEMENT_CHECKPOINT_MIN_READER} or later; preview it with amem formats raise home ${PLACEMENT_CHECKPOINT_MIN_READER}, confirm it with --confirm, then rerun the confirm (amem never raises a floor itself).`,
-  "writer-below-floor": `A writer sharing this home is below the ${PLACEMENT_CHECKPOINT_MIN_READER} checkpoint floor; upgrade it, then preview again with ${CHECKPOINT_PREVIEW} --writer-root <install root> for every install.`,
+  floor: `Confirming a placement checkpoint requires the person-written home floor of ${PLACEMENT_CHECKPOINT_MIN_READER} or later; preview it with amem formats raise home ${PLACEMENT_CHECKPOINT_MIN_READER}, confirm it with --confirm, then rerun the confirm (amem never raises a floor itself).`,
+  "writer-below-floor": `A writer sharing this home is below the recorded home or sync format floor; inspect formats.json and upgrade it, then preview again with ${CHECKPOINT_PREVIEW} --writer-root <install root> for every install.`,
   headroom: "",
   obligation: "The placement journal has an unfinished append, publication, reservation, renewal or source recovery; finish it with amem sync (or the pending renewal with amem migrate --sync-placement --resume), then preview the checkpoint again.",
   changed: `The placement state changed since the checkpoint plan was sealed; preview a fresh plan with ${CHECKPOINT_PREVIEW} and confirm that one.`,
@@ -99,7 +101,7 @@ export async function previewPlacementCheckpoint(homeInput: string, opts: { writ
   assertCurrent();
   const minReader = opts.minReader ?? PLACEMENT_CHECKPOINT_MIN_READER;
   return { mode: "checkpoint-preview", window: window.window, nextWindow: intent.window, journalObjects, currentObjects: journal.objects, headroom,
-    floorReady: formatFloorAtLeast(home, "sync", minReader), requiredHomeFloor: minReader, writers: roots.length, planHash: intent.seal, plan: intent,
+    floorReady: homeFloorAtLeast(home, minReader), requiredHomeFloor: minReader, writers: roots.length, planHash: intent.seal, plan: intent,
     nextStep: `${CHECKPOINT_PREVIEW} --confirm --plan <saved preview JSON> --writer-root <install root> (repeat for every install)` };
 }
 async function checkpointHeadroom(home: string, intent: CheckpointIntent): Promise<{ headroom: PlacementCheckpointHeadroom; journalObjects: PlacementJournalObjectComposition; assertCurrent(): void }> {
@@ -142,13 +144,14 @@ function reviewedHeadroom(value: unknown): unknown {
   return detached;
 }
 function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | undefined, minReader: string): void {
-  if (!formatFloorAtLeast(home, "sync", minReader)) throw new PlacementCheckpointError("floor");
+  if (!homeFloorAtLeast(home, minReader)) throw new PlacementCheckpointError("floor");
   // This reader itself below the recorded floor cannot measure anything: name the writer cause, not the inventory.
   try { assertFormatFloor(home, "sync"); } catch { throw new PlacementCheckpointError("writer-below-floor"); }
   if (!roots) return;
   const effective = readEffectiveSyncPlacementWriters(home).roots ?? [];
   const versions = [...roots.map(root => root.version), ...effective.map(root => installVersion(root))];
-  if (versions.some(version => version === null || versionBelow(version, minReader))) throw new PlacementCheckpointError("writer-below-floor");
+  const floors = (readFormatFloors(home) ?? []).filter(floor => floor.surface === "home" || floor.surface === "sync");
+  if (versions.some(version => version === null || floors.some(floor => versionBelow(version, floor.minReader)))) throw new PlacementCheckpointError("writer-below-floor");
 }
 /**
  * Confirm one exact sealed plan under the profile, sync and home/realm fences: the floor first, then the planner's own
@@ -167,9 +170,10 @@ export async function confirmPlacementCheckpoint(homeInput: string, value: unkno
     if (canonicalJSON(now) !== canonicalJSON(a)) throw new PlacementCheckpointError("changed");
     prospective.assertCurrent();
     checkFloor(home, roots, minReader);
+    const floorSnapshot = canonicalJSON(readFormatFloors(home));
     if (placementCheckpointPending(home, intent.epochHash)) throw new PlacementCheckpointError("pending");
     const value = input(home, now, roots, intent.writerRevision.requestId);
-    const assertCurrent = () => { assertPlacementActivationOwner(owner); if (!formatFloorAtLeast(home, "sync", minReader)) throw new PlacementCheckpointError("floor"); };
+    const assertCurrent = () => { assertPlacementActivationOwner(owner); if (canonicalJSON(readFormatFloors(home)) !== floorSnapshot) throw new PlacementCheckpointError("floor"); };
     try { return { ...applyPlacementCheckpoint(home, intent, value, { mutation, assertCurrent, ...(opts.phase ? { phase: opts.phase } : {}) }), renewed: true as const, planHash: intent.seal, nextStep: "amem sync" }; }
     catch (error) {
       const code = error instanceof SyncPlacementJournalError ? Object.getOwnPropertyDescriptor(error, "code")?.value : undefined;
