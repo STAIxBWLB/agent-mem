@@ -195,8 +195,10 @@ test("#485 review: telemetry I/O that cannot land never holds a completed read",
     expect(Date.now() - started).toBeLessThan(2000);
     expect(JSON.stringify(result)).toContain("ordinary note for read-tool telemetry");
     await Bun.sleep(100);
-    // The path is untouched: no sample was appended and nothing replaced the FIFO.
+    // The path is untouched: no sample was appended and nothing replaced the FIFO. Reading it back is answered as
+    // absent rather than waited on, so `amem capacity` cannot be held either.
     expect(lstatSync(file).isFIFO()).toBe(shape === "fifo");
+    expect(readMetrics(f.memory)).toEqual([]);
   }
 }, 30_000);
 
