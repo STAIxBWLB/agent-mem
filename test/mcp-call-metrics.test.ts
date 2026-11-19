@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryMcp, type MemoryMcp } from "../src/mcp-memory.ts";
@@ -28,6 +28,11 @@ function session(f: ReturnType<typeof seeded>): MemoryMcp {
   sessions.push(created); return created;
 }
 const samples = (memory: string): MetricSample[] => readMetrics(memory);
+/** The read path hands its sample off, so a fixture waits for the write instead of reading the moment the call returns. */
+const settled = async (memory: string, count = 1): Promise<MetricSample[]> => {
+  for (let attempt = 0; attempt < 200; attempt++) { const rows = readMetrics(memory); if (rows.length >= count) return rows; await Bun.sleep(5); }
+  return readMetrics(memory);
+};
 const markerFree = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const copy: NodeJS.ProcessEnv = { ...env };
   for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) delete copy[key];
@@ -73,7 +78,7 @@ test("#485 AC2: each read-tool call appends one named sample, and the call that 
   await mcp.tools.amem_show({ id: f.id });
   expect(held.byteLength).toBeGreaterThan(peakKB * 1024);
 
-  const rows = samples(f.memory);
+  const rows = await settled(f.memory, 3);
   expect(rows.map(row => row.tool)).toEqual(["amem_search", "amem_timeline", "amem_show"]);
   for (const row of rows) { expect(row.kind).toBe("search"); expect(row.wallMs).toBeGreaterThan(0); expect(row.rssMB).toBeGreaterThan(0); }
   // The call after the sized fill is the identified raiser: its peak is above every earlier sample's.
@@ -120,7 +125,7 @@ test("#485 AC3: a flood of one kind never evicts the other kind's samples", () =
 test("#485 AC4: a sample holds no query text, arguments, ids or paths", async () => {
   const f = seeded(`the canary body ${CANARY}`), mcp = session(f);
   await mcp.tools.amem_search({ query: CANARY });
-  const rows = samples(f.memory);
+  const rows = await settled(f.memory, 1);
   expect(rows).toHaveLength(1);
   expect(Object.keys(rows[0]!).sort()).toEqual(["at", "kind", "peakRaised", "rssMB", "tool", "wallMs"]);
   const text = JSON.stringify(rows[0]);
@@ -175,13 +180,24 @@ test("#485 review: a peak this host cannot report never fails or blocks a comple
   const window = peaks.begin();
   expect(peaks.end(window)).toEqual({ raised: false });
   expect(peaks.end(peaks.begin())).toEqual({ raised: false });
+}, 30_000);
 
-  // And a telemetry write that cannot land leaves a completed read's answer untouched.
-  const f = seeded(), mcp = session(f);
-  mkdirSync(metricsPath(f.memory));
-  const result = await mcp.tools.amem_search({ query: "telemetry" });
-  expect(JSON.stringify(result)).toContain("ordinary note for read-tool telemetry");
-  expect(samples(f.memory)).toEqual([]);
+test("#485 review: telemetry I/O that cannot land never holds a completed read", async () => {
+  // A sample goes to disk only after the response is queued, and the write is asynchronous with a non-blocking open, so
+  // a metrics path the writer cannot use is dropped instead of waited on. A FIFO with no reader is the shape that
+  // holds a writer forever, which is what a completed read must never do.
+  for (const shape of ["directory", "fifo"] as const) {
+    const f = seeded(), mcp = session(f), file = metricsPath(f.memory);
+    if (shape === "directory") mkdirSync(file);
+    else expect(Bun.spawnSync(["mkfifo", file]).exitCode).toBe(0);
+    const started = Date.now();
+    const result = await mcp.tools.amem_search({ query: "telemetry" });
+    expect(Date.now() - started).toBeLessThan(2000);
+    expect(JSON.stringify(result)).toContain("ordinary note for read-tool telemetry");
+    await Bun.sleep(100);
+    // The path is untouched: no sample was appended and nothing replaced the FIFO.
+    expect(lstatSync(file).isFIFO()).toBe(shape === "fifo");
+  }
 }, 30_000);
 
 test("#485 review: a peak set while two read calls overlap is credited to neither of them", () => {
