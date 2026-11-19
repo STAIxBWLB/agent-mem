@@ -5,7 +5,7 @@
  */
 import { createHash } from "node:crypto";
 import { InboxCache } from "./inbox-cache.ts";
-import { SnapshotCache } from "./snapshot-cache.ts";
+import { FRESH_SNAPSHOT_CURSOR_BASE, SnapshotCache } from "./snapshot-cache.ts";
 import { snapshotRevision } from "./snapshot-revision.ts";
 import { canonicalJSON, readSelector } from "../memory/generation.ts";
 import { candidateText, candidateTargets as targetsOf, visibleCandidate as visible } from "./inbox.ts";
@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createMemoryMcp } from "../mcp-memory.ts";
 import { sessionStartBrief } from "../session-brief.ts";
-import { withBriefSnapshot } from "../memory/doctor.ts";
+import { RecapSourceChangedError, withBriefSnapshot } from "../memory/doctor.ts";
 import { MCP_TOOLS } from "../mcp.ts";
 import { CandidateStore, withPendingCandidates, type Candidate, type CandidateInput } from "../memory/candidates.ts";
 import { pendingSummary } from "../memory/candidate-pending.ts";
@@ -235,7 +235,7 @@ export const plugin = {
         ...(view?.title ? { detail: oneLine(view.text, 120) } : {}), ...(view?.at ?? capture?.at ? { at: view?.at ?? capture?.at } : {}), link: { panel: "find", params: { project, q } } };
     }
 
-    async function panel(name: string, args: Args, project: string, onExpiry?: (at: number) => void): Promise<Args> {
+    async function panel(name: string, args: Args, project: string, onExpiry?: (at: number) => void, onValidate?: (validate: () => void, retries: number, bytes: number) => void): Promise<Args> {
       switch (name) {
         case "review": return { ...(await pending(project, true, onExpiry)), selected: str(args.id) ?? null };
         case "recap": {
@@ -246,7 +246,7 @@ export const plugin = {
           const brief = await withBriefSnapshot(base, project, measureOnly => {
             if (measureOnly.curated && onExpiry) onExpiry(expiryOf(measureOnly.curated.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
             return sessionStartBrief({ cwd: base, base, project, repository: false, policy: configuredPolicyOptions(base), measureOnly });
-          });
+          }, (validate, retries, bytes) => onValidate?.(() => { validate(); if (policyVersion() !== revision) throw Error("recap policy changed"); }, retries, bytes));
           assertProjectActive(base, project);
           if (policyVersion() !== revision) throw Error("recap policy changed");
           return { brief, generatedAt, repoAbsent: true };
@@ -432,8 +432,10 @@ export const plugin = {
 
     const preparedReads = new Set<string>();
     const cachedPanels = new Set(["review", "recap", "work"]);
-    async function snapshot(input: { after: number; panel: string } & Args): Promise<Args> {
+    async function snapshot(input: { after: number; panel: string } & Args, retryCache = true, diagnostic: { reason?: string; unavailable?: boolean } = {}): Promise<Args> {
       const args = input as Args;
+      const priority: Record<string, number> = { "no cached result": 0, expired: 1, "revision change": 2, "cache capacity": 3, "uncacheable selection": 4, "onExpiry -Infinity": 5, "failed copy": 6 };
+      const noteMiss = (reason: string) => { if (reason === "uncacheable selection" || reason === "onExpiry -Infinity") diagnostic.unavailable = true; if ((priority[reason] ?? 0) > (priority[diagnostic.reason ?? ""] ?? -1)) diagnostic.reason = reason; };
       if (input.panel === "inbox") {
         const value = await inboxCache.snapshot();
         for (const item of value.items) if (item.group === "candidate" && item.link.params?.project) projectOf.set(item.id, item.link.params.project);
@@ -456,6 +458,7 @@ export const plugin = {
           }
         }
         const selection = cachedPanels.has(input.panel) ? projectList() : { list: projects(), cacheable: false };
+        if (input.panel === "recap" && !selection.cacheable) noteMiss("uncacheable selection");
         list = selection.list; project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
@@ -466,14 +469,15 @@ export const plugin = {
           const hits = result.hits.map(hit => searchHit(hit, project!, q));
           return { hits, total: hits.length };
         }
-        const load = async (onExpiry?: (at: number) => void): Promise<Args> => input.panel === "capacity"
+        const load = async (onExpiry?: (at: number) => void, onValidate?: (validate: () => void, retries: number, bytes: number) => void): Promise<Args> => input.panel === "capacity"
           ? { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) }
-          : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry)) };
+          : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry, onValidate)) };
         // Capacity samples resources/time; Timeline probes arbitrary referenced files.
         // Neither has a cheap complete revision, so both stay uncached.
         if (!cachedPanels.has(input.panel)) return await load();
         const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
         let projectionVersion = actionVersion;
+        let sourceRetried = false;
         const projection = async () => {
           if (projectionVersion !== actionVersion) {
             list = projects(); project = pick(args, list); catalog = undefined;
@@ -481,13 +485,24 @@ export const plugin = {
           }
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
-          const data = await load(at => { until = Math.min(until, at); });
-          return { data, until };
+          let validate: (() => void) | undefined, validationBytes = 0;
+          const data = await load(at => { if (input.panel === "recap" && at === -Infinity) noteMiss("onExpiry -Infinity"); until = Math.min(until, at); }, (check, retries, bytes) => { validate = check; validationBytes = bytes; sourceRetried ||= retries > 0; if (retries > 0) noteMiss("failed copy"); });
+          return { data, until, ...(validate ? { validate, validationBytes } : {}) };
         };
-        return selection.cacheable ? await snapshots.snapshot(key, input.after, projection) : await snapshots.fresh(projection);
+        const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection, reason => { if (input.panel === "recap") noteMiss(reason); }) : await snapshots.fresh(projection);
+        // ponytail: one fresh selection after a successful copy retry whose initial revision drifted. This cannot loop.
+        if (retryCache && sourceRetried && selection.cacheable && !diagnostic.unavailable && typeof result.cursor === "number" && result.cursor > FRESH_SNAPSHOT_CURSOR_BASE)
+          return await snapshot(input, false, diagnostic);
+        return result;
       } catch (e) {
+        if (input.panel === "recap" && e instanceof RecapSourceChangedError) {
+          noteMiss("failed copy");
+          return { projects: list, project: project ?? null, error: e.message };
+        }
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
         return { projects: list, project: project ?? null, error: "Memory is unavailable for this project right now; details are in the terminal." };
+      } finally {
+        if (retryCache && input.panel === "recap" && diagnostic.reason) try { ctx.log(`amem: recap cache miss: ${diagnostic.reason}`); } catch { /* diagnostics never fail a snapshot */ }
       }
     }
     // The measured cold Review path opens the curated index and computes overlaps.

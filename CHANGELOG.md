@@ -9,6 +9,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Answer a placement inventory that refuses the retained journal as the sync's own failure result instead of throwing it: an unknown epoch member in the activated epoch directory, or any other retained-journal refusal while resolving the retained plan, now returns `ok: false`, `pushed: false`, `failure.cause: unavailable` and `placementRealms: []` with the journal's fixed refusal text in `error`, before any publication, effect or cache, where 0.29.0 and 0.30.0 threw `SyncPlacementJournalError` code `corrupt` past the result shape a host branches on. A `checkpoint-pending` refusal keeps that cause. Refs #492.
 - Compatibility with N-1 (0.30.0), sync result and failure causes: `SYNC_FAILURE_CAUSES` is unchanged, so a host built for 0.30.0 has a next step for every cause it can still receive; journal records, publication plans, remote refs and the format floor are unchanged, and a 0.30.0 reader of the same home still refuses an unknown epoch member before any effect.
 
+### Fixed
+
+- Reuse the console Recap snapshot only while its copied inputs remain unchanged, and retry a concurrent source change with a bounded, actionable refusal if writes do not settle. Refs #496.
+
 ## 0.30.0
 
 ### Added

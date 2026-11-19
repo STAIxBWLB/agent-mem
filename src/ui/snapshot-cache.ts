@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 
 type Data = Record<string, unknown>;
-interface Entry { sampledAt: number; generation: number; epoch: number; data: Data; revision: string; cursor: number; until: number; bytes: number }
-export interface SnapshotValue { data: Data; until: number }
+export const FRESH_SNAPSHOT_CURSOR_BASE = 2 ** 52;
+interface Entry { sampledAt: number; generation: number; epoch: number; data: Data; revision: string; cursor: number; until: number; bytes: number; validate?: () => void }
+export interface SnapshotValue { data: Data; until: number; validate?: () => void; validationBytes?: number }
 interface Reading extends SnapshotValue { sampledAt: number; generation: number; entry?: Entry }
 
 /** Provider-local screened snapshots. No disk cache, timer, watcher or retained store. */
@@ -14,7 +15,7 @@ export class SnapshotCache {
   private epoch = 0;
   private reuseUnavailable = false;
   // Cached digests occupy the lower 52 bits; fresh replies have distinct safe-integer cursors above them.
-  private freshCursor = 2 ** 52;
+  private freshCursor = FRESH_SNAPSHOT_CURSOR_BASE;
   private bytes = 0;
   private closed = false;
   constructor(private readonly revision: () => string, private readonly now: () => number = Date.now) {}
@@ -35,6 +36,9 @@ export class SnapshotCache {
   private timely(sampledAt: number, until: number): boolean {
     const now = this.now();
     return now >= sampledAt && now < until;
+  }
+  private valid(value: { validate?: () => void }): boolean {
+    try { value.validate?.(); return true; } catch { return false; }
   }
   private readable(value?: SnapshotValue): void {
     if (this.closed) throw Error("console snapshots are closed");
@@ -72,16 +76,21 @@ export class SnapshotCache {
   private dropEntry(key: string, entry: Entry | undefined): void {
     if (entry && this.entries.get(key) === entry) { this.entries.delete(key); this.bytes -= entry.bytes; }
   }
-  async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>): Promise<Data> {
+  async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>, onMiss?: (reason: "uncacheable selection" | "revision change" | "expired" | "no cached result" | "cache capacity") => void): Promise<Data> {
     this.readable();
     const revision = this.sourceRevision();
     this.readable();
-    if (revision === undefined) return this.fresh(read);
+    if (revision === undefined) { onMiss?.("uncacheable selection"); return this.fresh(read); }
     const cached = this.entries.get(key);
-    if (cached && cached.revision === revision && this.timely(cached.sampledAt, cached.until)) {
+    const cachedValid = !cached || cached.revision !== revision || this.valid(cached);
+    if (cached && cached.revision === revision && this.timely(cached.sampledAt, cached.until) && cachedValid) {
       this.entries.delete(key); this.entries.set(key, cached);
       return this.reply(cached, after);
     }
+    if (cached) onMiss?.(cached.revision === revision && cachedValid ? "expired" : "revision change");
+    else onMiss?.("no cached result");
+    // A copied input can change without affecting the broader revision; never join an older flight in that case.
+    if (!cachedValid) this.clearReusable();
     // Revision is part of the flight key: a new write never joins an older read.
     const flightKey = JSON.stringify([this.generation, this.epoch, revision, key]);
     let flight = this.flights.get(flightKey);
@@ -95,14 +104,18 @@ export class SnapshotCache {
         this.readable(value);
         const data = structuredClone(value.data); delete data.changed;
         const reading: Reading = { data, until: value.until, sampledAt, generation };
-        if (observed !== revision || epoch !== this.epoch || generation !== this.generation || !this.timely(sampledAt, value.until)) {
+        const proofValid = this.valid(value);
+        if (observed !== revision || epoch !== this.epoch || generation !== this.generation || !this.timely(sampledAt, value.until) || !proofValid) {
+          if (observed !== revision || epoch !== this.epoch || generation !== this.generation || !proofValid) onMiss?.("revision change");
           this.dropEntry(key, cached);
           if (this.flights.get(flightKey) === flight) this.flights.delete(flightKey);
           return reading;
         }
-        const serialized = JSON.stringify(data), bytes = Buffer.byteLength(serialized);
+        const proofBytes = value.validationBytes ?? 0;
+        if (!Number.isSafeInteger(proofBytes) || proofBytes < 0) throw Error("console snapshot proof size unavailable");
+        const serialized = JSON.stringify(data), bytes = Buffer.byteLength(serialized) + proofBytes;
         const cursor = Number.parseInt(createHash("sha256").update(JSON.stringify([key, revision, value.until])).update(serialized).digest("hex").slice(0, 13), 16) + 1;
-        const entry = { sampledAt, generation, epoch, data, revision, cursor, until: value.until, bytes };
+        const entry = { sampledAt, generation, epoch, data, revision, cursor, until: value.until, bytes, ...(value.validate ? { validate: value.validate } : {}) };
         // ponytail: 16 selections and 4 MiB per provider. Larger views are served once;
         // upgrade with paged panel results rather than retaining an unbounded corpus.
         if (bytes <= 4 * 1024 * 1024) {
@@ -111,7 +124,7 @@ export class SnapshotCache {
             const first = this.entries.keys().next().value!; this.bytes -= this.entries.get(first)!.bytes; this.entries.delete(first);
           }
           this.entries.set(key, entry); this.bytes += bytes;
-        }
+        } else onMiss?.("cache capacity");
         reading.entry = entry;
         return reading;
       })();
@@ -127,7 +140,7 @@ export class SnapshotCache {
       const observed = this.sourceRevision();
       this.readable(reading);
       if (reading.generation !== this.generation) { this.dropEntry(key, entry); return this.readFresh(read, false); }
-      if (observed !== entry.revision || entry.epoch !== this.epoch || !this.timely(entry.sampledAt, entry.until)) {
+      if (observed !== entry.revision || entry.epoch !== this.epoch || !this.timely(entry.sampledAt, entry.until) || !this.valid(entry)) {
         this.dropEntry(key, entry); return this.freshReply(reading.data);
       }
       return this.reply(entry, after);
