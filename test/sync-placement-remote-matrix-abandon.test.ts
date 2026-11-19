@@ -46,4 +46,3 @@ for (const action of ["abandon"] as readonly ("resume" | "abandon")[]) for (cons
       try { expect(reader.list({ project: target }).map(row => row.text)).toContain(`inventory note for ${target}`); } finally { reader.close(); }
     }
 }, 240_000);
-

@@ -1,11 +1,14 @@
 {
   "version": 1,
   "files": {
-    "test/sync-placement-remote-admission.test.ts": 431265,
     "test/sync-placement-transport.test.ts": 189192,
     "test/sync-placement-writer-renewal.test.ts": 154655,
     "test/ui-inbox.test.ts": 151086,
+    "test/sync-placement-remote-admission.test.ts": 97695,
+    "test/sync-placement-remote-matrix-older.test.ts": 96254,
     "test/public-prune-sync.test.ts": 88084,
+    "test/sync-placement-remote-matrix-resume.test.ts": 78789,
+    "test/sync-placement-remote-matrix-abandon.test.ts": 77867,
     "test/sync-placement-activation.test.ts": 73325,
     "test/sync-placement-host-attestation.test.ts": 57859,
     "test/sync-placement-remote-prune-probe.test.ts": 57127,
@@ -16,6 +19,7 @@
     "test/sync-placement-inspection-conformance.test.ts": 40627,
     "test/cli-sync-placement.test.ts": 39129,
     "test/sync-placement-remote-existing.test.ts": 37300,
+    "test/sync-placement-remote-matrix-old-abandon.test.ts": 37193,
     "test/sync-placement-inspection.test.ts": 33106,
     "test/sync-placement-abandon.test.ts": 23064,
     "test/sync-placement-remote-staging-n1.test.ts": 22872,

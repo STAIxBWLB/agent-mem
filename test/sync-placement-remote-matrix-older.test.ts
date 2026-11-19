@@ -42,4 +42,3 @@ for (const stage of ["after-companion", "after-stage", "after-install", "after-i
       try { expect(targetStore.list({ project: target }).map(row => row.text)).toContain(`inventory note for ${target}`); } finally { targetStore.close(); }
   } finally { rmSync(oldRoot, { recursive: true, force: true }); }
 }, 240_000);
-

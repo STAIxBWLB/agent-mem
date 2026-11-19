@@ -37,4 +37,3 @@ for (const stage of ["after-intent", "after-metadata", "after-proof"] as const) 
       try { expect(targetStore.list({ project: target }).map(row => row.text)).toContain(`inventory note for ${target}`); } finally { targetStore.close(); }
   } finally { rmSync(oldRoot, { recursive: true, force: true }); }
 }, 240_000);
-
