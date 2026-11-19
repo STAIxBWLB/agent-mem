@@ -33,7 +33,7 @@ Judging happens outside amem. amem draws the sample, records where each note's a
    amem eval audit score <sheet> --json
    ```
 
-   The output holds the label totals, the same counts split by kind, age bucket and anchor status, the sample frame size, the seed, and Cohen's kappa over the notes both judges labelled. It holds no note text, no title, no path and no entry id - not by convention but by a check that runs on every score: each note's text, title and anchor path is looked for in the serialized result, and one hit refuses the whole score.
+   The output holds the label totals, the same counts split by kind, age bucket and anchor status, the sample frame size, the seed, and Cohen's kappa over the notes both judges labelled. The project is named only by a SHA-256 prefix of its key, never by the key: a project key can be derived from a local checkout path, and the score is the part meant to be shared. It holds no note text, no title, no path and no entry id - not by convention but by a check that runs on every score: each note's text, title and anchor path is looked for in the serialized result, and one hit refuses the whole score.
 
 ## Anchor status
 
@@ -43,11 +43,13 @@ Each sampled note carries the anchors it names (its `path:` about nodes, at most
 - `changed since note time` - the path exists and at least one commit touched it after the note's timestamp (`git log --since <note time> -- <path>`);
 - `missing` - the path does not exist now.
 
+The sheet and the score spell that middle state `changed`; it is this document's `changed since note time`.
+
 A note's own status folds those: any `missing` anchor makes it `missing`, else any `changed` makes it `changed`, else `present`. A note that names no path anchor is `none` - no check applies, and a high `none` share is itself a finding about how the notes are written. Status is a hint for the judge, never a verdict: a rename reads as `missing`, a comment-only edit reads as `changed`, and a note can be `correct` while its anchor moved. The audit needs a git work tree; run it from the project the notes describe, and it refuses otherwise, naming that next step.
 
 ## The sheet
 
-The sheet is private and local: written `0600` under `eval/` in the memory home (or `--out <path>`), never overwritten, never part of a shard segment, never synced and never committed. It holds what the notes say, so treat it as note content: the score is what may be shared - quote counts and kappa, not the sheet. `frame` is the size of the frame the sample was drawn from, `drawn` is how many notes it holds.
+The sheet is private and local: written `0600` under `eval/` in the memory home (or `--out <path>`), never overwritten, never part of a shard segment, never synced and never committed. It holds what the notes say, so treat it as note content: the score is what may be shared - quote counts and kappa, not the sheet. `frame` is the size of the frame the sample was drawn from, `drawn` is how many notes it holds. The frame is read from one listing bounded at 20,000 live notes; a project larger than that reports `truncated`, and its `frame` is a floor rather than a count.
 
 A sheet is re-scoreable anywhere, and only re-checkable where it was drawn: anchors are work-tree relative, and `root` records the tree they were read in.
 
