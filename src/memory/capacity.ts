@@ -212,8 +212,11 @@ export function capacityReport(opts: {
   const samples = opts.inject?.metrics ?? readMetrics(base);
   const hookWalls = samples.filter((s) => s.kind === "hook" && typeof s.wallMs === "number").map((s) => s.wallMs!);
   const hookRss = samples.filter((s) => s.kind === "hook" && typeof s.rssMB === "number").map((s) => s.rssMB!);
-  const searchWalls = samples.filter((s) => s.kind === "search" && typeof s.wallMs === "number").map((s) => s.wallMs!);
-  const searchRss = samples.filter((s) => s.kind === "search" && typeof s.rssMB === "number").map((s) => s.rssMB!);
+  // #485: every completed read-tool call appends a `search` sample carrying its tool name; R3's reading is `amem_search`'s.
+  // A sample without a tool name counts as a search reading, so a hand-written or pre-#485 sample is still read.
+  const searchSamples = samples.filter((s) => s.kind === "search" && (s.tool === undefined || s.tool === "amem_search"));
+  const searchWalls = searchSamples.filter((s) => typeof s.wallMs === "number").map((s) => s.wallMs!);
+  const searchRss = searchSamples.filter((s) => typeof s.rssMB === "number").map((s) => s.rssMB!);
   const metrics = { samples: samples.length, hookP95Ms: p95(hookWalls), hookRssMB: p95(hookRss), searchP95Ms: p95(searchWalls), searchRssMB: p95(searchRss) };
 
   const homeConfig = readCaptureConfigFile(join(base, "capture-config.json"));

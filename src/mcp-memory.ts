@@ -14,6 +14,7 @@ import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
 import { hashJSON, readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
+import { appendMetricsLater, createPeakTracker } from "./memory/metrics.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
@@ -341,17 +342,44 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     };
     const exposed = { ...tools };
     const readTools = ["amem_search", "amem_evidence", "amem_show", "amem_timeline", "amem_graph", "amem_brief", "amem_vault_candidates"] as const;
+    // #485: the process peak is monotonic, so a call can be credited with raising it only when no other read call was
+    // in flight while it grew; the tracker owns that rule and the observed baseline.
+    const peaks = createPeakTracker();
     for (const name of readTools) exposed[name] = async args => {
-      fullGuard();
-      const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
-      const sourceCurrent = store.beginRecallRead();
-      if (policyKey(policyOptions()) !== revision) return unavailable();
-      return calls.run({ policy: snapshot, revision, configured }, async () => {
-        const result = await tools[name](args);
-        fullGuard(); sourceCurrent();
+      // #485: the sample measures the served span, so the clock and the peak window open at entry, before the guard, the
+      // policy snapshot and `beginRecallRead()` - whose preparation (an index refresh, a prune) the caller waits for.
+      const started = performance.now();
+      let window: ReturnType<typeof peaks.begin> | undefined;
+      try { window = peaks.begin(); } catch { /* telemetry is an observation, never a precondition */ }
+      // One bounded sample per completed call: the tool name, the wall time and the process peak. Never the arguments,
+      // the query text, an id or a result. It is handed off, not written: the response is queued first and the write is
+      // asynchronous, so telemetry can neither fail, refuse, delay nor block a completed call on disk.
+      const recorded = (): void => {
+        try {
+          const ended = window === undefined ? undefined : peaks.end(window);
+          window = undefined;
+          if (ended?.peakKB === undefined) return;
+          appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "search", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
+        } catch { /* a lost telemetry sample is never a failed call */ }
+      };
+      try {
+        fullGuard();
+        const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
+        const sourceCurrent = store.beginRecallRead();
         if (policyKey(policyOptions()) !== revision) return unavailable();
+        const result = await calls.run({ policy: snapshot, revision, configured }, async () => {
+          const value = await tools[name](args);
+          fullGuard(); sourceCurrent();
+          if (policyKey(policyOptions()) !== revision) return unavailable();
+          return value;
+        });
+        recorded();
         return result;
-      });
+      } catch (error) {
+        // A refused or failed call records nothing, but the peak it may have raised still advances the baseline.
+        try { if (window !== undefined) peaks.abort(window); } catch { /* nothing recorded, nothing to correct */ }
+        throw error;
+      }
     };
     return { tools: exposed, close, onEmitted };
   } catch (error) { close(); throw error; }

@@ -28,7 +28,8 @@ async function fixture(mode: Mode = "legacy") {
   const cli = (args: string[], extra: Partial<CliContext> = {}) => bound(() => runCli(args, { cwd: root, env: {}, stdinTTY: true, ...extra }));
   const counters = () => { const port = new CandidateStore({ memoryDir: base }); try { return port.counters(project); } finally { port.close(); } };
   const mcp = () => { const session = createMemoryMcp({ cwd: root, base, project }); cleanup.push(() => session.close()); return session; };
-  const bytes = () => Object.fromEntries(readdirSync(base, { recursive: true, withFileTypes: true }).filter(row => row.isFile() && row.name.endsWith(".jsonl")).map(row => { const file = join(row.parentPath, row.name); return [file, readFileSync(file, "utf8")]; }));
+  // `metrics.jsonl` is machine-local read-call telemetry (#485), not memory data, so it stays out of this byte snapshot.
+  const bytes = () => Object.fromEntries(readdirSync(base, { recursive: true, withFileTypes: true }).filter(row => row.isFile() && row.name.endsWith(".jsonl") && row.name !== "metrics.jsonl").map(row => { const file = join(row.parentPath, row.name); return [file, readFileSync(file, "utf8")]; }));
   return { root, base, project, use, note, bound, cli, counters, mcp, bytes, iso: () => new Date(clock).toISOString(), advance: () => { clock += 1000; } };
 }
 async function briefFixture(mode: Mode) {
