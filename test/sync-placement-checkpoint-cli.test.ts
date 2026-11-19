@@ -61,7 +61,11 @@ test("#288: headroom compares both inputs, reports unknown cache, and rejects a 
   expect(unknown.prospectivePlan.state).toBe("unavailable"); expect(unknown.largestPlan).toEqual(completed);
   const pending = checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 20, reservedJournalChunks: 4 });
   expect(pending.largestPlan).toEqual({ slots: 20, reservedJournalChunks: 4 });
-  expect(() => checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 250, reservedJournalChunks: 10 })).toThrow("11 over the limit");
+  // Four staged files plus active.json and one later renewal: a 250-object plan fits exactly.
+  const exact = checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 250, reservedJournalChunks: 0 });
+  expect(exact).toMatchObject({ liveAfter: 5, required: 256, remaining: 0 });
+  expect(() => checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 251, reservedJournalChunks: 0 })).toThrow("1 over the limit");
+  expect(() => checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 250, reservedJournalChunks: 10 })).toThrow("10 over the limit");
   expect(() => checkpointHeadroomFor(0, completed, { state: "cache-only", slots: 250, reservedJournalChunks: 10 })).toThrow("multi-plan split");
 });
 
@@ -146,7 +150,9 @@ test("#288 step 3: confirm refuses below the person floor, never writes it, then
   const before = readEffectiveSyncPlacementWriters(f.base);
   expect(await confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR })).toMatchObject({ window: 1, renewed: true, planHash: preview.planHash, nextStep: "amem sync" });
   releasePlacementStorageCaches();
-  expect(resolvePlacementWindow(f.base, f.epochHash)).toMatchObject({ window: 1, pending: false });
+  const window = resolvePlacementWindow(f.base, f.epochHash);
+  expect(window).toMatchObject({ window: 1, pending: false });
+  expect(preview.headroom.liveAfter).toBe(readdirSync(window.dir).length + 1);
   expect(tree(f.epochDir)).toEqual(frozen);
   const after = readEffectiveSyncPlacementWriters(f.base);
   expect(after.revisionSequence).toBe(1); expect(after.revisionHash).not.toBe(before.revisionHash);

@@ -120,7 +120,7 @@ async function checkpointHeadroom(home: string, intent: CheckpointIntent): Promi
 export function checkpointHeadroomFor(pages: number, completed: { slots: number; reservedJournalChunks: number }, prospective: CheckpointProspective): PlacementCheckpointHeadroom {
   const largest = prospective.state === "cache-only" && prospective.slots + prospective.reservedJournalChunks > completed.slots + completed.reservedJournalChunks
     ? { slots: prospective.slots, reservedJournalChunks: prospective.reservedJournalChunks } : completed;
-  const liveAfter = pages + 5 + 1, nextRenewal = 1, required = liveAfter + nextRenewal + largest.slots + largest.reservedJournalChunks;
+  const liveAfter = pages + 4 + 1, nextRenewal = 1, required = liveAfter + nextRenewal + largest.slots + largest.reservedJournalChunks;
   const result: PlacementCheckpointHeadroom = { limit: PLACEMENT_JOURNAL_MAX_OBJECTS, liveAfter, nextRenewal, completedPlan: completed, prospectivePlan: prospective,
     largestPlan: largest, required, remaining: PLACEMENT_JOURNAL_MAX_OBJECTS - required };
   if (result.remaining < 0) throw new PlacementCheckpointError("headroom",
