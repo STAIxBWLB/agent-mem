@@ -133,7 +133,7 @@ test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed m
     expect(existsSync(f.checkpoints)).toBe(false);
     expect(await runCli(["migrate", "--sync-placement", "--checkpoint", "--resume"], { cwd: f.root, env, stdinTTY: false })).toContain("nothing pending");
     expect(await runCli(["migrate", "--sync-placement", "--checkpoint", "--abandon"], { cwd: f.root, env, stdinTTY: false })).toContain("nothing pending");
-    for (const argv of [["--confirm", ...roots], ["--resume", "--abandon"], ["--plan", plan, ...roots], ["--resume", ...roots], ["--apply", ...roots]])
+    for (const argv of [["--confirm", ...roots], ["--resume", "--abandon"], ["--plan", plan, ...roots], ["--resume", ...roots], ["--apply", ...roots], ["--list-remote"], ["--from-remote"]])
       await expect(runCli(["migrate", "--sync-placement", "--checkpoint", ...argv], { cwd: f.root, env, stdinTTY: false })).rejects.toThrow();
     await expect(runCli(["migrate", "--checkpoint"], { cwd: f.root, env, stdinTTY: false })).rejects.toThrow("apply only to --sync-placement");
   });
