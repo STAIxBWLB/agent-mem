@@ -957,13 +957,18 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const n = options["--n"] === undefined ? 40 : Number(options["--n"]), seed = typeof options["--seed"] === "string" ? options["--seed"] : "";
         if (!Number.isInteger(n) || n < 1 || n > MAX_AUDIT_NOTES) throw new Error(`--n must be an integer from 1 to ${MAX_AUDIT_NOTES}`);
         if (!/^[A-Za-z0-9._-]{1,64}$/.test(seed)) throw new Error("--seed is required: 1 to 64 letters, digits, '.', '_' or '-', so the same seed and store draw the same sample");
-        const project = options["--project"] === undefined ? boundProject() : resolveAlias(memoryHome(), String(options["--project"])), root = audit.auditRoot(context.cwd ?? process.cwd());
+        // Anchors are checked against this cwd's work tree, so another project's key would silently check them against the wrong repository: the audit only
+        // samples the project bound here or one of its aliases, and names the checkout to run it from.
+        const cwd = context.cwd ?? process.cwd(), home = memoryHome(), bound = boundProject();
+        const project = options["--project"] === undefined ? bound : resolveAlias(home, String(options["--project"]));
+        if (project !== bound && !aliasedKeys(home, bound).includes(project)) throw new Error(`the audit checks note anchors against the git work tree of ${cwd}, so it samples only the project bound there (${bound}); run \`amem eval audit sample\` from that project's checkout to audit that project`);
+        const root = audit.auditRoot(cwd);
         const store = curatedStore(project, { deferPromotions: true });
         let sheet;
         try { sheet = audit.auditSample({ store, project, n, seed, root }); } finally { store.close(); }
         const out = typeof options["--out"] === "string" ? options["--out"] : join(memoryHome(), "eval", `audit-${project.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80)}-${seed}.json`);
         const file = audit.writeAuditSheet(out, sheet);
-        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn }, null, 2) : audit.auditSheetText(sheet, file);
+        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated }, null, 2) : audit.auditSheetText(sheet, file);
       }
       if (parsed.path[2] === "score") {
         const [sheet] = parsed.positionals;

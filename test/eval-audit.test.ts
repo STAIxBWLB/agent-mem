@@ -1,14 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { AUDIT_KINDS, AUDIT_LABELS, MAX_AUDIT_NOTES, auditAge, cohenKappa, foldAnchorStatus } from "../src/memory/eval.ts";
+import { appendAlias } from "../src/memory/aliases.ts";
 import { auditSample, auditScore, auditScoreText, readAuditSheet, writeAuditSheet, type AuditNote, type AuditSheet } from "../src/memory/eval-audit.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { realPath } from "../src/memory/platform.ts";
-import { MemoryStore, type Kind } from "../src/memory/store.ts";
+import { MemoryStore, type Kind, type View } from "../src/memory/store.ts";
 
 // agent-mem#326: a correctness audit that leaves judging outside amem. No model and no network here: the only outside read is the project's own git history.
 const roots: string[] = [];
@@ -54,7 +56,7 @@ test("AC1: the same seed and store draw the same stratified sample, and a differ
   const store = seeded(r, Array.from({ length: 12 }, (_, index) => ({ text: `note ${index} about the parcel routing rules`, kind: kinds[index % 4]!, at: NOW - ages[index % 3]! * DAY, about: [] })));
   try {
     const first = sample(r, store, "seed-a"), again = sample(r, store, "seed-a"), other = sample(r, store, "seed-b");
-    expect(first.frame).toBe(12); expect(first.drawn).toBe(6);
+    expect(first.frame).toBe(12); expect(first.drawn).toBe(6); expect(first.truncated).toBe(false);
     expect(new Set(first.notes.map(note => note.id)).size).toBe(6);
     expect(again.notes.map(note => note.id)).toEqual(first.notes.map(note => note.id));
     expect(other.notes.map(note => note.id)).not.toEqual(first.notes.map(note => note.id));
@@ -124,7 +126,7 @@ test("AC2: the score carries counts and kappa only - no note text, title, anchor
   } finally { store.close(); }
 });
 
-test("AC2: a sheet that would leak free text is refused, whether in a judge cell, an unknown key or a field the score copies", () => {
+test("AC2: a sheet that would leak free text is refused, whether in a judge cell, an unknown key or a field parsed into a bucket name", () => {
   const r = rig(), store = seeded(r, [{ text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:src/present.ts"] }]);
   try {
     const sheet = sample(r, store, "refuse", 1), file = join(r.root, "sheet.json");
@@ -138,9 +140,20 @@ test("AC2: a sheet that would leak free text is refused, whether in a judge cell
     extra.notes[0]!.comment = "the parcel router keeps its retry budget in src/present.ts";
     writeFileSync(file, JSON.stringify(extra));
     expect(() => readAuditSheet(file)).toThrow('has an unknown key "comment"');
-    // Every field the score copies is checked too: a project key that reads like note text refuses the score itself.
+    // A kind becomes a `byKind` key and the seed is copied into the score, so both are the closed sets `sample` draws with, not free strings from the file.
+    const oddKind = JSON.parse(JSON.stringify(sheet)) as { notes: { kind: string }[] };
+    oddKind.notes[0]!.kind = "the parcel router keeps its retry budget";
+    writeFileSync(file, JSON.stringify(oddKind));
+    expect(() => readAuditSheet(file)).toThrow("kind must be one of decision, finding, contract, fail");
+    writeFileSync(file, JSON.stringify({ ...sheet, seed: "my seed" }));
+    expect(() => readAuditSheet(file)).toThrow("seed must be 1 to 64 letters, digits");
+    writeFileSync(file, JSON.stringify({ ...sheet, truncated: "yes" }));
+    expect(() => readAuditSheet(file)).toThrow("truncated must be true or false");
+    // The project key stays in the sheet: the score names the project only by digest, because a key can be built from a local checkout path.
     const polluted = { ...sheet, project: sheet.notes[0]!.text } as AuditSheet;
-    expect(() => auditScore(polluted)).toThrow("content-free");
+    const scored = auditScore(polluted);
+    expect(scored.project).toBe(`sha256:${createHash("sha256").update(polluted.project).digest("hex").slice(0, 16)}`);
+    expect(JSON.stringify(scored)).not.toContain(polluted.project);
     // And the honest sheet scores.
     expect(auditScore(sheet).labelled).toBe(0);
   } finally { store.close(); }
@@ -162,7 +175,7 @@ test("AC3: kappa matches a hand-worked fixture", () => {
     id: String(index).padStart(32, "0"), kind: "finding", at: new Date(NOTE).toISOString(), age: "lt30", anchor: "present", anchors: [{ path: `src/${index}.ts`, status: "present" }],
     text: `synthetic note ${index}`, judge_a: judge_a as AuditNote["judge_a"], judge_b: judge_b as AuditNote["judge_b"],
   }));
-  const score = auditScore({ schema: "amem.audit/v1", project: "fixture/project", seed: "s", drawnAt: new Date(NOW).toISOString(), root: "/fixture", frame: 10, drawn: 10, rubric: { correct: "c", stale: "s", wrong: "w", unverifiable: "u" }, notes });
+  const score = auditScore({ schema: "amem.audit/v1", project: "fixture/project", seed: "s", drawnAt: new Date(NOW).toISOString(), root: "/fixture", frame: 10, drawn: 10, truncated: false, rubric: { correct: "c", stale: "s", wrong: "w", unverifiable: "u" }, notes });
   expect(score.byLabel).toEqual({ correct: 6, stale: 2, wrong: 2, unverifiable: 0 });
   expect(score.agreement).toEqual({ pairs: 10, agreed: 8, kappa: 0.6875 });
   expect(score.byAge).toEqual({ lt30: { correct: 6, stale: 2, wrong: 2 } });
@@ -184,6 +197,17 @@ test("#326: the sheet file is private, never overwritten, and scores from disk",
     writeFileSync(join(r.memory, "bad.json"), "{ not json"); expect(() => readAuditSheet(join(r.memory, "bad.json"))).toThrow("not valid JSON");
     writeFileSync(join(r.memory, "big.json"), "x".repeat(4 * 1024 * 1024 + 1)); expect(() => readAuditSheet(join(r.memory, "big.json"))).toThrow("regular file within");
   } finally { store.close(); }
+});
+
+test("#326: a frame cut by the store's listing bound says so rather than reporting the bound as the whole frame", () => {
+  const r = rig();
+  // The bound is 20,000 rows, so a synthetic listing reaches it without writing that many notes.
+  const views = Array.from({ length: 20_000 }, (_, index) => ({ id: String(index).padStart(32, "0"), kind: "finding", at: "not a date", about: [], text: "", title: null }) as unknown as View);
+  const sheet = auditSample({ store: { list: () => views } as unknown as MemoryStore, project: "fixture/project", n: 1, seed: "cap", root: r.repo, now: NOW });
+  expect(sheet.truncated).toBe(true); expect(sheet.frame).toBe(0);
+  const score = auditScore(sheet);
+  expect(score.truncated).toBe(true);
+  expect(auditScoreText(score)).toContain("the store listing hit its cap, so the frame is a floor");
 });
 
 test("AC4: the audit adds no model or network surface, and `preference` stays out of the frame", async () => {
@@ -231,6 +255,22 @@ test("#326: `amem eval audit sample` writes the private sheet and prints a conte
   expect(scored.byLabel).toEqual({ correct: 1, stale: 1, wrong: 0, unverifiable: 0 });
   expect(scored.agreement).toEqual({ pairs: 2, agreed: 1, kappa: 0 });
   expect(await cli(r, ["eval", "audit", "score", join(r.root, "filled.json")])).toContain("kappa 0.000 over 2");
+}, 60_000);
+
+test("#326: `eval audit sample --project` refuses a project the cwd's work tree does not own, naming the checkout to run from", async () => {
+  const r = rig(), other = join(r.root, "elsewhere"); mkdirSync(other, { recursive: true });
+  const store = seeded(r, [{ text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:src/present.ts"] }]);
+  store.close();
+  const elsewhere = memoryProjectKey(other);
+  expect(elsewhere).not.toBe(r.project);
+  // Anchors are read in this cwd's tree, so another project's key would silently check them against the wrong repository.
+  await expect(cli(r, ["eval", "audit", "sample", "--seed", "away", "--n", "1", "--project", elsewhere])).rejects.toThrow("run `amem eval audit sample` from that project's checkout");
+  // The project bound here is sampled when named explicitly, and so is an alias that resolves to it.
+  const own = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "own", "--n", "1", "--project", r.project, "--json"])) as { project: string; drawn: number };
+  expect(own).toMatchObject({ project: r.project, drawn: 1 });
+  appendAlias(r.memory, { alias: "parcel/legacy", key: r.project, actor: "fixture", machine: "fixture" });
+  const aliased = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "aliased", "--n", "1", "--project", "parcel/legacy", "--json"])) as { project: string };
+  expect(aliased.project).toBe(r.project);
 }, 60_000);
 
 test("#326: the audit command refuses a missing seed, an out-of-range n and a missing sheet, naming the next step", async () => {

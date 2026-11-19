@@ -29,6 +29,8 @@ export interface AuditSheet {
   schema: typeof AUDIT_SCHEMA; project: string; seed: string; drawnAt: string;
   /** The git work tree the anchors were checked in; anchors are repository-relative, so the sheet is only re-scoreable, never re-checkable, elsewhere. */
   root: string; frame: number; drawn: number;
+  /** True when the store's listing bound cut the frame, so `frame` is a floor rather than the project's live note count. */
+  truncated: boolean;
   rubric: Record<AuditLabel, string>;
   notes: AuditNote[];
 }
@@ -37,6 +39,13 @@ export interface AuditSampleOptions { store: MemoryStore; project: string; n: nu
 /** One frame member before the draw: the view plus the bucket the sheet will name. */
 interface Candidate { view: View; age: AuditAgeBucket }
 
+/**
+ * The bound on the one listing the frame is read from. A project with more live notes than this has its frame cut, and the sheet says `truncated` rather than
+ * reporting the bound as if it were the whole frame.
+ * ponytail: one bounded listing instead of a windowed walk; upgrade to a cursor over the store's ordering when a frame this size is real.
+ */
+const AUDIT_LIST_CAP = MAX_AUDIT_NOTES * 100;
+
 const fail = (message: string): never => { throw new Error(`invalid audit sheet: ${message}`); };
 const object = (value: unknown, what: string): Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : fail(`${what} must be an object`);
 function exact(row: Record<string, unknown>, allowed: readonly string[], what: string): void {
@@ -44,6 +53,8 @@ function exact(row: Record<string, unknown>, allowed: readonly string[], what: s
 }
 const string = (value: unknown, what: string, max: number): string => typeof value === "string" && value.length <= max && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value) ? value : fail(`${what} must be a string of at most ${max} characters without control characters`);
 const oneOf = <T extends string>(value: unknown, vocabulary: readonly T[], what: string): T => vocabulary.includes(value as T) ? value as T : fail(`${what} must be one of ${vocabulary.join(", ")}`);
+const seedValue = (value: unknown): string => typeof value === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(value) ? value : fail("seed must be 1 to 64 letters, digits, '.', '_' or '-', the alphabet `sample` draws with");
+const bool = (value: unknown, what: string): boolean => typeof value === "boolean" ? value : fail(`${what} must be true or false`);
 
 /** SHA-256 of the seed with a stratum and its ordinal, so one seed gives one order on every machine and runtime (no `Math.random`, no clock). */
 function seededOrder(seed: string, key: string, size: number): number[] {
@@ -125,7 +136,8 @@ export function auditSample(opts: AuditSampleOptions): AuditSheet {
   if (!Number.isInteger(opts.n) || opts.n < 1 || opts.n > MAX_AUDIT_NOTES) throw new Error(`the audit draws 1 to ${MAX_AUDIT_NOTES} notes, not ${opts.n}`);
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(opts.seed)) throw new Error("the audit seed is 1 to 64 letters, digits, '.', '_' or '-', so the same seed and store draw the same sample");
   const now = opts.now ?? Date.now(), kinds = new Set<string>(AUDIT_KINDS), candidates: Candidate[] = [];
-  for (const view of opts.store.list({ project: opts.project, limit: MAX_AUDIT_NOTES * 100 })) {
+  const listed = opts.store.list({ project: opts.project, limit: AUDIT_LIST_CAP });
+  for (const view of listed) {
     if (!kinds.has(view.kind)) continue;
     const age = auditAge(view.at, now);
     if (age !== undefined) candidates.push({ view, age });
@@ -140,7 +152,7 @@ export function auditSample(opts: AuditSampleOptions): AuditSheet {
   });
   return {
     schema: AUDIT_SCHEMA, project: opts.project, seed: opts.seed, drawnAt: new Date(now).toISOString(), root: opts.root,
-    frame: candidates.length, drawn: notes.length, rubric: { ...AUDIT_RUBRIC }, notes,
+    frame: candidates.length, drawn: notes.length, truncated: listed.length >= AUDIT_LIST_CAP, rubric: { ...AUDIT_RUBRIC }, notes,
   };
 }
 
@@ -178,11 +190,12 @@ export function readAuditSheet(path: string): AuditSheet {
 
 /**
  * Strict parse of a filled sheet. Unknown keys are refused rather than ignored: the sheet holds note text, and a key the score does not know is exactly how
- * free text would reach the content-free output. A judge cell holds one of the four labels or stays empty.
+ * free text would reach the content-free output. A judge cell holds one of the four labels or stays empty, a kind is one of the audit's four, and the seed is
+ * the alphabet `sample` accepts - every value the score copies or turns into a bucket name is a closed set, not a string from the file.
  */
 export function parseAuditSheet(raw: unknown): AuditSheet {
   const root = object(raw, "the sheet");
-  exact(root, ["schema", "project", "seed", "drawnAt", "root", "frame", "drawn", "rubric", "notes"], "the sheet");
+  exact(root, ["schema", "project", "seed", "drawnAt", "root", "frame", "drawn", "truncated", "rubric", "notes"], "the sheet");
   if (root.schema !== AUDIT_SCHEMA) fail(`schema must be "${AUDIT_SCHEMA}"`);
   if (!Array.isArray(root.notes) || !root.notes.length || root.notes.length > MAX_AUDIT_NOTES) fail(`notes must hold 1 to ${MAX_AUDIT_NOTES} items`);
   const notes = (root.notes as unknown[]).map((item, index): AuditNote => {
@@ -197,7 +210,7 @@ export function parseAuditSheet(raw: unknown): AuditSheet {
       return { path: string(entry.path, `${what}.anchors[${at}].path`, 400), status: oneOf(entry.status, ["present", "changed", "missing"] as const, `${what}.anchors[${at}].status`) };
     });
     return {
-      id, kind: string(row.kind, `${what}.kind`, 40), at: string(row.at, `${what}.at`, 40), age: oneOf(row.age, AUDIT_AGE_BUCKETS, `${what}.age`),
+      id, kind: oneOf(row.kind, AUDIT_KINDS, `${what}.kind`), at: string(row.at, `${what}.at`, 40), age: oneOf(row.age, AUDIT_AGE_BUCKETS, `${what}.age`),
       anchor: oneOf(row.anchor, ["present", "changed", "missing", "none"] as const, `${what}.anchor`), anchors,
       ...(row.title === undefined ? {} : { title: string(row.title, `${what}.title`, 200) }),
       text: string(row.text, `${what}.text`, 4_000), judge_a: judge(row.judge_a, "judge_a"), judge_b: judge(row.judge_b, "judge_b"),
@@ -205,23 +218,32 @@ export function parseAuditSheet(raw: unknown): AuditSheet {
   });
   const rubric = object(root.rubric, "the sheet's rubric");
   return {
-    schema: AUDIT_SCHEMA, project: string(root.project, "project", 200), seed: string(root.seed, "seed", 64),
+    schema: AUDIT_SCHEMA, project: string(root.project, "project", 200), seed: seedValue(root.seed),
     drawnAt: string(root.drawnAt, "drawnAt", 40), root: string(root.root, "root", 1_000),
     frame: typeof root.frame === "number" && Number.isInteger(root.frame) && root.frame >= 0 ? root.frame : fail("frame must be a non-negative integer"),
     drawn: typeof root.drawn === "number" && Number.isInteger(root.drawn) && root.drawn >= 0 ? root.drawn : fail("drawn must be a non-negative integer"),
+    truncated: bool(root.truncated, "truncated"),
     rubric: Object.fromEntries(AUDIT_LABELS.map(label => [label, string(rubric[label] ?? AUDIT_RUBRIC[label], `rubric.${label}`, 400)])) as Record<AuditLabel, string>,
     notes,
   };
 }
 
 export interface AuditScore {
-  schema: "amem.audit.score/v1"; project: string; seed: string; frame: number; drawn: number;
+  schema: "amem.audit.score/v1";
+  /** A SHA-256 prefix of the sheet's project key, never the key: a key can be derived from a local checkout path, and the score is the part meant to be shared. */
+  project: string;
+  seed: string; frame: number; drawn: number; truncated: boolean;
   labelled: number; unlabelled: number;
   byLabel: Record<AuditLabel, number>;
   byKind: Record<string, Partial<Record<AuditLabel, number>>>;
   byAge: Record<string, Partial<Record<AuditLabel, number>>>;
   byAnchor: Record<string, Partial<Record<AuditLabel, number>>>;
   agreement: { pairs: number; agreed: number; kappa: number | null };
+}
+
+/** So two scores name the same project without carrying a key, which can be built from the person's own checkout path. */
+function projectDigest(project: string): string {
+  return `sha256:${createHash("sha256").update(project).digest("hex").slice(0, 16)}`;
 }
 
 const tally = (rows: readonly AuditNote[], key: (note: AuditNote) => string): Record<string, Partial<Record<AuditLabel, number>>> => {
@@ -236,13 +258,14 @@ const tally = (rows: readonly AuditNote[], key: (note: AuditNote) => string): Re
 
 /**
  * Counts by label against kind, age bucket and anchor status, plus Cohen's kappa over the notes both judges labelled. The result is content-free by a check
- * that runs here, not by convention: every note's text, title and anchor path is looked for in the serialized score, and one hit refuses the whole score.
+ * that runs here, not by convention: the project key is replaced by a digest, and every note's text, title and anchor path is looked for in the serialized
+ * score, where one hit refuses the whole score.
  */
 export function auditScore(sheet: AuditSheet): AuditScore {
   const labelled = sheet.notes.filter(note => note.judge_a !== "");
   const pairs = sheet.notes.filter(note => note.judge_a !== "" && note.judge_b !== "").map(note => [note.judge_a, note.judge_b] as const);
   const score: AuditScore = {
-    schema: "amem.audit.score/v1", project: sheet.project, seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn,
+    schema: "amem.audit.score/v1", project: projectDigest(sheet.project), seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated,
     labelled: labelled.length, unlabelled: sheet.notes.length - labelled.length,
     byLabel: Object.fromEntries(AUDIT_LABELS.map(label => [label, labelled.filter(note => note.judge_a === label).length])) as Record<AuditLabel, number>,
     byKind: tally(sheet.notes, note => note.kind), byAge: tally(sheet.notes, note => note.age), byAnchor: tally(sheet.notes, note => note.anchor),
@@ -261,8 +284,9 @@ export function auditScore(sheet: AuditSheet): AuditScore {
 /** Human text for `amem eval audit sample`: where the sheet is, and what filling it costs. Content-free, like the score. */
 export function auditSheetText(sheet: AuditSheet, file: string): string {
   const cells = new Set(sheet.notes.map(note => `${note.kind}/${note.age}`));
+  const frame = `${sheet.frame}${sheet.truncated ? "+ (the store listing hit its cap, so the frame is a floor)" : ""}`;
   return [
-    `audit sample: ${sheet.drawn} of ${sheet.frame} ${sheet.project} notes, seed "${sheet.seed}", ${cells.size} kind/age cells, anchors checked in ${sheet.root}`,
+    `audit sample: ${sheet.drawn} of ${frame} ${sheet.project} notes, seed "${sheet.seed}", ${cells.size} kind/age cells, anchors checked in ${sheet.root}`,
     `sheet: ${file} (0600, local only; never synced and never committed)`,
     `fill judge_a and judge_b with ${AUDIT_LABELS.join(", ")} (rubric in the sheet header), then run \`amem eval audit score ${file}\``,
   ].join("\n");
@@ -271,7 +295,8 @@ export function auditSheetText(sheet: AuditSheet, file: string): string {
 /** Human text for `amem eval audit score`; the JSON is the machine form. */
 export function auditScoreText(score: AuditScore): string {
   const row = (label: string, counts: Partial<Record<AuditLabel, number>>) => `${label.padEnd(10)} ${AUDIT_LABELS.map(name => String(counts[name] ?? 0).padStart(4)).join(" ")}`;
-  const head = `audit score: ${score.drawn} of ${score.frame} ${score.project} notes, seed "${score.seed}", ${score.labelled} labelled, ${score.unlabelled} not`;
+  const frame = `${score.frame}${score.truncated ? "+ (the store listing hit its cap, so the frame is a floor)" : ""}`;
+  const head = `audit score: project ${score.project}, ${score.drawn} of ${frame} notes, seed "${score.seed}", ${score.labelled} labelled, ${score.unlabelled} not`;
   return [
     head,
     `${"".padEnd(10)} ${AUDIT_LABELS.map(name => name.slice(0, 4).padStart(4)).join(" ")}`,
