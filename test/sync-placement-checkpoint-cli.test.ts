@@ -14,6 +14,8 @@ import { abandonPlacementCheckpointPerson, confirmPlacementCheckpoint, previewPl
 import { placementSyncBoundMessage } from "../src/memory/sync-placement-bound.ts";
 import { createInspectionRemote } from "./fakes/sync-placement-inspection.ts";
 import { runCli } from "../src/cli.ts";
+import { memoryGitSync } from "../src/memory/platform.ts";
+import { shardKeyHash } from "../src/memory/shard.ts";
 import { applyRealmAdmission } from "../src/memory/sync-placement-realm-admission.ts";
 import { remoteRealmAdmission } from "../src/memory/sync-placement-remote-admission.ts";
 
@@ -76,6 +78,23 @@ test("#288: offline prospective plan uses cache and pending source without modif
     const actual = await f.sync(); expect(actual.ok).toBe(true);
     expect(actual.placementPublication?.journalObjects?.newPlan?.slots).toBe(preview.headroom.prospectivePlan.slots);
   }
+}, 240_000);
+
+test("#288: confirm refuses when reviewed cache evidence disappears", async () => {
+  const f = await fixture(); expect((await f.sync()).ok).toBe(true);
+  const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
+  try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "synthetic pending checkpoint row", about: [] }); }
+  finally { store.close(); }
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  expect(preview.headroom.prospectivePlan.state).toBe("cache-only");
+  const cache = join(f.base, "shard-sync-placement", "objects.git");
+  const deleted = memoryGitSync(["--git-dir", cache, "update-ref", "-d", `refs/heads/amem/p/${shardKeyHash(f.project)}`], { encoding: "utf8" });
+  expect(deleted.status).toBe(0);
+  const before = tree(f.base);
+  const current = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  expect(current.headroom.prospectivePlan.state).toBe("unavailable");
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR }))).toBe("changed");
+  expect(tree(f.base)).toEqual(before);
 }, 240_000);
 
 test("#288 step 3: preview is readonly and reports composition, headroom and the exact confirm step", async () => {
@@ -183,6 +202,7 @@ test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed m
     const text = await runCli(["migrate", "--sync-placement", "--checkpoint", ...roots], { cwd: f.root, env, stdinTTY: false });
     expect(text).toContain("Objects by holder"); expect(text).toContain("headroom after checkpoint");
     expect(text).toContain("home floor 0.30.0: missing; preview amem formats raise home 0.30.0");
+    expect(text).toContain("completed plan:"); expect(text).toContain("prospective plan:");
     const saved = JSON.parse(await runCli(["migrate", "--sync-placement", "--checkpoint", "--json", ...roots], { cwd: f.root, env, stdinTTY: false }));
     const plan = join(f.root, "checkpoint-plan.json"); writeFileSync(plan, JSON.stringify(saved), { mode: 0o600 });
     // The real floor (0.30.0) is not met by this 0.29.0 install: confirm refuses with the floor step, and writes nothing.
