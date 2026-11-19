@@ -85,6 +85,7 @@ test("#288 step 3: preview is readonly and reports composition, headroom and the
   expect((await f.sync()).ok).toBe(true);
   const before = tree(f.base);
   const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  expect(preview.headroom.prospectivePlan.state).toBe("none");
   expect(tree(f.base)).toEqual(before);
   expect(existsSync(f.checkpoints)).toBe(false);
   expect(preview).toMatchObject({ mode: "checkpoint-preview", window: 0, nextWindow: 1, floorReady: true, writers: 1 });
