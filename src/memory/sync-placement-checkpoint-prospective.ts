@@ -55,9 +55,17 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
     const selected = batch.map(realm), source = previewSelectedSyncPlacementSources(home, selected);
     const targets = batch.map(item => ({ realm: shard(item), profile: resolveShardProfile(home, item.scope === "user" ? { user: true } : { project: item.key }) }));
     const heads = targets.map(target => objects.ref(target.realm));
-    // A missing ref cannot distinguish an empty remote from one not fetched yet.
-    if (heads.some(head => head === undefined)) return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
-    const old = await Promise.all(targets.map((target, index) => objects.auditor(target.realm, active.profile.generation).history(heads[index]!)));
+    // A missing cache ref is usable only when the latest retained completed publication for this remote and realm
+    // observed an absent ref. With no such receipt it could be an unfetched remote, so never invent an empty history.
+    const publications = [...journal.publications.values()].filter(item => item.phase === "completed" && item.bundle.root.remoteHash === objects.remoteHash)
+      .sort((a, b) => a.bundle.root.journal.sequence - b.bundle.root.journal.sequence);
+    const knownEmpty = (identity: PlacementRealm) => {
+      const matching = publications.flatMap(item => item.bundle.root.targets.filter(target => same(target.realm, identity)));
+      const last = matching.at(-1); return !!last && !last.publish && last.expectedRemoteHead === null && last.commit === null;
+    };
+    if (heads.some((head, index) => head === undefined && !knownEmpty(selected[index]!)))
+      return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
+    const old = await Promise.all(targets.map((target, index) => heads[index] ? objects.auditor(target.realm, active.profile.generation).history(heads[index]!) : undefined));
     const planned = targets.map((target, index) => {
       const identity = selected[index]!, id = canonicalJSON(identity), sources = source.sourceRowsByRealm.get(id);
       if (!sources) throw new Error("selected placement source unavailable");
@@ -67,11 +75,11 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
       const inputHash = view.realms[target.realm.scope === "user" ? "user" : `project:${target.realm.key}`];
       const pruned = inputHash ? reducePublicPruneInputs({ dir: target.profile.dir, realm: target.realm, receivingGeneration: active.profile.generation, inputSetHash: inputHash,
         publicationFormat: active.profile.publicationFormat, nativeTargets: [...reduced.targets], ordinary: sources.map(row => row.row) }).targets : reduced.targets;
-      return { realm: target.realm, generation: active.profile.generation, remote: heads[index], local: heads[index], fetched: new Set(old[index]!.rows.keys()),
+      return { realm: target.realm, generation: active.profile.generation, remote: heads[index], local: heads[index], fetched: new Set(old[index]?.rows.keys() ?? []),
         localPrunes: new Map(prunes.filter(row => row.sourcePlacement === "synced").map(row => [row.key.id, row.row as PruneRow])), pruned };
     });
     const lineages = targets.map((target, index) => {
-      const rows = new Map<string, ShardSyncRow>(old[index]!.rows);
+      const rows = new Map<string, ShardSyncRow>(old[index]?.rows);
       for (const value of [...source.rows.values(), ...source.specialRows.values()]) if (same(value.key.realm, selected[index]!) && value.row.op !== "vault_link") {
         const prior = rows.get(value.key.id); if (prior && hashJSON(prior) !== value.key.rowHash) throw new Error("placement row mismatch"); rows.set(value.key.id, value.row);
       }
