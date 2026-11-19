@@ -458,13 +458,13 @@ Bun.spawn=()=>{effects++;throw Error('unexpected process');};Bun.spawnSync=()=>{
 try{readPlacementJournal(${JSON.stringify(active.home)},${JSON.stringify(active.epochHash)});}catch{journalRefused=true;}
 let refusal;
 try{const synced=await syncMemory(store,{remote:${JSON.stringify(active.remote)},visibility:async()=>{effects++;return 'private';},placementAttestation:()=>({legacySyncQuiesced:true,writers:${JSON.stringify(active.port.attest().writers)}})});
-refusal={form:'result',ok:synced.ok,pushed:synced.pushed};}
+refusal={form:'result',ok:synced.ok,pushed:synced.pushed,cause:synced.failure?.cause};}
 catch(error){if(!(error instanceof SyncPlacementJournalError)||error.code!=='corrupt')throw error;refusal={form:'throw',code:error.code};}
 const unchanged=JSON.stringify(inspectionFilesystemSnapshot(${JSON.stringify(active.root)}))===JSON.stringify(before);
 console.log(JSON.stringify({readable,journalRefused,refusal,effects,unchanged,cache:existsSync(${JSON.stringify(join(active.home,"shard-sync-placement"))})}));
 }finally{store.close();}`));
     expect(result).toMatchObject({readable:true,journalRefused:true,effects:0,unchanged:true,cache:false});
-    if(reader==="current")expect(result.refusal).toEqual({form:"throw",code:"corrupt"});
+    if(reader==="current")expect(result.refusal).toEqual({form:"result",ok:false,pushed:false,cause:"unavailable"});
     else expect([{form:"throw",code:"corrupt"},{form:"result",ok:false,pushed:false}]).toContainEqual(result.refusal);
     expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe("");expect(active.reachableIds()).toEqual([]);
   },30_000);
