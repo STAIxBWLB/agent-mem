@@ -19,9 +19,37 @@ for (const [event, phase, branch] of [
   };
   try {
     const result = await hookTimeoutProbe(f, event, false);
-    expect(result.branch).toBe(branch);
+    if (phase === "command") {
+      // The command delay is only reached after admission. The real deadline can expire earlier; the probe proves
+      // the corresponding guard or child lifecycle before returning either branch.
+      expect(["pre-admission", "spawned-not-entered"]).toContain(result.branch);
+      expect(result.ownedChildren).toBe(result.branch === "pre-admission" ? 0 : 2);
+    } else {
+      expect(result.branch).toBe(branch);
+      expect(result.ownedChildren).toBe(0);
+    }
     expect(result.remainingProcesses).toBe(0);
-    expect(result.ownedChildren).toBe(phase === "loader" ? 0 : 2);
+    expect(result.pending).toMatch(/^hook-/);
+    expect(result.rssMB).toBeGreaterThan(0);
+  } finally { f.close(); }
+}, 10000);
+
+// A separate host-seam fixture guarantees time for admission, then delays entry beyond that deadline. It keeps the
+// native-deadline probe above intact and still requires its own successful cleanup control.
+test("controlled PreToolUse timeout proves spawned-not-entered after admission", async () => {
+  const f = hookFixture(), run = f.run;
+  f.run = (name, payload, extra = {}) => {
+    const preload = extra.BUN_OPTIONS!.slice("--preload=".length), code = readFileSync(preload, "utf8");
+    const anchor = "const sleeper='sleep 30 &";
+    expect(code.split(anchor)).toHaveLength(2);
+    writeFileSync(preload, code.replace(anchor, "const sleeper='/bin/sleep 4; sleep 30 &"));
+    return run(name, payload, extra);
+  };
+  try {
+    const result = await hookTimeoutProbe(f, "PreToolUse", false, { run: 1, logicalRun: 1 }, 2000);
+    expect(result.branch).toBe("spawned-not-entered");
+    expect(result.ownedChildren).toBe(2);
+    expect(result.remainingProcesses).toBe(0);
     expect(result.pending).toMatch(/^hook-/);
     expect(result.rssMB).toBeGreaterThan(0);
   } finally { f.close(); }
