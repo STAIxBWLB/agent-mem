@@ -14,6 +14,8 @@ import { abandonPlacementCheckpointPerson, confirmPlacementCheckpoint, previewPl
 import { placementSyncBoundMessage } from "../src/memory/sync-placement-bound.ts";
 import { createInspectionRemote } from "./fakes/sync-placement-inspection.ts";
 import { runCli } from "../src/cli.ts";
+import { applyRealmAdmission } from "../src/memory/sync-placement-realm-admission.ts";
+import { remoteRealmAdmission } from "../src/memory/sync-placement-remote-admission.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); releasePlacementStorageCaches(); });
@@ -103,6 +105,11 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
   expect(() => readPlacementJournal(f.base, f.epochHash)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   expect(() => readEffectiveSyncPlacementWriters(f.base)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   expect(() => activePlacementWriterContext(f.base, activationOwnRoot)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  const pendingBytes = tree(f.base), other = "example.test/checkpoint/unadmitted";
+  await expect(applyRealmAdmission(f.base, other, { mode: "apply" })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  await expect(remoteRealmAdmission(f.base, other, { mode: "apply" })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  await expect(remoteRealmAdmission(f.base, other, { mode: "abandon", confirm: true })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  expect(tree(f.base)).toEqual(pendingBytes);
   await withHome(f.base, async () => {
     for (const env of [{}, { CODEX_THREAD_ID: "t" }])
       await expect(runCli(["migrate", "--sync-placement", "--dry-run", "--writer-root", activationOwnRoot], { cwd: f.root, env, stdinTTY: false })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);

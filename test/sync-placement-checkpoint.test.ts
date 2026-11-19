@@ -126,8 +126,8 @@ test("#288: a started checkpoint refuses placement effects; abandon removes only
   const frozen = tree(f.epochDir), records = readPlacementJournal(f.base, f.epochHash).records;
   expect(() => f.checkpoint(phase => { if (phase === "staged-fsync") throw Error("isolated interruption after the first staged file"); })).toThrow();
   expect(resolvePlacementWindow(f.base, f.epochHash).pending).toBe(true);
-  expect(code(() => readPlacementJournal(f.base, f.epochHash))).toBe("pending");
-  expect(code(() => readWriterHistory(f.base, f.binding))).toBe("pending");
+  expect(code(() => readPlacementJournal(f.base, f.epochHash))).toBe("checkpoint-pending");
+  expect(code(() => readWriterHistory(f.base, f.binding))).toBe("checkpoint-pending");
   // A foreign file in the staged window is never removed.
   const staging = join(f.base, "sync-placement-checkpoints", f.epochHash, "windows", "00001");
   writeFileSync(join(staging, "foreign.json"), "{}\n", { mode: 0o600 });
