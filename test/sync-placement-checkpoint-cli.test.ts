@@ -113,6 +113,9 @@ test("#288 step 3: confirm refuses below the person floor, never writes it, then
   expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: "0.30.0" }))).toBe("writer-below-floor");
   expect(existsSync(f.checkpoints)).toBe(false);
   f.floor(FLOOR);
+  // Confirm must retain the reviewed headroom envelope, not accept a bare or edited plan.
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview.plan, { ...f.opts, minReader: FLOOR }))).toBe("changed");
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, { ...preview, headroom: { ...preview.headroom, remaining: preview.headroom.remaining + 1 } }, { ...f.opts, minReader: FLOOR }))).toBe("changed");
   const before = readEffectiveSyncPlacementWriters(f.base);
   expect(await confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR })).toMatchObject({ window: 1, renewed: true, planHash: preview.planHash, nextStep: "amem sync" });
   releasePlacementStorageCaches();

@@ -4,6 +4,8 @@
  * person-written floor record (`amem formats raise` is the one writer).
  */
 import { randomBytes } from "node:crypto";
+import { types } from "node:util";
+import { memoryPolicySnapshot } from "./policy.ts";
 import { realPath } from "./platform.ts";
 import { canonicalJSON } from "./generation.ts";
 import { assertFormatFloor, formatFloorAtLeast } from "./formats.ts";
@@ -125,10 +127,19 @@ export function checkpointHeadroomFor(pages: number, completed: { slots: number;
     `the new window needs ${required} of ${PLACEMENT_JOURNAL_MAX_OBJECTS} objects (${liveAfter} after the checkpoint, ${nextRenewal} for the next renewal, ${largest.slots} for the largest observed plan and ${largest.reservedJournalChunks} for its reserved journal chunks), ${-result.remaining} over the limit.`);
   return result;
 }
-/** The saved preview (or its bare plan): only the sealed intent is read, and it is validated before use. */
+/** The saved preview must include both its sealed intent and the reviewed headroom. */
 export function checkpointPlanFrom(value: unknown): CheckpointIntent {
-  const candidate = value && typeof value === "object" && !Array.isArray(value) && "plan" in value ? (value as { plan: unknown }).plan : value;
-  try { return validateCheckpointIntent(candidate); } catch { throw new PlacementCheckpointError("changed"); }
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) throw new PlacementCheckpointError("changed");
+  const field = Object.getOwnPropertyDescriptor(value, "plan");
+  if (!field || !("value" in field)) throw new PlacementCheckpointError("changed");
+  try { return validateCheckpointIntent(field.value); } catch { throw new PlacementCheckpointError("changed"); }
+}
+function reviewedHeadroom(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) throw new PlacementCheckpointError("changed");
+  const field = Object.getOwnPropertyDescriptor(value, "headroom");
+  const detached = field && "value" in field ? memoryPolicySnapshot(field.value) : undefined;
+  if (!detached) throw new PlacementCheckpointError("changed");
+  return detached;
 }
 function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | undefined, minReader: string): void {
   if (!formatFloorAtLeast(home, "sync", minReader)) throw new PlacementCheckpointError("floor");
@@ -150,6 +161,7 @@ export async function confirmPlacementCheckpoint(homeInput: string, value: unkno
   if (intent.epochHash !== a.profile.placementHead) throw new PlacementCheckpointError("changed");
   checkFloor(home, undefined, minReader); checkFloor(home, measured(home, opts.writerRoots, opts.ownRoot), minReader);
   const prospective = await checkpointHeadroom(home, intent);
+  if (canonicalJSON(reviewedHeadroom(value)) !== canonicalJSON(prospective.headroom)) throw new PlacementCheckpointError("changed");
   return withPlacementActivationFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
     const now = active(home), roots = measured(home, opts.writerRoots, opts.ownRoot);
     if (canonicalJSON(now) !== canonicalJSON(a)) throw new PlacementCheckpointError("changed");
