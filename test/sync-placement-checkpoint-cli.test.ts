@@ -80,6 +80,14 @@ test("#288: offline prospective plan uses cache and pending source without modif
   }
 }, 240_000);
 
+test("#288: unavailable remote evidence remains explicit through confirm", async () => {
+  const f = await fixture(), before = tree(f.base);
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  expect(preview.headroom.prospectivePlan.state).toBe("unavailable");
+  expect(tree(f.base)).toEqual(before);
+  expect(await confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR })).toMatchObject({ window: 1, renewed: true });
+}, 240_000);
+
 test("#288: confirm refuses when reviewed cache evidence disappears", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
   const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
