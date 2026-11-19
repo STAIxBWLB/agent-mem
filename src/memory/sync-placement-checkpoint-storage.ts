@@ -14,10 +14,13 @@ import {
   PLACEMENT_CHECKPOINT_DIR, PLACEMENT_CHECKPOINT_COMMITS, PLACEMENT_CHECKPOINT_INTENT, PLACEMENT_CHECKPOINT_WINDOWS, PLACEMENT_CHECKPOINT_MANIFEST,
   PLACEMENT_CHECKPOINT_PROJECTION, PLACEMENT_CHECKPOINT_COMMITS_MAX_BYTES, PLACEMENT_CHECKPOINT_INTENT_MAX_BYTES, PLACEMENT_CHECKPOINT_MANIFEST_MAX_BYTES,
   PLACEMENT_CHECKPOINT_PAGE_MAX_BYTES, PLACEMENT_CHECKPOINT_ARCHIVE_MAX_MEMBERS, PLACEMENT_CHECKPOINT_ARCHIVE_MAX_BYTES, PLACEMENT_CHECKPOINT_LIMIT,
-  checkpointCommitGenesis, checkpointWindowName, validateCheckpointCatalogPage, validateCheckpointCommit, validateCheckpointIntent,
+  checkpointCommitGenesis, checkpointWindowName, checkpointWriterGenesis, validateCheckpointCatalogPage, validateCheckpointCommit, validateCheckpointIntent,
   validateCheckpointManifest, validateCheckpointProjection,
   type CheckpointCommit, type CheckpointIntent, type CheckpointManifest, type CheckpointMember, type CheckpointProjectionDigest,
 } from "./sync-placement-checkpoint-format.ts";
+import {
+  WRITER_COMMIT_LOG, WRITER_COMMIT_MAX_BYTES, WRITER_REVISION_MAX_BYTES, validateWriterCommit, validateWriterRevision, writerRevisionFile,
+} from "./sync-placement-writer-revision-format.ts";
 
 /** Largest single archived member: the writer revision ceiling (512 KiB) with headroom; every v1 family is smaller. */
 const MEMBER_MAX_BYTES = 1024 * 1024;
@@ -175,6 +178,14 @@ export function resolvePlacementWindow(homeInput: string, epochHash: string): Re
     if (cataloged !== publications.size) fail();
     projection = decode(sealedMember(dir, manifest.projection, PLACEMENT_CHECKPOINT_PAGE_MAX_BYTES), validateCheckpointProjection);
     if (projection.epochHash !== epochHash || projection.window !== commit.window || canonicalJSON(projection.journal) !== canonicalJSON({ sequence: manifest.journal.sequence, headHash: manifest.journal.headHash })) fail();
+    // The commit line binds the window's (W, 1) writer revision and the first line of its writer commit log; a substituted
+    // internally valid pair would otherwise pass the local chain check from the window genesis.
+    const genesis = checkpointWriterGenesis(epochHash, manifest.activationHash, manifest.seal, manifest.writer.headHash);
+    const revision = decode(read(join(dir, writerRevisionFile(1)), WRITER_REVISION_MAX_BYTES)?.bytes ?? fail(), value => validateWriterRevision(value, genesis));
+    const writerLog = read(join(dir, WRITER_COMMIT_LOG), WRITER_COMMIT_MAX_BYTES)?.bytes ?? fail(), first = writerLog.indexOf(10);
+    if (first < 0) fail();
+    const writerCommit = decode(writerLog.subarray(0, first + 1), validateWriterCommit);
+    if (revision.seal !== commit.writerRevisionHash || writerCommit.seal !== commit.writerCommitHash) fail();
     manifests.push(manifest);
   }
   if (archived.length) verifyArchive(archived);

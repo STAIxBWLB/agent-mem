@@ -19,7 +19,9 @@ import { measureSyncPlacementWriters } from "../src/memory/sync-placement-writer
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { resolvePlacementWindow } from "../src/memory/sync-placement-checkpoint-storage.ts";
 import { abandonPlacementCheckpoint, applyPlacementCheckpoint, planPlacementCheckpoint, resumePlacementCheckpoint, type PlacementCheckpointPhase } from "../src/memory/sync-placement-checkpoint.ts";
-import { validateCheckpointIntent } from "../src/memory/sync-placement-checkpoint-format.ts";
+import { validateCheckpointIntent, checkpointWriterGenesis } from "../src/memory/sync-placement-checkpoint-format.ts";
+import { WRITER_COMMIT_LOG, createWriterCommit, createWriterRevision, validateWriterRevision, writerRevisionFile } from "../src/memory/sync-placement-writer-revision-format.ts";
+import { canonicalJSON } from "../src/memory/generation.ts";
 import { createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
 import { SyncPlacementJournalError } from "../src/memory/sync-placement-journal-format.ts";
 
@@ -214,3 +216,21 @@ test("#288: writer-history and effective-writer snapshots taken before a checkpo
     f.note(`after checkpoint ${window}`); await f.sync();
   }
 }, 240_000);
+
+test("#288: a committed window refuses a substituted, internally valid (W, 1) writer revision and commit pair", async () => {
+  const f = await fixture(); await f.sync(); f.checkpoint();
+  const window = resolvePlacementWindow(f.base, f.epochHash), manifest = window.manifests.at(-1)!;
+  const revisionFile = join(window.dir, writerRevisionFile(1)), logFile = join(window.dir, WRITER_COMMIT_LOG);
+  const genesis = checkpointWriterGenesis(f.epochHash, f.binding.activationHash, manifest.seal, manifest.writer.headHash);
+  const original = validateWriterRevision(JSON.parse(readFileSync(revisionFile, "utf8")), genesis);
+  const { seal: _seal, ...body } = original;
+  const substitute = createWriterRevision({ ...body, requestId: sha("substituted request") }, genesis), commit = createWriterCommit(substitute, genesis);
+  expect(substitute.seal).not.toBe(original.seal);
+  const line = (value: unknown) => canonicalJSON(value) + "\n";
+  writeFileSync(revisionFile, line(substitute), { mode: 0o600 }); writeFileSync(logFile, line(commit), { mode: 0o600 });
+  releasePlacementStorageCaches();
+  expect(code(() => resolvePlacementWindow(f.base, f.epochHash))).toBe("corrupt");
+  // Writer history maps resolver corruption onto its own refusal class.
+  expect(code(() => readWriterHistory(f.base, f.binding))).toBe("invalid");
+  expect(() => readEffectiveSyncPlacementWriters(f.base)).toThrow();
+}, 180_000);
