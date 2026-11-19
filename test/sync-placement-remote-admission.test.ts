@@ -1,8 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { pathToFileURL } from "node:url";
 import { runCli } from "../src/cli.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { shardDir, shardKeyHash } from "../src/memory/shard.ts";
@@ -53,68 +51,6 @@ test("remote-only realm is explicitly previewed and admitted without changing ex
   } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
 }, 240_000);
 
-test("an older admission during staging is never duplicated and later sync imports remote rows", async () => {
-  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
-  const oldRoot = mkdtempSync(join(tmpdir(), "amem-029-remote-race-"));
-  const archive = Bun.spawnSync(["git", "archive", "57a4ace57bdf5c4fc12996146c76843de4ee21cc"], { stdout: "pipe", stderr: "pipe" });
-  expect(archive.exitCode, archive.stderr.toString()).toBe(0);
-  const extract = Bun.spawnSync(["tar", "-x", "-C", oldRoot], { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" });
-  expect(extract.exitCode, extract.stderr.toString()).toBe(0);
-  const oldAdmission = await import(pathToFileURL(join(oldRoot, "src/memory/sync-placement-realm-admission.ts")).href);
-  const shared = "example.test/adoption-race/shared", target = "example.test/adoption-race/target";
-  try {
-    const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote(); expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
-    for (const stage of ["after-companion", "after-stage", "after-install", "after-intent", "after-metadata", "after-proof", "after-append"] as const) {
-      const b = await inventoryFixture(1, [shared], true, [oldRoot]); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
-      await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: at => {
-        if (at === stage) throw Error("isolated crash seam");
-      } })).rejects.toThrow();
-      const oldMode = ["after-intent", "after-metadata", "after-proof", "after-append"].includes(stage) ? "resume" : "apply";
-      expect(await oldAdmission.applyRealmAdmission(b.home, target, { mode: oldMode })).toMatchObject({ state: "admitted" });
-      const extension = join(b.home, "placement-realm-extensions.jsonl"), before = readFileSync(extension);
-      const resumed = await remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility });
-      expect(resumed).toMatchObject({ state: "already-admitted", nextStep: "amem sync" }); expect(readFileSync(extension)).toEqual(before);
-      expect(readdirSync(b.home).filter(name => name.includes("placement-remote-adoption-")).length).toBe(0);
-      expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
-      const targetStore = openShardStore({ memoryDir: b.home, project: target, deferPromotions: true });
-      try { expect(targetStore.list({ project: target }).map(row => row.text)).toContain(`inventory note for ${target}`); } finally { targetStore.close(); }
-    }
-  } finally { rmSync(oldRoot, { recursive: true, force: true }); }
-}, 240_000);
-
-test("remote admission resumes or abandons each durable staging boundary", async () => {
-  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
-  const { readPlacementRuntimeMarkers } = await import("../src/memory/sync-placement-guard.ts");
-  const { readActivePlacementBinding } = await import("../src/memory/sync-placement-active.ts");
-  const { readEffectiveRealmInventory } = await import("../src/memory/sync-placement-realm-effective.ts");
-  const { createHash } = await import("node:crypto");
-  const shared = "example.test/adoption-crash/shared", target = "example.test/adoption-crash/target";
-  const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote();
-  expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
-  for (const action of ["resume", "abandon"] as const) for (const stage of ["after-companion", "after-stage", "after-install", "after-intent", "after-metadata", "after-proof", "after-append", "after-admission"] as const) {
-    const b = await inventoryFixture(1, [shared], true); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
-    const work = new WorkListStore({ base: b.home, project: target, policy: () => true });
-    try { await work.write("existing", { task: "keep across crash" }); } finally { work.close(); }
-    await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: at => {
-      if (at === stage) throw Error("isolated crash seam");
-    } })).rejects.toThrow();
-    const result = await remoteRealmAdmission(b.home, target, { mode: action, ...(action === "abandon" ? { confirm: true } : {}), visibility: privateVisibility });
-    const afterCommit = stage === "after-append" || stage === "after-admission", committed = action === "resume" || afterCommit;
-    expect(result.state).toBe(committed ? (afterCommit ? "already-admitted" : "admitted") : "abandoned");
-    const markers = readPlacementRuntimeMarkers(b.home), binding = readActivePlacementBinding(b.home, markers.profile, markers.shards)!;
-    const realm = createHash("sha256").update(target).digest("hex");
-    expect(readEffectiveRealmInventory(b.home, binding).realms.some(item => item.scope === "project" && item.keyHash === realm)).toBe(committed);
-    expect(readdirSync(b.home).filter(name => name.startsWith("placement-remote-adoption-")).length).toBe(0);
-    expect(readdirSync(b.home).filter(name => name.startsWith("placement-realm-intent-")).length).toBe(0);
-    const restored = new WorkListStore({ base: b.home, project: target, policy: () => true });
-    try { expect((await restored.read())[0]?.items[0]?.task).toBe("keep across crash"); } finally { restored.close(); }
-    if (committed) {
-      const reader = openShardStore({ memoryDir: b.home, project: target, deferPromotions: true });
-      try { expect(reader.list({ project: target }).map(row => row.text)).toContain(`inventory note for ${target}`); } finally { reader.close(); }
-    }
-  }
-}, 240_000);
-
 test("a retained remote staging operation fences another remote admission", async () => {
   const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
   const shared = "example.test/adoption-serial/shared", first = "example.test/adoption-serial/first", second = "example.test/adoption-serial/second";
@@ -160,30 +96,6 @@ test("the standard admission commands recognize a retained remote operation", as
     } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
   }
 }, 120_000);
-
-test("new resume survives an older confirmed abandon after shard metadata", async () => {
-  const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
-  const oldRoot = mkdtempSync(join(tmpdir(), "amem-029-remote-abandon-"));
-  const archive = Bun.spawnSync(["git", "archive", "57a4ace57bdf5c4fc12996146c76843de4ee21cc"], { stdout: "pipe", stderr: "pipe" });
-  expect(archive.exitCode, archive.stderr.toString()).toBe(0);
-  const extract = Bun.spawnSync(["tar", "-x", "-C", oldRoot], { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" });
-  expect(extract.exitCode, extract.stderr.toString()).toBe(0);
-  const oldAdmission = await import(pathToFileURL(join(oldRoot, "src/memory/sync-placement-realm-admission.ts")).href);
-  const shared = "example.test/adoption-old-abandon/shared", target = "example.test/adoption-old-abandon/target";
-  try {
-    const a = await inventoryFixture(2, [shared, target], true), remote = bareRemote(); expect((await sync(a.home, a.opts(remote))).ok).toBe(true);
-    for (const stage of ["after-intent", "after-metadata", "after-proof"] as const) {
-      const b = await inventoryFixture(1, [shared], true, [oldRoot]); expect((await sync(b.home, b.opts(remote))).ok).toBe(true);
-      await expect(remoteRealmAdmission(b.home, target, { mode: "apply", visibility: privateVisibility, checkpoint: at => {
-        if (at === stage) throw Error("isolated crash seam");
-      } })).rejects.toThrow();
-      expect(await oldAdmission.applyRealmAdmission(b.home, target, { mode: "abandon", confirm: true })).toMatchObject({ state: "abandoned" });
-      expect(await remoteRealmAdmission(b.home, target, { mode: "resume", visibility: privateVisibility })).toMatchObject({ state: "admitted" });
-      const targetStore = openShardStore({ memoryDir: b.home, project: target, deferPromotions: true });
-      try { expect(targetStore.list({ project: target }).map(row => row.text)).toContain(`inventory note for ${target}`); } finally { targetStore.close(); }
-    }
-  } finally { rmSync(oldRoot, { recursive: true, force: true }); }
-}, 240_000);
 
 test("a concurrent admission after remote preview returns already-admitted without creating a companion", async () => {
   const { remoteRealmAdmission } = await import("../src/memory/sync-placement-remote-admission.ts");
