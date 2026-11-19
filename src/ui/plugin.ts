@@ -432,7 +432,7 @@ export const plugin = {
 
     const preparedReads = new Set<string>();
     const cachedPanels = new Set(["review", "recap", "work"]);
-    async function snapshot(input: { after: number; panel: string } & Args, retryCache = true): Promise<Args> {
+    async function snapshot(input: { after: number; panel: string } & Args, retryCache = true, diagnostic: { reason?: string } = {}): Promise<Args> {
       const args = input as Args;
       if (input.panel === "inbox") {
         const value = await inboxCache.snapshot();
@@ -456,6 +456,7 @@ export const plugin = {
           }
         }
         const selection = cachedPanels.has(input.panel) ? projectList() : { list: projects(), cacheable: false };
+        if (input.panel === "recap" && !selection.cacheable) diagnostic.reason ??= "uncacheable selection";
         list = selection.list; project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
@@ -483,19 +484,23 @@ export const plugin = {
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
           let validate: (() => void) | undefined, validationBytes = 0;
-          const data = await load(at => { until = Math.min(until, at); }, (check, retries, bytes) => { validate = check; validationBytes = bytes; sourceRetried ||= retries > 0; });
+          const data = await load(at => { if (input.panel === "recap" && at === -Infinity) diagnostic.reason ??= "onExpiry -Infinity"; until = Math.min(until, at); }, (check, retries, bytes) => { validate = check; validationBytes = bytes; sourceRetried ||= retries > 0; if (retries > 0) diagnostic.reason ??= "failed copy"; });
           return { data, until, ...(validate ? { validate, validationBytes } : {}) };
         };
-        const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection) : await snapshots.fresh(projection);
+        const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection, reason => { if (input.panel === "recap") diagnostic.reason ??= reason; }) : await snapshots.fresh(projection);
         // ponytail: one fresh selection after a successful copy retry whose initial revision drifted. This cannot loop.
         if (retryCache && sourceRetried && selection.cacheable && typeof result.cursor === "number" && result.cursor > 2 ** 52)
-          return snapshot(input, false);
+          return await snapshot(input, false, diagnostic);
         return result;
       } catch (e) {
-        ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
-        if (input.panel === "recap" && e instanceof RecapSourceChangedError)
+        if (input.panel === "recap" && e instanceof RecapSourceChangedError) {
+          diagnostic.reason ??= "failed copy";
           return { projects: list, project: project ?? null, error: e.message };
+        }
+        ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
         return { projects: list, project: project ?? null, error: "Memory is unavailable for this project right now; details are in the terminal." };
+      } finally {
+        if (retryCache && input.panel === "recap" && diagnostic.reason) try { ctx.log(`amem: recap cache miss: ${diagnostic.reason}`); } catch { /* diagnostics never fail a snapshot */ }
       }
     }
     // The measured cold Review path opens the curated index and computes overlaps.

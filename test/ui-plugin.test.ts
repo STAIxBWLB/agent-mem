@@ -15,6 +15,7 @@ import { runCli } from "../src/cli.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import * as mcpModule from "../src/mcp-memory.ts";
 import * as revisionModule from "../src/ui/snapshot-revision.ts";
+import * as pendingModule from "../src/memory/candidate-pending.ts";
 import { pendingSummary } from "../src/memory/candidate-pending.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
@@ -136,7 +137,7 @@ test("Recap invalidates when a copied input omitted from the broad revision chan
 });
 
 for (const interruptions of [1, 3]) test(`Recap retries ${interruptions} concurrent copy change(s) with a bounded remedy`, async () => {
-  const f = fixture(), provider = await open(f.family);
+  const f = fixture(), logs: string[] = [], provider = await plugin.open({ home: f.family, log: line => logs.push(line) }); providers.add(provider);
   const source = join(f.base, "log", readdirSync(join(f.base, "log")).find(name => name.endsWith(".jsonl"))!);
   const original = fs.copyFileSync; let injected = 0;
   const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
@@ -153,7 +154,39 @@ for (const interruptions of [1, 3]) test(`Recap retries ${interruptions} concurr
       expect(copies.mock.calls.length).toBe(copied);
     }
     else expect(result.error).toBe("recap source changed during snapshot after 3 attempts; wait for memory writes to settle, then retry Recap.");
+    expect(logs.filter(line => line.startsWith("amem: recap cache miss:"))).toEqual(["amem: recap cache miss: failed copy"]);
   } finally { copies.mockRestore(); }
+});
+
+test("Recap logs one content-free reason when a revision is unavailable", async () => {
+  const f = fixture(), logs: string[] = [], provider = await plugin.open({ home: f.family, log: line => logs.push(line) }); providers.add(provider);
+  const revision = spyOn(revisionModule, "snapshotRevision").mockImplementation(() => { throw Error("private fixture detail"); });
+  try {
+    expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+    expect(logs.filter(line => line.startsWith("amem: recap cache miss:"))).toEqual(["amem: recap cache miss: uncacheable selection"]);
+    expect(logs.filter(line => line.startsWith("amem: recap cache miss:")).join()).not.toContain(f.project);
+  } finally { revision.mockRestore(); }
+});
+
+test("Recap logs one content-free reason when its cached revision changes", async () => {
+  const f = fixture(), logs: string[] = [], provider = await plugin.open({ home: f.family, log: line => logs.push(line) }); providers.add(provider);
+  expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+  logs.length = 0;
+  const store = new MemoryStore({ memoryDir: f.base });
+  try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "fixture revision", about: [] }); } finally { store.close(); }
+  expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+  expect(logs.filter(line => line.startsWith("amem: recap cache miss:"))).toEqual(["amem: recap cache miss: revision change"]);
+});
+
+test("Recap logs one content-free reason when selected candidate timing is unavailable", async () => {
+  const f = fixture(), logs: string[] = [], provider = await plugin.open({ home: f.family, log: line => logs.push(line) }); providers.add(provider);
+  const original = pendingModule.pendingSummary;
+  const pending = spyOn(pendingModule, "pendingSummary").mockImplementation(((base, projects, now, strict, onExpiry) =>
+    projects && strict ? null : Reflect.apply(original, undefined, [base, projects, now, strict, onExpiry])) as typeof pendingModule.pendingSummary);
+  try {
+    expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+    expect(logs.filter(line => line.startsWith("amem: recap cache miss:"))).toEqual(["amem: recap cache miss: onExpiry -Infinity"]);
+  } finally { pending.mockRestore(); }
 });
 
 test("Recap reports a directory that keeps changing after the retry bound", async () => {

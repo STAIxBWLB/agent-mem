@@ -75,17 +75,18 @@ export class SnapshotCache {
   private dropEntry(key: string, entry: Entry | undefined): void {
     if (entry && this.entries.get(key) === entry) { this.entries.delete(key); this.bytes -= entry.bytes; }
   }
-  async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>): Promise<Data> {
+  async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>, onMiss?: (reason: "uncacheable selection" | "revision change" | "expired") => void): Promise<Data> {
     this.readable();
     const revision = this.sourceRevision();
     this.readable();
-    if (revision === undefined) return this.fresh(read);
+    if (revision === undefined) { onMiss?.("uncacheable selection"); return this.fresh(read); }
     const cached = this.entries.get(key);
     const cachedValid = !cached || cached.revision !== revision || this.valid(cached);
     if (cached && cached.revision === revision && this.timely(cached.sampledAt, cached.until) && cachedValid) {
       this.entries.delete(key); this.entries.set(key, cached);
       return this.reply(cached, after);
     }
+    if (cached) onMiss?.(cached.revision === revision && cachedValid ? "expired" : "revision change");
     // A copied input can change without affecting the broader revision; never join an older flight in that case.
     if (!cachedValid) this.clearReusable();
     // Revision is part of the flight key: a new write never joins an older read.
@@ -101,7 +102,9 @@ export class SnapshotCache {
         this.readable(value);
         const data = structuredClone(value.data); delete data.changed;
         const reading: Reading = { data, until: value.until, sampledAt, generation };
-        if (observed !== revision || epoch !== this.epoch || generation !== this.generation || !this.timely(sampledAt, value.until) || !this.valid(value)) {
+        const proofValid = this.valid(value);
+        if (observed !== revision || epoch !== this.epoch || generation !== this.generation || !this.timely(sampledAt, value.until) || !proofValid) {
+          if (observed !== revision || epoch !== this.epoch || generation !== this.generation || !proofValid) onMiss?.("revision change");
           this.dropEntry(key, cached);
           if (this.flights.get(flightKey) === flight) this.flights.delete(flightKey);
           return reading;
