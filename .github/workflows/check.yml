@@ -75,7 +75,7 @@ jobs:
           key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - run: bun install --frozen-lockfile
-      # Whole-file milliseconds from a dgx02 Linux full-suite run, balancing Ubuntu's four shards and macOS's three (#402).
+      # Whole-file milliseconds from a dgx02 Linux full-suite run, balancing four shards on both OSes (#402).
       # ponytail: one weight set serves both layouts and new files use Bun's median; split per OS if a shard drifts past 1.5x the mean.
       # Refresh on dgx02: bun test --timings=test/ci-timings.json --update-timings
       - run: bun test --timeout 20000 --shard=${{ matrix.shard }}/${{ matrix.total }} --timings=test/ci-timings.json
@@ -87,8 +87,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest]
-        shard: [1, 2, 3]
-        total: [3]
+        shard: [1, 2, 3, 4]
+        total: [4]
     runs-on: ${{ matrix.os }}
     steps: *test-steps
   measure:
