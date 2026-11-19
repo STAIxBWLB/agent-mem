@@ -126,6 +126,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--admit": text("Admit one curated project realm that appeared after activation into the same epoch; previews without --apply"),
     "--from-remote": flag("Admit the named remote-only realm using the configured placement sync remote"),
     "--confirm": flag("Confirm the previewed realm admission abandonment"),
+    "--checkpoint": flag("Person-reviewed placement checkpoint: preview by default, then --confirm --plan, --resume or --abandon"),
+    "--plan": { description: "Saved --checkpoint --json preview to confirm", value: "path" },
     "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
   } },
   status: { description: "Report shard migration and pending old-layout appends", options: json },

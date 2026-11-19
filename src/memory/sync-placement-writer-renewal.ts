@@ -44,6 +44,8 @@ const binding=(a:ActivePlacementBinding)=>({epochHash:a.profile.placementHead,ac
 function list(dir:string,maximum:number):string[]{
   const out:string[]=[],reader=opendirSync(dir);try{for(;;){const e=reader.readSync();if(!e)break;if(out.length>=maximum)throw new SharedWriterRevisionError("bound");out.push(e.name);}}finally{reader.closeSync();}return out.sort();
 }
+/** The fenced directories of one active placement: the home, every activated realm and every admitted project shard. */
+export function placementFenceDirectories(home:string,a:ActivePlacementBinding):string[]{return directories(home,a);}
 function directories(home:string,a:ActivePlacementBinding):string[]{
   const out=[home];for(const r of a.activation.realms)out.push(r.scope==="user"?join(home,"user"):join(home,"projects",r.keyHash.slice(0,16)));
   const checked=(dir:string)=>{const s=lstatSync(dir);if(!s.isDirectory()||s.isSymbolicLink()||s.uid!==process.getuid?.()||(s.mode&0o022)!==0)throw new WriterRenewalError("changed");};

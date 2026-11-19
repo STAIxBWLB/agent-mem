@@ -35,6 +35,7 @@ import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placem
 import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_APPEND_SLICE, yieldTurn, type CooperativeYield } from "./sync-placement-yield.ts";
 import { placementCacheConfigStamp, placementCacheRootStamp, placementCacheTreePrivate, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
+import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
 import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
@@ -787,6 +788,8 @@ class PlacementTransport {
       this.factual=true;return await this.finish(material);
     }catch(error){
       try { this.testOnlyError?.(error); } catch { /* Test observers never alter production results. */ }
+      // #288 step 3: a started checkpoint pauses every placement effect with its own cause and next step.
+      if(this.epochHash&&placementCheckpointPending(this.home,this.epochHash)){this.failureCause="checkpoint-pending";return this.result(false,this.attemptHash?"unknown":"not-needed",PLACEMENT_CHECKPOINT_PENDING_MESSAGE);}
       if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){
         const code=Object.getOwnPropertyDescriptor(error,"code")?.value;
         if(code==="staging"||code==="pending"){this.failureCause="writer-renewal";return this.result(false,this.attemptHash?"unknown":"not-needed",new SharedWriterRevisionError(code).message);}
