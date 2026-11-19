@@ -22,8 +22,7 @@ import { remoteRealmAdmission } from "../src/memory/sync-placement-remote-admiss
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); releasePlacementStorageCaches(); });
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-// ponytail: this package is still 0.29.0; replace the 0.22.0 test floor with a real 0.30.0 confirm in release preparation.
-const FLOOR = "0.22.0";
+const FLOOR = "0.30.0";
 function tree(dir: string): Record<string, string> {
   const out: Record<string, string> = {};
   const visit = (at: string, prefix: string) => { for (const entry of readdirSync(at, { withFileTypes: true })) {
@@ -74,7 +73,7 @@ test("#288: offline prospective plan uses cache and pending source without modif
   const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
   try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "new checkpoint prospective row", about: [] }); }
   finally { store.close(); }
-  const before = tree(f.base), preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const before = tree(f.base), preview = await previewPlacementCheckpoint(f.base, { ...f.opts });
   expect(tree(f.base)).toEqual(before);
   expect(preview.headroom.prospectivePlan.state).toBe("cache-only");
   if (preview.headroom.prospectivePlan.state === "cache-only") {
@@ -86,10 +85,10 @@ test("#288: offline prospective plan uses cache and pending source without modif
 
 test("#288: unavailable remote evidence remains explicit through confirm", async () => {
   const f = await fixture(), before = tree(f.base);
-  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts });
   expect(preview.headroom.prospectivePlan.state).toBe("unavailable");
   expect(tree(f.base)).toEqual(before);
-  expect(await confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR })).toMatchObject({ window: 1, renewed: true });
+  expect(await confirmPlacementCheckpoint(f.base, preview, { ...f.opts })).toMatchObject({ window: 1, renewed: true });
 }, 240_000);
 
 test("#288: confirm refuses when reviewed cache evidence disappears", async () => {
@@ -97,25 +96,25 @@ test("#288: confirm refuses when reviewed cache evidence disappears", async () =
   const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
   try { store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "synthetic pending checkpoint row", about: [] }); }
   finally { store.close(); }
-  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts });
   expect(preview.headroom.prospectivePlan.state).toBe("cache-only");
   const cache = join(f.base, "shard-sync-placement", "objects.git");
   const deleted = memoryGitSync(["--git-dir", cache, "update-ref", "-d", `refs/heads/amem/p/${shardKeyHash(f.project)}`], { encoding: "utf8" });
   expect(deleted.status).toBe(0);
   const before = tree(f.base);
-  const current = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const current = await previewPlacementCheckpoint(f.base, { ...f.opts });
   expect(current.headroom.prospectivePlan.state).toBe("unavailable");
-  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR }))).toBe("changed");
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts }))).toBe("changed");
   expect(tree(f.base)).toEqual(before);
 }, 240_000);
 
 test("#288 step 3: preview is readonly and reports composition, headroom and the exact confirm step", async () => {
   const f = await fixture();
-  const noCache = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const noCache = await previewPlacementCheckpoint(f.base, { ...f.opts });
   expect(noCache.headroom.prospectivePlan.state).toBe("unavailable");
   expect((await f.sync()).ok).toBe(true);
   const before = tree(f.base);
-  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts });
   expect(preview.headroom.prospectivePlan.state).toBe("none");
   expect(tree(f.base)).toEqual(before);
   expect(existsSync(f.checkpoints)).toBe(false);
@@ -125,7 +124,8 @@ test("#288 step 3: preview is readonly and reports composition, headroom and the
   expect(preview.headroom.required).toBe(preview.headroom.liveAfter + 1 + preview.headroom.largestPlan.slots + preview.headroom.largestPlan.reservedJournalChunks);
   expect(preview.headroom.largestPlan.slots).toBeGreaterThan(0);
   expect(preview.nextStep).toContain("amem migrate --sync-placement --checkpoint --confirm --plan");
-  // The real 0.30.0 floor is missing here: preview says so and does not refuse.
+  // A below-minimum home floor is reported without writing.
+  f.floor("0.22.0");
   expect((await previewPlacementCheckpoint(f.base, f.opts)).floorReady).toBe(false);
   // Without a writer inventory there is nothing to renew into (W, 1).
   expect(await cause(() => previewPlacementCheckpoint(f.base, { ...f.opts, writerRoots: [] }))).toBe("candidate");
@@ -133,22 +133,21 @@ test("#288 step 3: preview is readonly and reports composition, headroom and the
 
 test("#288 step 3: confirm refuses below the person floor, never writes it, then commits the sealed plan with one renewal", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
-  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR }), frozen = tree(f.epochDir), formats = readFileSync(join(f.base, "formats.json"));
+  f.floor("0.22.0");
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts }), frozen = tree(f.epochDir), formats = readFileSync(join(f.base, "formats.json"));
   // The CLI's real floor is 0.30.0: a 0.22.0 home floor refuses with the formats raise next step, and nothing is written.
   const refused = await confirmPlacementCheckpoint(f.base, preview, f.opts).catch(error => error as PlacementCheckpointError);
   expect(refused).toBeInstanceOf(PlacementCheckpointError); expect((refused as PlacementCheckpointError).causeClass).toBe("floor");
   expect((refused as Error).message).toContain("amem formats raise home 0.30.0");
   expect(existsSync(f.checkpoints)).toBe(false); expect(readFileSync(join(f.base, "formats.json"))).toEqual(formats);
-  // A writer below the floor refuses too (this install is 0.29.0 and the floor names 0.30.0 for every known writer).
-  f.floor("0.30.0");
-  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: "0.30.0" }))).toBe("writer-below-floor");
-  expect(existsSync(f.checkpoints)).toBe(false);
+  // The reviewed plan can be confirmed after the person raises the home floor.
   f.floor(FLOOR);
+  expect(JSON.parse(readFileSync(join(activationOwnRoot, "package.json"), "utf8")).version).toBe(FLOOR);
   // Confirm must retain the reviewed headroom envelope, not accept a bare or edited plan.
-  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview.plan, { ...f.opts, minReader: FLOOR }))).toBe("changed");
-  expect(await cause(() => confirmPlacementCheckpoint(f.base, { ...preview, headroom: { ...preview.headroom, remaining: preview.headroom.remaining + 1 } }, { ...f.opts, minReader: FLOOR }))).toBe("changed");
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview.plan, { ...f.opts }))).toBe("changed");
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, { ...preview, headroom: { ...preview.headroom, remaining: preview.headroom.remaining + 1 } }, { ...f.opts }))).toBe("changed");
   const before = readEffectiveSyncPlacementWriters(f.base);
-  expect(await confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR })).toMatchObject({ window: 1, renewed: true, planHash: preview.planHash, nextStep: "amem sync" });
+  expect(await confirmPlacementCheckpoint(f.base, preview, { ...f.opts })).toMatchObject({ window: 1, renewed: true, planHash: preview.planHash, nextStep: "amem sync" });
   releasePlacementStorageCaches();
   const window = resolvePlacementWindow(f.base, f.epochHash);
   expect(window).toMatchObject({ window: 1, pending: false });
@@ -157,7 +156,7 @@ test("#288 step 3: confirm refuses below the person floor, never writes it, then
   const after = readEffectiveSyncPlacementWriters(f.base);
   expect(after.revisionSequence).toBe(1); expect(after.revisionHash).not.toBe(before.revisionHash);
   // The same sealed plan never commits twice.
-  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR }))).toBe("changed");
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts }))).toBe("changed");
   expect((await f.sync()).ok).toBe(true);
 }, 240_000);
 
@@ -166,38 +165,48 @@ test("#288: a sync-only floor cannot authorize a checkpoint", async () => {
   const file = join(f.base, "formats.json");
   writeFileSync(file, JSON.stringify([{ surface: "home", minReader: "0.21.0", since: "2026-11-19" }, { surface: "sync", minReader: FLOOR, since: "2026-11-19" }]) + "\n", { mode: 0o600 });
   const before = readFileSync(file);
-  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts });
   expect(preview.floorReady).toBe(false);
-  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR }))).toBe("floor");
+  expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, { ...f.opts }))).toBe("floor");
   expect(readFileSync(file)).toEqual(before);
   expect(existsSync(f.checkpoints)).toBe(false);
+}, 180_000);
+
+test("#288: release 0.30.0 confirms a checkpoint using its real home floor", async () => {
+  const f = await fixture();
+  expect(JSON.parse(readFileSync(join(activationOwnRoot, "package.json"), "utf8")).version).toBe("0.30.0");
+  const formats = readFileSync(join(f.base, "formats.json"));
+  const preview = await previewPlacementCheckpoint(f.base, f.opts);
+  expect(preview.floorReady).toBe(true);
+  expect(await confirmPlacementCheckpoint(f.base, preview, f.opts)).toMatchObject({ window: 1, renewed: true });
+  expect(readFileSync(join(f.base, "formats.json"))).toEqual(formats);
 }, 180_000);
 
 test("#288: suffixed home and sync floors use the existing numeric floor comparison", async () => {
   const f = await fixture();
   writeFileSync(join(f.base, "formats.json"), JSON.stringify([
-    { surface: "home", minReader: "0.22.0+build.1", since: "2026-11-19" },
-    { surface: "home", minReader: "0.22.0", since: "2026-11-19" },
-    { surface: "sync", minReader: "0.22.0-rc.1", since: "2026-11-19" },
+    { surface: "home", minReader: "0.30.0+build.1", since: "2026-11-19" },
+    { surface: "home", minReader: "0.30.0", since: "2026-11-19" },
+    { surface: "sync", minReader: "0.30.0-rc.1", since: "2026-11-19" },
   ]) + "\n", { mode: 0o600 });
-  const opts = { ...f.opts, minReader: FLOOR };
+  const opts = { ...f.opts };
   const preview = await previewPlacementCheckpoint(f.base, opts);
   expect(preview.floorReady).toBe(true);
   expect(await confirmPlacementCheckpoint(f.base, preview, opts)).toMatchObject({ window: 1, renewed: true });
 }, 180_000);
 
-test("#288: every candidate writer must meet the actual home floor, including a floor above the checkpoint minimum", async () => {
+test("#288: every candidate writer must meet the actual home floor, including a suffixed floor", async () => {
   const f = await fixture();
   const old = join(f.root, "older candidate writer");
   mkdirSync(old, { mode: 0o755 }); mkdirSync(join(old, "src"), { mode: 0o755 }); mkdirSync(join(old, "bin"), { mode: 0o755 });
-  writeFileSync(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.22.0" }), { mode: 0o644 });
+  writeFileSync(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.29.0" }), { mode: 0o644 });
   writeFileSync(join(old, "src", "index.ts"), "// isolated writer\n", { mode: 0o644 });
   writeFileSync(join(old, "bin", "amem.js"), "// isolated writer\n", { mode: 0o755 });
   writeFileSync(join(f.base, "formats.json"), JSON.stringify([
-    { surface: "home", minReader: "0.22.1+build.1", since: "2026-11-19" },
-    { surface: "home", minReader: "0.22.0", since: "2026-11-19" },
+    { surface: "home", minReader: "0.30.0+build.1", since: "2026-11-19" },
+    { surface: "home", minReader: "0.30.0", since: "2026-11-19" },
   ]) + "\n", { mode: 0o600 });
-  const opts = { ...f.opts, writerRoots: [activationOwnRoot, old], minReader: FLOOR };
+  const opts = { ...f.opts, writerRoots: [activationOwnRoot, old] };
   const preview = await previewPlacementCheckpoint(f.base, opts);
   expect(preview.floorReady).toBe(true);
   expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, opts))).toBe("writer-below-floor");
@@ -207,8 +216,8 @@ test("#288: every candidate writer must meet the actual home floor, including a 
 test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon before the commit byte, resume after it", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
   const records = readPlacementJournal(f.base, f.epochHash).records, frozen = tree(f.epochDir);
-  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
-  await expect(confirmPlacementCheckpoint(f.base, preview, { ...f.opts, minReader: FLOOR, phase: phase => { if (phase === "staged-fsync") throw Error("isolated interruption after staging"); } })).rejects.toThrow();
+  const preview = await previewPlacementCheckpoint(f.base, { ...f.opts });
+  await expect(confirmPlacementCheckpoint(f.base, preview, { ...f.opts, phase: phase => { if (phase === "staged-fsync") throw Error("isolated interruption after staging"); } })).rejects.toThrow();
   releasePlacementStorageCaches();
   // Journal effects and the host writer adapter name the checkpoint, rather than an unrelated renewal transaction.
   expect(() => readPlacementJournal(f.base, f.epochHash)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
@@ -234,15 +243,15 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
   });
   const paused = await f.sync();
   expect(paused.ok).toBe(false); expect(paused.failure?.cause).toBe("checkpoint-pending"); expect(paused.error).toBe(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
-  expect(await cause(() => previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR }))).toBe("pending");
+  expect(await cause(() => previewPlacementCheckpoint(f.base, { ...f.opts }))).toBe("pending");
   expect((await abandonPlacementCheckpointPerson(f.base)).abandoned).toBe(true);
   releasePlacementStorageCaches();
   expect(resolvePlacementWindow(f.base, f.epochHash)).toMatchObject({ window: 0, pending: false });
   expect(tree(f.epochDir)).toEqual(frozen); expect(readPlacementJournal(f.base, f.epochHash).records).toEqual(records);
   expect(await abandonPlacementCheckpointPerson(f.base)).toMatchObject({ abandoned: false, removed: 0 });
   // After the first commit byte: abandon refuses and names resume; resume finishes the frozen bytes once.
-  const again = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
-  await expect(confirmPlacementCheckpoint(f.base, again, { ...f.opts, minReader: FLOOR, phase: phase => { if (phase === "commit-started") throw Error("isolated interruption inside the commit line"); } })).rejects.toThrow();
+  const again = await previewPlacementCheckpoint(f.base, { ...f.opts });
+  await expect(confirmPlacementCheckpoint(f.base, again, { ...f.opts, phase: phase => { if (phase === "commit-started") throw Error("isolated interruption inside the commit line"); } })).rejects.toThrow();
   releasePlacementStorageCaches();
   const refused = await abandonPlacementCheckpointPerson(f.base).then(() => { throw Error("expected a refusal"); }, error => error as PlacementCheckpointError);
   expect(refused.causeClass).toBe("commit-started"); expect(refused.message).toContain("amem migrate --sync-placement --checkpoint --resume");
@@ -254,6 +263,7 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
 
 test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed modes, and the bound names the checkpoint", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
+  f.floor("0.22.0");
   const env = { CODEX_THREAD_ID: "t" }, roots = ["--writer-root", activationOwnRoot];
   await withHome(f.base, async () => {
     const text = await runCli(["migrate", "--sync-placement", "--checkpoint", ...roots], { cwd: f.root, env, stdinTTY: false });
@@ -262,7 +272,7 @@ test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed m
     expect(text).toContain("completed plan:"); expect(text).toContain("prospective plan:");
     const saved = JSON.parse(await runCli(["migrate", "--sync-placement", "--checkpoint", "--json", ...roots], { cwd: f.root, env, stdinTTY: false }));
     const plan = join(f.root, "checkpoint-plan.json"); writeFileSync(plan, JSON.stringify(saved), { mode: 0o600 });
-    // The real floor (0.30.0) is not met by this 0.29.0 install: confirm refuses with the floor step, and writes nothing.
+    // The below-minimum fixture floor makes confirm refuse with the floor step without writing.
     await expect(runCli(["migrate", "--sync-placement", "--checkpoint", "--confirm", "--plan", plan, ...roots], { cwd: f.root, env, stdinTTY: false })).rejects.toThrow("amem formats raise home 0.30.0");
     expect(existsSync(f.checkpoints)).toBe(false);
     expect(await runCli(["migrate", "--sync-placement", "--checkpoint", "--resume"], { cwd: f.root, env, stdinTTY: false })).toContain("nothing pending");
