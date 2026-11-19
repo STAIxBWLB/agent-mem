@@ -40,4 +40,3 @@ export function* placementPublicationEventSteps(bundle:PlacementPublicationBundl
     }
     return{events:[...holds,...known,...ambiguous,...committed],preCount:holds.length+known.length+ambiguous.length,holdCount:holds.length};
   }
-

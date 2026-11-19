@@ -8,7 +8,7 @@ import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { previewSelectedSyncPlacementSources } from "./sync-placement-capture.ts";
 import { placementInventory, placementInventoryBatches, type InventoryRealm } from "./sync-placement-inventory.ts";
-import { captureInspectionJournal, PlacementInspectionObjects } from "./sync-placement-inspection-evidence.ts";
+import { captureInspectionJournal, inspectRetainedPublicationHistories, PlacementInspectionObjects } from "./sync-placement-inspection-evidence.ts";
 import { createPlacementRecord, placementKeyId, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
 import { planPlacementPublicationAsync, publicationBytes, publicationFileNames } from "./sync-placement-publication-plan.ts";
@@ -57,7 +57,8 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
     const heads = targets.map(target => objects.ref(target.realm));
     // A missing cache ref is usable only when the latest retained completed publication for this remote and realm
     // observed an absent ref. With no such receipt it could be an unfetched remote, so never invent an empty history.
-    const publications = [...journal.publications.values()].filter(item => item.phase === "completed" && item.bundle.root.remoteHash === objects.remoteHash)
+    const publications = [...journal.publications.values()].filter(item => item.phase === "completed" && item.bundle.root.remoteHash === objects.remoteHash
+      && item.facts.some(fact => fact.phase === "completed" && fact.outcome === "committed"))
       .sort((a, b) => a.bundle.root.journal.sequence - b.bundle.root.journal.sequence);
     const knownEmpty = (identity: PlacementRealm) => {
       const matching = publications.flatMap(item => item.bundle.root.targets.filter(target => same(target.realm, identity)));
@@ -65,7 +66,11 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
     };
     if (heads.some((head, index) => head === undefined && !knownEmpty(selected[index]!)))
       return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
-    const old = await Promise.all(targets.map((target, index) => heads[index] ? objects.auditor(target.realm, active.profile.generation).history(heads[index]!) : undefined));
+    // A mutable cache ref is not a remote receipt: retain only the head verified through the publication journal.
+    const histories = await inspectRetainedPublicationHistories(journal, targets.map(target => ({ realm: target.realm, generation: active.profile.generation })), objects);
+    if (heads.some((head, index) => head !== histories.tips[index]))
+      return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" }, assertCurrent: checkInventory };
+    const old = histories.old;
     const planned = targets.map((target, index) => {
       const identity = selected[index]!, id = canonicalJSON(identity), sources = source.sourceRowsByRealm.get(id);
       if (!sources) throw new Error("selected placement source unavailable");

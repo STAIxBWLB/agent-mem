@@ -71,7 +71,11 @@ test("#288: offline prospective plan uses cache and pending source without modif
   const before = tree(f.base), preview = await previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR });
   expect(tree(f.base)).toEqual(before);
   expect(preview.headroom.prospectivePlan.state).toBe("cache-only");
-  if (preview.headroom.prospectivePlan.state === "cache-only") expect(preview.headroom.prospectivePlan.slots).toBeGreaterThan(0);
+  if (preview.headroom.prospectivePlan.state === "cache-only") {
+    expect(preview.headroom.prospectivePlan.slots).toBeGreaterThan(0);
+    const actual = await f.sync(); expect(actual.ok).toBe(true);
+    expect(actual.placementPublication?.journalObjects?.newPlan?.slots).toBe(preview.headroom.prospectivePlan.slots);
+  }
 }, 240_000);
 
 test("#288 step 3: preview is readonly and reports composition, headroom and the exact confirm step", async () => {
