@@ -1,7 +1,7 @@
 /**
  * Person surface of the placement checkpoint (#288 step 3): a readonly preview, confirm of one exact sealed plan, resume
  * and abandon. Never automatic and never on the capture or hook path. Code never raises a floor: confirm only reads the
- * person-written formats.json (`amem formats raise` is the one writer).
+ * person-written floor record (`amem formats raise` is the one writer).
  */
 import { randomBytes } from "node:crypto";
 import { realPath } from "./platform.ts";
