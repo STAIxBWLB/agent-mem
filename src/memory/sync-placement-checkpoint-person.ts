@@ -157,7 +157,7 @@ function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | und
  * Confirm one exact sealed plan under the profile, sync and home/realm fences: the floor first, then the planner's own
  * revalidation (fresh install, journal and history must reproduce the sealed bytes), then intent, staging and the commit line.
  * `minReader` is a test seam the CLI never passes.
- * ponytail: the seam exists only while this package is below 0.30.0 (a 0.30.0 floor refuses a 0.29.x reader); task 312 removes it.
+ * ponytail: the seam exists only while this package is below 0.30.0; remove it in 0.30.0 release preparation after a real-floor confirm test.
  */
 export async function confirmPlacementCheckpoint(homeInput: string, value: unknown, opts: { writerRoots: readonly string[]; ownRoot: string; minReader?: string; phase?: (phase: PlacementCheckpointPhase) => void }): Promise<{ window: number; renewed: true; planHash: string; nextStep: string }> {
   const home = realPath(homeInput), intent = checkpointPlanFrom(value), a = active(home), minReader = opts.minReader ?? PLACEMENT_CHECKPOINT_MIN_READER;

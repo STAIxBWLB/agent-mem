@@ -22,7 +22,7 @@ import { remoteRealmAdmission } from "../src/memory/sync-placement-remote-admiss
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); releasePlacementStorageCaches(); });
 const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
-// ponytail: this package is still 0.29.0, below the 0.30.0 checkpoint floor; tests confirm under a 0.22.0 floor through the seam task 312 removes.
+// ponytail: this package is still 0.29.0; replace the 0.22.0 test floor with a real 0.30.0 confirm in release preparation.
 const FLOOR = "0.22.0";
 function tree(dir: string): Record<string, string> {
   const out: Record<string, string> = {};
