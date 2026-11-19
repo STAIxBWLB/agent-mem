@@ -489,7 +489,7 @@ export const plugin = {
         };
         const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection, reason => { if (input.panel === "recap") diagnostic.reason ??= reason; }) : await snapshots.fresh(projection);
         // ponytail: one fresh selection after a successful copy retry whose initial revision drifted. This cannot loop.
-        if (retryCache && sourceRetried && selection.cacheable && typeof result.cursor === "number" && result.cursor > 2 ** 52)
+        if (retryCache && sourceRetried && selection.cacheable && diagnostic.reason !== "onExpiry -Infinity" && diagnostic.reason !== "uncacheable selection" && typeof result.cursor === "number" && result.cursor > 2 ** 52)
           return await snapshot(input, false, diagnostic);
         return result;
       } catch (e) {
