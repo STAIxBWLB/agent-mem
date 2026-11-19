@@ -309,7 +309,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const output = await runCliCommand(argv, context);
     if (marked && !argv.includes("--help") && !["--version", "version", "--help", "help", "completion"].includes(argv[0] ?? "")) {
       const parsed = parseCommand(argv);
-      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup") {
+      // #326: the audit's output is a rendered summary or score, and the sheet's `root` and the project path it names can match a configured denial, so it is
+      // screened whole like a receipt - a marked session's policy screens every read's output, and these two are reads whose rows are copied rather than stored
+      // views the store already filtered.
+      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup" || parsed.path[0] === "eval" && parsed.path[1] === "audit") {
         let receipt: unknown = output;
         // Import receipts contain fixed counters named `pii`; they are not row privacy flags.
         // Screen the complete rendered receipt, including every key and value, as text.
@@ -318,6 +321,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         }
         try { assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd())); }
         catch {
+          // A score leaves nothing behind, so an output the policy refuses refuses the read; a sample has written its private sheet already, and withholding
+          // the receipt reports exactly that without naming the file.
+          if (parsed.path[0] === "eval" && parsed.path[2] === "score") throw Error("Memory operation unavailable or refused; no partial result is shown.");
           // The command returned successfully: withholding its receipt cannot undo its effects.
           const failed = receipt !== null && typeof receipt === "object" && "ok" in receipt && receipt.ok === false;
           return parsed.options["--json"] === true ? JSON.stringify({ ok: !failed, completed: !failed, receiptWithheld: true })

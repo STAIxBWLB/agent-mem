@@ -472,3 +472,22 @@ test("#326: the audit command refuses a missing seed, an out-of-range n and a mi
     await expect(cli(r, ["eval", "audit", "score", join(r.root, "bad.json")])).rejects.toThrow("judge_a must be one of");
   } finally { store.close(); }
 }, 60_000);
+
+test("#326: a marked session's audit output is screened by the configured policy, and a person's is not", async () => {
+  const r = rig();
+  writeFileSync(join(r.memory, "amem.config.json"), JSON.stringify({ piiPatterns: ["never_public_"] }));
+  const store = seeded(r, [{ text: "the parcel router keeps its retry budget" }]);
+  let sheet: AuditSheet;
+  try { sheet = auditSample({ store, project: r.project, n: 1, seed: "never_public_seed", root: r.repo, asOf: NOW }); } finally { store.close(); }
+  const file = writeAuditSheet(join(r.root, "screened.json"), sheet);
+  // A person's own score prints the seed, which is their input and not note content (owner ruling 2026-11-20).
+  expect(JSON.parse(await cli(r, ["eval", "audit", "score", file, "--json"]))).toMatchObject({ seed: "never_public_seed" });
+  // A marked read is screened like every other: the policy denies the token the seed carries, so the score is refused rather than printed.
+  await expect(cli(r, ["eval", "audit", "score", file, "--json"], { CODEX_THREAD_ID: "fixture" }))
+    .rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  // A sample has already written its private sheet, so its summary is withheld rather than reporting a draw that did not fail.
+  expect(JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "never_public_seed", "--n", "1", "--out", join(r.root, "screened-sample.json"), "--json"], { CODEX_THREAD_ID: "fixture" })))
+    .toEqual({ ok: true, completed: true, receiptWithheld: true });
+  // The sheet is on disk all the same, and a person can read and score it: withholding the summary hides no effect, it reports one.
+  expect(readAuditSheet(join(r.root, "screened-sample.json")).seed).toBe("never_public_seed");
+}, 60_000);
