@@ -209,16 +209,38 @@ export function appendMetrics(base: string, samples: MetricSample[]): void {
 
 /** The newest samples first-preserved order (oldest to newest), `limit` of each kind kept (#485); malformed lines are skipped. */
 export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] {
-  let lines: string[] = [];
-  try { lines = readFileSync(metricsPath(base), "utf8").split("\n").filter(Boolean); } catch { return []; }
+  const text = readMetricsText(metricsPath(base));
+  if (text === undefined) return [];
   const parsed: MetricSample[] = [];
-  for (const line of lines) {
+  for (const line of text.split("\n")) {
+    if (!line) continue;
     try {
       const s = JSON.parse(line) as MetricSample;
       if ((s?.kind === "hook" || s?.kind === "search") && typeof s.at === "string") parsed.push(s);
     } catch { /* a malformed line is skipped */ }
   }
   return newestPerKind(parsed, limit, sample => sample.kind);
+}
+
+/**
+ * #485: a plain metrics file, read whole. The open is non-blocking and never follows a symlink, so a fifo that would
+ * hold a reader, or anything else that is not a plain file, is answered as absent instead of waited on.
+ */
+function readMetricsText(file: string): string | undefined {
+  let fd: number | undefined;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return undefined;
+    const bytes = Buffer.alloc(stat.size);
+    let length = 0;
+    for (;;) {
+      const read = readSync(fd, bytes, length, bytes.length - length, length);
+      if (read <= 0) break;
+      length += read;
+    }
+    return new TextDecoder("utf-8").decode(bytes.subarray(0, length));
+  } catch { return undefined; } finally { closeSync(fd); }
 }
 
 
