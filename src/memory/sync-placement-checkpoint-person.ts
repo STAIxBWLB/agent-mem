@@ -8,8 +8,8 @@ import { types } from "node:util";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { realPath } from "./platform.ts";
 import { canonicalJSON } from "./generation.ts";
-import { assertFormatFloor, readFormatFloors } from "./formats.ts";
-import { installVersion, versionBelow } from "./formats-raise.ts";
+import { assertFormatFloor, formatVersionBelow, readFormatFloors } from "./formats.ts";
+import { installVersion } from "./formats-raise.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_MAX_OBJECTS } from "./sync-placement-journal-format.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
@@ -30,7 +30,7 @@ import { checkpointProspective, type CheckpointProspective } from "./sync-placem
 export const CHECKPOINT_PREVIEW = PLACEMENT_CHECKPOINT_COMMAND;
 const RESUME = `${CHECKPOINT_PREVIEW} --resume`, ABANDON = `${CHECKPOINT_PREVIEW} --abandon`;
 const homeFloorAtLeast = (home: string, minimum: string): boolean =>
-  (readFormatFloors(home) ?? []).some(floor => floor.surface === "home" && !versionBelow(floor.minReader, minimum));
+  (readFormatFloors(home) ?? []).some(floor => floor.surface === "home" && !formatVersionBelow(floor.minReader, minimum));
 
 export type PlacementCheckpointCause = "pending" | "commit-started" | "floor" | "writer-below-floor" | "headroom" | "obligation" | "changed" | "inactive" | "candidate";
 const MESSAGES: Record<PlacementCheckpointCause, string> = {
@@ -151,7 +151,7 @@ function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | und
   const effective = readEffectiveSyncPlacementWriters(home).roots ?? [];
   const versions = [...roots.map(root => root.version), ...effective.map(root => installVersion(root))];
   const floors = (readFormatFloors(home) ?? []).filter(floor => floor.surface === "home" || floor.surface === "sync");
-  if (versions.some(version => version === null || floors.some(floor => versionBelow(version, floor.minReader)))) throw new PlacementCheckpointError("writer-below-floor");
+  if (versions.some(version => version === null || floors.some(floor => formatVersionBelow(version, floor.minReader)))) throw new PlacementCheckpointError("writer-below-floor");
 }
 /**
  * Confirm one exact sealed plan under the profile, sync and home/realm fences: the floor first, then the planner's own

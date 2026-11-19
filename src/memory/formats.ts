@@ -32,7 +32,8 @@ const READER_VERSION: string | undefined = (() => {
   catch { return undefined; }
 })();
 const parts = (version: string) => SEMVER.exec(version)!.slice(1, 4).map(Number);
-function below(reader: string, floor: string): boolean {
+/** Compare versions accepted by format-floor records, using their numeric release components. */
+export function formatVersionBelow(reader: string, floor: string): boolean {
   const a = parts(reader), b = parts(floor);
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! < b[i]!;
   return false;
@@ -65,7 +66,7 @@ export function assertFormatFloor(home: string, surface: FormatSurface): void {
   const floors = readFormatFloors(home);
   if (!floors) return;
   const reader = READER_VERSION ?? "unknown";
-  for (const floor of floors) if ((floor.surface === surface || floor.surface === "home") && (READER_VERSION === undefined || below(READER_VERSION, floor.minReader))) {
+  for (const floor of floors) if ((floor.surface === surface || floor.surface === "home") && (READER_VERSION === undefined || formatVersionBelow(READER_VERSION, floor.minReader))) {
     throw new FormatFloorError("format_floor", `amem ${reader} is below the ${surface} format floor ${floor.minReader} (since ${floor.since}) recorded in ${join(home, FORMATS_FILE)}; nothing was read or written. Upgrade amem to ${floor.minReader} or later.`, { ...floor, reader });
   }
 }
@@ -73,7 +74,7 @@ export function assertFormatFloor(home: string, surface: FormatSurface): void {
 /** A person opts into a capability only by an applicable floor, never by this code writing one. */
 export function formatFloorAtLeast(home: string, surface: FormatSurface, minimum: string): boolean {
   if (!SEMVER.test(minimum)) return false;
-  return (readFormatFloors(home) ?? []).some(floor => (floor.surface === surface || floor.surface === "home") && !below(floor.minReader, minimum));
+  return (readFormatFloors(home) ?? []).some(floor => (floor.surface === surface || floor.surface === "home") && !formatVersionBelow(floor.minReader, minimum));
 }
 
 /**

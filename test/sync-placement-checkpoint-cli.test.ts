@@ -173,6 +173,19 @@ test("#288: a sync-only floor cannot authorize a checkpoint", async () => {
   expect(existsSync(f.checkpoints)).toBe(false);
 }, 180_000);
 
+test("#288: suffixed home and sync floors use the existing numeric floor comparison", async () => {
+  const f = await fixture();
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([
+    { surface: "home", minReader: "0.22.0+build.1", since: "2026-11-19" },
+    { surface: "home", minReader: "0.22.0", since: "2026-11-19" },
+    { surface: "sync", minReader: "0.22.0-rc.1", since: "2026-11-19" },
+  ]) + "\n", { mode: 0o600 });
+  const opts = { ...f.opts, minReader: FLOOR };
+  const preview = await previewPlacementCheckpoint(f.base, opts);
+  expect(preview.floorReady).toBe(true);
+  expect(await confirmPlacementCheckpoint(f.base, preview, opts)).toMatchObject({ window: 1, renewed: true });
+}, 180_000);
+
 test("#288: every candidate writer must meet the actual home floor, including a floor above the checkpoint minimum", async () => {
   const f = await fixture();
   const old = join(f.root, "older candidate writer");
@@ -180,7 +193,10 @@ test("#288: every candidate writer must meet the actual home floor, including a 
   writeFileSync(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.22.0" }), { mode: 0o644 });
   writeFileSync(join(old, "src", "index.ts"), "// isolated writer\n", { mode: 0o644 });
   writeFileSync(join(old, "bin", "amem.js"), "// isolated writer\n", { mode: 0o755 });
-  f.floor("0.22.1");
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([
+    { surface: "home", minReader: "0.22.1+build.1", since: "2026-11-19" },
+    { surface: "home", minReader: "0.22.0", since: "2026-11-19" },
+  ]) + "\n", { mode: 0o600 });
   const opts = { ...f.opts, writerRoots: [activationOwnRoot, old], minReader: FLOOR };
   const preview = await previewPlacementCheckpoint(f.base, opts);
   expect(preview.floorReady).toBe(true);
