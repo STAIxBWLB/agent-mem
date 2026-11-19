@@ -2,7 +2,8 @@
 // `for await` over a Bun stream elsewhere in this program stops type-checking.
 /// <reference lib="dom.asynciterable" />
 import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -102,6 +103,85 @@ test("Recap memoizes its screened projection and unchanged cursor polls take und
     expect(changed.error).toBeUndefined(); expect(changed.cursor).not.toBe(first.cursor);
     expect(JSON.stringify(changed)).toContain("external recap revision marker"); expect(calls).toHaveBeenCalledTimes(2);
   } finally { calls.mockRestore(); }
+});
+
+test("Recap reuses unchanged copies and recopies after a work-log append", async () => {
+  const f = fixture(), work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+  await work.write("snapshot-test", { task: "first task", status: "doing" }); work.close();
+  const provider = await open(f.family), copies = spyOn(fs, "copyFileSync");
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); const initialCopies = copies.mock.calls.length; expect(initialCopies).toBeGreaterThan(0);
+    const warm = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(warm.error).toBeUndefined(); expect(copies.mock.calls.length).toBe(initialCopies);
+    const writer = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+    try { await writer.write("snapshot-test", { task: "second task", status: "doing" }); } finally { writer.close(); }
+    const changed = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(changed.error).toBeUndefined(); expect(copies.mock.calls.length).toBeGreaterThan(initialCopies);
+    expect(JSON.stringify(changed)).toContain("second task");
+  } finally { copies.mockRestore(); }
+});
+
+test("Recap invalidates when a copied input omitted from the broad revision changes", async () => {
+  const f = fixture(), extra = join(f.base, "log", "snapshot-input.bin"); writeFileSync(extra, "first");
+  const provider = await open(f.family), brief = spyOn(briefModule, "sessionStartBrief");
+  try {
+    expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+    expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+    expect(brief).toHaveBeenCalledTimes(1);
+    appendFileSync(extra, " changed");
+    expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+    expect(brief).toHaveBeenCalledTimes(2);
+  } finally { brief.mockRestore(); }
+});
+
+for (const interruptions of [1, 3]) test(`Recap retries ${interruptions} concurrent copy change(s) with a bounded remedy`, async () => {
+  const f = fixture(), provider = await open(f.family);
+  const source = join(f.base, "log", readdirSync(join(f.base, "log")).find(name => name.endsWith(".jsonl"))!);
+  const original = fs.copyFileSync; let injected = 0;
+  const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
+    original(from, to, flags);
+    if (String(from) === source && injected < interruptions) { injected++; appendFileSync(source, "\n"); }
+  });
+  try {
+    const result = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(injected).toBe(interruptions);
+    if (interruptions === 1) {
+      expect(result.error).toBeUndefined();
+      const copied = copies.mock.calls.length;
+      expect((await provider.snapshot({ after: 0, panel: "recap", project: f.project })).error).toBeUndefined();
+      expect(copies.mock.calls.length).toBe(copied);
+    }
+    else expect(result.error).toBe("recap source changed during snapshot after 3 attempts; wait for memory writes to settle, then retry Recap.");
+  } finally { copies.mockRestore(); }
+});
+
+test("Recap reports a directory that keeps changing after the retry bound", async () => {
+  const f = fixture(), provider = await open(f.family), directory = join(f.base, "log");
+  const source = join(directory, readdirSync(directory).find(name => name.endsWith(".jsonl"))!);
+  const original = fs.copyFileSync; let injected = 0;
+  const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
+    original(from, to, flags);
+    if (String(from) === source && injected < 3) writeFileSync(join(directory, `added-${++injected}.txt`), "fixture");
+  });
+  try {
+    const result = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(injected).toBe(3);
+    expect(result.error).toBe("recap source directory changed during snapshot after 3 attempts; wait for memory writes to settle, then retry Recap.");
+  } finally { copies.mockRestore(); }
+});
+
+test("Recap retries a file removed while it is being copied", async () => {
+  const f = fixture(), file = join(f.base, "log", "transient-input.bin"); writeFileSync(file, "fixture");
+  const provider = await open(f.family), original = fs.copyFileSync; let removed = false;
+  const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
+    if (!removed && String(from) === file) { removed = true; rmSync(file); }
+    return original(from, to, flags);
+  });
+  try {
+    const result = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(removed).toBe(true); expect(result.error).toBeUndefined();
+  } finally { copies.mockRestore(); }
 });
 
 test("Recap expires at the selected project's candidate day boundary even when another project masks the home summary", async () => {
@@ -428,16 +508,29 @@ test("Recap omits repository narrowing even when the home is inside a repository
   expect(brief.tokens).toBeGreaterThan(256); expect(brief.coverage).not.toHaveProperty("repo");
 });
 
-test("private brief copies refuse a live forget during projection and clean their scratch store", async () => {
-  const f = fixture(); let copy: string | undefined;
-  await expect(withBriefSnapshot(f.base, f.project, async measureOnly => {
-    copy = measureOnly.curated?.profile.home;
+test("private brief copies retry a live forget without exposing the forgotten row and clean every scratch store", async () => {
+  const f = fixture(), copies: string[] = []; let calls = 0;
+  const result = await withBriefSnapshot(f.base, f.project, async measureOnly => {
+    if (measureOnly.curated) copies.push(measureOnly.curated.profile.home);
     const brief = await briefModule.sessionStartBrief({ cwd: f.base, base: f.base, project: f.project, repository: false, measureOnly });
-    const store = new MemoryStore({ memoryDir: f.base });
-    try { store.forget(f.noteId, "person", f.project); } finally { store.close(); }
+    if (++calls === 1) {
+      const store = new MemoryStore({ memoryDir: f.base });
+      try { store.forget(f.noteId, "person", f.project); } finally { store.close(); }
+    }
     return brief;
-  })).rejects.toThrow("recap source");
-  expect(copy).toBeDefined(); expect(existsSync(copy!)).toBe(false);
+  });
+  expect(calls).toBe(2); expect(result.context).not.toContain("screened amem search index");
+  expect(copies).toHaveLength(2); for (const copy of copies) expect(existsSync(copy)).toBe(false);
+});
+
+test("a recap binding change is refused without retry", async () => {
+  const f = fixture(); let calls = 0;
+  await expect(withBriefSnapshot(f.base, f.project, async () => {
+    calls++;
+    appendAlias(f.base, { alias: "example.test/changed-alias", key: f.project, actor: "person", machine: "a".repeat(16) });
+    return null;
+  })).rejects.toThrow("recap binding changed");
+  expect(calls).toBe(1);
 });
 
 test("Recap refuses a symlinked work log instead of claiming an empty complete section", async () => {

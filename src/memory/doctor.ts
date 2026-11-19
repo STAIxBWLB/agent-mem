@@ -105,32 +105,50 @@ function curatedPresent(home: string, project: string, layout: Layout): boolean 
 /** What a scratch copy leaves out: databases, locks, repositories, the machine-local capture and work trees, spools and ingest cursors. */
 const SKIP = /\.db(-wal|-shm)?$|\.lock$|\.tmp$|^\.git$|\.git$|^spool$|^ingest$|^readers$/;
 class TooBig extends Error {}
-interface CopyBudget { bytes: number; verify?: (() => void)[] }
+// ponytail: at most three complete copy attempts; a future incremental snapshot protocol can reduce retry cost.
+const RECAP_SNAPSHOT_ATTEMPTS = 3;
+export class RecapSourceChangedError extends Error {
+  constructor(directory: boolean) {
+    super(`recap source ${directory ? "directory " : ""}changed during snapshot after ${RECAP_SNAPSHOT_ATTEMPTS} attempts; wait for memory writes to settle, then retry Recap.`);
+    this.name = "RecapSourceChangedError";
+  }
+}
+interface CopyBudget { bytes: number; verify?: (() => void)[]; verifyBytes?: number }
+function retainVerification(budget: CopyBudget, path: string, stamp: string, verify: () => void): void {
+  budget.verify!.push(verify);
+  // Account for captured path/stamp strings and a conservative per-closure allowance in the provider's cache bound.
+  budget.verifyBytes = (budget.verifyBytes ?? 0) + 2 * (Buffer.byteLength(path) + Buffer.byteLength(stamp)) + 512;
+}
 function observedCopy(from: string, to: string, budget: CopyBudget): void {
   budget.bytes += statSync(from).size; if (budget.bytes > COPY_LIMIT_BYTES) throw new TooBig();
+  let verifySource: (() => void) | undefined;
   if (budget.verify) {
     const stamp = () => { const s = lstatSync(from, { bigint: true }); if (!s.isFile()) throw Error("recap source is not a plain file"); return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`; };
-    const before = stamp(); budget.verify.push(() => { if (stamp() !== before) throw Error("recap source changed"); });
+    const before = stamp(); verifySource = () => { let current: string; try { current = stamp(); } catch { throw Error("recap source changed"); } if (current !== before) throw Error("recap source changed"); };
+    retainVerification(budget, from, before, verifySource);
   }
-  copyFileSync(from, to);
+  try { copyFileSync(from, to); } catch (error) { verifySource?.(); throw error; }
 }
-function observeDirectory(from: string, budget: CopyBudget, keep: (name: string) => boolean): void {
+function observeDirectory(from: string, budget: CopyBudget, keep: (name: string) => boolean): (() => void) | undefined {
   if (!budget.verify) return;
   const stamp = () => { const s = lstatSync(from, { bigint: true }); if (!s.isDirectory()) throw Error("recap source directory changed"); return JSON.stringify([String(s.dev), String(s.ino), readdirSync(from).filter(keep).sort()]); };
-  const before = stamp(); budget.verify.push(() => { if (stamp() !== before) throw Error("recap source directory changed"); });
+  const before = stamp(), verify = () => { let current: string; try { current = stamp(); } catch { throw Error("recap source directory changed"); } if (current !== before) throw Error("recap source directory changed"); };
+  retainVerification(budget, from, before, verify); return verify;
 }
 function copyTree(from: string, to: string, budget: CopyBudget, skipNames: ReadonlySet<string> = new Set()): void {
-  observeDirectory(from, budget, name => !(SKIP.test(name) && !(basename(from) === "public-prune-objects" && /^[a-f0-9]{40}\.git$/.test(name))) && !skipNames.has(name));
-  mkdirSync(to, { recursive: true, mode: 0o700 });
-  for (const name of readdirSync(from)) {
-    const proofObject = basename(from) === "public-prune-objects" && /^[a-f0-9]{40}\.git$/.exec(name)?.[0] === name;
-    if (SKIP.test(name) && !proofObject || skipNames.has(name)) continue;
-    const source = join(from, name), stat = lstatSync(source);
-    if (proofObject && !stat.isFile()) throw new Error("a public prune object is not a plain file");
-    if (stat.isSymbolicLink()) throw new Error("the memory home holds a link where a plain file or directory is expected");
-    if (stat.isDirectory()) copyTree(source, join(to, name), budget, skipNames);
-    else if (stat.isFile()) observedCopy(source, join(to, name), budget);
-  }
+  const verifyDirectory = observeDirectory(from, budget, name => !(SKIP.test(name) && !(basename(from) === "public-prune-objects" && /^[a-f0-9]{40}\.git$/.test(name))) && !skipNames.has(name));
+  try {
+    mkdirSync(to, { recursive: true, mode: 0o700 });
+    for (const name of readdirSync(from)) {
+      const proofObject = basename(from) === "public-prune-objects" && /^[a-f0-9]{40}\.git$/.exec(name)?.[0] === name;
+      if (SKIP.test(name) && !proofObject || skipNames.has(name)) continue;
+      const source = join(from, name), stat = lstatSync(source);
+      if (proofObject && !stat.isFile()) throw new Error("a public prune object is not a plain file");
+      if (stat.isSymbolicLink()) throw new Error("the memory home holds a link where a plain file or directory is expected");
+      if (stat.isDirectory()) copyTree(source, join(to, name), budget, skipNames);
+      else if (stat.isFile()) observedCopy(source, join(to, name), budget);
+    }
+  } catch (error) { verifyDirectory?.(); throw error; }
 }
 
 /** The curated side of the home, without any database: the logs of this project (and its aliases), and the small files that bind them. */
@@ -175,37 +193,47 @@ function copyWork(options: Pick<DoctorOptions, "home" | "project" | "aliases">, 
 }
 
 /** Reuse doctor's bounded private inputs for an on-demand brief, never a live store or reader lease. */
-export async function withBriefSnapshot<T>(home: string, project: string, read: (inputs: NonNullable<BriefOptions["measureOnly"]>) => Promise<T>): Promise<T> {
+export async function withBriefSnapshot<T>(home: string, project: string, read: (inputs: NonNullable<BriefOptions["measureOnly"]>) => Promise<T>, onValidated?: (validate: () => void, retries: number, verifyBytes: number) => void): Promise<T> {
   const aliases = aliasedKeys(home, project), selection = readSelector(home).revision, layout = layoutOf(home), guard = guardScratch();
-  const budget: CopyBudget = { bytes: 0, verify: [] };
   const inputDirectories = [join(home, "projects"), ...(layout === "split" ? [join(home, "user")] : [join(home, "log"), join(home, "local")]),
     ...(layout === "generation" ? [join(home, "generations")] : []),
     ...[project, ...aliases].flatMap(key => { const dir = shardDir(home, key); return [dir, join(dir, "work"), join(dir, "work", "log")]; })];
   const checkDirectories = () => {
     for (const dir of inputDirectories) { const stat = lstatSync(dir, { throwIfNoEntry: false }); if (stat && !stat.isDirectory()) throw Error("recap input is not a plain directory"); }
   };
-  const check = () => {
+  const check = (budget: CopyBudget) => {
     checkDirectories();
     if (readSelector(home).revision !== selection || layoutOf(home) !== layout || JSON.stringify(aliasedKeys(home, project)) !== JSON.stringify(aliases)) throw Error("recap binding changed");
     for (const verify of budget.verify!) verify();
   };
   try {
-    checkDirectories();
-    return await withDoctorPlacementScratch(home, guard.adopt, async scratch => {
-      let curated: MemoryStore | undefined;
+    for (let attempt = 0; attempt < RECAP_SNAPSHOT_ATTEMPTS; attempt++) {
+      const budget: CopyBudget = { bytes: 0, verify: [] };
       try {
-        const options = { home, project, aliases }, workBase = join(scratch, "work-base"); mkdirSync(workBase, { mode: 0o700 });
-        copyWork(options, workBase, budget);
-        if (curatedPresent(home, project, layout)) {
-          const copy = join(scratch, "home"); copyCurated(options, layout, copy, budget);
-          curated = openCuratedForRead(copy, project);
-          if (!curated) throw Error("recap curated snapshot unavailable");
-        }
-        check();
-        const result = await read({ ...(curated ? { curated } : {}), workBase });
-        check(); return result;
-      } finally { curated?.close(); }
-    });
+        checkDirectories();
+        return await withDoctorPlacementScratch(home, guard.adopt, async scratch => {
+          let curated: MemoryStore | undefined;
+          try {
+            const options = { home, project, aliases }, workBase = join(scratch, "work-base"); mkdirSync(workBase, { mode: 0o700 });
+            copyWork(options, workBase, budget);
+            if (curatedPresent(home, project, layout)) {
+              const copy = join(scratch, "home"); copyCurated(options, layout, copy, budget);
+              curated = openCuratedForRead(copy, project);
+              if (!curated) throw Error("recap curated snapshot unavailable");
+            }
+            check(budget);
+            const result = await read({ ...(curated ? { curated } : {}), workBase });
+            check(budget);
+            onValidated?.(() => check(budget), attempt, budget.verifyBytes ?? 0);
+            return result;
+          } finally { curated?.close(); }
+        });
+      } catch (error) {
+        if (!(error instanceof Error) || !["recap source changed", "recap source directory changed"].includes(error.message)) throw error;
+        if (attempt + 1 === RECAP_SNAPSHOT_ATTEMPTS) throw new RecapSourceChangedError(error.message === "recap source directory changed");
+      }
+    }
+    throw Error("recap snapshot unavailable; retry Recap.");
   } catch (error) {
     if (error instanceof TooBig) throw Error("recap snapshot exceeds the 64 MiB copy limit");
     throw error;

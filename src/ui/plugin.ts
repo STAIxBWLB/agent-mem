@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createMemoryMcp } from "../mcp-memory.ts";
 import { sessionStartBrief } from "../session-brief.ts";
-import { withBriefSnapshot } from "../memory/doctor.ts";
+import { RecapSourceChangedError, withBriefSnapshot } from "../memory/doctor.ts";
 import { MCP_TOOLS } from "../mcp.ts";
 import { CandidateStore, withPendingCandidates, type Candidate, type CandidateInput } from "../memory/candidates.ts";
 import { pendingSummary } from "../memory/candidate-pending.ts";
@@ -235,7 +235,7 @@ export const plugin = {
         ...(view?.title ? { detail: oneLine(view.text, 120) } : {}), ...(view?.at ?? capture?.at ? { at: view?.at ?? capture?.at } : {}), link: { panel: "find", params: { project, q } } };
     }
 
-    async function panel(name: string, args: Args, project: string, onExpiry?: (at: number) => void): Promise<Args> {
+    async function panel(name: string, args: Args, project: string, onExpiry?: (at: number) => void, onValidate?: (validate: () => void, retries: number, bytes: number) => void): Promise<Args> {
       switch (name) {
         case "review": return { ...(await pending(project, true, onExpiry)), selected: str(args.id) ?? null };
         case "recap": {
@@ -246,7 +246,7 @@ export const plugin = {
           const brief = await withBriefSnapshot(base, project, measureOnly => {
             if (measureOnly.curated && onExpiry) onExpiry(expiryOf(measureOnly.curated.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
             return sessionStartBrief({ cwd: base, base, project, repository: false, policy: configuredPolicyOptions(base), measureOnly });
-          });
+          }, (validate, retries, bytes) => onValidate?.(() => { validate(); if (policyVersion() !== revision) throw Error("recap policy changed"); }, retries, bytes));
           assertProjectActive(base, project);
           if (policyVersion() !== revision) throw Error("recap policy changed");
           return { brief, generatedAt, repoAbsent: true };
@@ -432,7 +432,7 @@ export const plugin = {
 
     const preparedReads = new Set<string>();
     const cachedPanels = new Set(["review", "recap", "work"]);
-    async function snapshot(input: { after: number; panel: string } & Args): Promise<Args> {
+    async function snapshot(input: { after: number; panel: string } & Args, retryCache = true): Promise<Args> {
       const args = input as Args;
       if (input.panel === "inbox") {
         const value = await inboxCache.snapshot();
@@ -466,14 +466,15 @@ export const plugin = {
           const hits = result.hits.map(hit => searchHit(hit, project!, q));
           return { hits, total: hits.length };
         }
-        const load = async (onExpiry?: (at: number) => void): Promise<Args> => input.panel === "capacity"
+        const load = async (onExpiry?: (at: number) => void, onValidate?: (validate: () => void, retries: number, bytes: number) => void): Promise<Args> => input.panel === "capacity"
           ? { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) }
-          : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry)) };
+          : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry, onValidate)) };
         // Capacity samples resources/time; Timeline probes arbitrary referenced files.
         // Neither has a cheap complete revision, so both stay uncached.
         if (!cachedPanels.has(input.panel)) return await load();
         const key = canonicalJSON({ ...args, after: undefined, project: project ?? null, projects: list });
         let projectionVersion = actionVersion;
+        let sourceRetried = false;
         const projection = async () => {
           if (projectionVersion !== actionVersion) {
             list = projects(); project = pick(args, list); catalog = undefined;
@@ -481,12 +482,19 @@ export const plugin = {
           }
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
-          const data = await load(at => { until = Math.min(until, at); });
-          return { data, until };
+          let validate: (() => void) | undefined, validationBytes = 0;
+          const data = await load(at => { until = Math.min(until, at); }, (check, retries, bytes) => { validate = check; validationBytes = bytes; sourceRetried ||= retries > 0; });
+          return { data, until, ...(validate ? { validate, validationBytes } : {}) };
         };
-        return selection.cacheable ? await snapshots.snapshot(key, input.after, projection) : await snapshots.fresh(projection);
+        const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection) : await snapshots.fresh(projection);
+        // ponytail: one fresh selection after a successful copy retry whose initial revision drifted. This cannot loop.
+        if (retryCache && sourceRetried && selection.cacheable && typeof result.cursor === "number" && result.cursor > 2 ** 52)
+          return snapshot(input, false);
+        return result;
       } catch (e) {
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
+        if (input.panel === "recap" && e instanceof RecapSourceChangedError)
+          return { projects: list, project: project ?? null, error: e.message };
         return { projects: list, project: project ?? null, error: "Memory is unavailable for this project right now; details are in the terminal." };
       }
     }
