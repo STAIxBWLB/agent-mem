@@ -65,12 +65,13 @@ test("#485 AC2: each read-tool call appends one named sample, and the call that 
   await mcp.tools.amem_search({ query: "telemetry" });
   await mcp.tools.amem_timeline({ limit: 5 });
   // The peak is a process-lifetime high-water mark, so a fixed allocation raises it only while this test process has
-  // not peaked higher already. Size the fill from the peak recorded so far: filling it puts resident memory about
-  // 8 MB above every earlier peak, so the call after it is the one that did raise the peak on any host.
-  const peakKB = processPeakRssKB(), residentKB = Math.round(process.memoryUsage().rss / 1024);
-  const held = Buffer.alloc((Math.max(0, peakKB - residentKB) + 8 * 1024) * 1024, 1);
+  // not peaked higher already, and the current resident size is not a reliable floor: macOS reports the peak from
+  // rusage while `memoryUsage().rss` is the live footprint. Fill a buffer larger than the recorded peak itself, which
+  // makes the filled pages alone exceed every earlier peak on any host.
+  const peakKB = processPeakRssKB();
+  const held = Buffer.alloc((peakKB + 16 * 1024) * 1024, 1);
   await mcp.tools.amem_show({ id: f.id });
-  expect(held.byteLength).toBeGreaterThanOrEqual(8 * 1024 * 1024);
+  expect(held.byteLength).toBeGreaterThan(peakKB * 1024);
 
   const rows = samples(f.memory);
   expect(rows.map(row => row.tool)).toEqual(["amem_search", "amem_timeline", "amem_show"]);
