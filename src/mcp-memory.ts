@@ -346,10 +346,8 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     // in flight while it grew; the tracker owns that rule and the observed baseline.
     const peaks = createPeakTracker();
     for (const name of readTools) exposed[name] = async args => {
-      fullGuard();
-      const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
-      const sourceCurrent = store.beginRecallRead();
-      if (policyKey(policyOptions()) !== revision) return unavailable();
+      // #485: the sample measures the served span, so the clock and the peak window open at entry, before the guard, the
+      // policy snapshot and `beginRecallRead()` - whose preparation (an index refresh, a prune) the caller waits for.
       const started = performance.now();
       let window: ReturnType<typeof peaks.begin> | undefined;
       try { window = peaks.begin(); } catch { /* telemetry is an observation, never a precondition */ }
@@ -365,6 +363,10 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         } catch { /* a lost telemetry sample is never a failed call */ }
       };
       try {
+        fullGuard();
+        const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
+        const sourceCurrent = store.beginRecallRead();
+        if (policyKey(policyOptions()) !== revision) return unavailable();
         const result = await calls.run({ policy: snapshot, revision, configured }, async () => {
           const value = await tools[name](args);
           fullGuard(); sourceCurrent();
