@@ -75,7 +75,7 @@ export class SnapshotCache {
   private dropEntry(key: string, entry: Entry | undefined): void {
     if (entry && this.entries.get(key) === entry) { this.entries.delete(key); this.bytes -= entry.bytes; }
   }
-  async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>, onMiss?: (reason: "uncacheable selection" | "revision change" | "expired") => void): Promise<Data> {
+  async snapshot(key: string, after: number, read: () => Promise<SnapshotValue>, onMiss?: (reason: "uncacheable selection" | "revision change" | "expired" | "no cached result" | "cache capacity") => void): Promise<Data> {
     this.readable();
     const revision = this.sourceRevision();
     this.readable();
@@ -87,6 +87,7 @@ export class SnapshotCache {
       return this.reply(cached, after);
     }
     if (cached) onMiss?.(cached.revision === revision && cachedValid ? "expired" : "revision change");
+    else onMiss?.("no cached result");
     // A copied input can change without affecting the broader revision; never join an older flight in that case.
     if (!cachedValid) this.clearReusable();
     // Revision is part of the flight key: a new write never joins an older read.
@@ -122,7 +123,7 @@ export class SnapshotCache {
             const first = this.entries.keys().next().value!; this.bytes -= this.entries.get(first)!.bytes; this.entries.delete(first);
           }
           this.entries.set(key, entry); this.bytes += bytes;
-        }
+        } else onMiss?.("cache capacity");
         reading.entry = entry;
         return reading;
       })();

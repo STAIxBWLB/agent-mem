@@ -2,11 +2,11 @@ import { expect, test } from "bun:test";
 import { SnapshotCache } from "../src/ui/snapshot-cache.ts";
 
 test("snapshot proof metadata counts toward the existing cache size bound", async () => {
-  const cache = new SnapshotCache(() => "stable"); let calls = 0;
+  const cache = new SnapshotCache(() => "stable"); let calls = 0; const reasons: string[] = [];
   const read = async () => ({ data: { value: ++calls }, until: Infinity, validate() {}, validationBytes: 4 * 1024 * 1024 });
+  await cache.snapshot("recap", 0, read, reason => reasons.push(reason));
   await cache.snapshot("recap", 0, read);
-  await cache.snapshot("recap", 0, read);
-  expect(calls).toBe(2);
+  expect(calls).toBe(2); expect(reasons).toContain("cache capacity");
   await cache.close();
 });
 

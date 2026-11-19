@@ -432,8 +432,10 @@ export const plugin = {
 
     const preparedReads = new Set<string>();
     const cachedPanels = new Set(["review", "recap", "work"]);
-    async function snapshot(input: { after: number; panel: string } & Args, retryCache = true, diagnostic: { reason?: string } = {}): Promise<Args> {
+    async function snapshot(input: { after: number; panel: string } & Args, retryCache = true, diagnostic: { reason?: string; unavailable?: boolean } = {}): Promise<Args> {
       const args = input as Args;
+      const priority: Record<string, number> = { "no cached result": 0, expired: 1, "revision change": 2, "cache capacity": 3, "uncacheable selection": 4, "onExpiry -Infinity": 5, "failed copy": 6 };
+      const noteMiss = (reason: string) => { if (reason === "uncacheable selection" || reason === "onExpiry -Infinity") diagnostic.unavailable = true; if ((priority[reason] ?? 0) > (priority[diagnostic.reason ?? ""] ?? -1)) diagnostic.reason = reason; };
       if (input.panel === "inbox") {
         const value = await inboxCache.snapshot();
         for (const item of value.items) if (item.group === "candidate" && item.link.params?.project) projectOf.set(item.id, item.link.params.project);
@@ -456,7 +458,7 @@ export const plugin = {
           }
         }
         const selection = cachedPanels.has(input.panel) ? projectList() : { list: projects(), cacheable: false };
-        if (input.panel === "recap" && !selection.cacheable) diagnostic.reason ??= "uncacheable selection";
+        if (input.panel === "recap" && !selection.cacheable) noteMiss("uncacheable selection");
         list = selection.list; project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
         if (input.panel === "search") {
@@ -484,17 +486,17 @@ export const plugin = {
           let until = Math.min(catalogExpiry,
             withPendingCandidates(base, reader => reader.nextExpiry()) ?? Infinity);
           let validate: (() => void) | undefined, validationBytes = 0;
-          const data = await load(at => { if (input.panel === "recap" && at === -Infinity) diagnostic.reason ??= "onExpiry -Infinity"; until = Math.min(until, at); }, (check, retries, bytes) => { validate = check; validationBytes = bytes; sourceRetried ||= retries > 0; if (retries > 0) diagnostic.reason ??= "failed copy"; });
+          const data = await load(at => { if (input.panel === "recap" && at === -Infinity) noteMiss("onExpiry -Infinity"); until = Math.min(until, at); }, (check, retries, bytes) => { validate = check; validationBytes = bytes; sourceRetried ||= retries > 0; if (retries > 0) noteMiss("failed copy"); });
           return { data, until, ...(validate ? { validate, validationBytes } : {}) };
         };
-        const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection, reason => { if (input.panel === "recap") diagnostic.reason ??= reason; }) : await snapshots.fresh(projection);
+        const result = selection.cacheable ? await snapshots.snapshot(key, input.after, projection, reason => { if (input.panel === "recap") noteMiss(reason); }) : await snapshots.fresh(projection);
         // ponytail: one fresh selection after a successful copy retry whose initial revision drifted. This cannot loop.
-        if (retryCache && sourceRetried && selection.cacheable && diagnostic.reason !== "onExpiry -Infinity" && diagnostic.reason !== "uncacheable selection" && typeof result.cursor === "number" && result.cursor > 2 ** 52)
+        if (retryCache && sourceRetried && selection.cacheable && !diagnostic.unavailable && typeof result.cursor === "number" && result.cursor > 2 ** 52)
           return await snapshot(input, false, diagnostic);
         return result;
       } catch (e) {
         if (input.panel === "recap" && e instanceof RecapSourceChangedError) {
-          diagnostic.reason ??= "failed copy";
+          noteMiss("failed copy");
           return { projects: list, project: project ?? null, error: e.message };
         }
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
