@@ -12,7 +12,9 @@ Judging happens outside amem. amem draws the sample, records where each note's a
    amem eval audit sample --project <key> --n 40 --seed 2026-11-20
    ```
 
-   The draw stratifies by kind (`decision`, `finding`, `contract`, `fail`) and by age (`<30`, `30-90`, `>90` days). Every non-empty kind/age cell is represented before any cell gets a second note; the remainder goes to the cells with the most members left to offer, and ties break on the stratum name. The cells themselves are drawn in seeded order, so a different seed reaches different strata rather than always the first ones. `--seed` is required, and the same seed over the same store draws the same notes in the same order on any machine: no clock and no `Math.random` participates in the draw (`--n` beyond the frame draws the frame).
+   The draw stratifies by kind (`decision`, `finding`, `contract`, `fail`) and by age (`<30`, `30-90`, `>90` days). Every non-empty kind/age cell is represented before any cell gets a second note; the remainder goes to the cells with the most members left to offer, and ties break on the stratum name. The cells themselves are drawn in seeded order, so a different seed reaches different strata rather than always the first ones. `--seed` is required, and there is no `Math.random` anywhere in the draw: the same store, seed and draw instant draw the same notes in the same order on any machine (`--n` beyond the frame draws the frame).
+
+   The draw instant is an input because a bucket is a property of a note at the moment it is sampled: two days later, a note 29 days old has moved from `<30` to `30-90` and can be drawn differently. The sheet records that instant as `drawnAt`, so a result is reproducible against the clock it was drawn at rather than a silent wall clock; two runs on one day with one seed and one store still draw identical notes.
 
    `preference` notes (#370) are not sampled. A preference states a person's taste, so there is no source to check it against and the rubric's `unverifiable` would absorb the whole class and blur the rate that matters here - the same reason preferences stay out of decay review and consolidation. Flipping the decision is one line: add `"preference"` to `AUDIT_KINDS` in `src/memory/eval.ts`, the frame this sample reads.
 
@@ -33,7 +35,9 @@ Judging happens outside amem. amem draws the sample, records where each note's a
    amem eval audit score <sheet> --json
    ```
 
-   The output holds the label totals, the same counts split by kind, age bucket and anchor status, the sample frame size, the seed, and Cohen's kappa over the notes both judges labelled. The project is named only by a SHA-256 prefix of its key, never by the key: a project key can be derived from a local checkout path, and the score is the part meant to be shared. It holds no note text, no title, no path and no entry id - not by convention but by a check that runs on every score: each note's text, title and anchor path is looked for in the serialized result, and one hit refuses the whole score.
+   The output holds the label totals, the same counts split by kind, age bucket and anchor status, the joint cross-tab of those three against the label as its non-zero cells, the sample frame size, the seed, and Cohen's kappa over the notes both judges labelled. A question like "how many stale `finding` notes older than 90 days have missing anchors" takes the joint cells; the three marginals beside them answer one attribute at a time. The project is named only by a SHA-256 prefix of its key, never by the key: a project key can be derived from a local checkout path, and the score is the part meant to be shared.
+
+   It holds no note text, no title, no path and no entry id - not by a search for note content but because no note field is copied at all: the project becomes a digest, and every other string in the result is a schema or field name, the seed the sheet already names, or a member of one of four closed vocabularies. The score refuses a sheet whose kind, age bucket or anchor status is outside its vocabulary, or whose seed is outside the alphabet `sample` draws with, so a hand-edited sheet cannot turn a sentence into a key. The one free string a score carries is the seed, which the sheet already names and the person chose; a note whose entire text equals that seed is indistinguishable in the output from the seed, and nothing else of the note is there.
 
 ## Anchor status
 
@@ -41,15 +45,18 @@ Each sampled note carries the anchors it names (its `path:` about nodes, at most
 
 - `present` - the path exists and no commit has touched it since the note was written;
 - `changed since note time` - the path exists and at least one commit touched it after the note's timestamp (`git log --since <note time> -- <path>`);
-- `missing` - the path does not exist now.
+- `missing` - the path does not exist now;
+- `unavailable` - the anchor exists but the audit could not check it: the history read failed or timed out, or the path resolves outside the work tree (a symlink inside the repository can point anywhere, and the audit reads only this repository).
 
-The sheet and the score spell that middle state `changed`; it is this document's `changed since note time`.
+The sheet and the score spell that second state `changed`; it is this document's `changed since note time`.
 
-A note's own status folds those: any `missing` anchor makes it `missing`, else any `changed` makes it `changed`, else `present`. A note that names no path anchor is `none` - no check applies, and a high `none` share is itself a finding about how the notes are written. Status is a hint for the judge, never a verdict: a rename reads as `missing`, a comment-only edit reads as `changed`, and a note can be `correct` while its anchor moved. The audit needs a git work tree; run it from the project the notes describe, and it refuses otherwise, naming that next step.
+A note's own status folds those: any `missing` anchor makes it `missing`, else any `changed` makes it `changed`, else any `unavailable` makes it `unavailable`, else `present`. So `present` always means the check ran and found nothing, never that it could not run. A note that names no path anchor is `none` - no check applies, and a high `none` share is itself a finding about how the notes are written. Status is a hint for the judge, never a verdict: a rename reads as `missing`, a comment-only edit reads as `changed`, and a note can be `correct` while its anchor moved. The audit needs a git work tree; run it from the project the notes describe, and it refuses otherwise, naming that next step.
 
 ## The sheet
 
-The sheet is private and local: written `0600` under `eval/` in the memory home (or `--out <path>`), never overwritten, never part of a shard segment, never synced and never committed. It holds what the notes say, so treat it as note content: the score is what may be shared - quote counts and kappa, not the sheet. `frame` is the size of the frame the sample was drawn from, `drawn` is how many notes it holds. The frame is read from one listing bounded at 20,000 live notes; a project larger than that reports `truncated`, and its `frame` is a floor rather than a count.
+The sheet is private and local: written `0600` under `eval/` in the memory home (or `--out <path>`), never overwritten, never part of a shard segment, never synced and never committed. It holds what the notes say, so treat it as note content: the score is what may be shared - quote counts and kappa, not the sheet. `frame` is the size of the frame the sample was drawn from, `drawn` is how many notes it holds, and `withheld` counts frame members the configured policy refused. The frame is read from one listing bounded at 20,000 live notes; a project larger than that reports `truncated`, and its `frame` is a floor rather than a count.
+
+The configured policy (the machine file narrowed by the repository's `.amem/config`) screens every sampled note before the sheet's first write, for a person and an agent-marked session alike: a note whose text names a secret, personal data, a denied path or a configured pattern is withheld - counted, never copied - so the sheet cannot carry what the policy refuses to let leave the home.
 
 A sheet is re-scoreable anywhere, and only re-checkable where it was drawn: anchors are work-tree relative, and `root` records the tree they were read in.
 
@@ -69,4 +76,4 @@ Ranking is unchanged and unmeasured here (`amem eval` still does that). The audi
 
 ## Checks
 
-The audit's own behaviour is pinned by `test/eval-audit.test.ts`: the same seed draws the same sample (AC1), the score carries no note content and a polluted sheet is refused (AC2), kappa matches a hand-worked fixture (AC3), and the module adds no model or network surface while the only process it runs is the hardened read-only `git` runner (AC4).
+The audit's own behaviour is pinned by `test/eval-audit.test.ts`: the same store, seed and draw instant draw the same sample, and a note crossing a bucket boundary changes strata (AC1); the score carries no note content at any length and a sheet with a foreign kind, a bad seed or a sentence in a judge cell is refused (AC2); kappa matches a hand-worked fixture and the joint cross-tab names intersections the marginals cannot rebuild (AC3); an uncheckable anchor is `unavailable` rather than `present`, and a symlink out of the work tree is never probed; a note the configured policy refuses never reaches the sheet, in a marked session and in a person's run; and the module adds no model or network surface while the only process it runs is the hardened read-only `git` runner (AC4).
