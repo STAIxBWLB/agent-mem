@@ -207,6 +207,9 @@ export function abandonPlacementCheckpoint(homeInput: string, epochHash: string,
     const intent = validateCheckpointIntent(JSON.parse(bytes.toString("utf8"))), l = layout(home, epochHash, intent.window);
     const log = readFile(l.log, PLACEMENT_CHECKPOINT_COMMITS_MAX_BYTES) ?? Buffer.alloc(0);
     if (log.length > intent.previousLogBytes) fail("pending");
+    // finish() creates the first commit log before its first byte; a crash there leaves an empty log the resolver refuses.
+    const emptyLog = intent.previousLogBytes === 0 ? lstatSync(l.log, { bigint: true, throwIfNoEntry: false }) : undefined;
+    if (emptyLog) { owned(emptyLog); if (emptyLog.size !== 0n) fail("pending"); }
     if (lstatSync(l.window, { throwIfNoEntry: false })) {
       // Check every name first: a foreign file refuses before anything is removed.
       const owned = new Map(staged(intent)), names = list(l.window);
@@ -217,6 +220,7 @@ export function abandonPlacementCheckpoint(homeInput: string, epochHash: string,
       for (const name of names) { proof(home, opts); unlinkSync(join(l.window, name)); removed++; }
       syncDir(home, l.window, opts); proof(home, opts); rmdirSync(l.window); syncDir(home, l.windows, opts);
     }
+    if (emptyLog) { proof(home, opts); unlinkSync(l.log); syncDir(home, l.dir, opts); }
   } else if (lstatSync(l0.windows, { throwIfNoEntry: false })) {
     // A torn intent was never followed by staging (the intent is fsynced first); a window beyond the commits is foreign.
     const commits = (readFile(l0.log, PLACEMENT_CHECKPOINT_COMMITS_MAX_BYTES) ?? Buffer.alloc(0)).toString("utf8").split("\n").filter(Boolean).length;

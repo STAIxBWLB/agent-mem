@@ -184,3 +184,33 @@ test("#288: the intent binds every staged byte to the manifest and refuses an op
   writeFileSync(join(f.epochDir, "append-intent.json"), "{", { mode: 0o600 }); releasePlacementStorageCaches();
   expect(() => planPlacementCheckpoint(f.base, f.epochHash, f.input())).toThrow();
 }, 120_000);
+
+test("#288: abandon of the first checkpoint removes an empty commit log created before its first byte", async () => {
+  const f = await fixture(); await f.sync();
+  const frozen = tree(f.epochDir), records = readPlacementJournal(f.base, f.epochHash).records;
+  expect(() => f.checkpoint(phase => { if (phase === "staged-fsync") throw Error("isolated interruption after the first staged file"); })).toThrow();
+  // Simulates a crash between the exclusive create of commits.jsonl and its first byte.
+  const log = join(f.base, "sync-placement-checkpoints", f.epochHash, "commits.jsonl");
+  writeFileSync(log, "", { mode: 0o600, flag: "wx" });
+  expect(f.withMutation(opts => abandonPlacementCheckpoint(f.base, f.epochHash, opts)).removed).toBeGreaterThan(0);
+  expect(existsSync(log)).toBe(false);
+  releasePlacementStorageCaches();
+  expect(resolvePlacementWindow(f.base, f.epochHash)).toMatchObject({ window: 0, pending: false });
+  expect(tree(f.epochDir)).toEqual(frozen); expect(readPlacementJournal(f.base, f.epochHash).records).toEqual(records);
+  await f.sync();
+}, 180_000);
+
+test("#288: writer-history and effective-writer snapshots taken before a checkpoint refuse as changed (0->1 and 1->2)", async () => {
+  const f = await fixture(); await f.sync();
+  for (const window of [1, 2]) {
+    releasePlacementStorageCaches();
+    const history = readWriterHistory(f.base, f.binding), effective = readEffectiveSyncPlacementWriters(f.base);
+    history.assertCurrent(); effective.assertCurrent();
+    expect(f.checkpoint()).toEqual({ window });
+    expect(code(() => history.assertCurrent())).toBe("changed");
+    expect(code(() => effective.assertCurrent())).toBe("changed");
+    releasePlacementStorageCaches();
+    readEffectiveSyncPlacementWriters(f.base).assertCurrent();
+    f.note(`after checkpoint ${window}`); await f.sync();
+  }
+}, 240_000);

@@ -6,7 +6,7 @@ import { types } from "node:util";
 import { canonicalJSON } from "./generation.ts";
 import { homeIdentityMatches } from "./home-identity.ts";
 import { realPath } from "./platform.ts";
-import { resolvePlacementWindow, type ResolvedPlacementWindow } from "./sync-placement-checkpoint-storage.ts";
+import { placementWindowToken, resolvePlacementWindow, type ResolvedPlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { checkpointWriterGenesis } from "./sync-placement-checkpoint-format.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
@@ -176,6 +176,8 @@ interface Snapshot { result:WriterHistoryRead; paths:Paths; log:Buffer; intentBy
 function snapshot(home:string,b:WriterHistoryBinding,allowPending:boolean,expected?:WriterRenewalIntent,ignoreUnpublishedStaging=false):Snapshot {
   const p=paths(home,b), checks:(()=>void)[]=[], names=manifest(p);
   for(const [dir,stat]of p.dirs)checks.push(()=>{if(identity(checkedDir(dir))!==identity(stat))fail("changed");});
+  // A checkpoint that starts, commits or abandons between two reads leaves the old window's files untouched; its token does not.
+  checks.push(()=>{let token:string;try{token=placementWindowToken(p.home,b.epochHash);}catch{fail("changed");}if(token!==p.window.token)fail("changed");});
   checks.push(()=>{if(canonicalJSON(manifest(p))!==canonicalJSON(names))fail("changed");});
   const intentRead=readIntent(p,checks,expected,ignoreUnpublishedStaging),intentFile=intentRead.file;let pending=intentRead.intent;
   if(pending){if(!allowPending)fail("pending");if(pending.home!==p.home)fail();boundRevision(pending.revision,b);}
