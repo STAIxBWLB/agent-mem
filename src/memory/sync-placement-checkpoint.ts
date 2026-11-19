@@ -28,8 +28,9 @@ import {
   type CheckpointCatalogEntry, type CheckpointIntent, type CheckpointMember,
 } from "./sync-placement-checkpoint-format.ts";
 
-export type PlacementCheckpointPhase = "intent-written" | "intent-fsync" | "staged-file" | "staged-fsync" | "commit-started" | "commit-written" | "commit-fsync" | "intent-cleared";
-export interface PlacementCheckpointOptions { mutation: MutationHandle; assertCurrent(): void; phase?(phase: PlacementCheckpointPhase): void }
+export type PlacementCheckpointPhase = "intent-written" | "intent-file-fsync" | "intent-fsync" | "staged-file" | "staged-file-fsync" | "staged-fsync" | "commit-started" | "commit-written" | "commit-file-fsync" | "commit-fsync" | "directory-fsync" | "intent-cleared";
+// ponytail: commitPrefix is an isolated-test seam for every commit-byte crash; remove it when the shared fault injector supports byte boundaries.
+export interface PlacementCheckpointOptions { mutation: MutationHandle; assertCurrent(): void; phase?(phase: PlacementCheckpointPhase): void; commitPrefix?(bytes: number): void }
 export interface PlacementCheckpointInput {
   binding: WriterHistoryBinding & { initialLocatorHash: string };
   /** The measured writer roots for the combined (W, 1) renewal; a caller measures them fresh. */
@@ -66,7 +67,7 @@ function proof(home: string, opts: PlacementCheckpointOptions): void {
 }
 function syncDir(home: string, dir: string, opts: PlacementCheckpointOptions): void {
   proof(home, opts); const fd = openSync(dir, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { owned(fstatSync(fd, { bigint: true }), true); fsyncSync(fd); } finally { closeSync(fd); }
+  try { owned(fstatSync(fd, { bigint: true }), true); fsyncSync(fd); opts.phase?.("directory-fsync"); } finally { closeSync(fd); }
 }
 function ensureDir(home: string, dir: string, parent: string, opts: PlacementCheckpointOptions): void {
   const s = lstatSync(dir, { bigint: true, throwIfNoEntry: false });
@@ -84,9 +85,11 @@ function complete(home: string, file: string, dir: string, expected: Buffer, opt
     let at = prior?.length ?? 0;
     while (at < expected.length) {
       proof(home, opts); const first = startPhase !== undefined && at === startPhase.at;
-      const n = writeSync(fd, expected, at, first ? 1 : expected.length - at, at); if (n < 1) fail(); at += n; if (first) opts.phase?.(startPhase!.phase);
+      const n = writeSync(fd, expected, at, first || (startPhase && opts.commitPrefix) ? 1 : expected.length - at, at); if (n < 1) fail(); at += n; if (first) opts.phase?.(startPhase!.phase);
+      if (startPhase) opts.commitPrefix?.(at - startPhase.at);
     }
     opts.phase?.(written); proof(home, opts); fsyncSync(fd);
+    opts.phase?.(synced === "intent-fsync" ? "intent-file-fsync" : synced === "staged-fsync" ? "staged-file-fsync" : "commit-file-fsync");
   } finally { closeSync(fd); }
   syncDir(home, dir, opts); opts.phase?.(synced);
   if (!readFile(file, expected.length)?.equals(expected)) fail("changed");
@@ -172,8 +175,8 @@ function finish(home: string, intent: CheckpointIntent, opts: PlacementCheckpoin
 }
 /**
  * Confirm one exact planned checkpoint.
- * ponytail: the person-raised `minReader` 0.30.0 floor gate on confirm is #288 item 4 (task 312), added with the N-1
- * matrices; until then this library call has no CLI caller and runs only in isolated tests. Only `amem formats raise` records a floor.
+ * The person CLI checks the 0.30.0 home floor and writers before calling this internal storage primitive.
+ * Only `amem formats raise` records a floor.
  */
 export function applyPlacementCheckpoint(homeInput: string, plan: CheckpointIntent, input: PlacementCheckpointInput, opts: PlacementCheckpointOptions): { window: number } {
   const home = realPath(homeInput), intent = validateCheckpointIntent(plan);

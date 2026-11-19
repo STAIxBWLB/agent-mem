@@ -1,6 +1,12 @@
 {
   "version": 1,
   "files": {
+    "test/sync-placement-checkpoint-staged-faults.test.ts": 170000,
+    "test/sync-placement-checkpoint-faults.test.ts": 113000,
+    "test/sync-placement-checkpoint-dir-fsync.test.ts": 94270,
+    "test/sync-placement-checkpoint-sigkill-prefix.test.ts": 79560,
+    "test/sync-placement-checkpoint-cap.test.ts": 20380,
+    "test/sync-placement-checkpoint-n1.test.ts": 2820,
     "test/sync-placement-transport.test.ts": 189192,
     "test/sync-placement-writer-renewal.test.ts": 154655,
     "test/ui-inbox.test.ts": 151086,

@@ -27,7 +27,8 @@
     "bun-types-host-1-4-2": "npm:bun-types@1.4.2",
     "@staix/agent-mem-v0220": "npm:@staix/agent-mem@0.22.0",
     "@types/bun-host-1-4-2": "npm:@types/bun@1.4.2",
-    "@staix/agent-mem-v0221": "npm:@staix/agent-mem@0.22.1"
+    "@staix/agent-mem-v0221": "npm:@staix/agent-mem@0.22.1",
+    "@staix/agent-mem-v0290": "npm:@staix/agent-mem@0.29.0"
   },
   "exports": {
     ".": "./src/index.ts",

@@ -78,7 +78,7 @@ test("only amem formats raise writes formats.json; every other reference only re
   } };
   walk(src);
   // These readers watch or require the person-authored floor; none raises it.
-  const readers = [join(src, "ui", "inbox.ts"), join(src, "sync-placement-writer-context.ts"), join(src, "memory", "sync-placement-prerequisites.ts"), join(src, "commands-table.ts")];
+  const readers = [join(src, "ui", "inbox.ts"), join(src, "sync-placement-writer-context.ts"), join(src, "memory", "sync-placement-prerequisites.ts"), join(src, "memory", "sync-placement-checkpoint-person.ts"), join(src, "commands-table.ts")];
   expect(offenders.sort()).toEqual([...readers, join(src, "memory", "formats-raise.ts")].sort());
   for (const reader of readers) expect(readFileSync(reader, "utf8")).not.toMatch(/writeFile|writeSync|appendFile|renameSync|linkSync|truncate|chmod|mkdir|unlink|rmSync/);
   expect(readFileSync(join(src, "memory", "formats.ts"), "utf8")).not.toMatch(/writeFileSync|writeSync|appendFileSync|renameSync|linkSync/);
