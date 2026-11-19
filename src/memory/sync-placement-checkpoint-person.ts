@@ -93,13 +93,13 @@ export interface PlacementCheckpointPreview {
  * headroom after the checkpoint. The headroom covers one next renewal plus the largest observed plan and its reserved journal
  * chunks; a checkpoint that cannot unblock the next sync refuses with the exact shortfall.
  */
-export async function previewPlacementCheckpoint(homeInput: string, opts: { writerRoots: readonly string[]; ownRoot: string; minReader?: string }): Promise<PlacementCheckpointPreview> {
+export async function previewPlacementCheckpoint(homeInput: string, opts: { writerRoots: readonly string[]; ownRoot: string }): Promise<PlacementCheckpointPreview> {
   const home = realPath(homeInput), a = active(home), epochHash = a.profile.placementHead;
   const roots = measured(home, opts.writerRoots, opts.ownRoot), intent = plan(home, epochHash, input(home, a, roots, randomBytes(32).toString("hex")));
   const journal = readPlacementJournal(home, epochHash), window = resolvePlacementWindow(home, epochHash);
   const { headroom, journalObjects, assertCurrent } = await checkpointHeadroom(home, intent);
   assertCurrent();
-  const minReader = opts.minReader ?? PLACEMENT_CHECKPOINT_MIN_READER;
+  const minReader = PLACEMENT_CHECKPOINT_MIN_READER;
   return { mode: "checkpoint-preview", window: window.window, nextWindow: intent.window, journalObjects, currentObjects: journal.objects, headroom,
     floorReady: homeFloorAtLeast(home, minReader), requiredHomeFloor: minReader, writers: roots.length, planHash: intent.seal, plan: intent,
     nextStep: `${CHECKPOINT_PREVIEW} --confirm --plan <saved preview JSON> --writer-root <install root> (repeat for every install)` };
@@ -156,11 +156,9 @@ function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | und
 /**
  * Confirm one exact sealed plan under the profile, sync and home/realm fences: the floor first, then the planner's own
  * revalidation (fresh install, journal and history must reproduce the sealed bytes), then intent, staging and the commit line.
- * `minReader` is a test seam the CLI never passes.
- * ponytail: the seam exists only while this package is below 0.30.0; remove it in 0.30.0 release preparation after a real-floor confirm test.
  */
-export async function confirmPlacementCheckpoint(homeInput: string, value: unknown, opts: { writerRoots: readonly string[]; ownRoot: string; minReader?: string; phase?: (phase: PlacementCheckpointPhase) => void }): Promise<{ window: number; renewed: true; planHash: string; nextStep: string }> {
-  const home = realPath(homeInput), intent = checkpointPlanFrom(value), a = active(home), minReader = opts.minReader ?? PLACEMENT_CHECKPOINT_MIN_READER;
+export async function confirmPlacementCheckpoint(homeInput: string, value: unknown, opts: { writerRoots: readonly string[]; ownRoot: string; phase?: (phase: PlacementCheckpointPhase) => void }): Promise<{ window: number; renewed: true; planHash: string; nextStep: string }> {
+  const home = realPath(homeInput), intent = checkpointPlanFrom(value), a = active(home), minReader = PLACEMENT_CHECKPOINT_MIN_READER;
   if (intent.epochHash !== a.profile.placementHead) throw new PlacementCheckpointError("changed");
   checkFloor(home, undefined, minReader); checkFloor(home, measured(home, opts.writerRoots, opts.ownRoot), minReader);
   const prospective = await checkpointHeadroom(home, intent);
