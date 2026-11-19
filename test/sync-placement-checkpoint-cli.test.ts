@@ -103,6 +103,10 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
   expect(() => readPlacementJournal(f.base, f.epochHash)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   expect(() => readEffectiveSyncPlacementWriters(f.base)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   expect(() => activePlacementWriterContext(f.base, activationOwnRoot)).toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  await withHome(f.base, async () => {
+    for (const env of [{}, { CODEX_THREAD_ID: "t" }])
+      await expect(runCli(["migrate", "--sync-placement", "--dry-run", "--writer-root", activationOwnRoot], { cwd: f.root, env, stdinTTY: false })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+  });
   const paused = await f.sync();
   expect(paused.ok).toBe(false); expect(paused.failure?.cause).toBe("checkpoint-pending"); expect(paused.error).toBe(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   expect(await cause(() => previewPlacementCheckpoint(f.base, { ...f.opts, minReader: FLOOR }))).toBe("pending");

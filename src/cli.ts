@@ -16,6 +16,7 @@ import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { DecayApplyError } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
+import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./memory/sync-placement-journal-format.ts";
 import { MCP_TOOLS, serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
@@ -336,6 +337,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // Data-free errors (decided before any store or file is opened) keep their own message.
     if (marked && error instanceof AgentUsageError) throw error;
     if (marked && error instanceof RemoteRealmRefusal) throw error;
+    // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
+    if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
     // #288 step 3: checkpoint refusals are fixed cause-and-next-step strings with numbers only (no path, row or project).
     if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
