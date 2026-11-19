@@ -25,7 +25,7 @@ import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-
 import { previewOwnedSyncPlacementSources, previewSyncPlacementSources } from "./sync-placement-capture.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readPlacementWriterJournalAnchors } from "./sync-placement-journal-storage.ts";
-import { placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
+import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { createRealmExtension, REALM_EXTENSION_SCHEMA, RealmExtensionFormatError, type RealmExtension } from "./sync-placement-realm-extension-format.ts";
 import { readRealmExtensionHistory, type RealmExtensionBinding, type RealmExtensionHistory } from "./sync-placement-realm-extension-storage.ts";
@@ -114,7 +114,8 @@ function activeBinding(home: string): ActivePlacementBinding {
 }
 function assertCheckpointClear(home: string): void {
   const active = activeBinding(home);
-  if (placementCheckpointPending(home, active.profile.placementHead)) throw new SyncPlacementJournalError("checkpoint-pending");
+  try { if (resolvePlacementWindow(home, active.profile.placementHead).pending) throw new SyncPlacementJournalError("checkpoint-pending"); }
+  catch (error) { if (error instanceof SyncPlacementJournalError && error.code === "pending") throw new SyncPlacementJournalError("checkpoint-pending"); throw error; }
 }
 function machineIdentity(home: string): { id: string; label: string } {
   const machine = readProfileJSON(join(home, "machine.json")) as { id?: unknown; label?: unknown } | undefined;

@@ -110,6 +110,15 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
   await expect(remoteRealmAdmission(f.base, other, { mode: "apply" })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   await expect(remoteRealmAdmission(f.base, other, { mode: "abandon", confirm: true })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
   expect(tree(f.base)).toEqual(pendingBytes);
+  // A malformed checkpoint intent also fails closed: admission must not mutate evidence merely because the resolver
+  // cannot classify the pending state. Restore the fixture's exact intent before exercising ordinary recovery.
+  const intentFile = join(f.checkpoints, f.epochHash, "intent.json"), intentBytes = readFileSync(intentFile);
+  writeFileSync(intentFile, "{}\n", { mode: 0o600 });
+  const malformedBytes = tree(f.base);
+  await expect(applyRealmAdmission(f.base, other, { mode: "apply" })).rejects.toThrow();
+  await expect(remoteRealmAdmission(f.base, other, { mode: "abandon", confirm: true })).rejects.toThrow();
+  expect(tree(f.base)).toEqual(malformedBytes);
+  writeFileSync(intentFile, intentBytes, { mode: 0o600 });
   await withHome(f.base, async () => {
     for (const env of [{}, { CODEX_THREAD_ID: "t" }])
       await expect(runCli(["migrate", "--sync-placement", "--dry-run", "--writer-root", activationOwnRoot], { cwd: f.root, env, stdinTTY: false })).rejects.toThrow(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);

@@ -12,7 +12,7 @@ import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { readRealmIntent } from "./sync-placement-realm-intent-storage.ts";
 import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "./sync-placement-journal-storage.ts";
-import { placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
+import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { readEffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { pendingRealmInventory } from "./sync-placement-realm-pending.ts";
@@ -51,7 +51,9 @@ function active(home: string, keyHash: string): boolean {
 }
 function assertCheckpointClear(home: string): void {
   const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home, markers.profile, markers.shards);
-  if (binding && placementCheckpointPending(home, binding.profile.placementHead)) throw new SyncPlacementJournalError("checkpoint-pending");
+  if (!binding) return;
+  try { if (resolvePlacementWindow(home, binding.profile.placementHead).pending) throw new SyncPlacementJournalError("checkpoint-pending"); }
+  catch (error) { if (error instanceof SyncPlacementJournalError && error.code === "pending") throw new SyncPlacementJournalError("checkpoint-pending"); throw error; }
 }
 function dirs(home: string, project: string): string[] {
   const dir = shardDir(home, project); return lstatSync(dir, { throwIfNoEntry: false }) ? [dir] : [];
