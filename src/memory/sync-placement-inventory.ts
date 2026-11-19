@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readPlacementJournal } from "./sync-placement-journal-storage.ts";
+import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
 import { readPlacementPublication } from "./sync-placement-publication-storage.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { readShardDescriptor, shardDir, userShardDir } from "./shard.ts";
@@ -86,6 +87,10 @@ function retainedRealms(home: string): string[] | undefined {
 }
 
 export async function syncPlacementInventory(home: string, opts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
+  // #288 step 3: a started checkpoint pauses every placement effect before any journal read, with its own cause and next step.
+  const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home, markers.profile, markers.shards);
+  if (binding && placementCheckpointPending(home, binding.profile.placementHead))
+    return { ok: false, pushed: false, entries: 0, error: PLACEMENT_CHECKPOINT_PENDING_MESSAGE, failure: { cause: "checkpoint-pending" }, placementRealms: [] };
   const { local, missing, inactive } = placementInventory(home);
   const retained = retainedRealms(home);
   let order = local;

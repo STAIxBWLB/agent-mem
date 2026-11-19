@@ -16,6 +16,7 @@ import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { DecayApplyError } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
+import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./memory/sync-placement-journal-format.ts";
 import { MCP_TOOLS, serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
@@ -123,13 +124,13 @@ const planFileIO: PrunePlanFileIO = {
 };
 
 /** Open once: pathname replacement cannot redirect the read and growth cannot exceed the fixed byte budget. */
-export function readPrunePlanFile(path: string, io: PrunePlanFileIO = planFileIO): string {
+export function readPrunePlanFile(path: string, io: PrunePlanFileIO = planFileIO, maximum = PRUNE_PLAN_MAX_BYTES): string {
   try {
     const fd = io.open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
       const before = io.stat(fd);
-      if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size < 0 || before.size > PRUNE_PLAN_MAX_BYTES) throw new Error();
-      const data = Buffer.alloc(PRUNE_PLAN_MAX_BYTES + 1);
+      if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size < 0 || before.size > maximum) throw new Error();
+      const data = Buffer.alloc(maximum + 1);
       let length = 0;
       while (length < data.length) {
         const n = io.read(fd, data, length, data.length - length, length);
@@ -137,7 +138,7 @@ export function readPrunePlanFile(path: string, io: PrunePlanFileIO = planFileIO
         if (n === 0) break;
         length += n;
       }
-      if (length > PRUNE_PLAN_MAX_BYTES) throw new Error();
+      if (length > maximum) throw new Error();
       const after = io.stat(fd);
       if (!after.isFile() || after.size !== before.size || length !== before.size) throw new Error();
       return new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, length));
@@ -325,7 +326,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       }
     }
     return output;
-  }).catch((error: unknown) => {
+  }).catch(async (error: unknown) => {
     // Preserve the authoritative partial outcome, without exposing a cause or a withheld target.
     if (marked && error instanceof DecayApplyError) {
       let readable = false;
@@ -336,6 +337,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // Data-free errors (decided before any store or file is opened) keep their own message.
     if (marked && error instanceof AgentUsageError) throw error;
     if (marked && error instanceof RemoteRealmRefusal) throw error;
+    // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
+    if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+    // #288 step 3: checkpoint refusals are fixed cause-and-next-step strings with numbers only (no path, row or project).
+    if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
     if (marked) {
       // parseCommand is pure: when it rejects argv, the error it raised is a usage error, not memory data.
@@ -410,18 +415,26 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const modes = ["--dry-run","--apply","--resume","--abandon","--deactivate"].filter(key=>options[key]===true);
     if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
       throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
-    if (options["--list-remote"] === true && (modes.length || options["--admit"] !== undefined || options["--from-remote"] === true || options["--writer-root"] !== undefined || options["--confirm"] === true))
+    if (options["--list-remote"] === true && (modes.length || options["--admit"] !== undefined || options["--from-remote"] === true || options["--writer-root"] !== undefined || options["--confirm"] === true || options["--checkpoint"] === true || options["--plan"] !== undefined))
       throw new AgentUsageError("Remote realm listing uses only --sync-placement --list-remote and optional --json.");
     if (options["--from-remote"] === true && options["--admit"] === undefined)
       throw new AgentUsageError("--from-remote requires --sync-placement --admit <project>.");
-    if (options["--admit"] !== undefined) {
+    if (options["--checkpoint"] === true) {
+      // #288 step 3: preview (default), --confirm --plan, --resume or --abandon; one mode at a time.
+      const chosen = [options["--confirm"] === true, options["--resume"] === true, options["--abandon"] === true].filter(Boolean).length;
+      if (options["--admit"] !== undefined || options["--list-remote"] === true || options["--from-remote"] === true || options["--apply"] === true || options["--dry-run"] === true || chosen > 1 || (options["--confirm"] === true) !== (options["--plan"] !== undefined)
+        || (options["--resume"] === true || options["--abandon"] === true) && options["--writer-root"] !== undefined)
+        throw new AgentUsageError("A placement checkpoint uses --sync-placement --checkpoint --writer-root <install root> (repeat) to preview, then --confirm --plan <saved preview JSON> with the same writer roots, or --resume / --abandon alone.");
+    } else if (options["--plan"] !== undefined) {
+      throw new AgentUsageError("--plan applies only to --sync-placement --checkpoint --confirm.");
+    } else if (options["--admit"] !== undefined) {
       if (options["--writer-root"] !== undefined || options["--confirm"] === true && options["--abandon"] !== true)
         throw new AgentUsageError("Admitting one realm uses only --sync-placement --admit <project> with --dry-run, --apply, --resume or --abandon --confirm; writer roots belong to initial activation.");
     } else if (options["--confirm"] === true) {
-      throw new AgentUsageError("--confirm applies only to --sync-placement --admit <project> --abandon; other placement modes keep their own confirmation.");
+      throw new AgentUsageError("--confirm applies only to --sync-placement --admit <project> --abandon or --sync-placement --checkpoint --plan <file>; other placement modes keep their own confirmation.");
     }
-  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined)) {
-    throw new AgentUsageError("--writer-root, --abandon and --admit apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
+  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined||options["--checkpoint"]!==undefined||options["--plan"]!==undefined)) {
+    throw new AgentUsageError("--writer-root, --abandon, --admit, --list-remote, --from-remote, --checkpoint and --plan apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
@@ -529,6 +542,28 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const realms = await discoverRemotePlacementRealms(memoryHome(), { ...(context.visibility ? { visibility: context.visibility } : {}) });
         const nextStep = "amem migrate --sync-placement --admit <project> --from-remote --dry-run";
         return options["--json"] === true ? JSON.stringify({ realms, nextStep }, null, 2) : `${realms.map(realm => `scope=${realm.scope} keyHash=${realm.keyHash}; next ${nextStep}`).join("\n") || "no remote-only placement realms"}`;
+      }
+      if (options["--checkpoint"] === true) {
+        const person = await import("./memory/sync-placement-checkpoint-person.ts");
+        const writerRoots = repeated(argv, "--writer-root"), ownRoot = fileURLToPath(new URL("..", import.meta.url));
+        if (options["--resume"] === true) { const r = await person.resumePlacementCheckpointPerson(memoryHome()); return options["--json"] === true ? JSON.stringify(r, null, 2) : `sync placement checkpoint: ${r.resumed ? "resumed" : "nothing pending"}; window ${r.window}\nnext: ${r.nextStep}\n`; }
+        if (options["--abandon"] === true) { const r = await person.abandonPlacementCheckpointPerson(memoryHome()); return options["--json"] === true ? JSON.stringify(r, null, 2) : `sync placement checkpoint: ${r.abandoned ? `abandoned (${r.removed} staged files removed)` : "nothing pending"}\nnext: ${r.nextStep}\n`; }
+        if (options["--confirm"] === true) {
+          let saved: unknown;
+          try { saved = JSON.parse(readPrunePlanFile(String(options["--plan"]), undefined, 4 * 1024 * 1024)); } catch { throw new Error("The checkpoint --plan file is unreadable or not the saved preview JSON; rerun amem migrate --sync-placement --checkpoint --json with the writer roots and save its output."); }
+          const r = await person.confirmPlacementCheckpoint(memoryHome(), saved, { writerRoots, ownRoot });
+          return options["--json"] === true ? JSON.stringify(r, null, 2) : `sync placement checkpoint: committed window ${r.window} with one writer renewal (plan ${r.planHash})\nnext: ${r.nextStep}\n`;
+        }
+        const preview = await person.previewPlacementCheckpoint(memoryHome(), { writerRoots, ownRoot });
+        if (options["--json"] === true) return JSON.stringify(preview, null, 2);
+        const { placementJournalObjectCompositionText } = await import("./memory/sync-placement-journal-storage.ts"), h = preview.headroom;
+        // Counts and hashes only; the sealed plan itself is in --json for the confirm step.
+        return `sync placement checkpoint preview: window ${preview.window} -> ${preview.nextWindow}; ${preview.currentObjects} of ${h.limit} live objects now\n`
+          + `${placementJournalObjectCompositionText(preview.journalObjects)}\n`
+          + `completed plan: ${h.completedPlan.slots} slots + ${h.completedPlan.reservedJournalChunks} reserved journal chunks; prospective plan: ${h.prospectivePlan.state === "cache-only" ? `${h.prospectivePlan.slots} slots + ${h.prospectivePlan.reservedJournalChunks} reserved journal chunks (cache-only; remote may have changed)` : h.prospectivePlan.state === "none" ? "none" : "unavailable without current remote evidence; using completed history"}\n`
+          + `headroom after checkpoint: ${h.remaining} of ${h.limit} (live ${h.liveAfter}, next renewal ${h.nextRenewal}, largest plan ${h.largestPlan.slots} + ${h.largestPlan.reservedJournalChunks} reserved journal chunks)\n`
+          + `home floor ${preview.requiredHomeFloor}: ${preview.floorReady ? "ready" : `missing; preview amem formats raise home ${preview.requiredHomeFloor}, then --confirm it`}; writers ${preview.writers}; plan ${preview.planHash}\n`
+          + `next: save this preview with --json, then ${preview.nextStep}\n`;
       }
       if (options["--admit"] !== undefined) {
         const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");

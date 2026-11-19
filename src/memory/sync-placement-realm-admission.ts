@@ -25,6 +25,8 @@ import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-
 import { previewOwnedSyncPlacementSources, previewSyncPlacementSources } from "./sync-placement-capture.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { readPlacementWriterJournalAnchors } from "./sync-placement-journal-storage.ts";
+import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
+import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { createRealmExtension, REALM_EXTENSION_SCHEMA, RealmExtensionFormatError, type RealmExtension } from "./sync-placement-realm-extension-format.ts";
 import { readRealmExtensionHistory, type RealmExtensionBinding, type RealmExtensionHistory } from "./sync-placement-realm-extension-storage.ts";
 /** A zero-byte extension log is the pre-write state of a retained admission for this epoch, never an unknown chain. */
@@ -91,7 +93,7 @@ function assertNoPendingAdmission(home: string, ownRealm?: string): void {
   if (other) throw new RealmAdmissionError("pending", other);
 }
 function rethrow(error: unknown): never {
-  if (error instanceof RealmAdmissionError || error instanceof RealmExtensionFormatError) throw error;
+  if (error instanceof RealmAdmissionError || error instanceof RealmExtensionFormatError || error instanceof SyncPlacementJournalError && error.code === "checkpoint-pending") throw error;
   if (error instanceof PlacementInventoryFenceError) fail(error.causeClass);
   return fail("metadata");
 }
@@ -109,6 +111,11 @@ function activeBinding(home: string): ActivePlacementBinding {
   const markers = readPlacementRuntimeMarkers(home), active = readActivePlacementBinding(home, markers.profile, markers.shards);
   if (!active) throw Error("sync placement is not active in this home; there is no inventory to admit a realm into");
   return active;
+}
+function assertCheckpointClear(home: string): void {
+  const active = activeBinding(home);
+  try { if (resolvePlacementWindow(home, active.profile.placementHead).pending) throw new SyncPlacementJournalError("checkpoint-pending"); }
+  catch (error) { if (error instanceof SyncPlacementJournalError && error.code === "pending") throw new SyncPlacementJournalError("checkpoint-pending"); throw error; }
 }
 function machineIdentity(home: string): { id: string; label: string } {
   const machine = readProfileJSON(join(home, "machine.json")) as { id?: unknown; label?: unknown } | undefined;
@@ -230,6 +237,7 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
   let home: string;
   try { home = realPath(homeInput); } catch { throw Error("Sync placement memory home is unavailable; select an existing private home and run amem migrate --sync-placement --admit <project> --dry-run."); }
   const realm = digest(project), projectPrefix = realm.slice(0, 16);
+  assertCheckpointClear(home);
   if (options.mode === "abandon") {
     const plan = planRealmAbandon(home, project);
     if (plan.state === "none") return { mode: "abandon", state: "already-admitted", realm, nextStep: plan.nextStep };
@@ -240,8 +248,9 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
     if (plan.staged && stages?.length !== plan.staged) fail("changed");
     return withPlacementActivationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
       try {
+        assertCheckpointClear(home);
         const binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
-        const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
+        const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); }, proof = { mutation, assertCurrent: check };
         if (stages) {
           readRealmExtensionHistory(home, binding, { allowEmptyLog: emptyLogAllowed(home, binding), attributeTorn: evidence => attributeTornRealmAppend(home, binding, evidence) });
           clearRealmIntentStages(home, realm, stages, proof);
@@ -268,10 +277,11 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
   }
   return withPlacementActivationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
     try {
+      assertCheckpointClear(home);
       if (options.mode === "apply") assertNoPendingAdmission(home);
       if (options.mode === "resume") assertNoPendingAdmission(home, realm);
       const binding = realmBinding(activeBinding(home));
-      const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); }, proof = { mutation, assertCurrent: check };
+      const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); }, proof = { mutation, assertCurrent: check };
       let intent = readRealmIntent(home, realm);
       const expected = options.expectedRemoteAnchors;
       if (intent && expected && (intent.writerHash !== expected.writerHash || intent.previousHash !== expected.inventoryHead

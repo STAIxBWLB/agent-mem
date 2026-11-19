@@ -33,7 +33,7 @@ function safe<T>(work: () => T): T {
   try { return work(); } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SharedWriterRevisionError) {
       const code=Object.getOwnPropertyDescriptor(error,"code");
-      if(code&&"value"in code&&["invalid","bound","changed","pending","staging","cap"].includes(code.value))throw new SharedWriterRevisionError(code.value);
+      if(code&&"value"in code&&["invalid","bound","changed","pending","checkpoint-pending","staging","cap"].includes(code.value))throw new SharedWriterRevisionError(code.value);
     }
     return fail();
   }
@@ -77,7 +77,7 @@ function paths(homeInput: string, input: WriterHistoryBinding): Paths {
   if(identity(original)!==identity(root)||!homeIdentityMatches(input.homeHash,home,root))fail("changed");
   // #288: the one window resolver names the live window; window 0 is the v1 epoch directory.
   let window:ResolvedPlacementWindow;try{window=resolvePlacementWindow(home,input.epochHash);}catch(error){throw checkpointError(error);}
-  if(window.pending)fail("pending"); // A started checkpoint owns the writer chain until resume or abandon.
+  if(window.pending)throw new SharedWriterRevisionError("checkpoint-pending"); // A started checkpoint owns the writer chain until resume or abandon.
   const dirs:[string,BigIntStats][]=[[home,root]];
   for(const dir of [...window.parents.slice(1),window.dir])dirs.push([dir,checkedDir(dir)]);
   const manifest=window.manifests.at(-1);
@@ -87,7 +87,7 @@ function paths(homeInput: string, input: WriterHistoryBinding): Paths {
 /** A checkpoint pending or broken refuses writer history the same way the journal does: pending, else invalid. */
 function checkpointError(error:unknown):SharedWriterRevisionError{
   const code=error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SyncPlacementJournalError?Object.getOwnPropertyDescriptor(error,"code")?.value:undefined;
-  return new SharedWriterRevisionError(code==="pending"?"pending":code==="bound"?"bound":code==="changed"?"changed":"invalid");
+  return new SharedWriterRevisionError(code==="pending"?"checkpoint-pending":code==="bound"?"bound":code==="changed"?"changed":"invalid");
 }
 interface ArchivedWriters { commits: WriterCommit[]; anchors: {sequence:number;headHash:string}[]; current?: WriterRevision }
 /**

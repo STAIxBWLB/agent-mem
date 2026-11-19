@@ -210,3 +210,9 @@ export function placementWindowToken(home: string, epochHash: string): string {
   if (windowsStat) { rows.push(stamp(windowsStat)); for (const name of list(windows, PLACEMENT_CHECKPOINT_LIMIT + 1)) { const s = state(join(windows, name), true); if (!s) fail("changed"); rows.push([name, String(s.dev), String(s.ino)]); } }
   return canonicalJSON(["checkpoint", rows]);
 }
+export { PLACEMENT_CHECKPOINT_COMMAND, PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./sync-placement-journal-format.ts";
+/** True while a checkpoint is started and not finished; any other resolver failure is left to the caller's own read. */
+export function placementCheckpointPending(home: string, epochHash: string): boolean {
+  try { return resolvePlacementWindow(home, epochHash).pending; }
+  catch (error) { return error instanceof SyncPlacementJournalError && Object.getOwnPropertyDescriptor(error, "code")?.value === "pending"; }
+}

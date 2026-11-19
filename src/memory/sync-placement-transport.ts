@@ -18,12 +18,13 @@ import { types } from "node:util";
 import { RemoteRealmRefusal, type RemoteRealmCause } from "./sync-placement-remote-refusal.ts";
 import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, SyncPlacementFormatError } from "./sync-placement-format.ts";
-import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementHoldReason, type PlacementRecord } from "./sync-placement-journal-format.ts";
+import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
 import { readPlacementJournal, readPlacementWriterJournalAnchors, placementWriterJournalToken, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
+import { placementPublicationEventSteps } from "./sync-placement-publication-events.ts";
 import { ShardHistoryAuditor, type ShardHistory } from "./shard-sync-history.ts";
 import { ShardSyncApplications } from "./shard-sync-applications.ts";
 import { ShardSourceChangedError, shardSourceRowsAsync, shardProvePrunes, shardImportRows, shardSelectorRetention, shardInstallHold, shardHoldWarning, type ShardSyncApplicationTarget } from "./shard-sync.ts";
@@ -35,6 +36,7 @@ import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placem
 import { cooperativeYield, drainSteps, drainStepsAsync, PLACEMENT_APPEND_SLICE, yieldTurn, type CooperativeYield } from "./sync-placement-yield.ts";
 import { placementCacheConfigStamp, placementCacheRootStamp, placementCacheTreePrivate, validatePlacementCacheConfig } from "./sync-placement-cache.ts";
 import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
+import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
 import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
@@ -483,43 +485,11 @@ class PlacementTransport {
     return{bundle,decisions,projection,old,...scheduled,exported:scheduled.events.filter(event=>event.kind==="publication-ambiguous").length,withheld:decisions.filter(decision=>!decision.eligible).length};
   }
   events(bundle:PlacementPublicationBundle,projection:PlacementProjection,old:(ShardHistory|undefined)[]):{events:PlacementEvent[];preCount:number;holdCount:number}{
-    return drainSteps(this.eventSteps(bundle,projection,old));
+    return drainSteps(placementPublicationEventSteps(bundle,projection,old));
   }
   /** #470: the same schedule, awaiting the caller's event loop between decisions; the event order is identical. */
   eventsAsync(bundle:PlacementPublicationBundle,projection:PlacementProjection,old:(ShardHistory|undefined)[],pause?:CooperativeYield):Promise<{events:PlacementEvent[];preCount:number;holdCount:number}>{
-    return drainStepsAsync(this.eventSteps(bundle,projection,old),pause);
-  }
-  private* eventSteps(bundle:PlacementPublicationBundle,projection:PlacementProjection,old:(ShardHistory|undefined)[]):Generator<void,{events:PlacementEvent[];preCount:number;holdCount:number},void>{
-    const decisions=bundle.chunks.filter(chunk=>chunk.kind==="decisions").flatMap(chunk=>chunk.items as PlacementPublicationDecision[]).sort((a,b)=>placementKeyId(a.key).localeCompare(placementKeyId(b.key)));
-    const holds:PlacementEvent[]=[],known:PlacementEvent[]=[],ambiguous:PlacementEvent[]=[],committed:PlacementEvent[]=[];
-    const root=bundle.root;
-    const make=(decision:PlacementPublicationDecision,kind:PlacementEvent["kind"],commit?:string):PlacementEvent=>{
-      const base={requestId:hashJSON({attempt:root.seal,key:decision.key,kind,commit:commit??null}),key:decision.key,sourcePlacement:decision.sourcePlacement,
-        effectHash:hashJSON({attempt:root.seal,context:root.contextHash,key:decision.key,kind,commit:commit??null})};
-      if(kind==="hold"){
-        const reason=decision.reason;
-        const hold:PlacementHoldReason=reason==="secret"||reason==="personal-data"||reason==="deny-path"||reason==="private-or-invalid"||reason==="host"||reason==="person-local"?reason:"related-local";
-        return{...base,kind,reason:hold};
-      }
-      const index=root.targets.findIndex(target=>sameRealm(target.realm,decision.key.realm));if(index<0)refuse();
-      const outcome={attemptHash:root.seal,remoteHash:root.remoteHash,refHash:root.targets[index]!.refHash};
-      if(kind==="publication-ambiguous")return{...base,kind,outcome};
-      if(kind!=="publication-committed"||!commit)refuse();
-      return{...base,kind,outcome:{...outcome,commit,proofHash:hashJSON({attempt:root.seal,key:decision.key,commit,remote:root.remoteHash,ref:root.targets[index]!.refHash})}};
-    };
-    let stepped=0;
-    for(const decision of decisions){
-      if(++stepped>=64){stepped=0;yield;}
-      const state=projection.get(decision.key);
-      const index=root.targets.findIndex(target=>sameRealm(target.realm,decision.key.realm)),target=root.targets[index];if(!target)refuse();
-      const original=old[index]?.rows.get(decision.key.id),published=original&&hashJSON(original)===decision.key.rowHash;
-      if(decision.hold)holds.push(make(decision,"hold"));
-      if(published&&state?.exposure!=="published"&&target.expectedRemoteHead)known.push(make(decision,"publication-committed",target.expectedRemoteHead));
-      if(decision.eligible&&target.publish&&!published){
-        ambiguous.push(make(decision,"publication-ambiguous"));committed.push(make(decision,"publication-committed",target.commit!));
-      }
-    }
-    return{events:[...holds,...known,...ambiguous,...committed],preCount:holds.length+known.length+ambiguous.length,holdCount:holds.length};
+    return drainStepsAsync(placementPublicationEventSteps(bundle,projection,old),pause);
   }
   async frozenOld(bundle:PlacementPublicationBundle):(Promise<(ShardHistory|undefined)[]>){
     const values:(ShardHistory|undefined)[]=[];
@@ -787,6 +757,8 @@ class PlacementTransport {
       this.factual=true;return await this.finish(material);
     }catch(error){
       try { this.testOnlyError?.(error); } catch { /* Test observers never alter production results. */ }
+      // #288 step 3: a started checkpoint pauses every placement effect with its own cause and next step.
+      if(this.epochHash&&placementCheckpointPending(this.home,this.epochHash)){this.failureCause="checkpoint-pending";return this.result(false,this.attemptHash?"unknown":"not-needed",PLACEMENT_CHECKPOINT_PENDING_MESSAGE);}
       if(error&&typeof error==="object"&&!types.isProxy(error)&&error instanceof SharedWriterRevisionError){
         const code=Object.getOwnPropertyDescriptor(error,"code")?.value;
         if(code==="staging"||code==="pending"){this.failureCause="writer-renewal";return this.result(false,this.attemptHash?"unknown":"not-needed",new SharedWriterRevisionError(code).message);}

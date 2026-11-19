@@ -28,7 +28,7 @@ export type Visibility = "public" | "private" | "unknown";
  * parsing `error` text. `bound` carries its numbers in `placementPublication.bound`; `refusal` carries its fixed
  * category; `unavailable` is any other refusal before an attempt (activation, inventory or I/O).
  */
-export const SYNC_FAILURE_CAUSES = ["bound", "refusal", "unknown-outcome", "writer-renewal", "remote", "stopped", "unavailable"] as const;
+export const SYNC_FAILURE_CAUSES = ["bound", "refusal", "unknown-outcome", "writer-renewal", "remote", "stopped", "unavailable", "checkpoint-pending"] as const;
 export type SyncFailureCause = typeof SYNC_FAILURE_CAUSES[number];
 export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
   /** #462: set on every failed placement sync; absent on success and on the legacy transports. */

@@ -12,6 +12,8 @@ import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { readRealmIntent } from "./sync-placement-realm-intent-storage.ts";
 import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "./sync-placement-journal-storage.ts";
+import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
+import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { readEffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { pendingRealmInventory } from "./sync-placement-realm-pending.ts";
 import { PlacementInventoryFenceError, withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
@@ -47,6 +49,12 @@ function active(home: string, keyHash: string): boolean {
   const inventory = readEffectiveRealmInventory(home, binding), present = inventory.realms.some(realm => realm.scope === "project" && realm.keyHash === keyHash);
   inventory.assertCurrent(); return present;
 }
+function assertCheckpointClear(home: string): void {
+  const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home, markers.profile, markers.shards);
+  if (!binding) return;
+  try { if (resolvePlacementWindow(home, binding.profile.placementHead).pending) throw new SyncPlacementJournalError("checkpoint-pending"); }
+  catch (error) { if (error instanceof SyncPlacementJournalError && error.code === "pending") throw new SyncPlacementJournalError("checkpoint-pending"); throw error; }
+}
 function dirs(home: string, project: string): string[] {
   const dir = shardDir(home, project); return lstatSync(dir, { throwIfNoEntry: false }) ? [dir] : [];
 }
@@ -55,6 +63,7 @@ const nextSync = "amem sync";
 /** Returns identifiers/counts only. A callback is used only for the existing remote visibility check. */
 async function remoteRealmAdmissionInner(homeInput: string, project: string, options: RemoteAdmissionOptions): Promise<RemoteAdmissionResult> {
   const home = realPath(homeInput), realm = keyOf(project), transport = { ...(options.signal ? { signal: options.signal } : {}), ...(options.visibility ? { visibility: options.visibility } : {}) };
+  if (options.mode !== "dry-run") assertCheckpointClear(home);
   const pending = pendingRemoteAdoptions(home);
   if (pending.unknown) return unavailable("staging");
   if (options.mode !== "abandon" && pending.hashes.some(hash => hash !== realm)) return unavailable("pending");
@@ -73,7 +82,7 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
   if (options.mode === "abandon" && staged.length) {
     if (!options.confirm) return { state: "retained", realm, staged: staged.length, nextStep: "confirm abandon" };
     await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
-      const proof = { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } };
+      const proof = { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); } };
       clearRemoteAdoptionPending(home, realm, staged, proof);
     });
     return { state: "abandoned", realm, staged: staged.length, nextStep: plan ? "resume or review abandon" : "preview admission" };
@@ -83,7 +92,7 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
   if (options.mode === "apply" && (plan || staged.length) && !admitted()) return unavailable("pending");
   if (!plan && admitted()) {
     if (staged.length) await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
-      clearRemoteAdoptionPending(home, realm, staged, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
+      clearRemoteAdoptionPending(home, realm, staged, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); } });
     });
     return { state: "already-admitted", realm, nextStep: nextSync };
   }
@@ -99,7 +108,7 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
     await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
       const current = readRemoteAdoption(home, realm); if (!current) return;
       if (current.seal !== frozen.seal) return unavailable("staging");
-      clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); } });
+      clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); } });
     });
   };
   if (options.mode === "abandon") {
@@ -112,7 +121,7 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
       }
     }
     await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
-      const current = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); };
+      const current = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); };
       const proof = { mutation, assertCurrent: current };
       if (!admitted() && remoteAdoptionLogMayBeInstalled(home, project, frozen))
         discardRemoteInstalledLog(home, project, frozen, { mutation, assertCurrent: () => { current(); if (admitted()) unavailable(); } });
@@ -137,8 +146,8 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
     if (inventory.extensionHead !== frozen.inventoryHead || expectedWriters.revisionHash !== frozen.writerHash
       || journal.sequence !== frozen.journalSequence || journalHead !== frozen.journalHead) return unavailable("drift");
     const writer = activePlacementWriterContext(home, fileURLToPath(new URL("../..", import.meta.url)));
-    const current = () => { try { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); writer.attest(); expectedWriters.assertCurrent(); inventory.assertCurrent();
-      if (placementWriterJournalToken(home, frozen.epochHash) !== journalToken) unavailable("drift"); assertPlacementActivationOwner(owner, home); } catch { return unavailable("drift"); } };
+    const current = () => { try { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); writer.attest(); expectedWriters.assertCurrent(); inventory.assertCurrent();
+      if (placementWriterJournalToken(home, frozen.epochHash) !== journalToken) unavailable("drift"); assertPlacementActivationOwner(owner, home); } catch (error) { if (error instanceof SyncPlacementJournalError && error.code === "checkpoint-pending") throw error; return unavailable("drift"); } };
     current(); const source = previewOwnedSyncPlacementSources(home, owner), installed = remoteAdoptionLogMayBeInstalled(home, project, frozen);
     if (source.base.homeHash !== frozen.homeHash || source.base.policyHash !== frozen.policyHash || source.base.aliasesHash !== frozen.aliasesHash
       || !installed && source.base.sourceHash !== frozen.sourceHash) return unavailable("drift");
@@ -170,6 +179,7 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
 export async function remoteRealmAdmission(homeInput: string, project: string, options: RemoteAdmissionOptions): Promise<RemoteAdmissionResult> {
   try { return await remoteRealmAdmissionInner(homeInput, project, options); }
   catch (error) {
+    if (error instanceof SyncPlacementJournalError && error.code === "checkpoint-pending") throw error;
     if (error instanceof RemoteRealmRefusal) throw error;
     if (error instanceof SyncPlacementFormatError || error instanceof Error && error.message === "sync placement activation metadata unavailable or changed; inspect the retained activation before continuing") return unavailable("epoch");
     if (error instanceof PlacementInventoryFenceError || error instanceof Error && error.message === "profile lock held by a live or unknown owner") return unavailable("lock");

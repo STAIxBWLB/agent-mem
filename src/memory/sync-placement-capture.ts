@@ -339,6 +339,17 @@ function pinnedHomeHash(home: string, activeHead: string | undefined, activating
 export function previewSyncPlacementSources(home: string): PlacementSourcePreview {
   return previewSources(home);
 }
+/** Read-only selected source facts for an offline prospective checkpoint preview; no writer authority. */
+export function previewSelectedSyncPlacementSources(home: string, selected: readonly PlacementRealm[]): PlacementSourcePreview {
+  try { assertPlacementRuntime(home); const preview = sourcePreview(home, selected); preview.assertSourcesUnchanged(); return preview; }
+  catch (error) {
+    if (error && typeof error === "object" && !types.isProxy(error)) {
+      if (error instanceof SyncPlacementJournalError) throw error;
+      if (error instanceof SegmentReadBudgetError) throw new PlacementSourceBoundError(inspectionBoundReceipt(error));
+    }
+    return fail();
+  }
+}
 /** Internal renewal inventory under the exact live home/profile/mutation owner; no marker virtualization. */
 export function previewOwnedSyncPlacementSources(home:string,owner:PlacementActivationOwner):PlacementSourcePreview {
   assertPlacementActivationOwner(owner,home);return previewSources(home,owner);
