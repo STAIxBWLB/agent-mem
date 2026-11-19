@@ -103,7 +103,7 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
       const candidates = [...rows.values()].filter((row): row is PruneRow => row.op === "prune" && row.generation === active.profile.generation);
       const machine = readProfileJSON(join(target.profile.dir, "machine.json")) as { id: string };
       const boundary = join(target.profile.dir, "local", `publisher-boundary-${machine.id}.json`);
-      return { rows, proof: existsSync(boundary) ? inspectPublisherPruneLineages(target.profile, candidates) : new Map() };
+      return { rows, proof: candidates.length && existsSync(boundary) ? inspectPublisherPruneLineages(target.profile, candidates) : new Map() };
     });
     const verified = verifiedPlacementPrunes(targets.map((target, index) => ({ realm: target.realm, generation: active.profile.generation, rows: lineages[index]!.rows,
       fetched: planned[index]!.fetched, lineageIds: new Set<string>(lineages[index]!.proof.keys()) })));
