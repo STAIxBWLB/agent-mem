@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryMcp, type MemoryMcp } from "../src/mcp-memory.ts";
-import { appendMetrics, metricsPath, processPeakRssKB, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
+import { appendMetrics, createPeakTracker, metricsPath, processPeakRssKB, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 
@@ -68,7 +68,7 @@ test("#485 AC2: each read-tool call appends one named sample, and the call that 
   // not peaked higher already, and the current resident size is not a reliable floor: macOS reports the peak from
   // rusage while `memoryUsage().rss` is the live footprint. Fill a buffer larger than the recorded peak itself, which
   // makes the filled pages alone exceed every earlier peak on any host.
-  const peakKB = processPeakRssKB();
+  const peakKB = processPeakRssKB() ?? Math.ceil(process.memoryUsage().rss / 1024);
   const held = Buffer.alloc((peakKB + 16 * 1024) * 1024, 1);
   await mcp.tools.amem_show({ id: f.id });
   expect(held.byteLength).toBeGreaterThan(peakKB * 1024);
@@ -126,3 +126,79 @@ test("#485 AC4: a sample holds no query text, arguments, ids or paths", async ()
   const text = JSON.stringify(rows[0]);
   for (const secret of [CANARY, f.id, f.project, PATH_CANARY, f.root]) expect(text).not.toContain(secret);
 }, 30_000);
+
+test("#485 review: a trim races another process's appends without tearing a line", async () => {
+  const f = seeded(), file = metricsPath(f.memory), script = join(f.root, "append-loop.ts");
+  const ready = join(f.root, "writer-ready"), stop = join(f.root, "writer-stop");
+  const batch = (offset: number): MetricSample[] => Array.from({ length: 800 }, (_, index) => ({ at: new Date(1_700_000_000_000 + offset + index).toISOString(),
+    kind: "hook", wallMs: offset + index, rssMB: 10, brief: { work: "complete", curated: "complete", capture: "complete" } }));
+
+  // The trim publishes a fully written sibling under the file's name, so a writer holding the old file keeps a
+  // complete one and no append can land inside the replacement. Rewriting the live file in place is what tore a line.
+  appendMetrics(f.memory, batch(0));
+  const before = statSync(file).ino;
+  appendMetrics(f.memory, batch(800));
+  expect(statSync(file).ino).not.toBe(before);
+  expect(readMetrics(f.memory).length).toBeGreaterThan(0);
+
+  // A second process appends whole samples to the same file while this process appends past the bound, so trims land
+  // among that writer's appends.
+  writeFileSync(script, `import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+const [file, ready, stop] = process.argv.slice(2);
+writeFileSync(ready, "");
+let index = 0;
+while (!existsSync(stop)) { appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), kind: "search", tool: "amem_search", wallMs: index++, rssMB: 1, peakRaised: false }) + "\\n"); await Bun.sleep(1); }
+`, { mode: 0o600 });
+  const writer = Bun.spawn([process.execPath, script, file, ready, stop], { cwd: f.root, stdout: "pipe", stderr: "pipe" });
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(ready) && Date.now() < deadline) await Bun.sleep(1);
+    expect(existsSync(ready)).toBe(true);
+    for (let round = 2; round < 302; round++) appendMetrics(f.memory, batch(round * 800));
+  } finally { writeFileSync(stop, "", { mode: 0o600 }); }
+  const stderr = await new Response(writer.stderr).text();
+  await writer.exited;
+  expect(stderr).toBe("");
+  const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+  expect(lines.length).toBeGreaterThan(200);
+  for (const line of lines) expect(() => JSON.parse(line)).not.toThrow();
+  // The other process's samples are in the window, so its appends really did overlap this file's trims.
+  const searches = lines.map(line => JSON.parse(line) as MetricSample).filter(row => row.kind === "search");
+  expect(searches.length).toBeGreaterThan(0);
+  expect(searches.every(row => row.tool === "amem_search")).toBe(true);
+  expect(samples(f.memory).length).toBeGreaterThan(200);
+}, 30_000);
+
+test("#485 review: a peak this host cannot report never fails or blocks a completed read", async () => {
+  // The sampler a host answers with may throw; a window still opens and closes, crediting nothing.
+  const peaks = createPeakTracker(() => { throw new Error("no peak on this host"); });
+  const window = peaks.begin();
+  expect(peaks.end(window)).toEqual({ raised: false });
+  expect(peaks.end(peaks.begin())).toEqual({ raised: false });
+
+  // And a telemetry write that cannot land leaves a completed read's answer untouched.
+  const f = seeded(), mcp = session(f);
+  mkdirSync(metricsPath(f.memory));
+  const result = await mcp.tools.amem_search({ query: "telemetry" });
+  expect(JSON.stringify(result)).toContain("ordinary note for read-tool telemetry");
+  expect(samples(f.memory)).toEqual([]);
+}, 30_000);
+
+test("#485 review: a peak set while two read calls overlap is credited to neither of them", () => {
+  let peak = 100;
+  const peaks = createPeakTracker(() => peak);
+  const first = peaks.begin();
+  peak = 300;
+  const second = peaks.begin();
+  // Either call could have raised this peak, so neither is named; both still record the peak they saw.
+  expect(peaks.end(second)).toEqual({ peakKB: 300, raised: false });
+  expect(peaks.end(first)).toEqual({ peakKB: 300, raised: false });
+  // The peak advanced anyway, so the next call is compared with reality and does not re-claim it.
+  expect(peaks.end(peaks.begin())).toEqual({ peakKB: 300, raised: false });
+  peak = 400;
+  expect(peaks.end(peaks.begin())).toEqual({ peakKB: 400, raised: true });
+  // A call that refuses or throws records nothing, but it still advances the baseline it may have raised.
+  peak = 500;
+  peaks.abort(peaks.begin());
+  expect(peaks.end(peaks.begin())).toEqual({ peakKB: 500, raised: false });
+});
