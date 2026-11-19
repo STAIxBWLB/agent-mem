@@ -8,9 +8,9 @@
  */
 import { createHash } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import {
-  AUDIT_AGE_BUCKETS, AUDIT_KINDS, AUDIT_LABELS, AUDIT_RUBRIC, AUDIT_SCHEMA, MAX_AUDIT_ANCHORS, MAX_AUDIT_NOTES, MAX_AUDIT_SHEET_BYTES,
+  AUDIT_AGE_BUCKETS, AUDIT_ANCHOR_STATUSES, AUDIT_KINDS, AUDIT_LABELS, AUDIT_RUBRIC, AUDIT_SCHEMA, MAX_AUDIT_ANCHORS, MAX_AUDIT_NOTES, MAX_AUDIT_SHEET_BYTES,
   auditAge, cohenKappa, foldAnchorStatus, type AuditAgeBucket, type AuditAnchorStatus, type AuditLabel,
 } from "./eval.ts";
 import { memoryGitEnv, memoryGitSync, realPath } from "./platform.ts";
@@ -31,10 +31,16 @@ export interface AuditSheet {
   root: string; frame: number; drawn: number;
   /** True when the store's listing bound cut the frame, so `frame` is a floor rather than the project's live note count. */
   truncated: boolean;
+  /** Frame members the configured policy refused, so they never entered the sheet: a count, because the sheet stays free of what was withheld. */
+  withheld: number;
   rubric: Record<AuditLabel, string>;
   notes: AuditNote[];
 }
-export interface AuditSampleOptions { store: MemoryStore; project: string; n: number; seed: string; root: string; now?: number }
+export interface AuditSampleOptions {
+  store: MemoryStore; project: string; n: number; seed: string; root: string; now?: number;
+  /** Screens one frame member before it can enter the sheet; `false` withholds it. The CLI passes the configured standalone policy. */
+  screen?: (note: { kind: string; at: string; text: string; title?: string; about: readonly string[] }) => boolean;
+}
 
 /** One frame member before the draw: the view plus the bucket the sheet will name. */
 interface Candidate { view: View; age: AuditAgeBucket }
@@ -111,16 +117,26 @@ export function auditAnchorPaths(view: View): string[] {
   return [...paths];
 }
 
+/** The statuses an anchor path can have: every one but `none`, which describes a note rather than a path. */
+const PATH_STATUSES = AUDIT_ANCHOR_STATUSES.filter((status): status is Exclude<AuditAnchorStatus, "none"> => status !== "none");
+
 /**
  * Where one anchor stands today. A path that is gone is `missing`; one with a commit touching it since the note was written is `changed since note time`;
- * anything else is `present`. The read is the repository's own history, so it runs through the hardened runner: read-only diagnostics, no lazy fetch.
+ * anything else is `present`. Two shapes are `unavailable` instead, because claiming `present` would say "no commit touched it" about a check that never ran:
+ * a path that resolves outside the work tree (a symlink inside the repository can point anywhere, and the audit reads only this repository), and a history
+ * read that fails or times out. The read itself runs through the hardened runner: read-only diagnostics, no lazy fetch.
  */
 function anchorStatus(root: string, at: string, path: string): AuditAnchor["status"] {
-  if (!existsSync(join(root, path))) return "missing";
+  const full = join(root, path);
+  if (!existsSync(full)) return "missing";
+  let real: string;
+  try { real = realPath(full); } catch { return "unavailable"; }
+  if (real !== root && !real.startsWith(`${root}${sep}`)) return "unavailable";
   const log = memoryGitSync(["-C", root, "log", "-n", "1", "--format=%H", "--since", at, "--", path], {
     encoding: "utf8", env: memoryGitEnv(process.env, { readOnlyDiagnostic: true }), timeout: 8_000, maxBuffer: 64 * 1024,
   });
-  return log.error === undefined && log.status === 0 && log.stdout.trim() !== "" ? "changed" : "present";
+  if (log.error !== undefined || log.status !== 0) return "unavailable";
+  return log.stdout.trim() === "" ? "present" : "changed";
 }
 
 /** The git work tree a cwd belongs to, or a refusal naming the next step: anchors are repository-relative, so an audit needs the tree they name. */
@@ -137,10 +153,14 @@ export function auditSample(opts: AuditSampleOptions): AuditSheet {
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(opts.seed)) throw new Error("the audit seed is 1 to 64 letters, digits, '.', '_' or '-', so the same seed and store draw the same sample");
   const now = opts.now ?? Date.now(), kinds = new Set<string>(AUDIT_KINDS), candidates: Candidate[] = [];
   const listed = opts.store.list({ project: opts.project, limit: AUDIT_LIST_CAP });
+  let withheld = 0;
   for (const view of listed) {
     if (!kinds.has(view.kind)) continue;
     const age = auditAge(view.at, now);
-    if (age !== undefined) candidates.push({ view, age });
+    if (age === undefined) continue;
+    // The policy runs before anything is written: a note it refuses is not copied into the sheet, and the sheet only reports how many were withheld.
+    if (opts.screen && !opts.screen({ kind: view.kind, at: view.at, text: view.text, ...(view.title === null ? {} : { title: view.title }), about: view.about })) { withheld++; continue; }
+    candidates.push({ view, age });
   }
   const drawn = draw(candidates, opts.n, opts.seed);
   const notes = drawn.map(({ view, age }): AuditNote => {
@@ -152,7 +172,7 @@ export function auditSample(opts: AuditSampleOptions): AuditSheet {
   });
   return {
     schema: AUDIT_SCHEMA, project: opts.project, seed: opts.seed, drawnAt: new Date(now).toISOString(), root: opts.root,
-    frame: candidates.length, drawn: notes.length, truncated: listed.length >= AUDIT_LIST_CAP, rubric: { ...AUDIT_RUBRIC }, notes,
+    frame: candidates.length, drawn: notes.length, truncated: listed.length >= AUDIT_LIST_CAP, withheld, rubric: { ...AUDIT_RUBRIC }, notes,
   };
 }
 
@@ -195,7 +215,7 @@ export function readAuditSheet(path: string): AuditSheet {
  */
 export function parseAuditSheet(raw: unknown): AuditSheet {
   const root = object(raw, "the sheet");
-  exact(root, ["schema", "project", "seed", "drawnAt", "root", "frame", "drawn", "truncated", "rubric", "notes"], "the sheet");
+  exact(root, ["schema", "project", "seed", "drawnAt", "root", "frame", "drawn", "truncated", "withheld", "rubric", "notes"], "the sheet");
   if (root.schema !== AUDIT_SCHEMA) fail(`schema must be "${AUDIT_SCHEMA}"`);
   if (!Array.isArray(root.notes) || !root.notes.length || root.notes.length > MAX_AUDIT_NOTES) fail(`notes must hold 1 to ${MAX_AUDIT_NOTES} items`);
   const notes = (root.notes as unknown[]).map((item, index): AuditNote => {
@@ -207,11 +227,11 @@ export function parseAuditSheet(raw: unknown): AuditSheet {
     const anchors = (row.anchors as unknown[]).map((anchor, at): AuditAnchor => {
       const entry = object(anchor, `${what}.anchors[${at}]`);
       exact(entry, ["path", "status"], `${what}.anchors[${at}]`);
-      return { path: string(entry.path, `${what}.anchors[${at}].path`, 400), status: oneOf(entry.status, ["present", "changed", "missing"] as const, `${what}.anchors[${at}].status`) };
+      return { path: string(entry.path, `${what}.anchors[${at}].path`, 400), status: oneOf(entry.status, PATH_STATUSES, `${what}.anchors[${at}].status`) };
     });
     return {
       id, kind: oneOf(row.kind, AUDIT_KINDS, `${what}.kind`), at: string(row.at, `${what}.at`, 40), age: oneOf(row.age, AUDIT_AGE_BUCKETS, `${what}.age`),
-      anchor: oneOf(row.anchor, ["present", "changed", "missing", "none"] as const, `${what}.anchor`), anchors,
+      anchor: oneOf(row.anchor, AUDIT_ANCHOR_STATUSES, `${what}.anchor`), anchors,
       ...(row.title === undefined ? {} : { title: string(row.title, `${what}.title`, 200) }),
       text: string(row.text, `${what}.text`, 4_000), judge_a: judge(row.judge_a, "judge_a"), judge_b: judge(row.judge_b, "judge_b"),
     };
@@ -223,18 +243,24 @@ export function parseAuditSheet(raw: unknown): AuditSheet {
     frame: typeof root.frame === "number" && Number.isInteger(root.frame) && root.frame >= 0 ? root.frame : fail("frame must be a non-negative integer"),
     drawn: typeof root.drawn === "number" && Number.isInteger(root.drawn) && root.drawn >= 0 ? root.drawn : fail("drawn must be a non-negative integer"),
     truncated: bool(root.truncated, "truncated"),
+    withheld: typeof root.withheld === "number" && Number.isInteger(root.withheld) && root.withheld >= 0 ? root.withheld : fail("withheld must be a non-negative integer"),
     rubric: Object.fromEntries(AUDIT_LABELS.map(label => [label, string(rubric[label] ?? AUDIT_RUBRIC[label], `rubric.${label}`, 400)])) as Record<AuditLabel, string>,
     notes,
   };
 }
 
+/** One non-zero cell of the joint cross-tab: a label against a kind, an age bucket and an anchor status together. */
+export interface AuditCell { kind: string; age: AuditAgeBucket; anchor: AuditAnchorStatus; label: AuditLabel; count: number }
+
 export interface AuditScore {
   schema: "amem.audit.score/v1";
   /** A SHA-256 prefix of the sheet's project key, never the key: a key can be derived from a local checkout path, and the score is the part meant to be shared. */
   project: string;
-  seed: string; frame: number; drawn: number; truncated: boolean;
+  seed: string; frame: number; drawn: number; truncated: boolean; withheld: number;
   labelled: number; unlabelled: number;
   byLabel: Record<AuditLabel, number>;
+  /** The spec's joint cross-tab (label x kind x age bucket x anchor status) as its non-zero cells, sorted; the marginals below cannot rebuild it. */
+  cells: AuditCell[];
   byKind: Record<string, Partial<Record<AuditLabel, number>>>;
   byAge: Record<string, Partial<Record<AuditLabel, number>>>;
   byAnchor: Record<string, Partial<Record<AuditLabel, number>>>;
@@ -244,6 +270,22 @@ export interface AuditScore {
 /** So two scores name the same project without carrying a key, which can be built from the person's own checkout path. */
 function projectDigest(project: string): string {
   return `sha256:${createHash("sha256").update(project).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * The score is content-free because no note field is copied into it: the project becomes a digest, and every other string it emits is a schema or field literal,
+ * the seed the sheet already names, or a member of the four closed vocabularies. This check makes the last part true for a sheet handed in directly rather than
+ * through the strict parse: a kind, age bucket or anchor status outside its vocabulary would become a key in `byKind`, `byAge`, `byAnchor` or `cells`, and a
+ * seed outside `sample`'s alphabet would be copied, so both refuse the score instead. Note text, title and anchor paths are never read by the score at all,
+ * which is why a note of any length - a three-character text no substring scan could tell from an ordinary word - cannot reach the output.
+ */
+function assertClosedInputs(sheet: AuditSheet): void {
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(sheet.seed)) throw new Error("the audit score would copy a seed that is not the alphabet `sample` draws with; it is refused, because the score is content-free by contract");
+  for (const note of sheet.notes) {
+    if (!AUDIT_KINDS.includes(note.kind) || !AUDIT_AGE_BUCKETS.includes(note.age) || !AUDIT_ANCHOR_STATUSES.includes(note.anchor)) {
+      throw new Error("the audit score would carry a kind, age bucket or anchor status outside its closed vocabulary; it is refused, because the score is content-free by contract");
+    }
+  }
 }
 
 const tally = (rows: readonly AuditNote[], key: (note: AuditNote) => string): Record<string, Partial<Record<AuditLabel, number>>> => {
@@ -257,27 +299,27 @@ const tally = (rows: readonly AuditNote[], key: (note: AuditNote) => string): Re
 };
 
 /**
- * Counts by label against kind, age bucket and anchor status, plus Cohen's kappa over the notes both judges labelled. The result is content-free by a check
- * that runs here, not by convention: the project key is replaced by a digest, and every note's text, title and anchor path is looked for in the serialized
- * score, where one hit refuses the whole score.
+ * Counts by label against kind, age bucket and anchor status - separately and jointly - plus Cohen's kappa over the notes both judges labelled. The result is
+ * content-free by the check above and by construction: the project key is replaced by a digest, and no note field is read into the output.
  */
 export function auditScore(sheet: AuditSheet): AuditScore {
+  assertClosedInputs(sheet);
   const labelled = sheet.notes.filter(note => note.judge_a !== "");
   const pairs = sheet.notes.filter(note => note.judge_a !== "" && note.judge_b !== "").map(note => [note.judge_a, note.judge_b] as const);
+  const joint = new Map<string, AuditCell>();
+  for (const note of labelled) {
+    const label = note.judge_a as AuditLabel, key = `${note.kind}\u0000${note.age}\u0000${note.anchor}\u0000${label}`, cell = joint.get(key);
+    if (cell) cell.count++;
+    else joint.set(key, { kind: note.kind, age: note.age, anchor: note.anchor, label, count: 1 });
+  }
   const score: AuditScore = {
-    schema: "amem.audit.score/v1", project: projectDigest(sheet.project), seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated,
-    labelled: labelled.length, unlabelled: sheet.notes.length - labelled.length,
+    schema: "amem.audit.score/v1", project: projectDigest(sheet.project), seed: sheet.seed, frame: sheet.frame, drawn: sheet.drawn,
+    truncated: sheet.truncated, withheld: sheet.withheld, labelled: labelled.length, unlabelled: sheet.notes.length - labelled.length,
     byLabel: Object.fromEntries(AUDIT_LABELS.map(label => [label, labelled.filter(note => note.judge_a === label).length])) as Record<AuditLabel, number>,
+    cells: [...joint.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, cell]) => cell),
     byKind: tally(sheet.notes, note => note.kind), byAge: tally(sheet.notes, note => note.age), byAnchor: tally(sheet.notes, note => note.anchor),
     agreement: { pairs: pairs.length, agreed: pairs.filter(([a, b]) => a === b).length, kappa: cohenKappa(pairs, AUDIT_LABELS) },
   };
-  const json = JSON.stringify(score);
-  for (const note of sheet.notes) {
-    for (const secret of [note.text, note.title ?? "", ...note.anchors.map(anchor => anchor.path)]) {
-      if (secret.length < 4) continue;
-      if (json.includes(secret) || json.includes(JSON.stringify(secret).slice(1, -1))) throw new Error("the audit score would carry note content or an anchor path; it is refused, because the score is content-free by contract");
-    }
-  }
   return score;
 }
 
@@ -286,7 +328,7 @@ export function auditSheetText(sheet: AuditSheet, file: string): string {
   const cells = new Set(sheet.notes.map(note => `${note.kind}/${note.age}`));
   const frame = `${sheet.frame}${sheet.truncated ? "+ (the store listing hit its cap, so the frame is a floor)" : ""}`;
   return [
-    `audit sample: ${sheet.drawn} of ${frame} ${sheet.project} notes, seed "${sheet.seed}", ${cells.size} kind/age cells, anchors checked in ${sheet.root}`,
+    `audit sample: ${sheet.drawn} of ${frame} ${sheet.project} notes, seed "${sheet.seed}", ${cells.size} kind/age cells, anchors checked in ${sheet.root}${sheet.withheld ? `, ${sheet.withheld} withheld by the configured policy` : ""}`,
     `sheet: ${file} (0600, local only; never synced and never committed)`,
     `fill judge_a and judge_b with ${AUDIT_LABELS.join(", ")} (rubric in the sheet header), then run \`amem eval audit score ${file}\``,
   ].join("\n");
@@ -296,7 +338,15 @@ export function auditSheetText(sheet: AuditSheet, file: string): string {
 export function auditScoreText(score: AuditScore): string {
   const row = (label: string, counts: Partial<Record<AuditLabel, number>>) => `${label.padEnd(10)} ${AUDIT_LABELS.map(name => String(counts[name] ?? 0).padStart(4)).join(" ")}`;
   const frame = `${score.frame}${score.truncated ? "+ (the store listing hit its cap, so the frame is a floor)" : ""}`;
-  const head = `audit score: project ${score.project}, ${score.drawn} of ${frame} notes, seed "${score.seed}", ${score.labelled} labelled, ${score.unlabelled} not`;
+  const withheld = score.withheld ? `, ${score.withheld} withheld by the configured policy` : "";
+  const head = `audit score: project ${score.project}, ${score.drawn} of ${frame} notes, seed "${score.seed}", ${score.labelled} labelled, ${score.unlabelled} not${withheld}`;
+  // The joint cells are printed as one line per kind/age/anchor stratum, so a reader sees which label fills each intersection instead of three marginals.
+  const strata = new Map<string, Partial<Record<AuditLabel, number>>>();
+  for (const cell of score.cells) {
+    const key = `${cell.kind}/${cell.age}/${cell.anchor}`, counts = strata.get(key) ?? {};
+    counts[cell.label] = cell.count;
+    strata.set(key, counts);
+  }
   return [
     head,
     `${"".padEnd(10)} ${AUDIT_LABELS.map(name => name.slice(0, 4).padStart(4)).join(" ")}`,
@@ -304,6 +354,7 @@ export function auditScoreText(score: AuditScore): string {
     ...Object.entries(score.byKind).map(([kind, counts]) => row(`kind ${kind}`, counts)),
     ...Object.entries(score.byAge).map(([age, counts]) => row(`age ${age}`, counts)),
     ...Object.entries(score.byAnchor).map(([anchor, counts]) => row(`anchor ${anchor}`, counts)),
+    ...strata.entries().map(([key, counts]) => row(`cross ${key}`, counts)),
     `kappa ${score.agreement.kappa === null ? "n/a (needs both judge columns, and more than one label between them)" : score.agreement.kappa.toFixed(3)} over ${score.agreement.pairs} doubly labelled note(s)`,
   ].join("\n");
 }

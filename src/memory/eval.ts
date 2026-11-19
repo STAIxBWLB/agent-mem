@@ -24,8 +24,11 @@ export type AuditLabel = (typeof AUDIT_LABELS)[number];
 /** The spec's <30, 30-90 and >90 day buckets, named so a sheet and its score agree without keeping the clock that made them. */
 export const AUDIT_AGE_BUCKETS = ["lt30", "d30to90", "gt90"] as const;
 export type AuditAgeBucket = (typeof AUDIT_AGE_BUCKETS)[number];
-/** `none` is a note that names no path anchor, so no anchor check applies to it. */
-export const AUDIT_ANCHOR_STATUSES = ["present", "changed", "missing", "none"] as const;
+/**
+ * `unavailable` is an anchor the audit could not check - the history read failed, or the path resolves outside the work tree through a symlink - so it claims
+ * neither "untouched" nor "gone". `none` is a note that names no path anchor, so no anchor check applies to it.
+ */
+export const AUDIT_ANCHOR_STATUSES = ["present", "changed", "missing", "unavailable", "none"] as const;
 export type AuditAnchorStatus = (typeof AUDIT_ANCHOR_STATUSES)[number];
 export const MAX_AUDIT_NOTES = 200, MAX_AUDIT_ANCHORS = 8, MAX_AUDIT_SHEET_BYTES = 4 * 1024 * 1024;
 /**
@@ -112,10 +115,14 @@ export function auditAge(at: string, now: number): AuditAgeBucket | undefined {
   return days < 30 ? "lt30" : days <= 90 ? "d30to90" : "gt90";
 }
 
-/** One note's anchor verdict from its per-path values: a missing path outranks a changed one, and no anchor at all is `none`. */
+/**
+ * One note's anchor verdict from its per-path values: a missing path outranks a changed one, a changed one outranks an uncheckable one, and no anchor at all
+ * is `none`.
+ */
 export function foldAnchorStatus(statuses: readonly Exclude<AuditAnchorStatus, "none">[]): AuditAnchorStatus {
   if (!statuses.length) return "none";
-  return statuses.includes("missing") ? "missing" : statuses.includes("changed") ? "changed" : "present";
+  if (statuses.includes("missing")) return "missing";
+  return statuses.includes("changed") ? "changed" : statuses.includes("unavailable") ? "unavailable" : "present";
 }
 
 /**

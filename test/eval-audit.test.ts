@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
@@ -79,6 +79,10 @@ test("AC1: the age bucket is the spec's <30, 30-90 and >90 days, and the anchor 
   expect(foldAnchorStatus(["present", "present"])).toBe("present");
   expect(foldAnchorStatus(["present", "changed"])).toBe("changed");
   expect(foldAnchorStatus(["changed", "missing"])).toBe("missing");
+  // An uncheckable anchor outranks a present one but never a changed or missing one, so `present` always means the check ran.
+  expect(foldAnchorStatus(["present", "unavailable"])).toBe("unavailable");
+  expect(foldAnchorStatus(["unavailable", "changed"])).toBe("changed");
+  expect(foldAnchorStatus(["unavailable", "missing"])).toBe("missing");
 });
 
 test("#326: anchor status is present, changed since note time, missing, or none when the note names no path", () => {
@@ -103,6 +107,44 @@ test("#326: anchor status is present, changed since note time, missing, or none 
   } finally { store.close(); }
 });
 
+test("#326: an anchor the audit cannot check is `unavailable`, never `present` - a failed history read, or a symlink out of the tree", () => {
+  const r = rig(), outside = temp();
+  writeFileSync(join(outside, "passwd"), "root:x:0:0\n");
+  symlinkSync(outside, join(r.repo, "escape"));
+  const store = seeded(r, [
+    { text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:repo/src/present.ts"] },
+    { text: "the parcel router follows an escape symlink out of its work tree", about: ["path:escape/passwd"] },
+  ]);
+  try {
+    // `r.root` is not a git work tree, so the history read fails: claiming `present` there would say "no commit touched it" about a check that never ran.
+    const unreadable = auditSample({ store, project: r.project, n: 2, seed: "unreadable", root: r.root, now: NOW });
+    const failed = unreadable.notes.find(note => note.text.includes("src/present.ts"))!;
+    expect(failed.anchors).toEqual([{ path: "repo/src/present.ts", status: "unavailable" }]); expect(failed.anchor).toBe("unavailable");
+    // A symlink inside the repository can point anywhere: an anchor that resolves outside the tree is not probed and not called present.
+    const sheet = sample(r, store, "escaping", 2), escaping = sheet.notes.find(note => note.text.includes("escape symlink"))!;
+    expect(escaping.anchors).toEqual([{ path: "escape/passwd", status: "unavailable" }]); expect(escaping.anchor).toBe("unavailable");
+    // `unavailable` is a sheet value the strict parse accepts, so a drawn sheet round-trips.
+    const file = join(r.memory, "eval", "unavailable.json"), reread = readAuditSheet(writeAuditSheet(file, sheet));
+    expect(reread.notes.find(note => note.text.includes("escape symlink"))!.anchor).toBe("unavailable");
+  } finally { store.close(); }
+});
+
+test("AC1: the draw's one clock input is the age bucket, measured from the draw instant the sheet records", () => {
+  const r = rig();
+  const store = seeded(r, [{ text: "note 29 about the parcel router", at: NOW - 29 * DAY }, { text: "note 89 about the parcel router", at: NOW - 89 * DAY }]);
+  try {
+    const before = sample(r, store, "clock", 2, NOW), after = sample(r, store, "clock", 2, NOW + 2 * DAY);
+    const ageOf = (sheet: AuditSheet, text: string) => sheet.notes.find(note => note.text === text)!.age;
+    // Two days later the same notes have crossed bucket boundaries: the bucket is a property of the note at draw time, so the clock is an input to the draw.
+    expect(ageOf(before, "note 29 about the parcel router")).toBe("lt30");
+    expect(ageOf(after, "note 29 about the parcel router")).toBe("d30to90");
+    expect(ageOf(before, "note 89 about the parcel router")).toBe("d30to90");
+    expect(ageOf(after, "note 89 about the parcel router")).toBe("gt90");
+    // The sheet names the instant, so a result is reproducible against the clock it was drawn at rather than a silent wall clock.
+    expect(before.drawnAt).toBe(new Date(NOW).toISOString()); expect(after.drawnAt).toBe(new Date(NOW + 2 * DAY).toISOString());
+  } finally { store.close(); }
+});
+
 test("AC2: the score carries counts and kappa only - no note text, title, anchor path or id", () => {
   const r = rig();
   const store = seeded(r, [
@@ -123,6 +165,25 @@ test("AC2: the score carries counts and kappa only - no note text, title, anchor
     const rendered = auditScoreText(auditScore(sheet));
     expect(rendered).toContain("audit score:"); expect(rendered).toContain("kappa");
     expect(rendered).not.toContain("parcel router");
+  } finally { store.close(); }
+});
+
+test("AC2: no note content reaches the score at any length - the seed is the one free string it emits", () => {
+  const r = rig(), store = seeded(r, [
+    { text: "abc", about: [] },
+    { text: "the parcel router keeps its retry budget in src/present.ts", about: ["path:src/present.ts"] },
+  ]);
+  try {
+    // A three-character note is shorter than any substring scan could tell apart from an ordinary word in the output.
+    const sheet = sample(r, store, "q7", 2);
+    for (const note of sheet.notes) note.judge_a = "correct";
+    expect(JSON.stringify({ ...auditScore(sheet), project: "" })).not.toContain("abc");
+    // With the seed equal to that text the one copy is the seed the sheet already names: drop the seed and no note content remains.
+    const same = sample(r, store, "abc", 2);
+    for (const note of same.notes) note.judge_a = "correct";
+    const twice = auditScore(same);
+    expect(twice.seed).toBe("abc");
+    expect(JSON.stringify({ ...twice, seed: "", project: "" })).not.toContain("abc");
   } finally { store.close(); }
 });
 
@@ -154,6 +215,9 @@ test("AC2: a sheet that would leak free text is refused, whether in a judge cell
     const scored = auditScore(polluted);
     expect(scored.project).toBe(`sha256:${createHash("sha256").update(polluted.project).digest("hex").slice(0, 16)}`);
     expect(JSON.stringify(scored)).not.toContain(polluted.project);
+    // The guard is a whitelist over every string the score emits, not a search for long note text: a kind that is a sentence cannot become a `byKind` key.
+    const foreign = { ...sheet, notes: [{ ...sheet.notes[0]!, kind: "the parcel router keeps its retry budget" }] } as AuditSheet;
+    expect(() => auditScore(foreign)).toThrow("content-free");
     // And the honest sheet scores.
     expect(auditScore(sheet).labelled).toBe(0);
   } finally { store.close(); }
@@ -175,11 +239,36 @@ test("AC3: kappa matches a hand-worked fixture", () => {
     id: String(index).padStart(32, "0"), kind: "finding", at: new Date(NOTE).toISOString(), age: "lt30", anchor: "present", anchors: [{ path: `src/${index}.ts`, status: "present" }],
     text: `synthetic note ${index}`, judge_a: judge_a as AuditNote["judge_a"], judge_b: judge_b as AuditNote["judge_b"],
   }));
-  const score = auditScore({ schema: "amem.audit/v1", project: "fixture/project", seed: "s", drawnAt: new Date(NOW).toISOString(), root: "/fixture", frame: 10, drawn: 10, truncated: false, rubric: { correct: "c", stale: "s", wrong: "w", unverifiable: "u" }, notes });
+  const score = auditScore({ schema: "amem.audit/v1", project: "fixture/project", seed: "s", drawnAt: new Date(NOW).toISOString(), root: "/fixture", frame: 10, drawn: 10, truncated: false, withheld: 0, rubric: { correct: "c", stale: "s", wrong: "w", unverifiable: "u" }, notes });
   expect(score.byLabel).toEqual({ correct: 6, stale: 2, wrong: 2, unverifiable: 0 });
   expect(score.agreement).toEqual({ pairs: 10, agreed: 8, kappa: 0.6875 });
   expect(score.byAge).toEqual({ lt30: { correct: 6, stale: 2, wrong: 2 } });
   expect(score.unlabelled).toBe(0);
+});
+
+test("AC3: the score's joint cross-tab names each label's kind, age and anchor cell, which the three marginals cannot rebuild", () => {
+  const r = rig();
+  const store = seeded(r, [
+    { text: "the parcel router keeps its retry budget in src/present.ts", kind: "finding", about: ["path:src/present.ts"] },
+    { text: "the parcel router used to read src/gone.ts", kind: "finding", about: ["path:src/gone.ts"] },
+    { text: "the parcel router rejects a duplicate consignment", kind: "contract", about: ["path:src/present.ts"] },
+    { text: "the parcel sorter never retries a rejected label", kind: "finding", at: NOW - 120 * DAY, about: ["path:src/gone.ts"] },
+  ]);
+  try {
+    const sheet = sample(r, store, "cross", 4);
+    const labels = [["keeps its retry budget", "correct"], ["used to read", "stale"], ["duplicate consignment", "stale"], ["never retries", "correct"]] as const;
+    for (const note of sheet.notes) note.judge_a = labels.find(([fragment]) => note.text.includes(fragment))![1];
+    const score = auditScore(sheet);
+    expect(score.cells).toEqual([
+      { kind: "contract", age: "lt30", anchor: "present", label: "stale", count: 1 },
+      { kind: "finding", age: "gt90", anchor: "missing", label: "correct", count: 1 },
+      { kind: "finding", age: "lt30", anchor: "missing", label: "stale", count: 1 },
+      { kind: "finding", age: "lt30", anchor: "present", label: "correct", count: 1 },
+    ]);
+    // The marginals agree with every cell but cannot say which kind/age/anchor holds which label: present and missing each hold one correct and one stale.
+    expect(score.byAnchor).toEqual({ missing: { stale: 1, correct: 1 }, present: { correct: 1, stale: 1 } });
+    expect(auditScoreText(score)).toContain("cross finding/lt30/missing");
+  } finally { store.close(); }
 });
 
 test("#326: the sheet file is private, never overwritten, and scores from disk", () => {
@@ -229,9 +318,9 @@ test("AC4: the audit adds no model or network surface, and `preference` stays ou
 
 // ---- the command ----
 
-async function cli(r: ReturnType<typeof rig>, args: string[]): Promise<string> {
+async function cli(r: ReturnType<typeof rig>, args: string[], env: Record<string, string> = {}): Promise<string> {
   const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = r.memory;
-  try { return await runCli(args, { cwd: r.repo, env: {}, stdinTTY: true }); } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+  try { return await runCli(args, { cwd: r.repo, env, stdinTTY: true }); } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }
 
 test("#326: `amem eval audit sample` writes the private sheet and prints a content-free summary; `score` reads it back", async () => {
@@ -271,6 +360,25 @@ test("#326: `eval audit sample --project` refuses a project the cwd's work tree 
   appendAlias(r.memory, { alias: "parcel/legacy", key: r.project, actor: "fixture", machine: "fixture" });
   const aliased = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "aliased", "--n", "1", "--project", "parcel/legacy", "--json"])) as { project: string };
   expect(aliased.project).toBe(r.project);
+}, 60_000);
+
+test("#326: a note the configured policy denies never reaches the sheet, in a marked session and in a person's run alike", async () => {
+  const r = rig();
+  writeFileSync(join(r.memory, "amem.config.json"), JSON.stringify({ piiPatterns: ["never_public_"] }));
+  const store = seeded(r, [
+    { text: "the parcel router keeps NEVER_PUBLIC_ in its header", about: ["path:src/present.ts"] },
+    { text: "the parcel router rejects a duplicate consignment", about: [] },
+  ]);
+  store.close();
+  // A marked session runs the person handler (#431): the policy screens the sampled rows before the sheet's first write instead of refusing the command.
+  const marked = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "policy", "--n", "2", "--json"], { CODEX_THREAD_ID: "fixture" })) as { file: string; frame: number; drawn: number; withheld: number };
+  expect(marked).toMatchObject({ frame: 1, drawn: 1, withheld: 1 });
+  const bytes = readFileSync(marked.file, "utf8");
+  expect(bytes).not.toContain("NEVER_PUBLIC_"); expect(bytes).toContain("duplicate consignment");
+  // Not an actor gate: the unmarked run withholds the same note, because the sheet is a copy out of the home either way.
+  const person = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "policy-2", "--n", "2", "--out", join(r.root, "person.json"), "--json"])) as { withheld: number };
+  expect(person.withheld).toBe(1);
+  expect(readFileSync(join(r.root, "person.json"), "utf8")).not.toContain("NEVER_PUBLIC_");
 }, 60_000);
 
 test("#326: the audit command refuses a missing seed, an out-of-range n and a missing sheet, naming the next step", async () => {
