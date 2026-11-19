@@ -439,12 +439,14 @@ try{console.log(JSON.stringify({allowed:store.get(${JSON.stringify(active.allowe
     expect(inspectionFilesystemSnapshot(join(active.base,"sync-placement"))).toEqual(placementBefore);expect(reachableInspectionRowIds(remote)).toEqual([active.allowed]);
   },120_000);
 
-  test("without a new floor, N-1 may read unrenewed v3 but refuses an unknown future epoch member before publication",async()=>{
+  for (const reader of ["previous", "current"] as const) test(`without a new floor, ${reader} may read unrenewed v3 but refuses an unknown future epoch member before publication`,async()=>{
     const runner=fixture(),active=await createPlacementInspectionFixture();clean.push(active.close);
     const native={...runner,env:{...runner.env,AMEM_HOME:active.home,AGENTHUB_HOME:active.root}};
-    const result=JSON.parse(run(native,`const {openShardStore}=await import(${JSON.stringify(prev("src/memory/store.ts"))});
-const {readPlacementJournal}=await import(${JSON.stringify(prev("src/memory/sync-placement-journal-storage.ts"))});
-const {syncMemory}=await import(${JSON.stringify(prev("src/memory/sync.ts"))});
+    const modulePath=(path:string)=>reader==="previous"?prev(path):pathToFileURL(resolve(import.meta.dir,"..",path)).href;
+    const result=JSON.parse(run(native,`const {openShardStore}=await import(${JSON.stringify(modulePath("src/memory/store.ts"))});
+const {readPlacementJournal}=await import(${JSON.stringify(modulePath("src/memory/sync-placement-journal-storage.ts"))});
+const {SyncPlacementJournalError}=await import(${JSON.stringify(modulePath("src/memory/sync-placement-journal-format.ts"))});
+const {syncMemory}=await import(${JSON.stringify(modulePath("src/memory/sync.ts"))});
 const {writeFileSync,existsSync}=await import('node:fs');
 const {inspectionFilesystemSnapshot}=await import(${JSON.stringify(pathToFileURL(resolve(import.meta.dir,"fakes/sync-placement-inspection.ts")).href)});
 const store=openShardStore({memoryDir:${JSON.stringify(active.home)},project:${JSON.stringify(active.project)},deferPromotions:true});
@@ -454,11 +456,16 @@ writeFileSync(${JSON.stringify(join(active.home,"sync-placement","epochs",active
 const before=inspectionFilesystemSnapshot(${JSON.stringify(active.root)});let effects=0,journalRefused=false;
 Bun.spawn=()=>{effects++;throw Error('unexpected process');};Bun.spawnSync=()=>{effects++;throw Error('unexpected process');};globalThis.fetch=()=>{effects++;throw Error('unexpected fetch');};
 try{readPlacementJournal(${JSON.stringify(active.home)},${JSON.stringify(active.epochHash)});}catch{journalRefused=true;}
-const synced=await syncMemory(store,{remote:${JSON.stringify(active.remote)},visibility:async()=>{effects++;return 'private';},placementAttestation:()=>({legacySyncQuiesced:true,writers:${JSON.stringify(active.port.attest().writers)}})});
+let refusal;
+try{const synced=await syncMemory(store,{remote:${JSON.stringify(active.remote)},visibility:async()=>{effects++;return 'private';},placementAttestation:()=>({legacySyncQuiesced:true,writers:${JSON.stringify(active.port.attest().writers)}})});
+refusal={form:'result',ok:synced.ok,pushed:synced.pushed};}
+catch(error){if(!(error instanceof SyncPlacementJournalError)||error.code!=='corrupt')throw error;refusal={form:'throw',code:error.code};}
 const unchanged=JSON.stringify(inspectionFilesystemSnapshot(${JSON.stringify(active.root)}))===JSON.stringify(before);
-console.log(JSON.stringify({readable,journalRefused,ok:synced.ok,pushed:synced.pushed,effects,unchanged,cache:existsSync(${JSON.stringify(join(active.home,"shard-sync-placement"))})}));
+console.log(JSON.stringify({readable,journalRefused,refusal,effects,unchanged,cache:existsSync(${JSON.stringify(join(active.home,"shard-sync-placement"))})}));
 }finally{store.close();}`));
-    expect(result).toEqual({readable:true,journalRefused:true,ok:false,pushed:false,effects:0,unchanged:true,cache:false});
+    expect(result).toMatchObject({readable:true,journalRefused:true,effects:0,unchanged:true,cache:false});
+    if(reader==="current")expect(result.refusal).toEqual({form:"throw",code:"corrupt"});
+    else expect([{form:"throw",code:"corrupt"},{form:"result",ok:false,pushed:false}]).toContainEqual(result.refusal);
     expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe("");expect(active.reachableIds()).toEqual([]);
   },30_000);
 

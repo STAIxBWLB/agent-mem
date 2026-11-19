@@ -14,6 +14,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Compatibility with N-1 (0.29.0), remote listing CLI: the older CLI refuses the new options before effects; existing sync behavior is unchanged. Refs #461.
 - Compatibility with N-1 (0.29.0), remote admission: private staging and its companion are ignored by 0.29.0, while the same existing extension and sync formats remain in use. If an older command admits the realm first, the newer recovery discards only its private staging and directs the person to sync. Refs #461.
 - Compatibility with N-1 (0.29.0), remote wire and reader floor: refs, descriptors, row packs and prune witnesses are unchanged; no format floor is raised. Refs #461.
+- Compatibility with N-1 (0.29.0), future epoch members: 0.29.0 refuses an unknown member by throwing from `syncMemory` before any effect. Refs #288.
 
 ### Fixed
 
