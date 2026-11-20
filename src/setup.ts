@@ -1,7 +1,7 @@
 import { cliAttribution } from "./memory/cli-attribution.ts";
 import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
-import { amemCaptureCommand, amemCaptureHooks, managedAfter, mcpRecord, piExtensionCommand, putMcpRecord, restoreOwned, retiresOriginalHook, sameImage, type ConfigImage } from "./setup-owned.ts";
+import { amemCaptureCommand, amemCaptureHooks, managedAfter, mcpRecord, putMcpRecord, restoreOwned, retiresOriginalHook, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { opencodeServer } from "./setup-opencode.ts";
 import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand } from "./setup-gemini.ts";
 import { resolveSetupPaths, opencodeConfigRoot } from "./setup-paths.ts";
@@ -252,7 +252,13 @@ const HOOK_SURFACE: Partial<Record<SetupTarget, number>> = { codex: 1, kimi: 1, 
 /** #512: amem capture entries of this target in the live surface that are not the current one: what apply removes, whatever their install root. */
 function strayCaptures(target: SetupTarget, image: Image, current: string): { event: string; command: string }[] {
   if (HOOK_SURFACE[target] === undefined) return [];
-  try { return amemCaptureHooks(target, image).filter(row => row.command !== current); } catch { return []; }
+  try {
+    const rows = amemCaptureHooks(target, image);
+    // Pi: only an extension that is byte-for-byte setup's own output for some install root is amem's; customized content is never replaced.
+    if (target === "pi" && !rows.every(row => { const launch = amemCaptureCommand(row.command); return !!launch && image.bytes === Buffer.from(piExtension(launch.bun, launch.entry)).toString("base64"); })) return [];
+    // Identical duplicates of the current entry are strays too (AC1: exactly one remains); apply removes every copy and adds one back.
+    return rows.filter(row => row.command !== current || rows.filter(other => other.command === current).length > 1);
+  } catch { return []; }
 }
 const lifecycle = (target: SetupTarget) => target === "opencode" || target === "gemini" || target === "agy" ? "MCP only; native capture unavailable" : target === "jcode" ? "post_tool and turn_end capture hooks" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
@@ -316,7 +322,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
       } catch { /* Advisory only: preparing the real change retains the existing configuration validation. */ }
     }
     const surface = HOOK_SURFACE[target], planned = plannedHooks(c, target)[0];
-    const removes = mode === "undo" || surface === undefined || !planned ? [] : strayCaptures(target, read(c.paths[target][surface]!), planned.command).map(row => ({ file: c.paths[target][surface]!, ...row }));
+    const removes = mode === "undo" || surface === undefined || !planned ? [] : strayCaptures(target, read(c.paths[target][surface]!), planned.command).filter((row, index, all) => row.command !== planned.command || all.findIndex(other => other.command === planned.command) !== index).map(row => ({ file: c.paths[target][surface]!, ...row }));
     const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } }) && !removes.length;
     const add = command(target, c.bun, c.entry), remove = target === "gemini" ? [...GEMINI_REMOVE] : [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
@@ -598,7 +604,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       const content = piExtension(c.bun, c.entry);
       if (!prior && changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes
         && !previous.some(runtime => changes[1]!.before.bytes === image(piExtension(runtime.bun, runtime.entry)).bytes)
-        && amemCaptureCommand(piExtensionCommand(changes[1]!.before) ?? "")?.target !== "pi") throw Error("Pi amem-session extension already exists and is not this setup's file");
+        && !strays.length) throw Error("Pi amem-session extension already exists and is not this setup's file");
       changes[1]!.after = image(content, changes[1]!.before.mode);
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.

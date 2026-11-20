@@ -128,3 +128,27 @@ test("pi: an amem extension left by a removed install is adopted and replaced, a
   f.undo();
   expect(bytes(f.surface)).toEqual(before);
 });
+
+test("AC1 codex: identical duplicates of the current entry collapse to exactly one, foreign entries keep order", () => {
+  const f = fixture("codex");
+  put(f.files[0]!, 'keep = "me"\n');
+  const h = (command: string, timeout = 3) => ({ hooks: [{ type: "command", command, timeout }] });
+  put(f.surface, JSON.stringify({ hooks: { SessionEnd: [h(foreignA, 7), h(f.current), h(f.current), h(foreignB, 9)] } }, null, 2) + "\n");
+  const before = bytes(f.surface);
+  expect(f.plan().actions[0]!.removes).toEqual([{ file: f.surface, event: "SessionEnd", command: f.current }]);
+  f.apply();
+  expect(sessionEnd(f, "codex").filter(c => c === f.current)).toHaveLength(1);
+  expect(sessionEnd(f, "codex").filter(c => c !== f.current)).toEqual([foreignA, foreignB]);
+  f.undo();
+  expect(bytes(f.surface)).toEqual(before);
+});
+
+test("pi: a customized extension that only resembles amem's is never replaced", () => {
+  const f = fixture("pi");
+  const goneEntry = f.stale.split(" ")[2]!.slice(1, -1);
+  put(f.surface, `// amem setup managed session-end ingest; no resident worker or instruction injection.\nimport { spawnSync } from 'node:child_process';\nexport default function (pi) {\n  pi.on('session_shutdown', (_event, ctx) => {\n    console.log('my own addition');\n    try { spawnSync(${JSON.stringify(process.execPath)}, ['--smol', ${JSON.stringify(goneEntry)}, 'ingest', 'pi'], { cwd: ctx.cwd, stdio: 'ignore', timeout: 2500 }); } catch {}\n  });\n}\n`);
+  const before = bytes(f.surface);
+  expect(f.plan().actions[0]!.removes).toBeUndefined();
+  expect(() => f.apply()).toThrow("Pi amem-session extension already exists and is not this setup's file");
+  expect(bytes(f.surface)).toEqual(before);
+});
