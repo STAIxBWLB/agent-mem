@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenerationIndex } from "../src/memory/generation-index.ts";
@@ -352,4 +352,39 @@ test("#466 AC2: a held writer does not fail or empty a read, and the read marks 
     expect(stale()).toBe(false); // and the flag clears only on a read that took the index
   } finally { lock.close(); store.close(); }
 }, 20000);
+
+test("#466 AC2b: two store handles race note(), settle() and refresh() on v2 and v3 without database is locked, and both equal rebuild()", async () => {
+  const ROUNDS = 40;
+  for (const v2 of [true, false]) {
+    const f = await home(v2);
+    const barrier = join(f.root, `race-${v2 ? "v2" : "v3"}`);
+    // The second handle lives in its own process, so the two handles really contend on one home's index and logs.
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "fakes/two-handle-race.ts"), f.memoryDir, PROJECT, TASK, barrier, String(ROUNDS)],
+      { env: { ...process.env, HOME: f.root, AMEM_HOME: join(f.root, "isolated-amem"), AGENTHUB_HOME: join(f.root, "isolated-hub") }, stdout: "pipe", stderr: "pipe" });
+    const store = open(f.memoryDir), failures: string[] = [];
+    try {
+      const deadline = Date.now() + 10000;
+      while (!existsSync(`${barrier}.ready`)) { if (Date.now() > deadline || child.exitCode !== null) throw Error(`race child not ready: ${await new Response(child.stderr).text()}`); await Bun.sleep(2); }
+      writeFileSync(`${barrier}.go`, "go");
+      for (let round = 0; round < ROUNDS; round++) {
+        for (const step of [() => store.note(note(`parent row ${round}`)), () => store.settle(TASK, "person"), () => store.refresh()]) {
+          try { step(); } catch (error) { failures.push(String((error as Error)?.stack ?? error)); }
+        }
+        await Bun.sleep(0);
+      }
+      expect(await child.exited).toBe(0);
+      failures.push(...(JSON.parse(readFileSync(`${barrier}.done`, "utf8")) as { failures: string[] }).failures);
+      expect(failures.filter((line) => /database is locked/.test(line))).toEqual([]);
+      expect(failures).toEqual([]);
+      // Both handles converge on the full rebuild once the race is over.
+      store.refresh();
+      const incremental = store.derivedTables();
+      const other = open(f.memoryDir);
+      try { other.refresh(); expect(other.derivedTables()).toEqual(incremental); } finally { other.close(); }
+      store.rebuild();
+      expect(store.derivedTables()).toEqual(incremental);
+      expect(store.list({ project: PROJECT }).some((row) => row.text === `child row ${ROUNDS - 1}`)).toBe(true);
+    } finally { if (child.exitCode === null) child.kill(); await child.exited; store.close(); }
+  }
+}, 60000);
 
