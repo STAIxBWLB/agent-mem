@@ -1,10 +1,10 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { SetupTarget } from "./setup.ts";
 import { SETUP_CONFIG_BYTES } from "./setup-toml.ts";
-import { managedAfter, managedHookEntries, mcpRecord, type ConfigImage } from "./setup-owned.ts";
+import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpRecord, type ConfigImage } from "./setup-owned.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { realPath } from "./memory/platform.ts";
@@ -189,6 +189,16 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
             if (!row.present) entries.push(entry(target, change.path, row.entry, "managed hook is missing or changed", "drift"));
           }
         } catch { entries.push(entry(target, change.path, "hooks", "managed hooks could not be checked", "unavailable")); unavailable = true; }
+      }
+      // #512: an amem capture hook whose launch path is gone fails on every session end. Named by target, file and event, never its command.
+      const captureSurface = { codex: "codex:1", kimi: "kimi:1", qwen: "qwen:0", pi: "pi:1" }[target as string];
+      if (captureSurface === change.key) {
+        try {
+          for (const row of amemCaptureHooks(target, current)) {
+            const launch = amemCaptureCommand(row.command);
+            if (launch && (!existsSync(launch.entry) || !existsSync(launch.bun))) entries.push(entry(target, change.path, `hooks.${row.event}`, "managed capture hook launches an amem install that no longer exists; rerun amem setup " + target + " --apply to replace it", "drift"));
+          }
+        } catch { entries.push(entry(target, change.path, "hooks", "managed capture hooks could not be checked", "unavailable")); unavailable = true; }
       }
       if (target === "pi" && change.key === "pi:1" && !managedAfter(target, 1, change.before, change.after, current)) entries.push(entry(target, change.path, "session_shutdown extension", "managed hook extension is missing or changed", "drift"));
       // #203: jcode's capture hooks are command elements in config.toml [hooks]; a pre-#203 receipt has no such change.

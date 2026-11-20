@@ -216,3 +216,44 @@ export function managedHookEntries(target: string, before: ConfigImage, after: C
   return installed.filter(row => ours.has(row.id) || expected.some(value => value.event === row.event && value.command === row.command))
     .map(row => ({ entry: `hooks.${row.event}`, present: live.some(value => value.id === row.id) }));
 }
+
+/**
+ * #512: the one matcher for an amem capture hook command, whatever its install root:
+ * `<bun> --smol <...>/@staix/agent-mem/bin/amem.js ingest <target>[ --json]`, each path raw or single-quoted shell style.
+ * Used for Codex hooks.json, Qwen settings.json, Kimi config.toml and the Pi extension launch.
+ */
+export function amemCaptureCommand(command: string): { target: string; bun: string; entry: string } | undefined {
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < command.length) {
+    while (command[i] === " ") i++;
+    if (i >= command.length) break;
+    let token = "";
+    while (i < command.length && command[i] !== " ") {
+      if (command[i] === "'") { const end = command.indexOf("'", i + 1); if (end < 0) return undefined; token += command.slice(i + 1, end); i = end + 1; }
+      else if (command[i] === "\\") { token += command[i + 1] ?? ""; i += 2; }
+      else if (command[i] === '"') return undefined;
+      else token += command[i++];
+    }
+    tokens.push(token);
+  }
+  const [bun, smol, entry, verb, target, json, ...rest] = tokens;
+  if (!bun || !entry || !target || smol !== "--smol" || verb !== "ingest" || rest.length || (json !== undefined && json !== "--json")) return undefined;
+  if (!bun.startsWith("/") || !entry.startsWith("/") || !entry.endsWith("/@staix/agent-mem/bin/amem.js") || !/^[a-z]+$/.test(target)) return undefined;
+  return { target, bun, entry };
+}
+
+/** The Pi extension's launch as a capture command, or undefined when the file is not an amem setup extension. */
+export function piExtensionCommand(image: ConfigImage): string | undefined {
+  const match = /^\/\/ amem setup managed session-end ingest;[\s\S]*?spawnSync\(("(?:[^"\\]|\\.)*"), \['--smol', ("(?:[^"\\]|\\.)*"), 'ingest', 'pi'\]/.exec(text(image));
+  if (!match) return undefined;
+  try { const q = (v: string) => "'" + v.replaceAll("'", "'\\''") + "'"; return `${q(JSON.parse(match[1]!))} --smol ${q(JSON.parse(match[2]!))} ingest pi`; } catch { return undefined; }
+}
+
+/** Every amem capture hook of `target` in a hook surface image, with its event, in file order (#512). */
+export function amemCaptureHooks(target: string, image: ConfigImage): { event: string; command: string }[] {
+  if (target === "pi") { const command = piExtensionCommand(image); return command ? [{ event: "session_shutdown", command }] : []; }
+  const rows = target === "kimi" ? kimiHooks(image).map(row => ({ event: String(row.event), command: typeof row.command === "string" ? row.command : "" }))
+    : hooks(json(image), target === "qwen").map(row => ({ event: row.event, command: row.command }));
+  return rows.filter(row => amemCaptureCommand(row.command)?.target === target);
+}

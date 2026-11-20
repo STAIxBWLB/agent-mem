@@ -1,7 +1,7 @@
 import { cliAttribution } from "./memory/cli-attribution.ts";
 import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
-import { managedAfter, mcpRecord, putMcpRecord, restoreOwned, retiresOriginalHook, sameImage, type ConfigImage } from "./setup-owned.ts";
+import { amemCaptureCommand, amemCaptureHooks, managedAfter, mcpRecord, piExtensionCommand, putMcpRecord, restoreOwned, retiresOriginalHook, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { opencodeServer } from "./setup-opencode.ts";
 import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand } from "./setup-gemini.ts";
 import { resolveSetupPaths, opencodeConfigRoot } from "./setup-paths.ts";
@@ -50,7 +50,7 @@ export interface SetupContext {
 }
 export interface SetupPlan {
   targets: SetupTarget[]; mode: "preview" | "apply" | "undo"; root?: InstallRoot;
-  actions: { target: SetupTarget; version?: ClientVersion; files: string[]; receipt: string; cwd?: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
+  actions: { target: SetupTarget; version?: ClientVersion; files: string[]; receipt: string; cwd?: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; removes?: { file: string; event: string; command: string }[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
   notes: string[];
 }
 const MAX = SETUP_CONFIG_BYTES, JOURNAL_MAX = 12 * MAX;
@@ -247,6 +247,13 @@ function plannedHooks(c: ReturnType<typeof context>, target: SetupTarget): Plann
   return target === "claude" ? HOOK_EVENTS.map(event => ({ event, command: `${launch} hook ${event}`, timeout: 1 }))
     : [{ event: target === "pi" ? "session_shutdown" : "SessionEnd", command: `${launch} ingest ${target}${target === "pi" ? "" : " --json"}`, timeout: target === "pi" ? 2.5 : 3 }];
 }
+/** The file index of a target's capture hook surface (#512): Qwen keeps hooks in its MCP settings file. */
+const HOOK_SURFACE: Partial<Record<SetupTarget, number>> = { codex: 1, kimi: 1, qwen: 0, pi: 1 };
+/** #512: amem capture entries of this target in the live surface that are not the current one: what apply removes, whatever their install root. */
+function strayCaptures(target: SetupTarget, image: Image, current: string): { event: string; command: string }[] {
+  if (HOOK_SURFACE[target] === undefined) return [];
+  try { return amemCaptureHooks(target, image).filter(row => row.command !== current); } catch { return []; }
+}
 const lifecycle = (target: SetupTarget) => target === "opencode" || target === "gemini" || target === "agy" ? "MCP only; native capture unavailable" : target === "jcode" ? "post_tool and turn_end capture hooks" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
@@ -308,11 +315,13 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
         if (sameBinding || sameHook) pluginNotes.push(`${target}: matching amem entries are already present without a setup receipt; apply will not duplicate matching hook commands, and undo preserves the original entries.`);
       } catch { /* Advisory only: preparing the real change retains the existing configuration validation. */ }
     }
-    const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } });
+    const surface = HOOK_SURFACE[target], planned = plannedHooks(c, target)[0];
+    const removes = mode === "undo" || surface === undefined || !planned ? [] : strayCaptures(target, read(c.paths[target][surface]!), planned.command).map(row => ({ file: c.paths[target][surface]!, ...row }));
+    const unchanged = !!prior && prior.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => { try { const live = read(change.path); restoreChange(prior, change, index, live); return managedAfter(target, index, change.before, change.after, live); } catch { return false; } }) && !removes.length;
     const add = command(target, c.bun, c.entry), remove = target === "gemini" ? [...GEMINI_REMOVE] : [target, "mcp", "remove", ...(target === "claude" || target === "qwen" ? ["--scope", "user"] : []), "amem"];
     const installed = available(c, target, options), version = installed && target !== "agy" && mode !== "undo" ? probeClientVersion(c, target, options) : undefined;
     if (version?.matches === false) pluginNotes.push(`WARNING: ${target} version ${version.output}; layout verified on ${version.verified}. Apply remains guarded by native configuration validation.`);
-    return { target, available: installed, ...(version ? { version } : {}), files, receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !installed ? [] : [...(hasAmem ? [remove] : []), add], state: stale ? options.adoptCurrent ? "stale receipt; current wiring will be adopted" : "stale receipt; apply needs --adopt-current" : prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
+    return { target, available: installed, ...(version ? { version } : {}), files, receipt: journal(c, target), ...(target === "agy" ? { cwd: c.workspace!.root } : {}), registration: mode === "undo" ? null : add, lifecycle: mode === "undo" ? "restore original MCP/hook files" : lifecycle(target), hooks: mode === "undo" || unchanged ? [] : plannedHooks(c, target), ...(removes.length ? { removes } : {}), mcpChange: mode === "undo" ? prior ? "restore" : "unchanged" : unchanged ? "unchanged" : hasAmem ? "replace" : "add", commands: mode === "undo" || prior?.intent === intent(c, target) || !add || !installed ? [] : [...(hasAmem ? [remove] : []), add], state: stale ? options.adoptCurrent ? "stale receipt; current wiring will be adopted" : "stale receipt; apply needs --adopt-current" : prior && prior.intent !== intent(c, target) ? "runtime changed; managed entries will update" : prior?.phase ?? "not installed" };
   }), notes: [...pluginNotes, ...(/\/[^/]*\d+\.\d+[^/]*\/(?:bin\/)?bun$/.test(c.bun) ? ["this bun path is version-specific; rerun setup --apply after changing Bun"] : []), "Preview only unless --apply or --undo is passed; explicit modes apply without a prompt.", "Native registration commands run in a private staging HOME; only the listed configuration files are published.", "Original file bytes restore exactly when untouched; otherwise undo preserves CLI-owned changes and restores only managed entries, refusing edits to those entries.", "No AGENTS.md, CLAUDE.md or rule files are edited.", `A private ${join(c.state, "setup.lock")} serializes mutations; temporary ${join(realPath(tmpdir()), "amem-setup-*")} staging homes are removed.`, "Codex requires its native /hooks review before newly registered hooks run; setup does not grant hook trust. Runtime registrations use the PATH-resolved absolute Bun path without resolving its stable symlink; setup all reports and skips missing clients."] };
 }
 /** Native probes and registration share one private HOME, cwd and configuration layout. */
@@ -492,7 +501,9 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     // Validate ownership at the historical path before adopting a new source, without publishing to the copy.
     if (prior && change && change.path !== path) restoreChange(prior, change, index, read(change.path));
     return prior && change && change.path === path ? restoreChange(prior, change, index, expected[index]!) : expected[index]!; });
-  if (prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
+  const surface = HOOK_SURFACE[target], currentCapture = plannedHooks(c, target)[0]?.command ?? "";
+  const strays = surface === undefined ? [] : strayCaptures(target, expected[surface]!, currentCapture).map(row => row.command);
+  if (!strays.length && prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const previousMcp = prior?.changes[0];
   const previous = previousRuntimes(target, [expected[0]!, ...(previousMcp && previousMcp.path === c.paths[target][0] ? [previousMcp.before, previousMcp.after, ...(previousMcp.start ? [previousMcp.start] : [])] : [])], c.bun, c.entry);
@@ -562,17 +573,18 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     }
     const capture = (kind: string) => `${quote(c.bun)} --smol ${quote(c.entry)} ingest ${kind} --json`;
     if (target === "claude") changes[1]!.after = hookDocument(changes[1]!.before, HOOK_EVENTS, event => `${quote(c.bun)} --smol ${quote(c.entry)} hook ${event}`, 1, event => oldLaunches.map(launch => `${launch} hook ${event}`));
-    if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"), 3, () => priorCaptures(oldLaunches, "codex"));
+    if (target === "codex") changes[1]!.after = hookDocument(changes[1]!.before, ["SessionEnd"], () => capture("codex"), 3, () => [...priorCaptures(oldLaunches, "codex"), ...strays]);
     // Qwen's user MCP and hooks share settings.json: publish and journal one combined image.
-    if (target === "qwen") changes[0]!.after = hookDocument(changes[0]!.after, ["SessionEnd"], () => capture("qwen"), 3, () => priorCaptures(oldLaunches, "qwen"));
+    if (target === "qwen") changes[0]!.after = hookDocument(changes[0]!.after, ["SessionEnd"], () => capture("qwen"), 3, () => [...priorCaptures(oldLaunches, "qwen"), ...strays]);
     if (target === "kimi") {
       const old = changes[1]!.before.bytes === null ? "" : Buffer.from(changes[1]!.before.bytes!, "base64").toString("utf8");
       const parsed = toml(old), rawHooks = parsed.hooks ?? [];
       if (!Array.isArray(rawHooks)) throw Error("Kimi hooks must be an array");
       let hooks: unknown[] = rawHooks;
-      if (oldLaunches.length) hooks = hooks.filter(h => {
+      const retire = [...priorCaptures(oldLaunches, "kimi"), ...strays];
+      if (retire.length) hooks = hooks.filter(h => {
         const row = record(h);
-        if (row.event !== "SessionEnd" || !priorCaptures(oldLaunches, "kimi").includes(String(row.command))) return true;
+        if (row.event !== "SessionEnd" || !retire.includes(String(row.command))) return true;
         if (![undefined, "", "*"].includes(row.matcher as string | undefined) || row.timeout !== 3
           || Object.keys(row).some(key => !["event", "command", "matcher", "timeout"].includes(key)))
           throw Error("previous-runtime hook settings are customized; review hook configuration before retrying setup");
@@ -585,12 +597,13 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     if (target === "pi") {
       const content = piExtension(c.bun, c.entry);
       if (!prior && changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes
-        && !previous.some(runtime => changes[1]!.before.bytes === image(piExtension(runtime.bun, runtime.entry)).bytes)) throw Error("Pi amem-session extension already exists and is not this setup's file");
+        && !previous.some(runtime => changes[1]!.before.bytes === image(piExtension(runtime.bun, runtime.entry)).bytes)
+        && amemCaptureCommand(piExtensionCommand(changes[1]!.before) ?? "")?.target !== "pi") throw Error("Pi amem-session extension already exists and is not this setup's file");
       changes[1]!.after = image(content, changes[1]!.before.mode);
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.
     if (changes.some(change => change.after.bytes !== null && Buffer.from(change.after.bytes, "base64").byteLength > MAX)) throw Error("planned setup configuration exceeds the size bound; no configuration published");
-    return { value: { version: previous.length && changes.some((change, index) => retiresOriginalHook(target, index, change.before, change.after)) ? 2 : 1, target, intent: intent(c, target), phase: "prepared", changes, ...(prior?.createdDirectory ? { createdDirectory: prior.createdDirectory } : {}) }, expected, unchanged: false, ...(setAside ? { setAside } : {}) };
+    return { value: { version: (previous.length || strays.length) && changes.some((change, index) => retiresOriginalHook(target, index, change.before, change.after)) ? 2 : 1, target, intent: intent(c, target), phase: "prepared", changes, ...(prior?.createdDirectory ? { createdDirectory: prior.createdDirectory } : {}) }, expected, unchanged: false, ...(setAside ? { setAside } : {}) };
   } finally { rmSync(staging, { recursive: true, force: true }); }
 }
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
@@ -707,6 +720,7 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
     lines.push(`            receipt  ${action.receipt}`);
     if (action.available && action.registration) lines.push(`            command  ${action.registration.map(quote).join(" ")}`);
     for (const hook of action.hooks) lines.push(`            hook     ${hook.event}: ${hook.command} (timeout ${hook.timeout})`);
+    for (const row of action.removes ?? []) lines.push(`            remove   ${row.event}: ${row.command} (an earlier amem install, in ${row.file})`);
     if (action.available && !action.hooks.length && plan.mode !== "undo") lines.push(`            hook     ${s.dim("none")}`);
     lines.push(`            ${s.dim(action.lifecycle)}`);
   }
