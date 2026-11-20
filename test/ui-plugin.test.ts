@@ -293,7 +293,8 @@ test("a revision exception disables reuse while Recap, Timeline and Capacity sti
       const fresh = await provider.snapshot({ after: 0, panel, project: f.project });
       expect(fresh.error, panel).toBeUndefined(); expect(fresh.changed).toBeUndefined();
     }
-    expect(revision).not.toHaveBeenCalled();
+    // #359: the project picker cache now consults the revision on every panel; a revision failure only disables reuse, never the panel.
+    expect(revision).toHaveBeenCalled();
     const fresh = await provider.snapshot({ after: Number(before.cursor), panel: "recap", project: f.project });
     expect(fresh.error).toBeUndefined(); expect(fresh.changed).toBeUndefined(); expect(Number.isSafeInteger(fresh.cursor)).toBe(true);
     const next = await provider.snapshot({ after: Number(fresh.cursor), panel: "recap", project: f.project });

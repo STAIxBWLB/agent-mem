@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
 import { indexFileName } from "./index-file.ts";
-import { chmodSync, existsSync, lstatSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { memoryBase } from "./home.ts";
-import { effectiveAliases, readShardDescriptor, SHARDED_SCHEMA, SHARDED_V2_SCHEMA } from "./shard.ts";
+import { effectiveAliases, readShardDescriptor, SHARD_SCHEMA, SHARDED_SCHEMA, SHARDED_V2_SCHEMA } from "./shard.ts";
 import { readProfileJSON, validGeneration } from "./generation.ts";
 import { captureShardStats, readCaptureConfig } from "./capture.ts";
 import { openShardStore } from "./store.ts";
@@ -101,6 +101,33 @@ export function walkShards(base: string): { hash: string; key: string; local: bo
   }
   return out;
 }
+
+/**
+ * #359: the catalog's project keys, in scanCatalog's order, without per-shard stats (no store open, no SQLite read, no directory sizing).
+ * It keeps scanCatalog's placement selection guard, so a home scanCatalog refuses is refused here too. For pickers; `amem projects`/usage keep scanCatalog.
+ */
+export function catalogKeys(base: string): string[] {
+  capturedSelection(base);
+  // Unlike walkShards, a read failure other than absence throws: a picker cache must never keep an inventory a transient error cut short.
+  const projectsDir = join(base, "projects");
+  let hashes: string[];
+  try { hashes = readdirSync(projectsDir, { withFileTypes: true }).filter((e) => e.isDirectory() && /^[0-9a-f]{16}$/.test(e.name)).map((e) => e.name); }
+  catch (e) { if (absent(e)) return []; throw e; }
+  const keys: string[] = [];
+  for (const hash of hashes) {
+    // One read: a transient failure throws instead of reading as a skipped shard. Absent or readable-but-invalid stays skipped, as in walkShards.
+    let text: string;
+    try { text = readFileSync(join(projectsDir, hash, "project.json"), "utf8"); }
+    catch (e) { if (absent(e)) continue; throw e; }
+    let d: unknown;
+    try { d = JSON.parse(text); } catch { continue; }
+    const v = d as { schema?: unknown; key?: unknown; local?: unknown } | null;
+    if (v?.schema === SHARD_SCHEMA && typeof v.key === "string" && typeof v.local === "boolean") keys.push(v.key);
+  }
+  return keys.sort((a, b) => a.localeCompare(b));
+}
+
+const absent = (e: unknown): boolean => (e as NodeJS.ErrnoException)?.code === "ENOENT" || (e as NodeJS.ErrnoException)?.code === "ENOTDIR";
 
 /** What the shards and the alias log say, before anything is persisted. */
 export function scanCatalog(base: string): CatalogProject[] {
