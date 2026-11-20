@@ -25,6 +25,7 @@ jobs:
       reused_run: ${{ steps.scope.outputs.reused_run }}
       reused_head: ${{ steps.scope.outputs.reused_head }}
       macos_deferred: ${{ steps.draft.outputs.macos_deferred }}
+      tree: ${{ steps.tree.outputs.tree }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,6 +35,11 @@ jobs:
       - name: Read pinned Bun version
         id: runtime
         run: echo "version=$(git show HEAD:.bun-version)" >> "$GITHUB_OUTPUT"
+      # #503: the tree this run checks out (for a PR, GitHub's merge commit at github.sha), recorded in a job name so a later
+      # main push can prove the exact tree that passed instead of trusting the live PR association.
+      - name: Record the checked-out tree
+        id: tree
+        run: echo "tree=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ steps.runtime.outputs.version }}
@@ -45,7 +51,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ]; then
-            bun scripts/ci-scope.ts reuse >> "$GITHUB_OUTPUT"
+            bun scripts/ci-scope.ts reuse <(git show HEAD:.github/workflows/check.yml) >> "$GITHUB_OUTPUT"
           elif [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             echo 'run_full=true' >> "$GITHUB_OUTPUT"
           elif gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" > "$RUNNER_TEMP/ci-scope-files.json"; then
@@ -237,6 +243,17 @@ jobs:
         os: [macos-latest]
     runs-on: ${{ matrix.os }}
     steps: *measure-steps
+  # #503: the job name carries the checked-out tree so the run's own record, not a mutable PR link, names what was tested.
+  checkout-tree:
+    name: checkout-tree ${{ needs.decision.outputs.tree }}
+    needs: decision
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - run: echo "$TREE"
+        env:
+          TREE: ${{ needs.decision.outputs.tree }}
   # Preserve both required names and validate planned skips in both directions.
   check:
     needs: [decision, test, test-macos, measure, measure-macos]

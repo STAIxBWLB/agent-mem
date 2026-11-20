@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { proveRelease, frozenTag, githubReader } from "../scripts/release-ci-reuse.mjs";
+import { proveRelease, frozenTag, githubReader, workflowShards, completeMatrix } from "../scripts/release-ci-reuse.mjs";
 
 const commit="a".repeat(40),tree="b".repeat(40),other="c".repeat(40),tagObject="d".repeat(40),repository="acme/memory";
-const input={repository,commit};
+const input={repository,commit,shards:{test:4,"test-macos":4}};
 const run=(extra:Record<string,unknown>={})=>({id:42,workflow_id:9,path:".github/workflows/check.yml",repository:{full_name:repository},head_repository:{full_name:repository},head_branch:"main",event:"push",head_sha:other,status:"completed",conclusion:"success",run_attempt:1,...extra});
 const HEAVY_JOBS=[1,2,3,4].map(s=>`test (ubuntu-latest, ${s}, 4)`).concat([1,2,3,4].map(s=>`test-macos (macos-latest, ${s}, 4)`),["measure (ubuntu-latest)","measure-macos (macos-latest)"]);
 const jobs=(heavy:string="success")=>["check (ubuntu-latest)","check (macos-latest)",...HEAVY_JOBS].map((name,index)=>({id:index+1,run_id:42,name,status:"completed",conclusion:index<2?"success":heavy}));
@@ -37,6 +37,17 @@ test("a main check that skipped its heavy jobs by reusing a PR proof is refused 
     jobs().filter(job=>job.name!=="test (ubuntu-latest, 3, 4)"),jobs().filter(job=>!/^test-macos .*, [234], 4\)$/.test(job.name)),[...jobs(),{...jobs()[2]!,id:99}]]){
     const f=fixture({jobRows:rows});await expect(proveRelease(f.api,input,f.clock)).rejects.toThrow("Push the release tree to main");
   }
+  // A coherent but different matrix than the proven tree declares, or no declared matrix, is never proof.
+  for(const shards of [{test:2,"test-macos":4},{test:4,"test-macos":3},null]){
+    const f=fixture();await expect(proveRelease(f.api,{...input,shards},f.clock)).rejects.toThrow("Push the release tree to main");
+  }
+  const wrongN=["check (ubuntu-latest)","check (macos-latest)","test (ubuntu-latest, 1, 1)","test-macos (macos-latest, 1, 1)","measure (ubuntu-latest)","measure-macos (macos-latest)"];
+  expect(completeMatrix(wrongN,{test:4,"test-macos":4})).toBe(false);
+  expect(completeMatrix(wrongN,{test:1,"test-macos":1})).toBe(true);
+  const workflow=readFileSync(join(import.meta.dir,"..",".github","workflows","check.yml"),"utf8");
+  expect(workflowShards(workflow)).toEqual({test:4,"test-macos":4});
+  expect(workflowShards(workflow.replace("shard: [1, 2, 3, 4]","shard: [1, 2, 4]"))).toBeNull();
+  expect(workflowShards("jobs: {}")).toBeNull();
 });
 test("release reuses a successful main check for an identical whole tree, even at a different commit",async()=>{
   const f=fixture(),proof=await proveRelease(f.api,input,f.clock);
