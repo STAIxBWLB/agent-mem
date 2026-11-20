@@ -277,7 +277,7 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
     cause = "setup_receipt_orca_profile"; next = "The receipt was written from an Orca Claude profile; rerun setup from that Orca profile."; partial = false;
   } else if (text === "setup receipt is stale: its managed entries were replaced at another amem install root; rerun with --adopt-current to adopt the current wiring") {
     cause = "setup_receipt_stale"; next = "The receipt's managed entries were replaced at another amem install root outside setup; rerun with --apply --adopt-current to keep the receipt aside and adopt the current wiring, which --undo then restores."; partial = false;
-  } else if (/^setup-owned .+ changed; refusing to overwrite it$/.test(text) || text === "Pi amem-session extension already exists and is not this setup's file"
+  } else if (/^setup-owned .+ changed; refusing to overwrite it$/.test(text) || text === "Pi amem-session extension already exists and is not this setup's file; inspect it, move your changes to another extension file or remove it, then rerun setup"
     || text === "previous-runtime hook settings are customized; review hook configuration before retrying setup"
     || /^setup receipt (?:does not match this installation|target mismatch|invalid|directory ownership invalid)$/.test(text)) {
     cause = "setup_ownership_conflict"; next = "Review the managed entries and saved setup receipt before retrying; keep unrelated configuration intact."; partial = false;

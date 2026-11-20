@@ -42,6 +42,8 @@ claude plugin install agent-mem@agent-mem
 
 The plugin packages MCP plus the existing `hooks/hooks.json` once, using Claude's default hook discovery. It needs no `--plugin-dir`. Choose either plugin installation or direct Claude setup to avoid registering the same hooks twice. The direct setup dry run names an installed agent-mem plugin and warns about duplicate MCP and hook registrations.
 
+Capture hooks left by a removed install (#512): `amem setup codex|qwen|kimi|pi` treats any SessionEnd (Pi: `session_shutdown`) hook with the amem capture form `<bun> --smol <...>/@staix/agent-mem/bin/amem.js ingest <target>[ --json]` as amem's own, whatever its install root. The preview lists each such entry other than the current one, and identical extra copies of the current one, under `removes` (file and event). Apply leaves exactly one entry per target and keeps every other hook in place and order; undo restores the files byte for byte. A Pi extension counts as amem's only when its bytes are exactly setup's own output for its launch root; a customized one is never replaced, and setup refuses until you inspect it, move your changes to another extension file or remove it. `amem doctor` reports a managed capture hook whose bun or amem entry path no longer exists in its `setup` section, naming the target, file and event but not the command; rerun `amem setup <target> --apply` to replace it.
+
 ## Shell completion
 
 Generate completion for `zsh`, `bash`, or `fish` with `amem completion <shell>`. Generation prints a script to stdout; it does not install files or edit shell configuration. The following commands configure shell completion.
