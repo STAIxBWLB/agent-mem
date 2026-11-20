@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { placementActivationFixture, activationOwnRoot } from "./fakes/sync-placement-activation.ts";
@@ -11,6 +11,7 @@ import { COMMANDS, commandHelp, parseCommand } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
 import { readSyncState, nextSyncAt, SYNC_BACKOFF_BASE_MS } from "../src/memory/sync-cadence.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
+import { resolveSetupPaths } from "../src/setup-paths.ts";
 import { cadenceDiagnosticPrelude, collectCadenceCallDiagnostic, withCadenceFailureDiagnostics, type CadenceCallDiagnostic } from "./fakes/cadence-diagnostic.ts";
 
 const cleanup:(()=>void)[]=[];
@@ -43,6 +44,14 @@ function unregisteredWriter(f:ReturnType<typeof hookFixture>){
   writeFileSync(join(extra,"package.json"),JSON.stringify({name:"@staix/agent-mem",version:"0.22.0"}),{mode:0o644});
   writeFileSync(join(extra,"src","index.ts"),"// unregistered measured fixture, never executed\n",{mode:0o644});writeFileSync(join(extra,"bin","amem.js"),"// fixture\n",{mode:0o755});
   return extra;
+}
+/** #520: an applied receipt for a `<bun> --smol <entry> mcp` runtime, at the native path doctor resolves for this home. */
+function setupReceipt(f:ReturnType<typeof hookFixture>,target:"qwen",entry:string){
+  const dir=join(f.base,"setup");mkdirSync(dir,{mode:0o700});
+  const image=(value:unknown)=>({mode:0o600,bytes:Buffer.from(JSON.stringify(value)).toString("base64")});
+  const after={mcpServers:{amem:{command:process.execPath,args:["--smol",entry,"mcp"]}}};
+  writeFileSync(join(dir,`${target}.json`),JSON.stringify({version:2,target,intent:"b".repeat(64),phase:"applied",
+    changes:[{key:`${target}:0`,path:resolveSetupPaths(f.env).paths[target][0]!,before:image({}),after:image(after)}]}),{mode:0o600});
 }
 function success(result:ReturnType<typeof run>){expect(result.exitCode,result.stderr.toString()).toBe(0);return JSON.parse(result.stdout.toString()) as Record<string,unknown>;}
 
@@ -167,6 +176,33 @@ test("missing migration prerequisites name their exact next command and never mi
   expect(result.exitCode).not.toBe(0);expect(result.stderr.toString()).toContain("amem migrate --public-prune-view --dry-run");expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
 });
 
+
+// #520: an applied setup receipt whose recorded amem install is gone refuses every placement sync; a marked session gets
+// the target and both remedies as fixed cause text instead of the generic masked refusal, and the same receipt shows up in
+// its doctor report without the recorded path.
+test("#520: a marked session names the setup target whose recorded install is gone, in sync and doctor", async () => {
+  const f=await placementActivationFixture(); cleanup.push(f.close);
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  const install=unregisteredWriter(f); setupReceipt(f,"qwen",join(install,"bin","amem.js"));
+  rmSync(install,{recursive:true});
+  const marked=run(f,["sync","--json"],true), text=marked.stderr.toString();
+  expect(marked.exitCode).not.toBe(0);
+  expect(text).toContain("[cause: setup_receipt_missing_install]");
+  expect(text).toContain("the qwen setup receipt names an amem install that no longer exists");
+  expect(text).toContain("amem setup qwen --apply"); expect(text).toContain("amem setup qwen --undo"); expect(text).toContain("then rerun the sync");
+  expect(text).not.toContain(install); expect(text).not.toContain(f.base);
+  // Fail-closed: the refusal is recorded as the run's failure, and a person is still refused by the same receipt.
+  expect(readSyncState(f.base).failures).toBe(1);
+  const person=run(f,["sync","--json"]);
+  expect(person.exitCode).not.toBe(0); expect(person.stderr.toString()).toContain("setup receipt"); expect(person.stderr.toString()).not.toContain(install);
+  expect(readSyncState(f.base).failures).toBe(2);
+  const doctor=run(f,["doctor","--json"],true), report=JSON.parse(doctor.stdout.toString()) as {sections:{setup:{status:string;entries:{target?:string;phase?:string;entry?:string;reason?:string}[]}}};
+  expect(doctor.exitCode).toBe(0); expect(report.sections.setup.status).toBe("attention");
+  const row=report.sections.setup.entries.find(entry=>entry.entry==="amem install")!;
+  expect(row).toMatchObject({target:"qwen",phase:"applied"});
+  expect(row.reason).toContain("amem setup qwen --apply"); expect(row.reason).toContain("amem setup qwen --undo");
+  expect(doctor.stdout.toString()).not.toContain(install);
+},120_000);
 
 test("#449/#450: an unlisted cwd selects no realm; placement sync covers the activated inventory and leaves the cwd shard unopened", async () => {
   const f=await placementActivationFixture(); cleanup.push(f.close);

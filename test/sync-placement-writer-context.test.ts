@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as setup from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
-import { initialPlacementWriterContext, PlacementWriterContextError, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
+import { initialPlacementWriterContext, markedSetupReceiptRefusal, placementSyncFailure, PlacementWriterContextError, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
 
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
@@ -59,6 +59,32 @@ test("the attest callback keeps the mapped setup target, and an anonymous receip
   f.receipts.mockImplementation(()=>{throw new setup.SetupWriterRootsError("unsupported");});
   const anonymous=failure(()=>initialPlacementWriterContext(f.home,f.roots,f.own));
   expect(anonymous.setupTarget).toBeUndefined();expect(anonymous.message).toContain("amem setup <target> --apply");
+});
+
+test("the marked diagnostic reports only a positively identified setup-receipt refusal, as fixed text",()=>{
+  const refusal=new PlacementWriterContextError("setup receipt","unavailable","active","unreadable",undefined,"qwen"),text=markedSetupReceiptRefusal(refusal)!;
+  expect(text).toContain("[cause: setup_receipt_missing_install]");
+  expect(text).toContain("the qwen setup receipt names an amem install that no longer exists");
+  expect(text).toContain("amem setup qwen --apply");expect(text).toContain("amem setup qwen --undo");expect(text).toContain("then rerun the sync");
+  // A writer that went missing, a changed install, another category and an anonymous receipt keep the generic masked refusal.
+  expect(markedSetupReceiptRefusal(new PlacementWriterContextError("setup receipt","missing"))).toBeUndefined();
+  expect(markedSetupReceiptRefusal(new PlacementWriterContextError("setup receipt","changed","active","changed",undefined,"qwen"))).toBeUndefined();
+  expect(markedSetupReceiptRefusal(new PlacementWriterContextError("declared writer","unavailable","active","unreadable",undefined,"qwen"))).toBeUndefined();
+  expect(markedSetupReceiptRefusal(Error("Memory operation unavailable or refused; no partial result is shown."))).toBeUndefined();
+  // Only an allowlisted target yields the template; a recorded path or a caught message never becomes text.
+  expect(markedSetupReceiptRefusal(Object.assign(Error("qwen setup receipt"),{category:"setup receipt",causeClass:"unavailable",setupTarget:"/private/install"}))).toBeUndefined();
+  expect(markedSetupReceiptRefusal(Object.assign(Error("caught message"),{category:"setup receipt",causeClass:"unavailable",setupTarget:"agy"}))).not.toContain("caught message");
+});
+
+test("the later sync failure keeps the mapped target through its wrapper, without its inner error text",()=>{
+  const f=fixture(),context=initialPlacementWriterContext(f.home,f.roots,f.own);
+  f.receipts.mockImplementation(()=>{throw new setup.SetupWriterRootsError("unavailable","pi");});
+  const refusal=failure(()=>context.attest()),later=placementSyncFailure(refusal,Error(`transport refused at ${f.home}`));
+  expect(later.message).toContain(f.home);   // the person's report keeps the underlying transport detail
+  const text=markedSetupReceiptRefusal(later)!;
+  expect(text).toContain("amem setup pi --apply");expect(text).not.toContain(f.home);expect(text).not.toContain("transport refused");
+  // An early refusal that never reached the wrapper reports the same fixed text.
+  expect(text).toBe(markedSetupReceiptRefusal(refusal)!);
 });
 
 test("active diagnostics keep restore-or-renew and locator recovery never invents a backup",()=>{

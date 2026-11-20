@@ -2,7 +2,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readS
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { SetupTarget } from "./setup.ts";
+import { setupReceiptRemedy, type SetupTarget } from "./setup.ts";
 import { SETUP_CONFIG_BYTES } from "./setup-toml.ts";
 import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpLauncher, mcpRecord, type ConfigImage } from "./setup-owned.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
@@ -173,9 +173,7 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
         let missing = false;
         try { missing = !lstatSync(realPath(dirname(dirname(launch.entry)))).isDirectory(); }
         catch (error) { const code = (error as NodeJS.ErrnoException).code; missing = code === "ENOENT" || code === "ENOTDIR"; }
-        if (missing) entries.push({ ...entry(target, "setup receipt", "amem install",
-          `the applied setup receipt names an amem install that no longer exists; run amem setup ${target} --apply to refresh the receipt or amem setup ${target} --undo to remove it`, "drift"),
-          phase: "applied" });
+        if (missing) entries.push({ ...entry(target, "setup receipt", "amem install", setupReceiptRemedy(target, true), "drift"), phase: "applied" });
       }
     } catch { /* A malformed managed MCP record is reported by the live-file check below. */ }
     const liveImages: (ConfigImage | undefined)[] = [];

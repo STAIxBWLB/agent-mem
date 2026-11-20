@@ -746,15 +746,22 @@ export async function runSetup(target: string, mode: SetupPlan["mode"], options:
 
 
 /**
+ * #520: the fixed remedy for a receipt whose recorded amem install no longer exists, shared by setup, the placement
+ * sync refusal, doctor and the marked diagnostic. It names the target and both commands, never the recorded path.
+ */
+export function setupReceiptRemedy(target: SetupTarget, applied = false): string {
+  return `the ${applied ? "applied " : ""}${target} setup receipt names an amem install that no longer exists; run amem setup ${target} --apply to refresh the receipt or amem setup ${target} --undo to remove it`;
+}
+/**
  * Fixed safe category only; receipt text, native paths and external error messages are never diagnostics.
- * `target` is set only when an applied receipt names a runtime root that no longer exists, so the refusal can
- * name the setup target and its remedy without exposing the recorded path (#520).
+ * `target` is set only when an applied receipt names a runtime root whose absence was positively identified, so the
+ * refusal can name the setup target and its remedy without exposing the recorded path (#520).
  */
 export class SetupWriterRootsError extends Error {
   readonly code = "setup_writer_roots_unavailable";
   constructor(readonly category: "unsafe" | "changed" | "bound" | "unsupported" | "pending" | "unavailable", readonly target?: SetupTarget) {
     super(target
-      ? `Setup writer inventory has a setup receipt for ${target} whose recorded amem install no longer exists; run amem setup ${target} --apply to refresh the receipt, or amem setup ${target} --undo to remove it.`
+      ? `Setup writer inventory: ${setupReceiptRemedy(target, true)}.`
       : `Setup writer inventory ${category}; have the person inspect setup receipts and rerun setup before activation.`);
     this.name = "SetupWriterRootsError";
   }
@@ -802,7 +809,8 @@ export function readSetupWriterRoots(home: string): string[] {
       const runtime = mcpLauncher(mcpRecord(target, value.changes[0]!.after), target);
       if (!runtime || runtime.bun.includes("\0") || runtime.entry.length > 4096 || runtime.entry.includes("\0") || !["/bin/amem.js", "/src/cli.ts"].some(suffix => runtime.entry.endsWith(suffix))
         || target === "opencode" && [runtime.bun, runtime.entry].some(value => /\{(?:env|file):/.test(value))) fail("unsupported");
-      // #520: a recorded runtime root that no longer exists names its setup target; every other unreadable state stays anonymous.
+      // #520: only a positively identified ENOENT/ENOTDIR for the recorded root names its setup target; a non-directory,
+      // a permission error and every other unreadable state stay anonymous.
       let root: string;
       try { root = realPath(dirname(dirname(runtime.entry))); }
       catch (error) {
@@ -810,9 +818,7 @@ export function readSetupWriterRoots(home: string): string[] {
         if (code === "ENOENT" || code === "ENOTDIR") fail("unavailable", target);
         fail("unavailable");
       }
-      const present = lstatSync(root, { throwIfNoEntry: false });
-      if (!present) fail("unavailable", target);
-      if (!present.isDirectory()) fail("unavailable");
+      if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) fail("unavailable");
       roots.add(root); launchers.push({ entry: runtime.entry, root });
     }
     const finalHome = lstatSync(home, { bigint: true }); owned(finalHome);
