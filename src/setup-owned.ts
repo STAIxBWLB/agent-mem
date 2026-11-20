@@ -255,5 +255,6 @@ export function amemCaptureHooks(target: string, image: ConfigImage): { event: s
   if (target === "pi") { const command = piExtensionCommand(image); return command ? [{ event: "session_shutdown", command }] : []; }
   const rows = target === "kimi" ? kimiHooks(image).map(row => ({ event: String(row.event), command: typeof row.command === "string" ? row.command : "" }))
     : hooks(json(image), target === "qwen").map(row => ({ event: row.event, command: row.command }));
-  return rows.filter(row => amemCaptureCommand(row.command)?.target === target);
+  // Only the event setup manages: a matching command under another event is not touched by apply, so it is neither removed nor diagnosed.
+  return rows.filter(row => row.event === "SessionEnd" && amemCaptureCommand(row.command)?.target === target);
 }

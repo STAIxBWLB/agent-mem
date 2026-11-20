@@ -508,7 +508,8 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
     if (prior && change && change.path !== path) restoreChange(prior, change, index, read(change.path));
     return prior && change && change.path === path ? restoreChange(prior, change, index, expected[index]!) : expected[index]!; });
   const surface = HOOK_SURFACE[target], currentCapture = plannedHooks(c, target)[0]?.command ?? "";
-  const strays = surface === undefined ? [] : strayCaptures(target, expected[surface]!, currentCapture).map(row => row.command);
+  // The restored baseline can carry an orphan back from the prior receipt's before-image: retire strays from both images (#512).
+  const strays = surface === undefined ? [] : [...new Set([...strayCaptures(target, expected[surface]!, currentCapture), ...strayCaptures(target, restored[surface]!, currentCapture)].map(row => row.command))];
   if (!strays.length && prior?.phase === "applied" && prior.intent === intent(c, target) && prior.changes.every((change, index) => managedAfter(target, index, change.before, change.after, expected[index]!))) return { value: prior, expected, unchanged: true };
   const changes: Change[] = c.paths[target].map((path, i) => ({ key: `${target}:${i}`, path, before: restored[i]!, after: restored[i]!, start: expected[i]! }));
   const previousMcp = prior?.changes[0];

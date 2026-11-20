@@ -152,3 +152,31 @@ test("pi: a customized extension that only resembles amem's is never replaced", 
   expect(() => f.apply()).toThrow("Pi amem-session extension already exists and is not this setup's file; inspect it, move your changes to another extension file or remove it, then rerun setup");
   expect(bytes(f.surface)).toEqual(before);
 });
+
+test("AC1 codex: a retired orphan is not resurrected by a later install-root change, and undo still restores the original bytes", () => {
+  const f = fixture("codex");
+  put(f.files[0]!, 'keep = "me"\n');
+  seedJson(f, false);
+  const before = [bytes(f.files[0]!), bytes(f.surface)];
+  f.apply();
+  expect(sessionEnd(f, "codex")).toEqual([foreignA, foreignB, f.current]);
+  const next = join(f.home, "tools", "amem", "0.31.0", "node_modules", "@staix", "agent-mem");
+  put(join(next, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.31.0" }) + "\n");
+  put(join(next, "bin", "amem.js"), "// fixture, never executed\n");
+  const options = { ...f.options, root: next };
+  applySetup(planSetup("codex", "apply", options), options);
+  const nextCommand = `${quote(process.execPath)} --smol ${quote(join(next, "bin", "amem.js"))} ingest codex --json`;
+  expect(sessionEnd(f, "codex")).toEqual([foreignA, foreignB, nextCommand]);
+  undoSetup(planSetup("codex", "undo", options), options);
+  expect([bytes(f.files[0]!), bytes(f.surface)]).toEqual(before);
+});
+
+test("a matching command under another event is neither listed for removal nor touched", () => {
+  const f = fixture("codex");
+  put(f.files[0]!, 'keep = "me"\n');
+  const h = (command: string, timeout = 3) => ({ hooks: [{ type: "command", command, timeout }] });
+  put(f.surface, JSON.stringify({ hooks: { Stop: [h(f.stale)], SessionEnd: [h(foreignA, 7)] } }, null, 2) + "\n");
+  expect(f.plan().actions[0]!.removes).toBeUndefined();
+  f.apply();
+  expect(JSON.parse(readFileSync(f.surface, "utf8")).hooks.Stop[0].hooks[0].command).toBe(f.stale);
+});
