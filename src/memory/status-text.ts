@@ -1,4 +1,4 @@
-import { facts, label, PLAIN, type Style } from "./style.ts";
+import { facts, label, markerCell, paint, section, PLAIN, type Style } from "./style.ts";
 
 /** The `amem status` object as the CLI builds it; `amem status --json` prints it unchanged. */
 export interface StatusView {
@@ -32,15 +32,15 @@ export function statusText(status: StatusView, s: Style = PLAIN): string {
   const { machine, repo, denyPaths, piiPatterns, ...limits } = status.config;
   const pendingCounts = facts(Object.fromEntries(Object.entries(status.pending).filter(([key]) => !key.endsWith("Ids"))));
   const lines = [
-    `${s.bold("amem status:")} ${overall === "ok" ? s.ok(overall) : overall === "attention" ? s.attention(overall) : s.error(overall)}`,
-    `home     ${status.home.path} ${s.dim(`(${status.home.source})`)}`,
-    "",
+    `${paint("header", " amem Status", s.color)}: ${overall === "ok" ? s.ok(overall) : overall === "attention" ? s.attention(overall) : s.error(overall)}`,
+    ...(warnings.length || actions.length ? ["", section(s, "Attention"), ...warnings.map(warning => `  ${s.attention(markerCell("warn", s.ascii))} ${warning}`), ...actions.map(action => `  ${paint("accent", markerCell("next", s.ascii), s.color)} ${action}`)] : []),
+    "", section(s, "Memory"),
+    `  home:  ${status.home.path} ${s.dim(`(${status.home.source})`)}`,
     `${label(s, "ok")} policy: machine ${machine ?? "none (defaults)"}, repo ${repo ?? "none"}; ${denyPaths} deny paths, ${piiPatterns} PII patterns${facts(limits) ? `; ${facts(limits)}` : ""}`,
     `${label(s, candidateState)} candidates: ${candidateLine}`,
     `${label(s, migrationState)} layout: ${status.active ? `shards active${status.generation ? ` (generation ${status.generation.slice(0, 8)})` : ""}` : status.phase ? `shard migration ${status.phase}${interrupted ? ", not active" : ""}` : "single home"}; ${pendingCounts ? `pending ${pendingCounts}` : "no pending old-layout appends"}`,
     ...(status.deadLeasesRemoved?.length ? [`            ${s.dim(`${status.deadLeasesRemoved.length} dead reader leases removed`)}`] : []),
-    ...(warnings.length ? ["", "Warnings:", ...warnings.map(warning => `  - ${s.attention(warning)}`)] : []),
-    "", actions.length ? "Next actions:" : "Next actions: none", ...actions.map(action => `  - ${action}`),
+    "", actions.length ? "Next actions: see Attention" : "Next actions: none",
     s.dim("Full report: amem status --json; health checks: amem doctor"),
   ];
   return lines.join("\n");

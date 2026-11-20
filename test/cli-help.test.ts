@@ -21,6 +21,15 @@ test("a defaultCommand parent shows itself and its subcommands", async () => {
   for (const name of ["list", "accept", "reject", "walk"]) expect(review).toMatch(new RegExp(`\\n {2}${name} +\\S`));
 });
 
+test("help command and short flag show bounded command details", async () => {
+  expect(await runCli(["help", "status"], person)).toBe(await runCli(["status", "--help"], person));
+  expect(await runCli(["status", "-h"], person)).toBe(await runCli(["status", "--help"], person));
+  for (const command of ["status", "setup", "review", "capacity"]) {
+    const text = await runCli([command, "--help"], person);
+    for (const line of text.split("\n")) expect(Bun.stringWidth(line, { ambiguousIsNarrow: true })).toBeLessThanOrEqual(80);
+  }
+});
+
 test("existing help contracts hold", async () => {
   expect(await runCli(["import", "claude-mem", "--help"], person)).toContain("--capture-days");
   expect((await runCli(["ingest", "codex", "--help"], agent)).startsWith("usage: amem ingest <kind>")).toBe(true);

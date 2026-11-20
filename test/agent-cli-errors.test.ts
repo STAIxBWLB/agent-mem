@@ -142,4 +142,9 @@ test("#511: missing and policy-hidden show IDs are indistinguishable in current 
     const expected = await outcome(absent), actual = await outcome(hidden);
     expect(actual).toEqual(expected); expect(JSON.stringify(actual)).not.toContain("HIDDEN_FIXTURE_MARKER");
   }
+  for (const flags of [["--color=always"], ["--ascii"], ["--color=never", "--ascii"]]) {
+    const plain = await runCli(["show", absent, "--json"], context);
+    expect(await runCli(["show", absent, "--json", ...flags], context)).toBe(plain);
+    expect(await runCli(["show", hidden, "--json", ...flags], context)).toBe(plain);
+  }
 });

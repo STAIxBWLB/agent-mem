@@ -1,5 +1,6 @@
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { GOAL_STATES, KINDS } from "./memory/store.ts";
+import { wrapReport } from "./memory/style.ts";
 
 export interface OptionDefinition { description: string; value?: "text" | "path" | readonly string[] }
 export interface ArgumentDefinition { name: string; values?: readonly string[]; path?: boolean; variadic?: boolean }
@@ -21,7 +22,7 @@ const policy = { "--policy-free": flag("Accepted and ignored: the configured pri
 const filters = { ...json, "--tier": { description: "Memory tier", value: ["short", "long"] } as OptionDefinition,
   "--kind": { description: "Note kind", value: KINDS }, "--peer": text("Author peer"), "--machine": text("Machine ID"),
   "--since": text("ISO date or time"), "--limit": text("Maximum results") };
-export const GLOBAL_OPTIONS = { "--help": flag("Show help") };
+export const GLOBAL_OPTIONS = { "--help": flag("Show help"), "--color": { description: "Color output: auto, always or never", value: ["auto", "always", "never"] } as OptionDefinition, "--ascii": flag("Use ASCII markers") };
 export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
 export const COMMANDS: Record<string, CommandDefinition> = {
   consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after explicit acceptance", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
@@ -177,6 +178,7 @@ export function completionDefinitions(): CompletionDefinition[] {
   walk(COMMANDS, [], GLOBAL_OPTIONS); return rows;
 }
 export interface ParsedCommand { path: string[]; definition: CommandDefinition; options: Record<string, string | boolean>; positionals: string[]; rawArgs: string[] }
+export class CommandUsageError extends Error { readonly exitCode = 2; }
 
 /** Pure validation, shared definitions with help/completion; no store, files or network. */
 export function parseCommand(argv: readonly string[]): ParsedCommand {
@@ -192,16 +194,16 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
     const token = tokens[i]!;
     if (token.startsWith("--")) {
       const option = available[token];
-      if (!option) throw new Error(`unknown option ${token}`);
+      if (!option) throw new CommandUsageError(`unknown option ${token}`);
       if (option.value !== undefined) {
         const value = tokens[++i];
-        if (value === undefined || value.startsWith("--")) throw new Error(`${token} needs a value`);
-        if (Array.isArray(option.value) && !option.value.includes(value)) throw new Error(`${token} takes ${option.value.join(" or ")}`);
+        if (value === undefined || value.startsWith("--")) throw new CommandUsageError(`${token} needs a value`);
+        if (Array.isArray(option.value) && !option.value.includes(value)) throw new CommandUsageError(`${token} takes ${option.value.join(" or ")}`);
         options[token] = value;
       } else options[token] = true;
     } else if (definition.commands) {
       const child: CommandDefinition | undefined = Object.hasOwn(definition.commands, token) ? definition.commands[token] : undefined;
-      if (!child) throw new Error(`unknown command ${[...path, token].join(" ")}`);
+      if (!child) throw new CommandUsageError(`unknown command ${[...path, token].join(" ")}`);
       commandIndexes.add(i);
       definition = { ...definition, ...child }; path.push(token);
       // Child metadata inherits policy, but its command children belong only to that child.
@@ -216,14 +218,19 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (definition.defaultCommand && definition.commands) {
     const name = definition.defaultCommand; definition = { ...definition, ...definition.commands[name]!, commands: undefined }; path.push(name);
   }
-  if (positionals.length > (definition.args?.length ?? 0) && !definition.args?.at(-1)?.variadic) throw new Error(`too many arguments for ${path.join(" ")}`);
+  if (positionals.length > (definition.args?.length ?? 0) && !definition.args?.at(-1)?.variadic) throw new CommandUsageError(`too many arguments for ${path.join(" ")}`);
   for (let i = 0; i < positionals.length; i++) {
     const argument = definition.args?.[i];
-    if (argument?.values && !argument.values.includes(positionals[i]!)) throw new Error(`${argument.name} takes ${argument.values.join(" or ")}`);
+    if (argument?.values && !argument.values.includes(positionals[i]!)) throw new CommandUsageError(`${argument.name} takes ${argument.values.join(" or ")}`);
   }
   const allowed = path[0] === "version" && options["--version"] === true ? completionDefinitions()[0]!.options : completionDefinitions().find(row => row.path.join(" ") === path.join(" "))!.options;
-  for (const name of Object.keys(options)) if (!allowed[name]) throw new Error(`unknown option ${name} for ${path.join(" ")}`);
-  const rawArgs = [...(path[0] === "goal" ? path.slice(1) : path), ...tokens.filter((arg, index) => arg !== "--policy-free" && !commandIndexes.has(index))];
+  for (const name of Object.keys(options)) if (!allowed[name]) throw new CommandUsageError(`unknown option ${name} for ${path.join(" ")}`);
+  const outputOptionIndexes = new Set<number>();
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] === "--color") { outputOptionIndexes.add(i); outputOptionIndexes.add(++i); }
+    else if (tokens[i] === "--ascii") outputOptionIndexes.add(i);
+  }
+  const rawArgs = [...(path[0] === "goal" ? path.slice(1) : path), ...tokens.filter((arg, index) => arg !== "--policy-free" && !commandIndexes.has(index) && !outputOptionIndexes.has(index))];
   return { path, definition, options, positionals, rawArgs };
 }
 
@@ -255,8 +262,16 @@ export function commandHelp(argv: readonly string[] = []): string {
   if (command && path[0] !== "help") {
     const lines = [`usage: amem ${usageRow(row)}`, "", command.description, "", "options:", ...described(Object.entries(row.options).map(([name, option]) => [optionLabel(name, option), option.description]))];
     if (command.commands) lines.push("", "commands:", ...described(Object.entries(command.commands).map(([name, child]) => [name, child.description])));
-    return lines.join("\n");
+    return wrapReport(lines.join("\n"), 80);
   }
-  return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", ...completionDefinitions().filter(row => row.path.length).map(row => `  ${usageRow(row)}`),
-    "--policy-free: accepted and ignored; the configured privacy policy (amem.config.json in the memory home, narrowed by .amem/config) always applies.", "Agent-marked reads use the MCP privacy ceiling. Explicit apply/confirm flags do not require a terminal; review walk and the note editor remain interactive."].join("\n");
+  const overview = Object.entries(COMMANDS).map(([name, item]) => {
+    const description = item.description.split("\n")[0] ?? "";
+    const limit = 76 - name.length - Math.max(1, 20 - name.length);
+    const summary = description.length > limit ? `${description.slice(0, limit - 3).trimEnd()}...` : description;
+    return `  ${name.padEnd(20)}  ${summary}`;
+  });
+  return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", "", "Commands:", ...overview,
+    "--policy-free is accepted and ignored; the configured privacy policy applies.",
+    "Agent-marked reads use the MCP privacy ceiling. Apply and confirm need no TTY;",
+    "review walk and the note editor remain interactive."].join("\n");
 }

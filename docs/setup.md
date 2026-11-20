@@ -140,7 +140,7 @@ Hook capture rows carry two optional fields: `session`, a 16-hex hash of Claude 
 
 ## Native transcript intake
 
-`amem ingest` reads existing Codex, Kimi, Pi or Qwen transcripts and writes screened deterministic capture rows, never curated notes. Run it from the project to bind intake to that working directory; the CLI exposes no project/home override or policy bypass:
+`amem ingest` reads existing Codex, Kimi, Pi or Qwen transcripts and writes screened deterministic capture rows, never curated notes. It prints a human receipt on a terminal or pipe; pass `--json` for a compact machine-readable receipt. Run it from the project to bind intake to that working directory; the CLI exposes no project/home override or policy bypass:
 
 ```sh
 amem ingest codex --since 2026-10-01T00:00:00Z --json

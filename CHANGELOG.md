@@ -4,6 +4,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+### Changed
+
+- `amem ingest` now prints human text on a pipe unless `--json` is passed, and `--json` output is compact while retaining its existing schemas. Human output uses the shared CLI output roles, status markers, ASCII fallback and color precedence. Compared with 0.31.0, scripts consuming piped ingest receipts must pass `--json`; parser usage errors now exit 2 instead of 1. Refs #398.
+
 ### Fixed
 
 - A console project outside the activated placement inventory is marked with the class its own evidence proves (`local-key`, `capture-only`, `no-memory`, `curated-unadmitted` or `unverified`) beside its name in the project picker, and its Timeline and Work answer with that class and that class's next step instead of one generic admission hint: capture-only memory stays readable without admission, a local-key project needs the admission and then a per-invocation `amem sync --remote <url>` or `amem project archive`, an empty scaffold and a restored unadmitted realm each get their own sentence, and an unsafe or unprovable one asks the person to inspect the home. The class never comes from the key form alone; the capture store and the curated markers are proved by `lstat` on an owned file without opening the realm, a machine entry that is a link or otherwise unsafe and an inventory too large to scan completely answer `unverified` instead of `no-memory`, an unavailable inventory proof is retried and never cached, and the text carries no path or project name. Refs #525.

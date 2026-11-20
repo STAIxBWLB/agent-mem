@@ -127,7 +127,7 @@ test("alias remove names its usage and refuses what is not an alias (#27)", asyn
 });
 
 test("help and completion name `alias remove` (#27)", () => {
-  expect(commandHelp()).toContain("alias remove");
+  expect(commandHelp(["alias", "remove"])).toContain("alias remove");
   for (const shell of ["zsh", "bash", "fish"]) expect(completionScript(shell)).toContain("remove");
 });
 

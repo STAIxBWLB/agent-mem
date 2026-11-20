@@ -29,7 +29,7 @@ function fixture() {
   return { root, home, cwd, env, rules, context, calls };
 }
 test("setup command table, parser and actual help expose the same targets and apply/undo options", async () => {
-  const f = fixture(), before = snapshot(f.root), help = await runCli(["--help"], f.context);
+  const f = fixture(), before = snapshot(f.root), help = await runCli(["setup", "--help"], f.context);
   expect(help).toContain("setup <target>"); expect(help).toContain("[--apply]"); expect(help).toContain("[--undo]");
   expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--adopt-current", "--apply", "--json", "--root", "--undo"]);
   for (const target of targets) expect(parseCommand(["setup", target])).toMatchObject({ path: ["setup"], positionals: [target] });

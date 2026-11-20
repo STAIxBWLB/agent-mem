@@ -239,7 +239,7 @@ test("the human report names every section, marks attention and shows the hint",
   const r = rig(); r.note("n");
   const text = await doctor(r, ["doctor"]);
   for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence", "drops", "spool"]) expect(text).toContain(`${name}:`);
-  expect(text).toMatch(/^amem doctor: (ok|attention|unavailable)/);
+  expect(text).toMatch(/^ amem Doctor: (ok|attention|unavailable)/);
 });
 
 test("#431 AC1: an agent-marked doctor gives the same report a person gets and still creates no home", async () => {
@@ -476,7 +476,7 @@ test("#217: doctor reports both full hook spool tiers without changing pending f
   expect(report.sections.spool!.hint).toContain("pending hook spool needs attention");
   expect(exact(r)).toEqual(before);
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^ATTENTION +spool:/m);
+  expect(text).toMatch(/^  !  ATTENTION +spool:/m);
   expect(text).toContain("active 256/256 files"); expect(text).toContain("reserve 32/32 files");
   expect(text).toContain("claimed 1"); expect(text).not.toContain("amem spool replay");
   expect(text).toContain("native 0, summaries 0, unclassified 288");
@@ -520,7 +520,7 @@ for (const surface of ["active", "reserve"] as const) test("#217: a symlinked ho
   expect(report.sections.spool!.active).toBeUndefined();
   expect(lstatSync(linked).isSymbolicLink()).toBe(true); expect(tree(target)).toEqual(before);
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^UNAVAILABLE +spool:/m); expect(text).not.toContain("active 0/256 files");
+  expect(text).toMatch(/^  [?]  UNAVAILABLE +spool:/m); expect(text).not.toContain("active 0/256 files");
 });
 
 test("#132: recent capture drops by reason are an attention item with counts only", async () => {
@@ -534,7 +534,7 @@ test("#132: recent capture drops by reason are an attention item with counts onl
   expect(report.status).toBe("attention");
   expect(Object.keys(report.sections.drops).sort()).toEqual(["counts", "hint", "status", "total", "window"]);
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^ATTENTION +drops:/m); expect(text).toContain("spool full 2, cwd removed 1");
+  expect(text).toMatch(/^  !  ATTENTION +drops:/m); expect(text).toContain("spool full 2, cwd removed 1");
 });
 
 test("#132: an existing metrics file doctor cannot read is unavailable, never a healthy zero", async () => {
@@ -557,7 +557,7 @@ test("#132: a torn metrics line is counted, a tail with no decodable record is u
   const garbage = (await doctor(r)).sections.drops;
   expect(garbage).toMatchObject({ status: "unavailable", reason: "metrics.jsonl has no decodable record in its recent tail" });
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^UNAVAILABLE +drops:/m); expect(text).not.toContain("none in the recent metrics tail");
+  expect(text).toMatch(/^  [?]  UNAVAILABLE +drops:/m); expect(text).not.toContain("none in the recent metrics tail");
   const { captureDropSummary } = await import("../src/memory/metrics.ts");
   expect(captureDropSummary(r.memory)).toEqual({});
 });

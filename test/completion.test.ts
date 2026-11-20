@@ -97,7 +97,7 @@ test("search filter and explain are shared boolean options in parsing, help and 
   expect(search.options["--filter"]?.description).toContain("newest first");
   expect(search.options["--explain"]?.value).toBeUndefined();
   expect(search.options["--explain"]?.description).toContain("score factors");
-  expect(commandHelp().split("\n").find(line => line.trimStart().startsWith("search "))).toContain("[--explain]");
+  expect(commandHelp(["search"])).toContain("--explain");
   expect(() => parseCommand(["list", "--filter"])).toThrow();
 });
 
@@ -108,11 +108,11 @@ test("migration apply is explicit in parser help and completion metadata", () =>
   const migrate = completionDefinitions().find(definition => definition.path.join(" ") === "migrate")!;
   expect(migrate.options["--apply"]?.description).toContain("Apply");
   expect(migrate.options["--dry-run"]?.description).toContain("default");
-  expect(commandHelp()).toContain("--apply");
+  expect(commandHelp(["migrate"])).toContain("--apply");
 });
 
 test("completion metadata and CLI parser cover the retained raw command cases and flags", () => {
-  const definitions = completionDefinitions(), help = commandHelp();
+  const definitions = completionDefinitions(), help = completionDefinitions().map(row => commandHelp(row.path)).join("\n");
   const raw = readFileSync(join(import.meta.dir, "../src/memory/commands.ts"), "utf8");
   const split = raw.indexOf("export async function rawGoalCommand");
   expect(split).toBeGreaterThan(0);
@@ -121,7 +121,7 @@ test("completion metadata and CLI parser cover the retained raw command cases an
     for (const command of cases) {
       const path = [...prefix, command];
       expect(definitions.some(definition => definition.path.join(" ") === path.join(" "))).toBe(true);
-      expect(help).toContain(command);
+      expect(commandHelp(prefix)).toContain(command);
     }
   }
   // Per-case options must agree too: an option on another command cannot hide drift.
@@ -142,7 +142,7 @@ test("completion metadata and CLI parser cover the retained raw command cases an
         // #40 F16: `sync --if-due --force` are the person's schedule gate, handled by src/cli.ts before the raw command, which never sees them (test/sync-cadence.test.ts); the exemption is these two flags on `sync` only.
         // #15 T4: `promote --to repo --confirm --confirm-public` are the person's repo-scope promotion, handled by src/cli.ts before the raw command; the raw command refuses them (test/repo-scope.test.ts). The exemption is these three flags on `promote` only.
         // #13 G: `import claude-mem --capture-days` is handled by src/cli.ts after the curated import and is stripped before the raw command.
-        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free"].includes(flag) || name === "search" && ["--all-projects", "--include-archived", "--filter", "--explain"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag) || name === "sync" && ["--if-due", "--force", "--progress", "--status"].includes(flag) || name === "import" && flag === "--capture-days").toBe(true);
+        for (const flag of Object.keys(row.options)) expect(flags.has(flag) || ["--help", "--json", "--policy-free", "--color", "--ascii"].includes(flag) || name === "search" && ["--all-projects", "--include-archived", "--filter", "--explain"].includes(flag) || name === "promote" && ["--to", "--confirm", "--confirm-public"].includes(flag) || name === "sync" && ["--if-due", "--force", "--progress", "--status"].includes(flag) || name === "import" && flag === "--capture-days").toBe(true);
       }
     }
   }

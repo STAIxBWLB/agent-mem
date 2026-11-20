@@ -173,7 +173,7 @@ test("configured policy screens the final note peer before append", async () => 
 
 test("note add is in help, completion and the command table, with every fail flag", async () => {
   const r = rig();
-  const help = await cli(r, ["--help"]);
+  const help = await cli(r, ["note", "add", "--help"]);
   for (const word of ["note add", "--approach", "--symptom", "--cause", "--evidence", "--retry-when"]) expect(help, word).toContain(word);
   expect(await cli(r, ["completion", "bash"])).toContain("--retry-when");
 });

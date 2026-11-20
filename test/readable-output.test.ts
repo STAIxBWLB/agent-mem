@@ -21,13 +21,13 @@ import { setupConfirmationText, setupPlanText, type SetupPlan } from "../src/set
 const ANSI = /\x1b\[/, COLOR = style(true), WIDTH = 160;
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); });
-const strip = (text: string) => text.replace(/\x1b\[\d+m/g, "");
+const strip = (text: string) => text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]+m`, "g"), "");
 
 test("color is on only for a TTY without NO_COLOR or TERM=dumb", () => {
   expect(colorEnabled({}, true)).toBe(true);
   expect(colorEnabled({}, false)).toBe(false);
   expect(colorEnabled({}, undefined)).toBe(false);
-  expect(colorEnabled({ NO_COLOR: "" }, true)).toBe(false);
+  expect(colorEnabled({ NO_COLOR: "" }, true)).toBe(true);
   expect(colorEnabled({ NO_COLOR: "1" }, true)).toBe(false);
   expect(colorEnabled({ TERM: "dumb" }, true)).toBe(false);
   expect(colorEnabled({ TERM: "xterm-256color" }, true)).toBe(true);
@@ -47,9 +47,9 @@ function report(overrides: Partial<DoctorReport["sections"]> = {}, clis = 4): Do
 
 test("doctor healthy: concise overall state, labelled rows, no raw JSON, no next action", () => {
   const text = doctorText(report());
-  expect(text.split("\n")[0]).toBe("amem doctor: ok  (all 10 checks ok)");
+  expect(text.split("\n")[0]).toBe(" amem Doctor: ok  (all 10 checks ok)");
   expect(text).not.toMatch(ANSI); expect(text).not.toContain("{\"");
-  for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence"]) expect(text).toMatch(new RegExp(`^OK +${name}:`, "m"));
+  for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence"]) expect(text).toMatch(new RegExp(`^  ok OK +${name}:`, "m"));
   expect(text).toContain("Next actions: none");
   expect(text).toMatch(/claude +hook registered, capture fresh/);
 });
@@ -63,11 +63,11 @@ test("doctor attention, skipped and unavailable are distinct labels; registered 
   });
   for (const s of [PLAIN, COLOR]) {
     const text = strip(doctorText(r, s));
-    expect(text.split("\n")[0]).toBe("amem doctor: attention  (attention 1, unavailable 1, skipped 1)");
-    expect(text).toMatch(/^ATTENTION +capture:/m); expect(text).toMatch(/^SKIPPED +stale:/m); expect(text).toMatch(/^UNAVAILABLE +index:/m);
+    expect(text.split("\n")[0]).toBe(" amem Doctor: attention  (attention 1, unavailable 1, skipped 1)");
+    expect(text).toMatch(/^  !  ATTENTION +capture:/m); expect(text).toMatch(/^  -  SKIPPED +stale:/m); expect(text).toMatch(/^  [?]  UNAVAILABLE +index:/m);
     expect(text).toMatch(/claude +hook registered, capture never, 0 rows/); expect(text).toMatch(/codex +hook manual, capture never/);
     expect(text).toContain("reason: copy failed");
-    expect(text).toContain("Next actions:\n  - capture claude: the claude hook is registered but its capture is never");
+    expect(text).toContain("  -> capture claude: the claude hook is registered but its capture is never");
   }
   expect(doctorText(r, COLOR)).toMatch(ANSI);
   expect(doctorText(r, PLAIN)).not.toMatch(ANSI);
@@ -85,10 +85,10 @@ const status = (overrides: Partial<StatusView> = {}): StatusView => ({ home: { p
 
 test("status empty: home, policy and summarized zero counters, nothing to do", () => {
   const text = statusText(status());
-  expect(text.split("\n")[0]).toBe("amem status: ok");
-  expect(text).toContain("home     /h/memory (default)");
-  expect(text).toMatch(/^OK +policy: machine none \(defaults\), repo none; 0 deny paths, 0 PII patterns$/m);
-  expect(text).toMatch(/^OK +candidates: none pending$/m);
+  expect(text.split("\n")[0]).toBe(" amem Status: ok");
+  expect(text).toContain("home:  /h/memory (default)");
+  expect(text).toMatch(/^  ok OK +policy: machine none \(defaults\), repo none; 0 deny paths, 0 PII patterns$/m);
+  expect(text).toMatch(/^  ok OK +candidates: none pending$/m);
   expect(text).toContain("no pending old-layout appends");
   expect(text).not.toContain("skippedRows"); expect(text).toContain("Next actions: none"); expect(text).not.toMatch(ANSI);
 });
@@ -97,15 +97,15 @@ test("status attention and error surface warnings and actions with text labels",
   const due = statusText(status({ candidates: { count: 3, oldestExpiresInDays: 2, dueWithin7Days: 1, unshown: 1, warning: "1 candidate within 7 days of expiry: run `amem review walk`" },
     pending: { rows: 7, skippedRows: 0, byShard: { p: 7 } }, refusals: ["dangling prune"] }), COLOR);
   const plain = strip(due);
-  expect(plain.split("\n")[0]).toBe("amem status: attention");
-  expect(plain).toMatch(/^ATTENTION +candidates: 3 pending \(1 never shown\), oldest expires in 2 days$/m);
-  expect(plain).toMatch(/^ATTENTION +layout: single home; pending rows 7, byShard \{"p":7\}$/m);
-  expect(plain).toContain("Warnings:\n  - migration refusal: dangling prune");
-  expect(plain).toContain("  - 1 candidate within 7 days of expiry");
+  expect(plain.split("\n")[0]).toBe(" amem Status: attention");
+  expect(plain).toMatch(/^  !  ATTENTION +candidates: 3 pending \(1 never shown\), oldest expires in 2 days$/m);
+  expect(plain).toMatch(/^  !  ATTENTION +layout: single home; pending rows 7, byShard \{"p":7\}$/m);
+  expect(plain).toContain("> Attention\n  !  migration refusal: dangling prune");
+  expect(plain).toContain("  -> 1 candidate within 7 days of expiry");
   expect(due).toMatch(ANSI);
   const broken = statusText(status({ candidates: { unavailable: "candidates.db exists but cannot be read" } }));
-  expect(broken.split("\n")[0]).toBe("amem status: unavailable");
-  expect(broken).toMatch(/^UNAVAILABLE +candidates: candidates.db exists but cannot be read$/m);
+  expect(broken.split("\n")[0]).toBe(" amem Status: unavailable");
+  expect(broken).toMatch(/^  [?]  UNAVAILABLE +candidates: candidates.db exists but cannot be read$/m);
 });
 
 function plan(mode: SetupPlan["mode"], count = 2): SetupPlan {
@@ -118,8 +118,8 @@ function plan(mode: SetupPlan["mode"], count = 2): SetupPlan {
 test("setup plan shows targets, files, MCP and hook changes, skipped clients and warnings once", () => {
   const text = setupPlanText(plan("preview"));
   expect(text.split("\n")[0]).toBe("amem setup preview: 2 targets, 1 with MCP changes, 1 skipped");
-  expect(text).toMatch(/^ATTENTION +claude: MCP add \(not installed\)$/m);
-  expect(text).toMatch(/^SKIPPED +codex: CLI not installed$/m);
+  expect(text).toMatch(/^  !  ATTENTION +claude: MCP add \(not installed\)$/m);
+  expect(text).toMatch(/^  -  SKIPPED +codex: CLI not installed$/m);
   expect(text).toContain("file     /h/.claude/config.json"); expect(text).toContain("receipt  /h/memory/setup/claude.json");
   expect(text).toContain("hook     PostToolUse: bun amem hook PostToolUse (timeout 5)");
   expect(text).toContain("Skipped clients: codex (not installed)");
@@ -169,7 +169,7 @@ test("status and doctor: TTY colors, plain stays plain, --json never carries ANS
     expect(await run([command], { NO_COLOR: "1" }, true)).not.toMatch(ANSI);
     expect(await run([command], { TERM: "dumb" }, true)).not.toMatch(ANSI);
     const plain = await run([command], {}, false);
-    expect(plain).not.toMatch(ANSI); expect(plain).toStartWith(`amem ${command}: `);
+    expect(plain).not.toMatch(ANSI); expect(plain).toStartWith(command === "status" ? " amem Status: " : " amem Doctor: ");
     const json = await run([command, "--json"], {}, true);
     expect(json).not.toMatch(ANSI); expect(() => JSON.parse(json)).not.toThrow();
   }
@@ -191,7 +191,7 @@ test("setup command lines quote paths with spaces and skipped clients take one l
   const shown = plan("preview"); shown.actions[0]!.registration = ["claude", "mcp", "add", "amem", "--", "/opt/my bun/bun"];
   const text = setupPlanText(shown);
   expect(text).toContain("command  'claude' 'mcp' 'add' 'amem' '--' '/opt/my bun/bun'");
-  expect(text).toMatch(/^SKIPPED +codex: CLI not installed$/m);
+  expect(text).toMatch(/^  -  SKIPPED +codex: CLI not installed$/m);
   expect(text).not.toContain("/h/.codex/config.json");
 });
 
@@ -200,15 +200,15 @@ test("undo of an uninstalled client with a receipt still shows its files and res
     lifecycle: "restore original MCP/hook files", available: false, hooks: [], mcpChange: "restore", commands: [], state: "applied" }] };
   const text = setupPlanText(undo);
   expect(text.split("\n")[0]).toBe("amem setup undo: 1 target, 1 with restores");
-  expect(text).toMatch(/^ATTENTION +codex: restore original MCP\/hook files \(CLI not installed\)/m);
+  expect(text).toMatch(/^  !  ATTENTION +codex: restore original MCP\/hook files \(CLI not installed\)/m);
   expect(text).toContain("file     /h/.codex/config.toml"); expect(text).toContain("receipt  /h/memory/setup/codex.json");
   expect(text).not.toContain("SKIPPED");
 });
 
 test("status flags a shard migration stopped after capture with the resume action", () => {
   const text = statusText(status({ active: false, phase: "captured", generation: "0123456789abcdef" }));
-  expect(text.split("\n")[0]).toBe("amem status: attention");
-  expect(text).toMatch(/^ATTENTION +layout: shard migration captured, not active; no pending old-layout appends$/m);
+  expect(text.split("\n")[0]).toBe(" amem Status: attention");
+  expect(text).toMatch(/^  !  ATTENTION +layout: shard migration captured, not active; no pending old-layout appends$/m);
   expect(text).toContain("amem migrate --shards --resume");
   expect(text).not.toContain("Next actions: none");
 });
@@ -221,9 +221,9 @@ test("pending old-layout rows point to the resume that carries them", () => {
 test("undo of a target without a receipt says there is nothing to restore", () => {
   const undo: SetupPlan = { targets: ["kimi"], mode: "undo", notes: [], actions: [{ target: "kimi", files: ["/h/.kimi/config.json"], receipt: "/h/memory/setup/kimi.json", registration: null,
     lifecycle: "restore original MCP/hook files", available: true, hooks: [], mcpChange: "unchanged", commands: [], state: "not installed" }] };
-  expect(setupPlanText(undo)).toMatch(/^OK +kimi: no setup receipt; nothing to restore/m);
+  expect(setupPlanText(undo)).toMatch(/^  ok OK +kimi: no setup receipt; nothing to restore/m);
   expect(setupPlanText(undo)).not.toContain("already set up");
-  expect(setupPlanText({ ...undo, mode: "apply" })).toMatch(/^OK +kimi: already set up; no change/m);
+  expect(setupPlanText({ ...undo, mode: "apply" })).toMatch(/^  ok OK +kimi: already set up; no change/m);
 });
 
 const emptyIngest: IngestReceipt = { records: { supported: true, found: 0, staged: 0, refused: {}, duplicatesSkipped: 0 }, files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
@@ -257,13 +257,13 @@ test("ingest receipts distinguish complete, remaining, spooled, errors and no so
 test("migration text covers preview, already active, deactivation, shard refusals and pending rows", () => {
   for (const s of [PLAIN, COLOR]) {
     const preview = strip(migrationText(migrationView(), s));
-    expect(preview).toStartWith("amem migrate: preview\n"); expect(preview).toMatch(/^OK +profile shared-v1/m);
+    expect(preview).toStartWith("amem migrate: preview\n"); expect(preview).toMatch(/^  ok OK +profile shared-v1/m);
     expect(preview).toContain("Next action: apply migration: amem migrate --apply");
     const active = strip(migrationText({ ...migrationView("apply", true), alreadyActive: true, counts: undefined }, s));
     expect(active).toContain("already active"); expect(active).toContain("Next action: none");
     expect(strip(migrationText({ ...migrationView("deactivate"), counts: undefined }, s))).toContain("Next action: none");
     const shards = shardView(), before = JSON.stringify(shards), routed = strip(shardMigrationText(shards, s));
-    expect(routed).toStartWith("amem migrate --shards: preview\n"); expect(routed).toMatch(/^OK +shard rows project 2/m); expect(JSON.stringify(shards)).toBe(before);
+    expect(routed).toStartWith("amem migrate --shards: preview\n"); expect(routed).toMatch(/^  ok OK +shard rows project 2/m); expect(JSON.stringify(shards)).toBe(before);
     expect(routed).toContain("Next action: apply shard migration: amem migrate --shards --apply");
     expect(strip(shardMigrationText({ ...shards, active: true, counts: { ...shards.counts, rows: 0 } }, s))).toContain("Next action: none");
     const refused = strip(shardMigrationText({ ...shards, refusals: ["witness not current"] }, s));
@@ -326,11 +326,11 @@ test("ingest JSON keeps exact compact bytes and agent capture entry remains allo
   const h = home(), saved = process.env.CODEX_HOME; process.env.CODEX_HOME = join(h.root, "native-codex"); mkdirSync(join(process.env.CODEX_HOME, "sessions"), { recursive: true });
   try {
     const nonTTY = await readableCommand(h, ["ingest", "codex"]);
-    expect(nonTTY).toBe(JSON.stringify(emptyIngest)); expect(nonTTY).not.toMatch(ANSI);
-    const plain = await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" });
+    expect(nonTTY).toStartWith("amem ingest codex: skipped\n"); expect(nonTTY).not.toMatch(ANSI);
+    const plain = await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "1" });
     expect(plain).toStartWith("amem ingest codex: skipped\n"); expect(plain).not.toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true)).toMatch(ANSI);
-    expect(await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" })).toBe(plain);
+    expect(await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" })).toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true, { TERM: "dumb" })).toBe(plain);
     const json = await readableCommand(h, ["ingest", "codex", "--json"], true, { CODEX_THREAD_ID: "agent" }, false);
     expect(json).toBe(JSON.stringify(emptyIngest)); expect(json).not.toMatch(ANSI);
@@ -338,15 +338,15 @@ test("ingest JSON keeps exact compact bytes and agent capture entry remains allo
   } finally { if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved; }
 }, 30_000);
 
-test("capacity apply CLI has readable two-step plans and the previous pretty JSON", async () => {
+test("capacity apply CLI has readable two-step plans and compact JSON", async () => {
   const h = home(), args = ["capacity", "apply", "--cap-mb", "64", "--retention-days", "7"];
   const human = await readableCommand(h, args);
   expect(human).toStartWith("amem capacity apply: preview\n"); expect(human).toContain("keeping all other arguments"); expect(human).not.toMatch(ANSI);
   expect(await readableCommand(h, args, true)).toMatch(ANSI);
   const json = await readableCommand(h, [...args, "--json"], true), preview = JSON.parse(readFileSync(join(h.memory, "capture-config.preview.json"), "utf8"));
-  expect(json).toBe(JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2));
+  expect(json).toBe(JSON.stringify({ preview, confirm: "re-run with --confirm to write" }));
   const written = await readableCommand(h, [...args, "--confirm", "--json"], true), result = JSON.parse(written);
-  expect(written).toBe(JSON.stringify({ preview: result.preview, written: { cap_mb: 64, retention_days: 7 } }, null, 2)); expect(written).not.toMatch(ANSI);
+  expect(written).toBe(JSON.stringify({ preview: result.preview, written: { cap_mb: 64, retention_days: 7 } })); expect(written).not.toMatch(ANSI);
 }, 30_000);
 
 test("generation/prune CLI keeps sealed JSON artifacts and a readable apply receipt", async () => {
@@ -355,13 +355,13 @@ test("generation/prune CLI keeps sealed JSON artifacts and a readable apply rece
   finally { store.close(); }
   expect(await readableCommand(h, ["migrate", "--dry-run"])).toStartWith("amem migrate: preview\n");
   const migrated = await readableCommand(h, ["migrate", "--generation", "a".repeat(32), "--apply", "--json"], true);
-  expect(migrated).toBe(JSON.stringify(JSON.parse(migrated), null, 2)); expect(migrated).not.toMatch(ANSI);
+  expect(migrated).toBe(JSON.stringify(JSON.parse(migrated))); expect(migrated).not.toMatch(ANSI);
   const selectedPreview = await readableCommand(h, ["migrate"]);
   expect(selectedPreview).toContain("profile generation"); expect(selectedPreview).toContain("Next action: none");
   const args = ["prune", "--dry-run", "--cutoff", new Date().toISOString()];
   expect(await readableCommand(h, args)).toStartWith("amem prune: preview\n");
   const plan = await readableCommand(h, [...args, "--json"], true);
-  expect(plan).toBe(JSON.stringify(JSON.parse(plan), null, 2));
+  expect(plan).toBe(JSON.stringify(JSON.parse(plan)));
   const file = join(h.root, "prune.json"); writeFileSync(file, plan, { mode: 0o600 });
   expect(await readableCommand(h, ["prune", "--apply", "--plan", file])).toStartWith("amem prune: complete\n");
 }, 30_000);
@@ -391,7 +391,7 @@ test("split capacity CLI previews in text and confirms the same JSON plan", asyn
   expect(human).toContain("--split command with --confirm, keeping all other arguments");
   const json = await readableCommand(h, [...args, "--json"], true);
   const saved = JSON.parse(readFileSync(join(h.memory, "capacity-split.preview.json"), "utf8"));
-  expect(json).toBe(JSON.stringify({ ...saved, confirm: "re-run with --confirm to write each shard's share" }, null, 2));
+  expect(json).toBe(JSON.stringify({ ...saved, confirm: "re-run with --confirm to write each shard's share" }));
   expect(json).not.toMatch(ANSI);
   const confirmed = await readableCommand(h, [...args, "--confirm"]);
   expect(confirmed).toStartWith("amem capacity apply --split: complete\n"); expect(confirmed).toContain("Next action: none");
@@ -415,4 +415,20 @@ test("all new human renderers use the shared color contract without mutating the
     expect(render(PLAIN)).toContain("Next action:");
   }
   expect(JSON.stringify([migration, shards, plan, capacity])).toBe(before);
+});
+
+test("explicit color options override environment without coloring JSON", async () => {
+  const h = home();
+  expect(await readableCommand(h, ["status", "--color=always"], false, { NO_COLOR: "1" })).toMatch(ANSI);
+  expect(await readableCommand(h, ["status", "--color=never"], true, { FORCE_COLOR: "1" })).not.toMatch(ANSI);
+  expect(await readableCommand(h, ["status"], false, { FORCE_COLOR: "1" })).toMatch(ANSI);
+  expect(await readableCommand(h, ["status"], true, { NO_COLOR: "1", FORCE_COLOR: "1" })).not.toMatch(ANSI);
+  expect(await readableCommand(h, ["status", "--json", "--color=always"], false)).not.toMatch(ANSI);
+  expect(await readableCommand(h, ["status"], false, { LANG: "C" })).toContain("  ok OK");
+  expect(await readableCommand(h, ["status"], false, { LANG: "en_US.UTF-8" })).toContain("  ✓  OK");
+  expect(await readableCommand(h, ["status", "--ascii"], false, { LANG: "en_US.UTF-8" })).toContain("  ok OK");
+  for (const args of [["status", "--color=never"], ["status", "--color=always"]]) {
+    const report = await readableCommand(h, args, false, { COLUMNS: "80", LANG: "C" });
+    for (const line of report.split("\n")) expect(Bun.stringWidth(strip(line), { ambiguousIsNarrow: true })).toBeLessThanOrEqual(80);
+  }
 });
