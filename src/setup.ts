@@ -604,7 +604,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
       const content = piExtension(c.bun, c.entry);
       if (!prior && changes[1]!.before.bytes !== null && changes[1]!.before.bytes !== image(content).bytes
         && !previous.some(runtime => changes[1]!.before.bytes === image(piExtension(runtime.bun, runtime.entry)).bytes)
-        && !strays.length) throw Error("Pi amem-session extension already exists and is not this setup's file");
+        && !strays.length) throw Error("Pi amem-session extension already exists and is not this setup's file; inspect it, move your changes to another extension file or remove it, then rerun setup");
       changes[1]!.after = image(content, changes[1]!.before.mode);
     }
     // Never publish an image that this installer's own read/undo boundary cannot reopen.

@@ -149,6 +149,6 @@ test("pi: a customized extension that only resembles amem's is never replaced", 
   put(f.surface, `// amem setup managed session-end ingest; no resident worker or instruction injection.\nimport { spawnSync } from 'node:child_process';\nexport default function (pi) {\n  pi.on('session_shutdown', (_event, ctx) => {\n    console.log('my own addition');\n    try { spawnSync(${JSON.stringify(process.execPath)}, ['--smol', ${JSON.stringify(goneEntry)}, 'ingest', 'pi'], { cwd: ctx.cwd, stdio: 'ignore', timeout: 2500 }); } catch {}\n  });\n}\n`);
   const before = bytes(f.surface);
   expect(f.plan().actions[0]!.removes).toBeUndefined();
-  expect(() => f.apply()).toThrow("Pi amem-session extension already exists and is not this setup's file");
+  expect(() => f.apply()).toThrow("Pi amem-session extension already exists and is not this setup's file; inspect it, move your changes to another extension file or remove it, then rerun setup");
   expect(bytes(f.surface)).toEqual(before);
 });
