@@ -464,8 +464,8 @@ const unchanged=JSON.stringify(inspectionFilesystemSnapshot(${JSON.stringify(act
 console.log(JSON.stringify({readable,journalRefused,refusal,effects,unchanged,cache:existsSync(${JSON.stringify(join(active.home,"shard-sync-placement"))})}));
 }finally{store.close();}`));
     expect(result).toMatchObject({readable:true,journalRefused:true,effects:0,unchanged:true,cache:false});
-    if(reader==="current")expect(result.refusal).toEqual({form:"result",ok:false,pushed:false,cause:"unavailable"});
-    else expect([{form:"throw",code:"corrupt"},{form:"result",ok:false,pushed:false}]).toContainEqual(result.refusal);
+    // Since 0.31.0 (#492, PR #498) the previous release answers the refusal as the sync's own failed result, as this build does.
+    expect(result.refusal).toEqual({form:"result",ok:false,pushed:false,cause:"unavailable"});
     expect(inspectionGit(active.remote,"for-each-ref","--format=%(refname)")).toBe("");expect(active.reachableIds()).toEqual([]);
   },30_000);
 
