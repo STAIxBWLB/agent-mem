@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, type NoteInput } from "../src/memory/store.ts";
 import { applyDecay, decayPreview, DecayApplyError } from "../src/memory/decay-review.ts";
 import type { Counter } from "../src/memory/candidates.ts";
+import { CandidateStore } from "../src/memory/candidates.ts";
+import { unusedInjectionTargets, UNUSED_INJECTION_REASON } from "../src/memory/decay-review.ts";
 import { realPath } from "../src/memory/platform.ts";
 const closes: Array<() => void> = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
@@ -17,6 +19,27 @@ function fixture(ttlMs?: number) {
   const bytes = () => readdirSync(base, { recursive: true, withFileTypes: true }).filter(row => row.isFile() && row.name.endsWith(".jsonl")).map(row => [join(row.parentPath, row.name), readFileSync(join(row.parentPath, row.name), "utf8")]).sort((a, b) => a[0]!.localeCompare(b[0]!));
   return { store, project, note, clock, bytes, advance: (days: number) => { now += days * 86400_000; } };
 }
+test("unused-injection proposals require known delivery and citation and explicit acceptance", () => {
+  const f = fixture(), id = f.note();
+  writeFileSync(join(f.store.profile.home, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "0.25.0", since: "fixture" }]));
+  const preference = f.note({ kind: "preference", text: "a preference" });
+  const row = (entryId: string, delivered: number | null, cited: number | null): Counter => ({ id: entryId, key: { entryId, project: f.project, deliveryId: "d" }, createdAt: new Date(f.clock()).toISOString(), rendered: 20, delivered, cited });
+  const snapshot = { counters: [row(id, null, 0), row(preference, 20, 0)], decided: [] };
+  const options = { now: f.clock(), days: 30, threshold: 20 };
+  expect(unusedInjectionTargets(f.store, f.project, snapshot, options)).toEqual([]);
+  snapshot.counters[0] = row(id, 20, null);
+  expect(unusedInjectionTargets(f.store, f.project, snapshot, options)).toEqual([]);
+  snapshot.counters[0] = row(id, 20, 0);
+  const [entry] = unusedInjectionTargets(f.store, f.project, snapshot, options);
+  expect(entry?.target.id).toBe(id);
+  const candidates = new CandidateStore({ memoryDir: f.store.profile.home, now: f.clock });
+  try {
+    const candidate = candidates.put({ project: f.project, kind: "decay", target: entry!.target, reason: UNUSED_INJECTION_REASON }, "public");
+    expect(f.store.get(id, f.project)?.tier).toBe("long");
+    candidates.accept(candidate, { project: f.project, actor: "person", verdict: "public", store: f.store, policy: () => true, unusedEligible: view => unusedInjectionTargets(f.store, f.project, snapshot, options).some(target => target.target.id === view.id) });
+    expect(f.store.get(id, f.project)?.tier).toBe("short");
+  } finally { candidates.close(); }
+});
 test("decay preview keeps exact age/project/goal selection and authors no rows", () => {
   const f = fixture(), old = f.note(), foreign = f.note({ project: "other", scope: "shared" });
   const goal = f.store.goal({ project: f.project, scope: "project", title: "protected goal", milestones: [], dependsOn: [], actor: "person" });

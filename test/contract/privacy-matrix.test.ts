@@ -76,6 +76,7 @@ const MARKED_READ_INVENTORY: readonly MarkedReadInventoryRow[] = [
   { path: "goal show", mode: "one goal", outcome: "refused", detail: "goal records outside MCP" },
   { path: "suggestions", mode: "pending suggestions", outcome: "refused", detail: "suggestion metadata outside MCP" },
   { path: "review list", mode: "candidate records", outcome: "refused", detail: "review candidates outside MCP" },
+  { path: "review targets", mode: "prioritized curated targets", outcome: "admin-screened", detail: "each view and the rendered receipt are screened by the current policy" },
   { path: "review walk", mode: "marked in any TTY mode", outcome: "refused", detail: "pending-candidate bodies have no MCP equivalent; never expose them as an admin receipt" },
   { path: "repo status", mode: "repository log status", outcome: "refused", detail: "repository scope crosses the current MCP surface" },
   { path: "project export", mode: "write bundle outside home", outcome: "refused", detail: "cross-project export is outside MCP" },

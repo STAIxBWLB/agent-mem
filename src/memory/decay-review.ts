@@ -3,7 +3,27 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { hashJSON } from "./generation.ts";
 import { candidateTargetRevision, type CandidateTarget, type Counter } from "./candidates.ts";
+export { UNUSED_INJECTION_REASON } from "./candidates.ts";
 import { MemoryStore, type View } from "./store.ts";
+import { reviewUse, type ReviewSnapshot } from "./review-targets.ts";
+
+/** Select proposals only; caller must explicitly queue and accept them. */
+export function unusedInjectionTargets(store: MemoryStore, project: string, snapshot: ReviewSnapshot, options: { now: number; days: number; threshold: number; aliases?: readonly string[]; screen?: (view: View) => boolean; id?: string; exclude?: (target: CandidateTarget) => boolean }): DecayEntry[] {
+  const goals = store.goals(project).filter(goal => ["open", "active", "blocked"].includes(goal.state));
+  const tasks = new Set(goals.flatMap(goal => goal.links.map(link => link.task))), goalNodes = new Set(goals.map(goal => `goal:${goal.id}`));
+  const since = options.now - options.days * 86400_000;
+  return store.withDeferredPromotions(() => {
+    const rows = options.id ? [store.get(options.id, project)].filter((view): view is View => view !== undefined) : store.list({ project, tier: "long", limit: DECAY_SCAN_LIMIT + 1 });
+    if (rows.length > DECAY_SCAN_LIMIT) throw Error("unused-injection scan exceeds 5000 notes; narrow the project before retrying");
+    return rows.flatMap(view => {
+    if (view.project !== project || view.kind === "preference" || view.supersededBy || view.task && tasks.has(view.task) || view.about.some(node => goalNodes.has(node) || node.startsWith("task:") && tasks.has(node.slice(5))) || options.screen && !options.screen(view)) return [];
+    const counts = reviewUse(snapshot, [project, ...options.aliases ?? []], view.id, since);
+    if (counts.delivered === null || counts.cited === null || counts.cited !== 0 || Math.max(counts.rendered ?? 0, counts.delivered) < options.threshold) return [];
+    const target = { id: view.id, revision: candidateTargetRevision(view) };
+    return options.exclude?.(target) ? [] : [{ target, view }];
+    }).slice(0, DECAY_PREVIEW_LIMIT);
+  });
+}
 
 export const DECAY_DEFAULT_DAYS = 90, DECAY_PREVIEW_LIMIT = 64, DECAY_SCAN_LIMIT = 5000;
 export interface DecayEntry { target: CandidateTarget; view: View }

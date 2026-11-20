@@ -1,5 +1,11 @@
 # Memory profile contracts
 
+## Review targets and unused injection
+
+`amem review targets [--project P] [--limit N]` lists stale hints first, then rendered notes without a recent review, then old decision and contract notes. Machine `amem.config.json` accepts `review.recheck_days` (default 30), `review.unused_rendered` (default 20), and `review.unused_days` (default 30, maximum 90). A retained accepted or rejected candidate whose creation time is in the recheck window counts as a review; creation is a proxy, not the decision time. An older candidate decided recently can therefore lead to one extra review. Candidate retention is 30 days; decisions older than retention are unknown and treated as absent when the configured window is longer.
+
+`amem decay --propose` queues candidates for notes rendered or delivered at least the configured threshold during the window with zero citations; unknown delivered or cited counts do not qualify. Preferences and notes linked to open goals are excluded. Queueing does not demote; `amem review accept` rechecks the target, telemetry, goals and policy before demotion.
+
 The default remains the shared `agent-hub.memory/v1` profile. The schema string, content hashes, segment format and reducers stay unchanged. `src/memory/ops-contract.ts` declares the current operation vocabulary and the reserved truth-changing operations. `MemoryStore.appendBody` and the separate `importNote` append path refuse unknown or truth-changing operations before appending bytes. This is a writer boundary, not validation of externally edited segments. Older/raw writers remain outside this version's mutation lock.
 
 Truth-changing operations require an explicitly authorized generation migration and their own payload/reducer contracts. No reader inventory, announcement or successful compatibility check permits them in shared-v1 segments. The generation profile enables exact-entry `prune` and local exact-entry `vault_link`; `correct`, `lift`, `consolidate` and `group` remain blocked. `OP_CONTRACTS`, `V1_OPS` and `assertSharedV1Op` retain their shared-v1 meaning. The separate `GENERATION_OP_CONTRACTS` declares the enabled generation contracts and names `validatePruneRow` and `validateVaultLinkRow` as their runtime validators. Metadata alone never grants writer authority.

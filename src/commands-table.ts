@@ -110,6 +110,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     take: { description: "Take a goal lease", options: { "--force": flag("Override the prior lease") }, args: [{ name: "id" }], mutates: true },
   } },
   review: { description: "Review machine-local non-evidentiary candidates", options: json, defaultCommand: "list", commands: {
+    targets: { description: "List notes to re-check in deterministic priority order", options: { ...json, "--project": text("Current project or alias"), "--limit": text("Maximum targets (1..500, default 50)") } },
     list: { description: "List review candidates", options: {
       "--status": { description: "Candidate status", value: ["pending", "accepting", "accepted", "rejected", "all"] },
       "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] }, "--limit": text("Maximum candidates (1..500)"),
@@ -121,7 +122,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } } },
   } },
   decay: { description: "Preview old live long-term notes unprotected by open goals; apply only with --apply --confirm", mutates: "apply", options: {
-    ...json, "--days": text("Age in whole days (default 90)"), "--apply": flag("Preview exact revisions; combine with --confirm to apply"), "--confirm": flag("Apply the exact revision preview with --apply"), "--forget": flag("Explicitly forget instead of demoting; confirmation names this action") }, args: [{ name: "id", variadic: true }] },
+    ...json, "--days": text("Age in whole days (default 90)"), "--propose": flag("Queue unused-injection candidates for review"), "--apply": flag("Preview exact revisions; combine with --confirm to apply"), "--confirm": flag("Apply the exact revision preview with --apply"), "--forget": flag("Explicitly forget instead of demoting; confirmation names this action") }, args: [{ name: "id", variadic: true }] },
   migrate: { description: "Preview a generation migration; apply only with --apply, or deactivate it explicitly", mutates: "apply", options: {
     ...json, "--apply": flag("Apply the previewed migration"), "--dry-run": flag("Read-only migration receipt (default; kept as an alias)"), "--generation": text("Explicit 32-hex generation ID"),
     "--resume": flag("Resume the recorded migration"), "--deactivate": flag("Select shared v1 without deleting a generation"),

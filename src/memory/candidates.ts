@@ -27,6 +27,7 @@ export class ConsolidationReviewLimit extends Error {
   }
 }
 export const COUNTER_RETENTION = { count: 10_000, ageMs: 90 * 86400_000 } as const;
+export const UNUSED_INJECTION_REASON = "Unused injection: frequent rendered or delivered notes have no reported citations in the review window.";
 export type CandidateVerdict = "public" | "private" | "pii" | "unknown";
 export interface CandidateTarget { id: string; revision: string }
 /** One capture `Record` row a candidate was derived from: the session hash, its row time and the hash of the stored line. */
@@ -73,6 +74,7 @@ export interface CandidateAcceptance {
    * prove the source, and accepting such a candidate refuses instead of writing memory from a row nobody verified.
    */
   recordSource?: (project: string, binding: RecordSourceBinding) => "present" | "changed" | "missing";
+  unusedEligible?: (view: View) => boolean;
 }
 export interface CandidateAcceptanceResult { candidateId: string; noteId: string; alreadyAccepted: boolean }
 
@@ -436,7 +438,7 @@ export class CandidateStore {
     if (candidate.status !== "pending") throw new Error("candidate is rejected or acceptance was interrupted; no automatic replay");
     const data = candidate.input;
     if (data.kind === "model-answer") throw Error("model answers cannot become curated memory; use amem note add to author an independent note");
-    if (data.kind === "decay") throw new Error("decay candidates are listing-only; no automatic mutation is available");
+    if (data.kind === "decay") return this.acceptDecay(candidate, data, context);
     if (data.kind === "promotion") return this.acceptPromotion(candidate, data, context);
     if (data.kind === "consolidation") return this.acceptConsolidation(candidate, data, context);
     // #368: a Record-derived candidate quotes capture rows. Absent proof, or a row that moved since the queue, refuses
@@ -489,6 +491,20 @@ export class CandidateStore {
     const current = context.store.get(target.id, context.project);
     if (!current || current.id !== target.id || candidateTargetRevision(current) !== target.revision) throw new Error("candidate target revision is stale");
     return context.store.withCurrentEntries([target.id], context.project, execute);
+  }
+  private acceptDecay(candidate: Candidate, data: Extract<CandidateInput, { kind: "decay" }>, context: CandidateAcceptance): CandidateAcceptanceResult {
+    if (data.reason !== UNUSED_INJECTION_REASON || !context.unusedEligible) throw Error("decay candidates are listing-only unless proposed for unused injection; use amem decay to review current eligibility");
+    return context.store.withCurrentEntries([data.target.id], context.project, () => {
+      const target = context.store.get(data.target.id, context.project);
+      if (!target || target.tier !== "long" || target.kind === "preference" || target.supersededBy || candidateTargetRevision(target) !== data.target.revision || !context.unusedEligible!(target)) throw Error("decay candidate is no longer eligible; run amem decay --propose again");
+      const note: NoteInput = { op: "note", project: target.project, scope: target.scope, tier: target.tier, kind: target.kind, peer: target.peer, source: target.source as NoteInput["source"], about: target.about, text: target.text };
+      if (!context.policy(structuredClone(candidate), structuredClone(target), note)) throw Error("decay candidate refused by current policy; review the policy before accepting");
+      const replay = this.beginAcceptance(candidate.id, context.project); if (replay) return { candidateId: candidate.id, noteId: replay, alreadyAccepted: true };
+      // ponytail: the sidecar receipt and append are not atomic; interrupted acceptance requires inspection, not automatic replay.
+      if (!context.store.demote(target.id, context.actor, context.project)) throw Error("decay demotion outcome unavailable; inspect the accepting candidate");
+      this.db.query("UPDATE candidates SET status = 'accepted', note_id = ? WHERE id = ? AND project IN (SELECT value FROM json_each(?))").run(target.id, candidate.id, this.scope(context.project));
+      return { candidateId: candidate.id, noteId: target.id, alreadyAccepted: false };
+    });
   }
   private acceptConsolidation(candidate: Candidate, data: Extract<CandidateInput, { kind: "consolidation" }>, context: CandidateAcceptance): CandidateAcceptanceResult {
     if (typeof context.policyVersion !== "function") throw Error("consolidation requires a policy revision guard");

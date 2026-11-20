@@ -1,5 +1,7 @@
 # agent-mem
 
+`amem review targets` prioritizes stale notes, frequently rendered notes without a recent review, and old decisions and contracts. `amem decay --propose` queues unused-injection demotion candidates for explicit review; it does not demote notes. Machine `amem.config.json` accepts `review.recheck_days` (default 30), `review.unused_rendered` (20), and `review.unused_days` (30, maximum 90). Older amem versions reject unknown configuration keys, so upgrade every host sharing the home before setting `review`. Recent review uses a decided candidate's creation time as a proxy: an older candidate decided recently can be listed again, and decisions older than the 30-day candidate retention are unknown and treated as absent.
+
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
 <!-- facts:version -->

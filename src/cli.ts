@@ -13,7 +13,7 @@ import { recordCaptureLookup, recordSourceCheck, recordWindow } from "./memory/r
 import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
 import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
-import { DecayApplyError } from "./memory/decay-review.ts";
+import { DecayApplyError, UNUSED_INJECTION_REASON } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
 import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./memory/sync-placement-journal-format.ts";
@@ -31,7 +31,7 @@ import { originLine, originRecheck } from "./memory/candidate-origin.ts";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
-import { CandidateStore, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
+import { CandidateStore, candidateInputId, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
 import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-overlaps.ts";
 import { openCuratedForRead } from "./memory/curated-read.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
@@ -312,10 +312,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const output = await runCliCommand(argv, context);
     if (marked && !argv.includes("--help") && !["--version", "version", "--help", "help", "completion"].includes(argv[0] ?? "")) {
       const parsed = parseCommand(argv);
-      // #326: the audit's output is a rendered summary or score, and the sheet's `root` and the project path it names can match a configured denial, so it is
-      // screened whole like a receipt - a marked session's policy screens every read's output, and these two are reads whose rows are copied rather than stored
-      // views the store already filtered.
-      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup" || parsed.path[0] === "eval" && parsed.path[1] === "audit") {
+      // Audit outputs and review targets are screened whole for marked reads.
+      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup" || parsed.path[0] === "eval" && parsed.path[1] === "audit" || parsed.path[0] === "review" && parsed.path[1] === "targets") {
         let receipt: unknown = output;
         // Import receipts contain fixed counters named `pii`; they are not row privacy flags.
         // Screen the complete rendered receipt, including every key and value, as text.
@@ -718,11 +716,24 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (sub === "decay") {
     const applying = options["--apply"] === true && options["--confirm"] === true;
     if (options["--confirm"] === true && options["--apply"] !== true) throw new Error("decay --confirm requires --apply");
-    const { decayPreview, applyDecay, readDecayCounters, DECAY_DEFAULT_DAYS, assertExactDecayForget } = await import("./memory/decay-review.ts");
+    const { decayPreview, applyDecay, readDecayCounters, DECAY_DEFAULT_DAYS, assertExactDecayForget, unusedInjectionTargets } = await import("./memory/decay-review.ts");
     const project = boundProject(), base = memoryHome(), aliases = aliasedKeys(base, project);
     const store = curatedStore(project, { deferPromotions: true, screen: note => policyOf().screenStandalone(note) ? "promote" : "keep" });
     try {
       const assertCurrent = commandBinding(store.profile.home, project);
+      if (options["--propose"] === true) {
+        if (options["--apply"] || options["--confirm"] || options["--forget"] || options["--days"] || parsed.positionals.length) throw Error("decay --propose cannot be combined with apply, age or ids; run it alone to queue candidates");
+        const { readReviewSnapshot, REVIEW_DEFAULTS } = await import("./memory/review-targets.ts");
+        const settings = loadAmemConfig(base, repoConfigRoot(policyCwd)).config.review;
+        const candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
+        try {
+          const targets = unusedInjectionTargets(store, project, readReviewSnapshot(base, [project, ...aliases]), { now: store.readNow(), days: settings?.unused_days ?? REVIEW_DEFAULTS.unused_days, threshold: settings?.unused_rendered ?? REVIEW_DEFAULTS.unused_rendered, aliases, screen: view => policyOf().screenStandalone(view), exclude: target => candidates.get(candidateInputId({ project, kind: "decay", target, reason: UNUSED_INJECTION_REASON }), project) !== undefined });
+          assertCurrent();
+          for (const entry of targets) candidates.put({ project, kind: "decay", target: entry.target, reason: UNUSED_INJECTION_REASON }, "public");
+          const receipt = { unusedInjection: targets.length };
+          return options["--json"] ? JSON.stringify(receipt) : `queued ${targets.length} unused-injection decay candidates; review with amem review list`;
+        } finally { candidates.close(); }
+      }
       const selected = parsed.positionals.length ? parsed.positionals : undefined;
       if (options["--days"] !== undefined && !/^[1-9][0-9]*$/.test(String(options["--days"]))) throw new Error("decay days must be a positive decimal integer");
       const days = options["--days"] === undefined ? DECAY_DEFAULT_DAYS : Number(options["--days"]);
@@ -767,6 +778,24 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     } finally { store.close(); }
   }
   if (review) {
+    if (sub === "targets") {
+      const { reviewTargets, readReviewSnapshot, reviewUse, noRecentReview, REVIEW_DEFAULTS } = await import("./memory/review-targets.ts");
+      const base = memoryHome(), bound = boundProject(), project = options["--project"] === undefined ? bound : resolveAlias(base, String(options["--project"]));
+      if (project !== bound) throw Error("review targets can screen only the current project's policy; run it from that project's checkout");
+      const rawLimit = options["--limit"] === undefined ? "50" : String(options["--limit"]);
+      if (!/^[1-9][0-9]*$/.test(rawLimit) || Number(rawLimit) > 500) throw Error("review targets --limit must be from 1 to 500; pass a limit in that range");
+      const aliases = aliasedKeys(base, project), snapshot = readReviewSnapshot(base, [project, ...aliases]);
+      const store = openCuratedForRead(base, project);
+      if (!store) return options["--json"] ? "[]" : "no review targets";
+      try {
+        const policy = policyOf(), root = boundRepoRoot(policyCwd, base, project), stale = createRecallStalenessProbe({ cwd: root ?? policyCwd, rootConfirmed: root !== undefined, policy: () => policy });
+        const settings = loadAmemConfig(base, repoConfigRoot(policyCwd)).config.review;
+        const rows = store.withDeferredPromotions(() => store.list({ project, limit: 5000 })).filter(row => actor !== "agent" || policy.screenStandalone(row));
+        const result = reviewTargets(rows, { now: store.readNow(), recheckDays: settings?.recheck_days ?? REVIEW_DEFAULTS.recheck_days, limit: Number(rawLimit), stale,
+          use: row => reviewUse(snapshot, [project, ...aliases], row.id), eligibleForRecheck: (row, cutoff) => noRecentReview(snapshot, row.id, cutoff) });
+        return options["--json"] ? JSON.stringify(result, null, 2) : result.length ? result.map(row => `${row.id}  ${row.reason}  ${row.ageDays}d  rendered ${row.counts.rendered ?? "unknown"} delivered ${row.counts.delivered ?? "unknown"} cited ${row.counts.cited ?? "unknown"}`).join("\n") : "no review targets";
+      } finally { store.close(); }
+    }
     const id = parsed.positionals[0];
     if (sub !== "list" && sub !== "walk" && (!id || !/^[a-f0-9]{64}$/.test(id))) throw new Error(`review ${sub} requires a full 64-character candidate id`);
     if (sub === "walk" && !(context.stdinTTY ?? process.stdin.isTTY)) throw Error("review walk requires a terminal on stdin; stdout must be a terminal too");
@@ -835,7 +864,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const candidate = candidates.get(id!, project);
         if (!candidate || !candidatePermitted(candidate)) throw new Error("candidate unavailable");
         if (candidate.status !== "pending") throw new Error(`candidate is ${candidate.status}, not pending`);
-        if (decision === "accept" && candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; use `amem demote` or `amem forget` after review");
+        if (decision === "accept" && candidate.input.kind === "decay" && candidate.input.reason !== UNUSED_INJECTION_REASON) throw new Error("decay candidates are listing-only unless proposed for unused injection; use amem decay to review current eligibility");
         if (decision === "accept" && candidate.input.kind === "model-answer") throw new Error("model answers cannot be accepted; author an independent note with amem note add");
         if (options["--confirm"] !== true) {
           const shown = terminalSafe(body(candidate)), overlaps = await overlapsFor(candidate);
@@ -930,7 +959,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const candidate = candidates.get(id!, project);
       if (!candidate) throw new Error("candidate unavailable");
       if (options["--kind"] !== undefined && candidate.input.kind !== options["--kind"]) throw new Error("candidate kind does not match --kind");
-      if (candidate.input.kind === "decay") throw new Error("decay candidates are listing-only; use `amem demote` or `amem forget` after review");
+      if (candidate.input.kind === "decay" && candidate.input.reason !== UNUSED_INJECTION_REASON) throw new Error("decay candidates are listing-only unless proposed for unused injection; use amem decay to review current eligibility");
       const store = curatedStore(project, { deferPromotions: true, screen: note => policyOf().screenStandalone(note) ? "promote" : "keep" });
       try {
         const assertCurrent = commandBinding(store.profile.home, project);
@@ -942,6 +971,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           // #368: a Record candidate quotes capture rows, so acceptance point-reads exactly those turns of its shard,
           // rather than the brief window a candidate can outlive.
           recordSource: recordSourceCheck(recordCaptureLookup(realPath(store.profile.home), policyCwd)),
+          unusedEligible: view => {
+            const { readReviewSnapshot, REVIEW_DEFAULTS } = require("./memory/review-targets.ts") as typeof import("./memory/review-targets.ts");
+            const { unusedInjectionTargets } = require("./memory/decay-review.ts") as typeof import("./memory/decay-review.ts");
+            const settings = loadAmemConfig(store.profile.home, repoConfigRoot(policyCwd)).config.review;
+            return unusedInjectionTargets(store, project, readReviewSnapshot(store.profile.home, [project, ...aliases]), { now: store.readNow(), days: settings?.unused_days ?? REVIEW_DEFAULTS.unused_days, threshold: settings?.unused_rendered ?? REVIEW_DEFAULTS.unused_rendered, aliases, id: view.id, screen: row => policyOf().screenStandalone(row) }).some(entry => entry.target.id === view.id);
+          },
         });
         return options["--json"] ? JSON.stringify(result, null, 2) : `accepted candidate ${id} as ${candidate.input.kind === "promotion" ? "promoted" : "ordinary"} note ${result.noteId}`;
       } finally { store.close(); }
