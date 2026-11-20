@@ -1,4 +1,4 @@
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -61,8 +61,8 @@ function parseImage(value: unknown): ConfigImage {
   return { bytes: value.bytes as string | null, mode: Number(value.mode) };
 }
 
-function parseReceipt(value: unknown, target: SetupTarget, expectedPaths: readonly string[]): Receipt {
-  if (!plain(value) || (value.version !== 1 && value.version !== 2) || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== expectedPaths.length && !(target === "jcode" && value.changes.length === 1)) throw Error("invalid receipt");
+function parseReceipt(value: unknown, target: SetupTarget, count: number): Receipt {
+  if (!plain(value) || (value.version !== 1 && value.version !== 2) || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== count && !(target === "jcode" && value.changes.length === 1)) throw Error("invalid receipt");
   const changes: ReceiptChange[] = [];
   for (let index = 0; index < value.changes.length; index++) {
     const item: unknown = value.changes[index];
@@ -128,6 +128,16 @@ function entry(target: SetupTarget, file: string, name: string, reason: string, 
   return { target, file, entry: name, reason, kind };
 }
 
+/** #520: the receipt's managed MCP launcher names a runtime root that was positively identified as absent. */
+function installMissing(target: SetupTarget, after: ConfigImage): boolean {
+  try {
+    const launch = mcpLauncher(mcpRecord(target, after), target);
+    if (!launch) return false;
+    try { return !lstatSync(realPath(dirname(dirname(launch.entry)))).isDirectory(); }
+    catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR"; }
+  } catch { return false; }
+}
+
 /** Read setup receipts and only the resolver-selected native config files. This function never writes. */
 export function readSetupDrift(options: { home: string; env?: SetupEnvironment; cwd?: string }): SetupDriftReport {
   const env = options.env ?? process.env;
@@ -153,7 +163,7 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
       const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(raw.bytes, "base64")));
       if (plain(value) && value.target === target && value.phase === "prepared") continue;
       anyReceipt = true; checked++;
-      receipt = parseReceipt(value, target, expectedPaths);
+      receipt = parseReceipt(value, target, expectedPaths.length);
     } catch {
       entries.push(entry(target, receiptPath, "receipt", "receipt is invalid or unavailable", "unavailable")); unavailable = true; continue;
     }
@@ -167,15 +177,7 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
     }
     // #520: an applied receipt whose recorded amem install root is gone blocks every placement sync, whatever its native files still say.
     // The entry names the target and receipt phase only: the recorded path, version and command text are never diagnostics.
-    try {
-      const launch = mcpLauncher(mcpRecord(target, receipt.changes[0]!.after), target);
-      if (launch) {
-        let missing = false;
-        try { missing = !lstatSync(realPath(dirname(dirname(launch.entry)))).isDirectory(); }
-        catch (error) { const code = (error as NodeJS.ErrnoException).code; missing = code === "ENOENT" || code === "ENOTDIR"; }
-        if (missing) entries.push({ ...entry(target, "setup receipt", "amem install", setupReceiptRemedy(target, true), "drift"), phase: "applied" });
-      }
-    } catch { /* A malformed managed MCP record is reported by the live-file check below. */ }
+    if (installMissing(target, receipt.changes[0]!.after)) entries.push({ ...entry(target, "setup receipt", "amem install", setupReceiptRemedy(target, true), "drift"), phase: "applied" });
     const liveImages: (ConfigImage | undefined)[] = [];
     for (const change of receipt.changes) {
       let current: ConfigImage;
@@ -233,6 +235,25 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
         } catch { entries.push(entry(target, configPath, "hooks.state", "Codex hook trust could not be checked safely", "unavailable")); unavailable = true; }
       }
     }
+  }
+  // #520: placement sync reads every `agy-<hash>.json` under setup/, so another workspace's receipt whose install is gone
+  // blocks it too. Only that receipt and its launcher root are read; the other workspace's native files are never opened.
+  const ownAgy = root === undefined ? undefined : `agy-${hash(root)}.json`;
+  let foreign: string[] = [];
+  try { foreign = readdirSync(join(options.home, "setup")).filter(name => /^agy-[a-f0-9]{64}\.json$/.test(name) && name !== ownAgy).sort().slice(0, 256); }
+  catch { /* no readable setup directory */ }
+  for (const name of foreign) {
+    let raw: ConfigImage;
+    try { raw = safeImage(join(options.home, "setup", name), JOURNAL_BYTES, budget); } catch { continue; }
+    if (raw.bytes === null) continue;
+    let receipt: Receipt;
+    try {
+      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(raw.bytes, "base64")));
+      if (plain(value) && value.phase === "prepared") continue;
+      receipt = parseReceipt(value, "agy", 1);
+    } catch { continue; }
+    anyReceipt = true; checked++;
+    if (installMissing("agy", receipt.changes[0]!.after)) entries.push({ ...entry("agy", "setup receipt of another workspace", "amem install", setupReceiptRemedy("agy", true), "drift"), phase: "applied" });
   }
   const status: SetupDriftStatus = entries.some(value => value.kind === "drift" || value.kind === "review-needed") ? "attention"
     : unavailable ? "unavailable" : anyReceipt ? "ok" : "skipped";

@@ -54,6 +54,22 @@ function setupReceipt(f:ReturnType<typeof hookFixture>,target:"qwen",entry:strin
     changes:[{key:`${target}:0`,path:resolveSetupPaths(f.env).paths[target][0]!,before:image({}),after:image(after)}]}),{mode:0o600});
 }
 function success(result:ReturnType<typeof run>){expect(result.exitCode,result.stderr.toString()).toBe(0);return JSON.parse(result.stdout.toString()) as Record<string,unknown>;}
+/**
+ * #520: the later refusal — the receipt's install root disappears between building the active writer proof and the
+ * attestation's own re-read — cannot be produced by mutating the home mid-run without a race, so the child removes the
+ * root on the receipt's fourth read: reads 1-3 build the context, read 4 is the attestation re-read, and the refusal it
+ * meets is the real ENOENT from production code, not a hand-built error.
+ */
+function runLaterAttestation(f:ReturnType<typeof hookFixture>,args:string[],install:string){
+  const env={...f.env};delete env.CLAUDECODE;env.AGENTHUB_PEER_ID="codex";
+  const setupPath=fileURLToPath(new URL("../src/setup.ts",import.meta.url));
+  const source=`const {mock}=await import("bun:test");const fs=await import("node:fs");
+const setup=await import(${JSON.stringify(setupPath)}),read=setup.readSetupWriterRoots;let reads=0;
+mock.module(${JSON.stringify(setupPath)},()=>({...setup,readSetupWriterRoots:home=>{if(++reads===4)fs.rmSync(${JSON.stringify(install)},{recursive:true,force:true});return read(home);}}));
+const {runCli}=await import(${JSON.stringify(cli)});
+try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}`;
+  return Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
+}
 
 test("shared parser/help/completions expose only migrate writer roots and forward-only activation",()=>{
   expect(parseCommand(["migrate","--sync-placement","--dry-run","--writer-root","/fixture/root"]).options["--sync-placement"]).toBe(true);
@@ -202,6 +218,25 @@ test("#520: a marked session names the setup target whose recorded install is go
   expect(row).toMatchObject({target:"qwen",phase:"applied"});
   expect(row.reason).toContain("amem setup qwen --apply"); expect(row.reason).toContain("amem setup qwen --undo");
   expect(doctor.stdout.toString()).not.toContain(install);
+},120_000);
+
+test("#520: a marked session keeps the target and remedy for a later attestation refusal too", async () => {
+  const f=await placementActivationFixture(); cleanup.push(f.close);
+  const install=unregisteredWriter(f); setupReceipt(f,"qwen",join(install,"bin","amem.js"));
+  // The receipt's root is part of the activation inventory, so the context builds and only its attestation re-read refuses.
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--writer-root",install,"--json"])).active).toBe(true);
+  expect(existsSync(install)).toBe(true);
+  const later=runLaterAttestation(f,["sync","--json"],install), text=later.stderr.toString();
+  expect(existsSync(install)).toBe(false);   // the refusal came after the context was built, not from it
+  // A later refusal is the sync's own failed result, so the marked session reads it from the receipt: fixed category, target and remedies, no path.
+  const receipt=JSON.parse(later.stdout.toString()) as {ok:boolean;error:string;failure:{cause:string}};
+  expect(later.exitCode).toBe(0); expect(receipt.ok).toBe(false); expect(receipt.failure.cause).toBe("refusal");
+  expect(receipt.error).toContain("(setup receipt category");
+  expect(receipt.error).toContain("the qwen setup receipt names an amem install that no longer exists");
+  expect(receipt.error).toContain("amem setup qwen --apply"); expect(receipt.error).toContain("amem setup qwen --undo");
+  expect(receipt.error).not.toContain(install); expect(later.stdout.toString()).not.toContain(install);
+  expect(text).not.toContain("Memory operation unavailable or refused"); expect(text).not.toContain(install);
+  expect(readSyncState(f.base).failures).toBe(1);
 },120_000);
 
 test("#449/#450: an unlisted cwd selects no realm; placement sync covers the activated inventory and leaves the cwd shard unopened", async () => {
