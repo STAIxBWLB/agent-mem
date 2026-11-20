@@ -95,6 +95,18 @@ test("doctor leaves a live index that is behind the logs untouched: a foreign ma
   expect(exact(r)).toEqual(before); expect(again.sections.duplicates.notes).toBe(2);   // the foreign note is read from the copy
 });
 
+test("ordinary doctor keeps its existing telemetry copy inputs", async () => {
+  const r = rig(); r.note("synthetic doctor copy");
+  const metrics = join(r.memory, "metrics.jsonl"), variants = join(r.memory, "record-variants.jsonl");
+  writeFileSync(metrics, ""); writeFileSync(variants, "");
+  const copy = fs.copyFileSync, seen: string[] = [];
+  const spy = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
+    seen.push(String(from)); return copy(from, to, flags);
+  });
+  try { await doctor(r); expect(seen).toContain(metrics); expect(seen).toContain(variants); }
+  finally { spy.mockRestore(); }
+});
+
 test("doctor never migrates or recreates a work list: a deleted lock file stays deleted, and a log with no index still counts in the brief", async () => {
   const r = rig(); r.note("n");
   const { WorkListStore } = await import("../src/memory/work-lists.ts");

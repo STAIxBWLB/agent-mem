@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Recap no longer retries a scratch copy just because the observation-only hook metrics or record-variant journals changed, and those journals no longer invalidate reusable console panels by themselves. Curated, work, policy, placement and capture database/WAL changes remain witnessed. Live warm Recap timing remains to be measured. Refs #359.
+
 ## 0.32.0
 
 ### Changed

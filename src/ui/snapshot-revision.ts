@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { pendingSummary } from "../memory/candidate-pending.ts";
 import { realPath } from "../memory/platform.ts";
 import { inboxPolicyVersion } from "./inbox.ts";
+import { isRecapTelemetry } from "../memory/recap-telemetry.ts";
 
 type Scope = "home" | "realm" | "projects" | "generations" | "machines" | "machine" | "work" | "logs" | "evidence";
 type Source = Scope | "file";
@@ -16,6 +17,7 @@ const databases = /^(?:capture|candidates)\.db(?:-wal|-journal)?$/;
 const derived = /^(?:index(?:-[a-z0-9]+)*|search(?:-[a-f0-9]+)?|catalog|mutation-lock|reader-admission)\.db(?:-(?:wal|shm|journal))?$/;
 
 function source(scope: Scope, name: string): Source | undefined {
+  if (scope === "home" && isRecapTelemetry(name)) return;
   if (name === ".git" || name === "node_modules" || name === "reader-leases" || name === "leases" || name === "readers" || name === "shard-readers"
     || name.endsWith("-shm") || derived.test(name) || /^brief-(?:capture|curated)\.json$/.test(name)) return;
   if (scope === "logs") return name.endsWith(".jsonl") ? "file" : undefined;

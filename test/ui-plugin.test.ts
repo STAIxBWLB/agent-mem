@@ -19,6 +19,7 @@ import * as pendingModule from "../src/memory/candidate-pending.ts";
 import { pendingSummary } from "../src/memory/candidate-pending.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
+import { appendMetrics } from "../src/memory/metrics.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { appendAlias, ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
 import * as shardModule from "../src/memory/shard.ts";
@@ -123,6 +124,59 @@ test("Recap reuses unchanged copies and recopies after a work-log append", async
     expect(changed.error).toBeUndefined(); expect(copies.mock.calls.length).toBeGreaterThan(initialCopies);
     expect(JSON.stringify(changed)).toContain("second task");
   } finally { copies.mockRestore(); }
+});
+
+test("Recap excludes observation journals while a capture write still invalidates its result", async () => {
+  const f = fixture(), metrics = join(f.base, "metrics.jsonl"), variants = join(f.base, "record-variants.jsonl");
+  const variantTemp = join(f.base, "record-variants.jsonl.tmp-12345678-1234-4abc-8abc-123456789abc");
+  appendMetrics(f.base, [{ at: new Date().toISOString(), kind: "hook", wallMs: 1 }]);
+  writeFileSync(variants, "synthetic observation\n");
+  const writer = new CaptureStore({ memoryDir: f.base, project: f.project, cwd: f.root });
+  const provider = await open(f.family), log = realPath(join(f.base, "log", readdirSync(join(f.base, "log")).find(name => name.endsWith(".jsonl"))!));
+  const copyOriginal = fs.copyFileSync, readOriginal = fs.readFileSync, openOriginal = fs.openSync, existsOriginal = fs.existsSync, copied: string[] = [], read: string[] = [];
+  let writes = 0;
+  const copies = spyOn(fs, "copyFileSync").mockImplementation((from, to, flags) => {
+    copied.push(String(from)); const value = copyOriginal(from, to, flags);
+    if (String(from) === log && writes < 3) {
+      writes++;
+      writer.append({ project: f.project, agent: "fixture", event: "PostToolUse", excerpt: "new capture during recap" });
+      appendMetrics(f.base, [{ at: new Date().toISOString(), kind: "hook", wallMs: 1 }]);
+      writeFileSync(variantTemp, "synthetic observation\n");
+    }
+    return value;
+  });
+  const reads = spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+    if (typeof file === "string" && (file.endsWith("/metrics.jsonl") || file.endsWith("/record-variants.jsonl"))) read.push(file);
+    return Reflect.apply(readOriginal, fs, [file, ...args]);
+  }) as typeof fs.readFileSync);
+  const opened = spyOn(fs, "openSync").mockImplementation(((file, flags, mode) => {
+    const readAccess = typeof flags === "number" ? (flags & 3) === 0 : typeof flags === "string" && flags.startsWith("r");
+    if (readAccess && typeof file === "string" && (file.endsWith("/metrics.jsonl") || file.endsWith("/record-variants.jsonl"))) read.push(file);
+    return openOriginal(file, flags, mode);
+  }) as typeof fs.openSync);
+  const exists = spyOn(fs, "existsSync").mockImplementation(file => {
+    if (typeof file === "string" && (file.endsWith("/metrics.jsonl") || file.endsWith("/record-variants.jsonl"))) read.push(file);
+    return existsOriginal(file);
+  });
+  try {
+    const first = await provider.snapshot({ after: 0, panel: "recap", project: f.project });
+    expect(first.error).toBeUndefined(); expect(writes).toBeGreaterThan(0);
+    expect(copied).toContain(log);
+    expect(copied).not.toContain(metrics); expect(copied).not.toContain(variants); expect(copied).not.toContain(variantTemp);
+    expect(read).toEqual([]);
+    expect(JSON.stringify(first)).toContain("new capture during recap");
+    fs.renameSync(variantTemp, variants);
+    const next = await provider.snapshot({ after: Number(first.cursor), panel: "recap", project: f.project });
+    expect(next.error).toBeUndefined();
+    if (next.changed !== false) expect(JSON.stringify(next)).toContain("new capture during recap");
+  } finally { exists.mockRestore(); opened.mockRestore(); reads.mockRestore(); copies.mockRestore(); writer.close(); }
+});
+
+test("Recap retains the 64 MiB authoritative copy limit", async () => {
+  const f = fixture(), file = join(f.base, "log", "oversized-fixture.bin");
+  const fd = fs.openSync(file, "w", 0o600);
+  try { fs.ftruncateSync(fd, 64 * 1024 * 1024 + 1); } finally { fs.closeSync(fd); }
+  await expect(withBriefSnapshot(f.base, f.project, async () => null)).rejects.toThrow("recap snapshot exceeds the 64 MiB copy limit");
 });
 
 test("Recap invalidates when a copied input omitted from the broad revision changes", async () => {
@@ -281,6 +335,17 @@ test("Capacity stays uncached when its external and rolling-time inputs have no 
     expect(second.error).toBeUndefined(); expect(second.changed).toBeUndefined(); expect(second.cursor).toBeUndefined();
     expect((second.report as { at: string }).at).not.toBe((first.report as { at: string }).at);
   } finally { clock.mockRestore(); }
+});
+
+test("Capacity reads fresh hook metrics even when reusable panel revisions ignore them", async () => {
+  const f = fixture(), provider = await open(f.family);
+  const first = await provider.snapshot({ after: 0, panel: "capacity", project: f.project });
+  expect(first.error).toBeUndefined();
+  appendMetrics(f.base, [{ at: new Date().toISOString(), kind: "hook", wallMs: 123 }]);
+  const next = await provider.snapshot({ after: 0, panel: "capacity", project: f.project });
+  expect(next.error).toBeUndefined();
+  expect((next.report as { metrics: { samples: number } }).metrics.samples)
+    .toBeGreaterThan((first.report as { metrics: { samples: number } }).metrics.samples);
 });
 
 test("a revision exception disables reuse while Recap, Timeline and Capacity still read fresh", async () => {
