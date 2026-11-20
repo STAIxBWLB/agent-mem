@@ -34,7 +34,7 @@ export interface SyncResult { ok: boolean; pushed: boolean; entries: number; war
   /** #462: set on every failed placement sync; absent on success and on the legacy transports. */
   failure?: { cause: SyncFailureCause; category?: PlacementRefusalCategory };
   /** #450: per-realm outcomes of a whole-inventory placement sync, in run order (`user` or the full realm key hash). */
-  placementRealms?: { realm: string; outcome: "committed" | "not-needed" | "unknown" | "failed" | "not-run" | "not-local" | "inactive"; publication?: number }[];
+  placementRealms?: { realm: string; outcome: "committed" | "not-needed" | "unknown" | "failed" | "not-run" | "not-local" | "inactive" | "held"; publication?: number }[];
   placementPublication?: { attemptHash?: string; outcome: "committed" | "unknown" | "not-needed"; withheld: number; exported: number;
     lastPolicyHash?: string; lastPolicyCheckUnixMs?: number; policyCheckSource?: "live" | "durable-intent"; policyCeiling: "last-positive-check-before-in-flight-push"; recovered?: boolean;
     /** #419: an expected size refusal before any publication attempt; numbers only. */

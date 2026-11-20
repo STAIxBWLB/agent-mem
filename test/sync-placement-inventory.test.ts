@@ -166,3 +166,48 @@ test("#492 an unknown epoch member is the run's own failure result, not a throw,
     expect(existsSync(join(f.home, "shard-sync-placement"))).toBe(false);
   } finally { rmSync(join(epochs, "future-placement-history-v99.json"), { force: true }); }
 }, 120_000);
+
+test("#508: local-key realms are held while their partner and later publications sync", async () => {
+  const local = "fixture@12345678", choices = Array.from({ length: 100 }, (_, i) => `github.com/example/repo-${i}`);
+  const below = choices.filter(key => digest(key) < digest(local)), above = choices.filter(key => digest(key) > digest(local));
+  expect(below.length).toBeGreaterThan(0); expect(above.length).toBeGreaterThan(1);
+  const projects = [local, below[0]!, above[0]!, above[1]!];
+  const f = await inventoryFixture(projects.length, projects), remote = bare(), user = f.entry();
+  const seeded = await syncPlacementMemory(user, f.opts(remote), undefined, undefined, undefined, [user]);
+  expect(seeded.ok).toBe(true);
+  const { remote: _remote, ...implicit } = f.opts(remote);
+  const localStore = openShardStore({ memoryDir: f.home, project: local, deferPromotions: true });
+  try {
+    const refusal = await syncPlacementMemory(localStore, implicit, undefined, undefined, undefined, [localStore]);
+    expect(refusal.ok).toBe(false);
+    expect(refusal.error).toContain(local);
+    expect(refusal.error).toContain("--remote");
+    expect(refusal.error).toContain("amem project archive");
+    expect(refusal.placementPublication?.refusal?.category).not.toBe("remote");
+  } finally { localStore.close(); }
+  const progress = new SyncProgress({ sink: syncProgressSidecar(f.home), intervalMs: 0 });
+  const result = await syncMemory(user, { ...implicit, progress });
+  expect(result.ok).toBe(true);
+  expect(result.placementRealms).toContainEqual({ realm: digest(local), outcome: "held" });
+  expect(readSyncStatus(f.home).operations[0]!.inventory!.outcomes).toContainEqual({ realm: digest(local).slice(0, 16), outcome: "held" });
+  expect(result.warning).toContain(local);
+  expect(result.placementRealms!.filter(row => row.realm !== digest(local) && row.realm !== "user").every(row => row.outcome === "committed")).toBe(true);
+  expect(refs(remote)).toEqual(expectedRefs(projects.filter(project => project !== local)));
+}, 240_000);
+
+test("#508: retained local-key publication is not reshaped without opt-in", async () => {
+  const local = "fixture@12345678", f = await inventoryFixture(1, [local]), remote = bare(), user = f.entry();
+  const target = openShardStore({ memoryDir: f.home, project: local, deferPromotions: true });
+  try {
+    const interrupted = await syncPlacementMemory(user, f.opts(remote), phase => { if (phase === "plan-fsynced") throw Error("fixture interruption"); }, undefined, undefined, [user, target]);
+    expect(interrupted.ok).toBe(false);
+    const before = f.plans(); expect(before).toHaveLength(1);
+    const { remote: _remote, ...implicit } = f.opts(remote);
+    const result = await syncMemory(user, implicit);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain(local);
+    expect(result.placementRealms).toContainEqual({ realm: digest(local), outcome: "held" });
+    expect(f.plans()).toEqual(before);
+    expect(refs(remote)).toEqual([]);
+  } finally { target.close(); }
+}, 240_000);

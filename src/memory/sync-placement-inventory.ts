@@ -18,7 +18,7 @@ import { readPlacementJournal } from "./sync-placement-journal-storage.ts";
 import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
 import { readPlacementPublication } from "./sync-placement-publication-storage.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
-import { readShardDescriptor, shardDir, userShardDir } from "./shard.ts";
+import { isLocalKey, localKeyOptInMessage, readShardDescriptor, shardDir, userShardDir } from "./shard.ts";
 import { projectState } from "./lifecycle.ts";
 import { SyncPlacementJournalError, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { SyncOptions, SyncResult } from "./sync.ts";
@@ -29,7 +29,7 @@ const PUBLICATION_TARGETS = 2;
 
 /** One activated realm with its local key (the project key is resolved from the local descriptor; user has none). */
 export type InventoryRealm = { scope: "user" } | { scope: "project"; key: string; keyHash: string };
-export type PlacementRealmOutcome = "committed" | "not-needed" | "unknown" | "failed" | "not-run" | "not-local" | "inactive";
+export type PlacementRealmOutcome = "committed" | "not-needed" | "unknown" | "failed" | "not-run" | "not-local" | "inactive" | "held";
 /** Per-realm receipt: identifiers only (the user realm or the full key hash), never a project name, row or path. */
 export interface PlacementRealmResult { realm: "user" | string; outcome: PlacementRealmOutcome; publication?: number }
 
@@ -110,8 +110,12 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
     // chunk) is answered as this run's own failure before any effect, never thrown past the caller's result shape.
     const refused = journalRefusal(error); if (refused) return refused; throw error;
   }
-  let order = local;
+  const held = opts.remote === undefined ? local.filter((realm): realm is Extract<InventoryRealm, { scope: "project" }> => realm.scope === "project" && isLocalKey(realm.key)) : [];
   const resumed = retained;
+  const retainedHeld = held.find(realm => resumed?.includes(label(realm)));
+  if (retainedHeld) return { ok: false, pushed: false, entries: 0, error: `Retained publication cannot resume. ${localKeyOptInMessage(retainedHeld.key)}`, failure: { cause: "unavailable" }, placementRealms: [{ realm: label(retainedHeld), outcome: "held" }] };
+  local = local.filter(realm => !held.includes(realm as Extract<InventoryRealm, { scope: "project" }>));
+  let order = local;
   if (resumed) {
     // The retained plan names its own realms; it runs first, exactly as recorded, then the rest in the usual order.
     const first = resumed.map(name => local.find(realm => label(realm) === name));
@@ -119,7 +123,7 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
     order = [...first as InventoryRealm[], ...local.filter(realm => !resumed.includes(label(realm)))];
   }
   const batches = resumed ? [order.slice(0, resumed.length), ...placementInventoryBatches(order.slice(resumed.length))] : placementInventoryBatches(order);
-  const realms: PlacementRealmResult[] = [...missing.map(realm => ({ realm, outcome: "not-local" as const })), ...inactive.map(realm => ({ realm, outcome: "inactive" as const }))];
+  const realms: PlacementRealmResult[] = [...missing.map(realm => ({ realm, outcome: "not-local" as const })), ...inactive.map(realm => ({ realm, outcome: "inactive" as const })), ...held.map(realm => ({ realm: label(realm), outcome: "held" as const }))];
   const progress = opts.progress, total = batches.filter(batch => batch.length).length;
   // One reporter for the whole run: each publication reports its phases, but only this driver reports the terminal state.
   const report = (completed: number) => progress?.inventory({ publications: total, completed, realms: order.length,
@@ -155,5 +159,5 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
   const base: SyncResult = last ? { ...last } : { ok: true, pushed: false, entries: 0 };
   return { ...base, ok: !stopped, pushed: totals.pushed, entries: totals.entries,
     ...(base.placementPublication ? { placementPublication: { ...base.placementPublication, exported: totals.exported, withheld: totals.withheld } } : {}),
-    ...(stopped?.error !== undefined ? { error: stopped.error } : {}), placementRealms: realms };
+    ...(stopped?.error !== undefined ? { error: stopped.error } : {}), ...(held.length ? { warning: held.map(realm => localKeyOptInMessage(realm.key)).join(" ") } : {}), placementRealms: realms };
 }

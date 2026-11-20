@@ -35,6 +35,10 @@ export function shardKeyHash(key: string): string {
 /** A key in the no-remote path-hash form (`chain@hash8`) is this machine's only; the catalog flags it. */
 export const isLocalKey = (key: string): boolean => /.+@[0-9a-f]{8}$/.test(key);
 
+export function localKeyOptInMessage(key: string): string {
+  return `Local project ${JSON.stringify(key)} requires an explicit amem sync --remote <url> opt-in, or amem project archive ${JSON.stringify(key)} to hold it.`;
+}
+
 export function shardDir(base: string, key: string): string {
   return join(base, "projects", shardKeyHash(key));
 }

@@ -26,7 +26,7 @@ export interface SyncProgressCounts { permitted: number; local: number; declined
 export interface SyncProgressInventory { publications: number; completed: number; realms: number;
   /** Per-realm outcomes in run order: `user` or the 16-hex shard key hash, never a name. At most 32; `truncated` marks more. */
   outcomes?: { realm: string; outcome: SyncRealmOutcome }[]; truncated?: boolean }
-export const SYNC_REALM_OUTCOMES = ["committed", "not-needed", "unknown", "failed", "not-run", "not-local", "inactive"] as const;
+export const SYNC_REALM_OUTCOMES = ["committed", "not-needed", "unknown", "failed", "not-run", "not-local", "inactive", "held"] as const;
 export type SyncRealmOutcome = typeof SYNC_REALM_OUTCOMES[number];
 const MAX_REALM_OUTCOMES = 32;
 const realmLabel = (value: unknown): value is string => typeof value === "string" && (value === "user" || /^[a-f0-9]{16}$/.test(value));
