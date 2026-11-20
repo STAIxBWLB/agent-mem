@@ -112,6 +112,76 @@
         "src/setup.ts",
         "scripts/smoke-installed-package.ts"
       ]
+    },
+    "docs/setup.md": {
+      "verifiedAgainst": "e82f51ff250b08598d4323ec56e82b22c84ef2d3",
+      "paths": [
+        "package.json",
+        ".bun-version",
+        "bin/",
+        "hooks/",
+        ".claude-plugin/",
+        "src/",
+        "scripts/",
+        ".github/workflows/",
+        "docs/bench/r2-baseline.json"
+      ]
+    },
+    "docs/cli.md": {
+      "verifiedAgainst": "e82f51ff250b08598d4323ec56e82b22c84ef2d3",
+      "paths": [
+        "package.json",
+        ".bun-version",
+        "bin/",
+        "hooks/",
+        ".claude-plugin/",
+        "src/",
+        "scripts/",
+        ".github/workflows/",
+        "docs/bench/r2-baseline.json"
+      ]
+    },
+    "docs/sync.md": {
+      "verifiedAgainst": "e82f51ff250b08598d4323ec56e82b22c84ef2d3",
+      "paths": [
+        "package.json",
+        ".bun-version",
+        "bin/",
+        "hooks/",
+        ".claude-plugin/",
+        "src/",
+        "scripts/",
+        ".github/workflows/",
+        "docs/bench/r2-baseline.json"
+      ]
+    },
+    "docs/development.md": {
+      "verifiedAgainst": "e82f51ff250b08598d4323ec56e82b22c84ef2d3",
+      "paths": [
+        "package.json",
+        ".bun-version",
+        "bin/",
+        "hooks/",
+        ".claude-plugin/",
+        "src/",
+        "scripts/",
+        ".github/workflows/",
+        "docs/bench/r2-baseline.json"
+      ]
+    },
+    "docs/recall.md": {
+      "verifiedAgainst": "e82f51ff250b08598d4323ec56e82b22c84ef2d3",
+      "paths": [
+        "package.json",
+        ".bun-version",
+        "bin/",
+        "hooks/",
+        ".claude-plugin/",
+        "src/",
+        "scripts/",
+        ".github/workflows/",
+        "docs/bench/r2-baseline.json"
+      ]
     }
   }
 }

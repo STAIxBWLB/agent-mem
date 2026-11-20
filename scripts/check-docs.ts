@@ -57,7 +57,7 @@ try {
     schemaVersion?: unknown; documents?: Record<string, { verifiedAgainst?: unknown; paths?: string[] }>;
   };
   if (manifest.schemaVersion !== 1 || !manifest.documents || typeof manifest.documents !== "object" || Array.isArray(manifest.documents)) throw new Error("invalid docs/verified.json schema");
-  const required = ["README.md", "docs/contracts.md", "docs/purge.md", "docs/curated-shard-migration.md", "docs/jcode.md", "docs/opencode.md", "docs/gemini-cli.md", "docs/qwen-code.md", "docs/antigravity.md"];
+  const required = ["README.md", "docs/contracts.md", "docs/purge.md", "docs/curated-shard-migration.md", "docs/jcode.md", "docs/opencode.md", "docs/gemini-cli.md", "docs/qwen-code.md", "docs/antigravity.md", "docs/setup.md", "docs/cli.md", "docs/sync.md", "docs/development.md", "docs/recall.md"];
   for (const path of required.sort()) if (!Object.hasOwn(manifest.documents, path)) errors.push(`missing manifest entry: ${path}`);
   const head = git("rev-parse", "--verify", "HEAD");
   if (head.status !== 0 || !/^[0-9a-f]{40}$/.test(head.stdout.trim())) throw new Error("HEAD does not resolve");

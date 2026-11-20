@@ -12,6 +12,7 @@
 - Keep TypeScript strict with `noUncheckedIndexedAccess` and explicit `.ts` relative import extensions.
 - Put library exports in `src/index.ts`, person-facing argument and identity checks in `src/cli.ts`, and portable memory implementation in `src/memory/`.
 - Add a `ponytail:` comment naming the ceiling and upgrade path for deliberate shortcuts.
+- Keep `README.md` to the overview, install, quick start, a short command overview and links; put command details, procedures, contracts and rationale in `docs/`.
 - Work on a branch; use conventional English commit messages. Do not publish without explicit authorization.
 
 ## Scope and sessions
