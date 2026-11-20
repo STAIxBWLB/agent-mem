@@ -151,7 +151,7 @@ test("doctor reports notes with identical text as duplicates, a note about a del
   expect(JSON.stringify(twice)).not.toContain("same words");
   r.note("this refers to a file", { about: ["path:gone/missing.ts"] }); r.note("this refers to a kept file", { about: ["path:keep.ts"] });
   const stale = await doctor(r);
-  expect(stale.sections.stale).toMatchObject({ status: "attention", missingReferences: 1 });
+  expect(stale.sections.stale).toMatchObject({ status: "attention", missingReferences: 1, hint: expect.stringContaining("own shell") });
   expect(stale.sections.index).toMatchObject({ status: "ok" });
 });
 
@@ -792,4 +792,20 @@ test("#509: doctor names an unsafe configured native root without exposing its p
       expect(output).not.toContain(native); expect(output).not.toContain(outside); expect(output).toContain("unsafe symlink");
     }
   } finally { if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome; if (savedCodex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedCodex; }
+});
+
+test("#511: stale example IDs tell a marked reader that the person inspects them", async () => {
+  const r = rig(), id = r.note("PRIVATE_SENTINEL stale entry", { about: ["path:gone/missing.ts"] });
+  writeFileSync(join(r.memory, "amem.config.json"), JSON.stringify({ piiPatterns: ["PRIVATE_SENTINEL"] }));
+  const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = r.memory;
+  const context = { cwd: r.cwd, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false };
+  try {
+    const report = JSON.parse(await runCli(["doctor", "--json"], context));
+    expect(report.sections.stale.examples).toContain(id.slice(0, 8));
+    expect(report.sections.stale.hint).toContain("own shell");
+    expect(report.sections.stale.hint).toContain("amem show <id>");
+    expect(await runCli(["doctor"], context)).toContain("own shell");
+    const shown = await runCli(["show", id, "--json"], context);
+    expect(shown).not.toContain("PRIVATE_SENTINEL");
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 });

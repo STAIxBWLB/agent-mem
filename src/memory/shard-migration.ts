@@ -1,3 +1,6 @@
+import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
+import { PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA } from "./sync-placement-format.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -469,7 +472,17 @@ const refusalSummary = (value: ShardMigrationCounts) => {
 const removalEvidence = (journal: ShardJournal | undefined) => journal?.deadLeasesRemoved?.length ? { deadLeasesRemoved: journal.deadLeasesRemoved } : {};
 
 export function shardMigrationStatus(memoryDir: string): { active: boolean; generation?: string; phase?: "captured" | "active"; pending: ShardMigrationCounts; deadLeasesRemoved?: DeadLeaseRemoval[]; refusals?: string[] } {
-  const dir = existsSync(memoryDir) ? realPath(memoryDir) : canonicalPath(memoryDir), journal = readJournal(dir, true);
+  const dir = existsSync(memoryDir) ? realPath(memoryDir) : canonicalPath(memoryDir);
+  const marker = readProfileJSON(join(dir, JOURNAL)) as { schema?: unknown } | undefined;
+  // Probe only the profile schema: a legacy malformed selector keeps its original status path.
+  let profileSchema: unknown;
+  try { profileSchema = (readProfileJSON(join(dir, "profile.json")) as { schema?: unknown } | undefined)?.schema; } catch { /* Legacy status never read this selector. */ }
+  let journal: ShardJournal | undefined;
+  if (marker?.schema === PLACEMENT_SHARDS_SCHEMA || profileSchema === PLACEMENT_PROFILE_SCHEMA) {
+    const markers = readPlacementRuntimeMarkers(dir), active = readActivePlacementBinding(dir, markers.profile, markers.shards);
+    if (!active) throw new Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
+    journal = { ...active.shards, schema: SHARDED_V2_SCHEMA };
+  } else journal = readJournal(dir, true);
   if (!journal) return { active: false, pending: emptyCounts() };
   const plan = route(capture(dir, journal.generation, journal), journal.sources, true);
   return { active: journal.phase === "active", phase: journal.phase, generation: journal.generation, pending: counts(plan), ...refusalSummary(plan), ...removalEvidence(journal) };
