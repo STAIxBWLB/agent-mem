@@ -119,3 +119,11 @@ test("#511: MCP's ambiguous refusal is not misclassified as failure or policy", 
     expect(output).toContain("same command from their own shell");
   } finally { spy.mockRestore(); }
 });
+
+
+test("#511: effectful audit sample and project export keep the existing failure treatment", async () => {
+  const { context } = agent();
+  for (const args of [["eval", "audit", "sample", "--seed", ""], ["project", "export", "fixture", "--to", "/nonexistent/fixture.json"]]) {
+    expect(await message(args, context)).toBe(UNAVAILABLE);
+  }
+});

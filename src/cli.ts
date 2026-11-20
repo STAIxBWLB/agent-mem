@@ -299,6 +299,13 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
   return safe;
 }
 
+/** Some commands write files despite having no mutates entry; preserve their existing effectful error/receipt treatment. */
+function markedReadOnly(parsed: ReturnType<typeof parseCommand>): boolean {
+  return parsed.definition.mutates === undefined && parsed.path[0] !== "setup"
+    && !(parsed.path[0] === "eval" && parsed.path[1] === "audit" && parsed.path[2] === "sample")
+    && !(parsed.path[0] === "project" && parsed.path[1] === "export");
+}
+
 class ReadPolicyWithheld extends Error {
   constructor() { super("Memory read withheld [cause: policy_withheld]; no partial result is shown. Ask the person to check the configured policy."); }
 }
@@ -326,11 +333,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         }
         try { assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd())); }
         catch (error) {
-          if (parsed.definition.mutates === undefined && parsed.path[0] !== "setup" && !(error instanceof ReadPolicyWithheld)) throw error;
+          if (markedReadOnly(parsed) && !(error instanceof ReadPolicyWithheld)) throw error;
           // A score leaves nothing behind, so an output the policy refuses refuses the read; a sample has written its private sheet already, and withholding
           // the receipt reports exactly that without naming the file.
           if (parsed.path[0] === "eval" && parsed.path[2] === "score") throw Error(AUDIT_SCORE_REFUSED);
-          if (parsed.definition.mutates === undefined && parsed.path[0] !== "setup") throw new ReadPolicyWithheld();
+          if (markedReadOnly(parsed)) throw new ReadPolicyWithheld();
           // The command returned successfully: withholding its receipt cannot undo its effects.
           const failed = receipt !== null && typeof receipt === "object" && "ok" in receipt && receipt.ok === false;
           return parsed.options["--json"] === true ? JSON.stringify({ ok: !failed, completed: !failed, receiptWithheld: true })
@@ -364,7 +371,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       if (usage) throw Object.assign(new Error(usage.message), (error as { exitCode?: number }).exitCode === undefined ? {} : { exitCode: (error as { exitCode?: number }).exitCode });
       const setupError = parsed && markedSetupApplyError(parsed, error);
       if (setupError) throw setupError;
-      if (parsed && parsed.definition.mutates === undefined && parsed.path[0] !== "setup") {
+      if (parsed && markedReadOnly(parsed)) {
         if (error instanceof ReadPolicyWithheld) throw error;
         if (error instanceof Error && error.message === "Memory operation unavailable or refused; no partial result is shown.") throw Error(error.message);
         throw new AgentReadFailure();
