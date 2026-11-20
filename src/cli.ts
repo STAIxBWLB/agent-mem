@@ -299,6 +299,9 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
   return safe;
 }
 
+/** #326: a marked score read the policy refuses names its cause class and where to check it, never the matched value. */
+export const AUDIT_SCORE_REFUSED = "Audit score refused [cause: policy_denied]: the configured policy denies a value in the rendered score (its seed, as-of or project digest); no partial result is shown. Next step: check the policy (amem.config.json in the memory home, narrowed by the repository's .amem/config) against those values, or sample again with a different --seed.";
+
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   // Native capture and the MCP server retain their existing surfaces and attribution.
   if (argv[0] === "hook" || argv[0] === "ingest" || argv.length === 1 && argv[0] === "mcp") return runCliCommand(argv, context);
@@ -309,7 +312,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     const output = await runCliCommand(argv, context);
     if (marked && !argv.includes("--help") && !["--version", "version", "--help", "help", "completion"].includes(argv[0] ?? "")) {
       const parsed = parseCommand(argv);
-      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup") {
+      // #326: the audit's output is a rendered summary or score, and the sheet's `root` and the project path it names can match a configured denial, so it is
+      // screened whole like a receipt - a marked session's policy screens every read's output, and these two are reads whose rows are copied rather than stored
+      // views the store already filtered.
+      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup" || parsed.path[0] === "eval" && parsed.path[1] === "audit") {
         let receipt: unknown = output;
         // Import receipts contain fixed counters named `pii`; they are not row privacy flags.
         // Screen the complete rendered receipt, including every key and value, as text.
@@ -318,6 +324,9 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         }
         try { assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd())); }
         catch {
+          // A score leaves nothing behind, so an output the policy refuses refuses the read; a sample has written its private sheet already, and withholding
+          // the receipt reports exactly that without naming the file.
+          if (parsed.path[0] === "eval" && parsed.path[2] === "score") throw Error(AUDIT_SCORE_REFUSED);
           // The command returned successfully: withholding its receipt cannot undo its effects.
           const failed = receipt !== null && typeof receipt === "object" && "ok" in receipt && receipt.ok === false;
           return parsed.options["--json"] === true ? JSON.stringify({ ok: !failed, completed: !failed, receiptWithheld: true })
@@ -339,6 +348,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (marked && error instanceof RemoteRealmRefusal) throw error;
     // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
     if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+    // #326: the audit score refusal is a fixed cause-class string that names no matched value.
+    if (marked && error instanceof Error && error.message === AUDIT_SCORE_REFUSED) throw new Error(AUDIT_SCORE_REFUSED);
     // #288 step 3: checkpoint refusals are fixed cause-and-next-step strings with numbers only (no path, row or project).
     if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
@@ -950,6 +961,40 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if (sub === "eval") {
     // F13: read-only. A set with entries is scored against a throwaway store seeded with them (touches no memory home); one without scores the bound project's real entries.
+    if (parsed.path[1] === "audit") {
+      // #326: a private local sheet plus a content-free score. Judging happens outside amem, so nothing on this path calls a model or the network.
+      const audit = await import("./memory/eval-audit.ts"), { MAX_AUDIT_NOTES } = await import("./memory/eval.ts");
+      if (parsed.path[2] === "sample") {
+        const n = options["--n"] === undefined ? 40 : Number(options["--n"]), seed = typeof options["--seed"] === "string" ? options["--seed"] : "";
+        if (!Number.isInteger(n) || n < 1 || n > MAX_AUDIT_NOTES) throw new Error(`--n must be an integer from 1 to ${MAX_AUDIT_NOTES}`);
+        if (!/^[A-Za-z0-9._-]{1,64}$/.test(seed)) throw new Error("--seed is required: 1 to 64 letters, digits, '.', '_' or '-', so the same seed and store draw the same sample");
+        // Anchors are checked against this cwd's work tree, so another project's key would silently check them against the wrong repository: the audit only
+        // samples the project bound here or one of its aliases, and names the checkout to run it from.
+        const cwd = context.cwd ?? process.cwd(), home = memoryHome(), bound = boundProject();
+        const project = options["--project"] === undefined ? bound : resolveAlias(home, String(options["--project"]));
+        if (project !== bound && !aliasedKeys(home, bound).includes(project)) throw new Error(`the audit checks note anchors against the git work tree of ${cwd}, so it samples only the project bound there (${bound}); run \`amem eval audit sample\` from that project's checkout to audit that project`);
+        const root = audit.auditRoot(cwd);
+        // The age buckets the draw stratifies by are measured at one explicit instant, recorded in the sheet: the same seed, store and as-of draw the same sample.
+        const asOf = options["--as-of"] === undefined ? Date.now() : audit.auditAsOf(String(options["--as-of"]), Date.now());
+        const store = curatedStore(project, { deferPromotions: true });
+        let sheet;
+        // The configured policy screens each frame member before the sheet's first write, for a person and an agent-marked session alike (like `project export`).
+        // It screens the complete view, not the fields the sheet copies: a denied pattern in `task`, `peer` or `source` is a denial of that note.
+        // It is read once: the screen runs per frame member, and the policy reads the config files when it is built.
+        const screen = policyOf();
+        try { sheet = audit.auditSample({ store, project, n, seed, root, asOf, screen: view => screen.screenStandalone(view) }); } finally { store.close(); }
+        const out = typeof options["--out"] === "string" ? options["--out"] : join(memoryHome(), "eval", `audit-${project.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80)}-${seed}.json`);
+        const file = audit.writeAuditSheet(out, sheet);
+        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, asOf: sheet.asOf, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated, withheld: sheet.withheld }, null, 2) : audit.auditSheetText(sheet, file);
+      }
+      if (parsed.path[2] === "score") {
+        const [sheet] = parsed.positionals;
+        if (!sheet) throw new Error("usage: amem eval audit score <sheet> (the file `amem eval audit sample` wrote)");
+        const score = audit.auditScore(audit.readAuditSheet(sheet));
+        return options["--json"] === true ? JSON.stringify(score, null, 2) : audit.auditScoreText(score);
+      }
+      throw new Error("usage: amem eval audit sample --seed <s> [--n <n>] [--project <key>] | amem eval audit score <sheet>");
+    }
     const ks = parseKs(typeof options["--k"] === "string" ? options["--k"] : undefined);
     const file = typeof options["--set"] === "string" ? options["--set"] : undefined;
     const builtin = file === undefined ? undefined : builtinSet(file);
