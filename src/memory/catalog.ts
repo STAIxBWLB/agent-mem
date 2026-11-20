@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { indexFileName } from "./index-file.ts";
-import { chmodSync, existsSync, lstatSync, readdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { memoryBase } from "./home.ts";
 import { effectiveAliases, readShardDescriptor, SHARDED_SCHEMA, SHARDED_V2_SCHEMA } from "./shard.ts";
@@ -108,8 +108,22 @@ export function walkShards(base: string): { hash: string; key: string; local: bo
  */
 export function catalogKeys(base: string): string[] {
   capturedSelection(base);
-  return walkShards(base).map(shard => shard.key).sort((a, b) => a.localeCompare(b));
+  // Unlike walkShards, a read failure other than absence throws: a picker cache must never keep an inventory a transient error cut short.
+  const projectsDir = join(base, "projects");
+  let hashes: string[];
+  try { hashes = readdirSync(projectsDir, { withFileTypes: true }).filter((e) => e.isDirectory() && /^[0-9a-f]{16}$/.test(e.name)).map((e) => e.name); }
+  catch (e) { if (absent(e)) return []; throw e; }
+  const keys: string[] = [];
+  for (const hash of hashes) {
+    const descriptor = readShardDescriptor(base, hash);
+    if (descriptor) { keys.push(descriptor.key); continue; }
+    try { readFileSync(join(projectsDir, hash, "project.json")); }
+    catch (e) { if (absent(e)) continue; throw e; } // readable but invalid stays skipped, as in walkShards
+  }
+  return keys.sort((a, b) => a.localeCompare(b));
 }
+
+const absent = (e: unknown): boolean => (e as NodeJS.ErrnoException)?.code === "ENOENT" || (e as NodeJS.ErrnoException)?.code === "ENOTDIR";
 
 /** What the shards and the alias log say, before anything is persisted. */
 export function scanCatalog(base: string): CatalogProject[] {

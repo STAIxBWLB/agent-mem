@@ -129,12 +129,13 @@ export const plugin = {
         return [...new Set(views.filter(view => !view.supersededBy).map(view => view.project))];
       } finally { store.close(); }
     }
+    let inventoryIncomplete = false;
     function projects(): string[] {
-      catalogExpiry = Infinity;
+      catalogExpiry = Infinity; inventoryIncomplete = false;
       if (!existsSync(base)) return [];
       const keys = new Set<string>(), waiting = new Set<string>();
-      try { for (const key of catalogKeys(base)) keys.add(key); } catch (e) { ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
-      try { for (const key of sharedStoreProjects()) keys.add(resolveAlias(base, key)); } catch (e) { ctx.log(`amem: shared store projects unavailable: ${errorText(e)}`); }
+      try { for (const key of catalogKeys(base)) keys.add(key); } catch (e) { inventoryIncomplete = true; ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
+      try { for (const key of sharedStoreProjects()) keys.add(resolveAlias(base, key)); } catch (e) { inventoryIncomplete = true; ctx.log(`amem: shared store projects unavailable: ${errorText(e)}`); }
       if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
     }
@@ -145,6 +146,8 @@ export const plugin = {
       const now = Date.now();
       if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) return { list: [...catalog.list], cacheable: true };
       const list = projects();
+      // #359: an inventory a read failure cut short serves this snapshot only; the next one reads again, write or not.
+      if (inventoryIncomplete) { catalog = undefined; return { list, cacheable: false }; }
       // A missing witness affects reuse only; ordinary fresh reads remain available.
       try {
         if (snapshotRevision(base) === revision) {

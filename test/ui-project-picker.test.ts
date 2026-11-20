@@ -70,3 +70,31 @@ test("every panel reuses the cached picker while the revision holds, and a revis
     expect(after).toContain("fixture/new-project");
   } finally { scans.mockRestore(); }
 });
+
+test("a transient projects/ read failure is not reused: the next panel recovers without a home write", async () => {
+  const { family } = fixture();
+  const projectsDir = join(realPath(family), "memory", "projects");
+  const real = fs.readdirSync;
+  let fail = true;
+  const scans = spyOn(fs, "readdirSync").mockImplementation(((path: fs.PathLike, options?: unknown) => {
+    if (fail && path === projectsDir) { throw Object.assign(Error("injected EIO"), { code: "EIO" }); }
+    return (real as (p: fs.PathLike, o?: unknown) => unknown)(path, options);
+  }) as typeof fs.readdirSync);
+  try {
+    const provider = await open(family);
+    const cut = (await provider.snapshot({ panel: "goals", after: 0 })).projects as string[];
+    fail = false; // the disk recovers; nothing under the home is written
+    expect(cut).not.toContain("fixture/capture-only"); // only the shard walk lists a capture-only project
+    const next = (await provider.snapshot({ panel: "capacity", after: 0 })).projects as string[];
+    expect(next).toContain("fixture/zeta"); expect(next).toContain("fixture/capture-only");
+  } finally { scans.mockRestore(); }
+});
+
+test("catalogKeys throws on a non-absence read failure and returns [] when projects/ is absent", () => {
+  const { base } = fixture();
+  const real = fs.readdirSync;
+  const scans = spyOn(fs, "readdirSync").mockImplementation((() => { throw Object.assign(Error("injected EIO"), { code: "EIO" }); }) as typeof fs.readdirSync);
+  try { expect(() => catalogKeys(base)).toThrow("injected EIO"); } finally { scans.mockRestore(); }
+  expect(real).toBe(fs.readdirSync);
+  expect(catalogKeys(join(base, "missing"))).toEqual([]);
+});
