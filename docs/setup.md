@@ -1,0 +1,162 @@
+# Setup, hooks and native intake
+
+Moved from the README (#514). The [README](../README.md) keeps the overview and links.
+
+## Setup / plugin
+
+For Orca-managed Claude and Codex homes, setup writes the personal source that Orca copies into new sessions. Claude hooks go to `$HOME/.claude/settings.json` and its MCP entry to `$HOME/.claude.json`, because Orca syncs the personal `mcpServers` over each profile's copy (#243); the profile copies stay untouched. Codex MCP and hooks go to `$HOME/.codex/config.toml` and `hooks.json`. Detection requires an exact managed-home shape under `ORCA_USER_DATA_PATH` (default `~/Library/Application Support/orca`); a similar directory elsewhere is unchanged. Preview lists each redirect and its reason. Start a new Orca session after applying. Existing matching managed-copy receipts migrate on apply; undo restores the files and bytes recorded for that installation. Codex hooks still require the person's native `/hooks` review; setup never grants trust or writes `trusted_hash`.
+
+`amem setup agy` registers MCP only in the current git repository's `.agents/mcp_config.json`, with an explicit absolute repository cwd and a private receipt per repository. `setup all` excludes agy; run it separately in each repository. Setup refuses tracked config files and JSONC, and warns when the file is not ignored. Restart Antigravity after applying, use one workspace per session, and ensure no global, plugin or running server is also named `amem`. No global configuration, ingest command or hook is installed. Undo removes `.agents` only when setup created it and it is still empty; pre-existing or nonempty directories remain. Older receipts still restore their configuration without directory cleanup. See the [Antigravity contract and capture limitation](antigravity.md).
+
+`amem setup jcode` registers MCP and capture hooks (below), using Jcode v0.99.1's global `JCODE_HOME/mcp.json` (default `~/.jcode/mcp.json`). An explicitly set `JCODE_HOME` must be absolute for amem setup: empty, relative and literal `~` values are refused. Unset uses the default, and absolute values retain their literal spelling without trimming. It owns only `servers.amem`, sets `shared: false` for a workspace-bound session, and preserves unrelated configuration bytes. Jcode has no native MCP add/remove command in this release, so setup edits the owned entry directly. Setup also adds `amem hook jcode` to the `post_tool` and `turn_end` lifecycle hooks in `JCODE_HOME/config.toml`, keeping an existing user command for those events (array form). Each captured row is scoped by that event's `JCODE_HOOK_CWD`; events with no cwd or outside a Git repository are skipped. On `turn_end`, 0.23.0 also captures bounded journal metadata as `Title` and `Compact` rows, independently of the ordinary assistant-text capture. It does not ingest persisted message bodies or snapshots. There is still no `amem ingest jcode`: saved messages lack per-message origin while the session cwd can change. Launch Jcode with `JCODE_DISABLE_CLAUDE_MCP=1` and without a same-name project override, which could otherwise replace the private binding. Use a new workspace-bound session when changing projects. See the [Jcode contract and capture limitation](jcode.md).
+
+`amem setup gemini` registers MCP only, at user scope in Gemini CLI 0.61.0's `~/.gemini/settings.json` (`GEMINI_CLI_HOME`, which must be absolute, moves it). It runs the native `gemini mcp add --scope user` (and `remove` for an earlier entry) in a private staging `HOME`, owns only `mcpServers.amem` and keeps every unrelated setting. Antigravity's `~/.gemini/config/mcp_config.json` is a different client's file and is never read or written; `amem setup agy` stays per repository. A workspace `.gemini/settings.json` that defines `mcpServers.amem` overrides the user entry. Setup refuses settings that are not strict JSON (Gemini allows comments, but setup's exact undo needs strict JSON) and runtime paths containing `$`, which Gemini expands. No hook, ingest command or `GEMINI.md` edit: see [the Gemini CLI contract](gemini-cli.md) for why transcripts are not ingested. `setup all` includes Gemini CLI when it is installed.
+
+`amem setup opencode` registers MCP only in OpenCode 1.18.35's global `opencode.json` (default `~/.config/opencode/opencode.json`; an absolute `XDG_CONFIG_HOME` moves it and is used literally, untrimmed, as OpenCode does; a relative value is refused). It owns only `mcp.amem`, a `type: "local"` server with no `cwd`, so OpenCode starts it in each session's project directory, and it preserves unrelated configuration bytes. OpenCode's `mcp add` is interactive and has no remove, so setup edits the owned entry directly. Setup refuses strict-JSON violations (JSONC), a sibling `opencode.jsonc` or `config.json` in the same directory (OpenCode merges them over this file) and `OPENCODE_CONFIG`, `OPENCODE_CONFIG_DIR` or `OPENCODE_CONFIG_CONTENT`. A project `opencode.json` that defines `mcp.amem` overrides the global entry. No plugin, hook or ingest command is installed: see [the OpenCode contract](opencode.md) for why its session database is not ingested. `setup all` includes OpenCode when its CLI is installed.
+
+`amem setup qwen` previews a user-scope MCP registration and a bounded SessionEnd ingest hook in the same `QWEN_HOME/settings.json` (default `~/.qwen/settings.json`). `--apply` and `--undo` follow the same confirmed, private-receipt contract as the other targets. Unrelated settings, servers and hooks are preserved. Qwen runs this hook on normal interactive exit; use `amem ingest qwen` when the session ends without that hook. Native-client operation is source-verified; the installed-package tests use stub registration CLIs.
+
+Preview the exact configuration files, native registration commands and private undo receipts before changing anything:
+
+```sh
+amem setup all
+amem setup claude --apply
+amem setup codex --apply
+amem setup kimi --apply
+amem setup pi --apply
+amem setup all --undo
+```
+
+`--apply` and `--undo` are explicit writes; the default remains a read-only plan. They do not require a TTY prompt, and an agent marker supplies identity rather than a tool refusal. Follow workspace authorization for changes to machine configuration. Native Claude, Codex, Pi, Qwen and Gemini MCP registration commands run in a private temporary HOME before the listed files are published; current Kimi Code uses its MCP JSON file. No AGENTS.md, CLAUDE.md or rule files are edited. Repeated apply is a no-op even after routine CLI metadata writes. Registrations use the absolute Bun path found on PATH, preserving its stable symlink rather than a versioned Cellar target; temporary package entries (such as bunx caches) are refused; reapply refreshes moved package/runtime locations automatically. Private receipts restore original bytes, permissions and absent-file state when files are untouched. When a CLI updates its own metadata, undo restores only the managed MCP entry and hook rows while preserving those updates; edits to those managed entries refuse rather than overwrite. Config files have an 8 MiB bound and generated TOML is validated before publication.
+
+Claude receives its seven bounded hooks; Jcode receives `post_tool` and `turn_end` capture hooks. Codex, Kimi and Qwen receive SessionEnd incremental ingest; Pi receives a session_shutdown extension. [Codex's native `/hooks` review](https://learn.chatgpt.com/docs/hooks) remains a pending person step: setup never grants or bypasses hook trust. Native registration requires a CLI exposing `mcp` administration (Claude, Codex, Pi, Qwen and Gemini are checked through their help before any registration command); current Kimi Code uses its documented config files. `setup all` skips and reports missing CLIs; an individual missing target refuses. Setup does not download tools or start a resident worker.
+
+To keep several releases side by side, install each under its own root (for example `<install>/releases/<version>/`) and register one with `amem setup <target> --root <abs path> --apply`. The root is resolved to its real path, so a `current` link registers the release it names, and replacing another install never changes what the registered hooks and MCP server load. `amem manifest --json` prints the version, the MCP tools (read-only ones as `{ name, readOnly: true }`) and the commands of an install. See [versions on one machine](contracts.md#versions-on-one-machine-199).
+
+For a Claude Code plugin installation instead of direct setup registration:
+
+```sh
+claude plugin marketplace add STAIxBWLB/agent-mem
+claude plugin install agent-mem@agent-mem
+```
+
+The plugin packages MCP plus the existing `hooks/hooks.json` once, using Claude's default hook discovery. It needs no `--plugin-dir`. Choose either plugin installation or direct Claude setup to avoid registering the same hooks twice. The direct setup dry run names an installed agent-mem plugin and warns about duplicate MCP and hook registrations.
+
+## Shell completion
+
+Generate completion for `zsh`, `bash`, or `fish` with `amem completion <shell>`. Generation prints a script to stdout; it does not install files or edit shell configuration. The following commands configure shell completion.
+
+### zsh
+
+```sh
+mkdir -p ~/.zfunc
+amem completion zsh > ~/.zfunc/_amem
+```
+
+Enable it by adding these lines to `~/.zshrc`, placing `fpath` before your existing `compinit` call (use only one `compinit` call):
+
+```sh
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit
+compinit
+```
+
+Start a new shell. After upgrading amem, regenerate `~/.zfunc/_amem` with the same command and start a new shell. To remove it, delete `~/.zfunc/_amem` and start a new shell; remove the added `fpath` entry only if no other completions use that directory.
+
+### bash
+
+```sh
+mkdir -p ~/.local/share/bash-completion/completions
+amem completion bash > ~/.local/share/bash-completion/completions/amem
+```
+
+Enable it by adding this line to `~/.bashrc`:
+
+```sh
+source ~/.local/share/bash-completion/completions/amem
+```
+
+Source that file or start a new interactive Bash. After upgrading amem, regenerate it and source it again. To remove it, delete that file, remove its source line from `~/.bashrc`, and run `complete -r amem` in the current shell (or start a new shell).
+
+### fish
+
+```sh
+mkdir -p ~/.config/fish/completions
+amem completion fish > ~/.config/fish/completions/amem.fish
+```
+
+Fish loads this directory automatically. Start a new fish shell. After upgrading amem, regenerate the file and start a new shell. To remove it, delete `~/.config/fish/completions/amem.fish` and start a new shell, or run `complete -c amem -e` to clear the current shell's definitions.
+
+### Manual Tab checks
+
+These interactive checks remain unrun until a person checks them in each installed shell; automated syntax/candidate tests do not establish terminal behavior.
+
+- Type `amem ` and press Tab: top-level commands appear.
+- Type `amem goal ` and press Tab: goal subcommands appear.
+- Type `amem list --tier ` and press Tab: `short` and `long` appear.
+- Type `amem goal state <id> ` and press Tab: goal states appear.
+- Type `amem import claude-mem --db ` and press Tab in a directory containing a filename with spaces: the path remains one argument.
+- Type `amem completion ` and press Tab: `zsh`, `bash`, and `fish` appear.
+
+## Claude Code hooks and SessionStart context
+
+The package includes a local Claude Code plugin: `.claude-plugin/plugin.json` and `hooks/hooks.json`. Install the package as above, then explicitly load its package root in a person's Claude Code session. A checkout can be loaded directly:
+
+```sh
+claude --plugin-dir /absolute/path/to/agent-mem
+```
+
+Use the directory containing `.claude-plugin/`, `hooks/` and `bin/`, not the global executable directory. These are setup instructions, not an installation performed by this repository. Package installation alone does not edit Claude settings, register the plugin or disable any existing memory integration. Check for duplicate capture hooks before opting in; the separate P5 cutover owns changes to existing integrations.
+
+The packaged executable uses `#!/usr/bin/env -S bun --smol`, and plugin commands explicitly pass `bun --smol`. An explicit `bun bin/amem.js hook ...` invocation without that flag replaces its bootstrap with `execve` before loading hook stores/policy. That fallback keeps the same PID, stdin, preload arguments and original wall deadline; it does not add a third Bun process. Process helpers load on demand, and machine identity lives in a small shared leaf, avoiding eager curated-store loading in the hook parent/work-list path.
+
+The plugin observes seven events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop` and `SessionEnd`. They are deterministic capture/context hooks, never permission hooks: they cannot deny a tool call, replace its arguments or turn a capture failure into a native failure. Input is capped at 64 KiB. Malformed, private, secret-looking, denied-path or unavailable input is skipped, and hook errors exit successfully without a native decision. All seven events may append screened rows to the current project's machine-local capture shard; only SessionStart adds context.
+
+The standalone brief prioritizes open work lists, recent curated notes and then recent capture; native SessionStart uses the narrower deadline-safe sources described below. The memory context starts with an untrusted-data warning and per-section `complete`, `partial` or `unavailable` coverage, followed by JSON records. Native SessionStart may prepend the package-owned [Record instruction](recall.md#assistant-records-313) before that warning. Capture records carry `evidence: false`. The default context bound is 1,200 UTF-8 bytes, counted conservatively as a token upper bound, including the header. Unicode-safe display limits flatten control/line separators; memory text cannot introduce a new header or instruction frame. Full rows and composed work views pass standalone and any stricter host policy before selection; displayed projections are screened again. Canonical project scope includes reviewed aliases for curated notes and work lists, excludes foreign shared-project rows, and is rechecked with profile/selector bindings after asynchronous policy calls.
+
+Before optional work starts, the parent screens the complete hook input and bounded normalized capture fields, then closes and atomically publishes a private immutable record in `<memory-home>/hook-spool/`. It retains normalized capture data and a physical-cwd/scope stamp, never the raw native envelope or native argument vector. Non-SessionStart events use the fixed Bun `--smol` worker in a short-lived owned process group. The worker resolves the current project, rechecks scope, drains by a stable receipt, and acknowledges only after append or capture-spool publication. The parent reaps it, and it has its own deadline. SessionStart computes context in the already-running CLI, avoiding a second Bun boot. Its native metadata commands have owned shell supervisors with the same remaining deadline, an armed self-watchdog and group cleanup even if the CLI dies. A timeout leaves accepted capture pending for later replay; unresolved pending records never enter context.
+
+Pending capture has an ordinary soft tier of 256 files/2 MiB and a separate private reserve of 32 files/256 KiB, admitted before optional recovery. Replay first processes the current cwd's records oldest-first across both tiers, then considers the newest eligible non-project rows from the same session. Both paths share the existing 32-file/256 KiB replay budget. A record replays only when its original non-null scope positively matches. Null scope is never adopted later, even with a physical cwd receipt: protecting project privacy takes priority over recovering an unattested event. Alias/profile/shard changes invalidate the derived identity cache and reader binding without changing pending scope. Positive fresh native project identity may still supply known-work context when pending scope is unknown; it does not authorize replay of those records.
+
+Known-format pending records whose cwd is positively absent can retire after one hour (capture and file modification time must both exceed the grace). Unattributed non-project records can also retire after that one-hour grace, or under a repository cwd's global-cap pressure, with the counted `nonproject_unattributed` reason. Other undrainable records keep the seven-day rule; a changed device/root/scope alone never proves cwd removal. Fair-share pressure can retire known-format records with a counted `scope_capacity` loss, while unknown/newer schemas retain seven-day protection. Each retirement persists numeric reason/count metrics before removing the body; a failed receipt leaves it pending. Retired bodies never become replay or context sources. A repository hook may attribute a non-project record only on an exact session match, with its original non-null scope still valid and current policy checks passing. Malformed publications still use bounded owned-file cleanup. See [the spool admission contract](contracts.md#pending-spool-identity-and-admission-217) for identity, N-1 and retention details.
+
+If both replayable tiers fill, or SessionStart's reserve alone fills, the current event can be dropped. The library receipt reports `dropped: true`, `dropReason: "spool_full"`, `dropCount: 1`, and the metric reports `captureDrops: 1` with `captureDropReason: "spool_full"`. Non-SessionStart native stdout remains empty. Native SessionStart emits only `hookSpecificOutput`, placing a bounded notice with reason counts from the last 200 metric samples after its untrusted-data header inside `additionalContext`, not in new top-level fields. These are rolling-window counts, not all-time totals. The header stays before all memory data even when the brief is otherwise unavailable; the optional trusted Record instruction precedes it. The combined instruction and context stay within the same byte bound. Finite-capacity and retirement losses are observable rather than reported as captured. Exact-once replay applies to positively bound retained records that can progress; unlimited lossless intake is not promised. Soft-cap overshoot, unpublished `.writing/` leftovers and power-loss durability retain the [contracts ceiling](contracts.md#p3-hook-and-native-intake-boundaries-13).
+
+SessionStart prioritizes known open work. Native curated notes use a private prebuilt section prepared after curated writes and sync, with current policy screening before work and whole-line output after work. Admission requires all writers to be upgraded and a `home` or `curated` floor of 0.24.0 or later, raised explicitly with `amem formats raise` after checking writers. Below it, native curated stays deferred. Migration and profile/selector changes invalidate caches without rebuilding; a later curated write or explicit trigger prepares them. A CLI `amem brief`, including an agent-marked call, or an explicit off-hook host call to the root export `prepareCuratedBriefCache(base, project)` prepares a quiet project cache. The export is a write: it opens one selected store, reads at most four 32-row pages and writes one file up to 32 KiB. MCP and library `sessionStartBrief()` never prepare it. A project with no curated writes and neither explicit trigger keeps native curated unavailable; mutations rebuild only their touched projects after invalidating old derived files. Missing and stale files report `curated cache missing` or `curated cache stale` without rebuilding. Profile/generation binding, selected-note expiry and a 24-hour age cap bound freshness; see [the curated cache contract](contracts.md#r2-hook-budget-150-mb-ceiling-per-runner-baseline-regression-300-ms-maximum-228). Native capture uses the prebuilt Record/Recap/Compact section; raw chronological history remains a library source. Neither native cache path creates schema/FTS or repairs indexes. Missing/locked/incompatible sources are explicitly unavailable. The standalone `sessionStartBrief()` retains all its original sources. Recovery failure cannot discard a computed brief. Work and reader-lease host ports use zero busy-wait and cooperative deadline checks; ordinary library callers retain their original defaults, including 3,000 ms waits. No watcher, resident worker, model/network call, embedding job or vault access is added. Host policy callbacks remain unsupported by `runHook`, while the standalone brief composes them normally.
+
+Native work uses a bounded snapshot prepared by a work write, selected for the current static repository and host policy. A missing, stale, oversized or incompatible snapshot reports the work section unavailable with `use amem_work_state_read`; the hook does not replay the work log. A standalone brief with a host screen callback instead uses the deadline-bound live read. See [the work snapshot contract](contracts.md#r2-hook-budget-150-mb-ceiling-per-runner-baseline-regression-300-ms-maximum-228).
+
+SessionStart admits directly to the reserve with at most 32 metadata entries and performs no active-tier scan or replay. Both tiers use per-cwd fair shares (64 active records, 8 reserve records), grouping together all HOME/scope variants of a cwd. Admission can retire native records from an overrepresented cwd, counting each loss as `scope_capacity` before removal. Accepted summaries survive same-cwd pressure; new summaries backpressure without advancing their transcript cursor. A fully verified foreign all-summary inventory can use counted `summary_capacity` eviction; otherwise it stays pending for replay. All admission maintenance shares a 32-file/256 KiB body-read bound; unknown/newer schemas retain their seven-day protection. Non-SessionStart hooks maintain and drain both tiers. This is bounded reserve admission, not O(1) accounting; an atomic slot-reservation protocol is the upgrade. Parent brief storage still contains synchronous filesystem/SQLite work between cooperative deadline checks; asynchronous/deadline-aware storage remains the upgrade, not a larger handler limit. The default R2 wall limit remains 150 ms p95, with the scoped hosted-runner exceptions in [the R2 contract](contracts.md#r2-hook-budget-150-mb-ceiling-per-runner-baseline-regression-300-ms-maximum-228), including 181 ms for hosted macOS M1 transcript hooks. The production handler budget remains 140 ms; the absolute 100 MB peak RSS was retired by #228 for a 150 MB per-invocation ceiling plus a per-runner baseline regression gate. Functional tests construct a programmatic host-only deadline; the actual executable exposes no environment or CLI deadline extension. Its exec-only boot-clock handoff can only shorten the deadline and is cleared before hook import. Dedicated budget scripts retain the actual CLI, original sample counts, cold attempt 0 and timeout/reaper assertions. The [P3 receipt](p3-hook-budget-2026-10-23.md) identifies prior-head evidence separately from current acceptance; the current rework has no newly claimed both-OS green CI result.
+
+A private admission cursor rotates bounded inspection across pending records (at most 32 files/256 KiB per pass), so a healthy first slice cannot indefinitely hide later removed/unknown entries from retirement checks. Git include/conditional identity dependencies are traversed within depth four and 16 files. Pending scope hashes relevant semantic project-identity values rather than unrelated full-config or HEAD churn; derived cache validity may additionally hash raw configuration/HEAD bytes. Unconditional and `gitdir` includes bind semantic identity values. Dynamic `onbranch`/`hasconfig` or unknown conditional trees without identity keys bind nothing; if they contain origin/rewrite/worktree identity keys, scope stays unknown. Native read-only identity may still supply known work, but it never adopts that pending capture; counted `scope_unknown` retirement needs seven days. This conservative ceiling is upgraded by evaluating `onbranch` against HEAD at drain time, not by adding a condition interpreter in this PR.
+
+Successful native project identities have a private, bounded derived cache (128 cwd entries, 4 KiB each). A hit must match the current project scope, stricter Git-validity metadata and executable revision; a miss still uses the shared hardened Git resolver. It stores no capture or context, and does not guess an identity when Git fails. The hook uses the selected developer Git directly only when PATH selects Apple's root-owned shim; custom PATH binaries remain selected. Cache ceilings and invalidation are in [the P3 contracts](contracts.md#hook-project-identity-cache).
+
+SessionStart honors Claude Code's `source` field. On `resume` the earlier brief is already in the restored transcript, so the hook emits only the untrusted-data header line, plus the capture-drop notice when there is one, and no brief body. `startup`, `clear` and `compact` (compaction removed the earlier brief), as well as a missing or unknown `source`, keep the full brief. `source` is read, never stored. Only the native SessionStart hook follows this rule; `sessionStartBrief()`, `amem brief`, MCP tools and other clients are unchanged.
+
+Hook capture rows carry two optional fields: `session`, a 16-hex hash of Claude Code's `session_id` (never the raw id or transcript path), and `subagent: true` when the event fired inside a subagent (its payload carries `agent_id`). The SessionStart brief and `sessionStartBrief()` leave subagent rows out; search, timeline and show keep them and show the `subagent` field. Older rows read unchanged. Field sources and the mixed-version rule are in [the contracts](contracts.md#session-and-subagent-attribution-in-capture-173).
+
+## Native transcript intake
+
+`amem ingest` reads existing Codex, Kimi, Pi or Qwen transcripts and writes screened deterministic capture rows, never curated notes. Run it from the project to bind intake to that working directory; the CLI exposes no project/home override or policy bypass:
+
+```sh
+amem ingest codex --since 2026-10-01T00:00:00Z --json
+amem ingest kimi --json
+amem ingest pi --since 2026-10-01T00:00:00Z --json
+amem ingest qwen --json
+```
+
+Discovery uses `CODEX_HOME` or `~/.codex` (`sessions/` and `archived_sessions/`), `KIMI_CODE_HOME` or `~/.kimi-code` (`sessions/**/wire.jsonl`), and `PI_CODING_AGENT_DIR` or `~/.pi/agent` (`sessions/`). It does not follow directory symlinks. A native record must carry a recognized schema/time and an observed absolute working-directory binding that resolves to this canonical project, including reviewed aliases. Unknown working directories, unsupported Kimi wire versions, missing timestamps and unavailable source roots are reported rather than guessed as an empty successful history. Foreign/private/secret rows are not imported. Full native envelopes and extracted capture inputs both pass current policy.
+
+Qwen Code uses `QWEN_RUNTIME_DIR`, then `QWEN_HOME`, then `~/.qwen`, with bounded discovery of `projects/*/chats/*.jsonl`. Each row proves its own project through `cwd`; a sanitized directory name is not an identity. The reader supports the verified 0.26.1 native envelope, an internal format rather than a public schema, and excludes thought/media content. For `advanced.runtimeOutputDir`, export the matching `QWEN_RUNTIME_DIR`; amem does not reproduce merged Qwen settings or read `.env`. See the [Qwen capture contract](qwen-code.md) for source pins, cursor upgrade behavior and limitations.
+
+A receipt with `reason: "unsupported_version"` and a `version` (for example `0.27.0` for Qwen or `1.6` for Kimi) means the client wrote a native format version this amem does not read (newer or older than the supported ones): nothing from those records is captured. Qwen records are read again once an amem update supports that version, because the Qwen cursor is keyed to its decoder contract. `schema_or_time` still means a malformed or untimed record (#136).
+
+Record extraction is capture-only and follows the existing cursor forward, without resetting it or backfilling old messages. With `recordsEnabled` true, Codex requires `phase: "final_answer"` and a main-session header; Pi requires `stopReason: "stop"` and an ordinary root session; Kimi 1.5 requires a matched main-agent `step.end` whose `finishReason` is the native `end_turn`. Tool output, reasoning and explicit child/subagent sources supply no Records. The canonical parser, privacy/anchor checks, staging receipts and replay are shared with Claude. Either the home or repository `records: false` disables extraction. The additive JSON `records` object reports `supported`, `found`, `staged`, `refused` by reason and `duplicatesSkipped`.
+
+Qwen 0.26.1 and Jcode's journal cannot prove finality. They stage no Records and report recognized candidates as refused with `finality-unavailable`; ordinary Qwen capture and Jcode Title/Compact intake are unchanged. Jcode exposes the same unsupported receipt in journal progress and numeric refusal metrics, without adding an `ingest jcode` command, and a Record refusal never appears as a `capture dropped` notice in the SessionStart brief. Kimi completion correlation is bounded to the newly read source window; a missing completion witness is a counted refusal, never a guessed final answer. Prompt instruction delivery to these clients remains the host's responsibility.
+
+Per-source cursor databases and a fair rotation cursor live in the capture shard's private `ingest/` directory. Filenames and source identities are hashes; cursor contents retain offsets, anchor hashes, scope/protocol/cutoff and ownership metadata, not raw transcript paths or text. Capture receipts make replay idempotent across a crash between append and cursor acknowledgement. Repeating the command resumes its bounded tour instead of repeatedly favoring the first files. Broadening `--since` rechecks earlier history while existing capture receipts prevent duplicates. The JSON receipt reports `files`, `read`, `imported`, `skipped`, `spooled`, `remaining`, `errors` and an optional bounded `reason`; unavailable coverage is not silently represented by zero imported rows.
+
+The default invocation reads at most 4 MiB and attempts 32 sources; trusted library options can raise those limits to 16 MiB and 128 sources. It examines at most 4,096 records, bounds a record at 256 KiB, and caps discovery at 4,096 directory entries/depth 8. Re-run a receipt with `remaining: true` after inspecting its reason; ingest creates no polling timer or watcher. Oversized records, including an unbroken record longer than the 4 MiB default window, are counted once and discarded through their next newline using a durable byte offset/skip flag. Later valid records remain reachable without retaining oversized content; an unfinished oversized tail stays pending until its newline arrives. The cursor assumes append-only native files and verifies file identity plus the last 1,024 acknowledged bytes. Historical rewrites outside that anchor are a declared ceiling, not full-file verification. These readers do not establish account-backed native interoperability, P5 cutover or P6 live-week acceptance.

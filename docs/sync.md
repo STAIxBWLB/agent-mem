@@ -1,0 +1,74 @@
+# Generation migration, prune and sync placement
+
+Moved from the README (#514). The [README](../README.md) keeps the overview and links.
+
+## Generation migration and exact-entry prune
+
+Available from 0.3.0. Do not migrate a memory home that agent-hub also uses until agent-hub pins a generation-capable agent-mem and binds the selected profile (rollout order in [#9](https://github.com/STAIxBWLB/agent-mem/issues/9)); until then a running hub keeps writing shared v1 and the person's notes would split.
+
+Shared v1 remains the default until the memory home is explicitly migrated. A generation uses `M/generations/G/` and a separate Git repository/ref (`refs/heads/amem/gen/G`); legacy directories and `main` are unchanged. The one-way readonly bridge consumes complete validated legacy prefixes without using the old index or writing legacy notes. Old programs continue using their legacy view, and generation-created notes never flow back to it.
+
+Complete malformed legacy lines (invalid JSON, unknown operations or mismatched content IDs) are skipped and counted, matching shared-v1 handling. Migration dry-run/apply and the person's human CLI status report the skipped count without printing the bodies; JSON list output stays an array of notes. Prefix rewrites, truncation and non-fast-forward legacy history still refuse access. A generation never promotes a bridged note or applies its own settlement to one; only generation-born notes receive generation settlements and promotions.
+
+Generation bridge reads use plain-file snapshots captured during explicit legacy sync and never invoke Git. Unchanged segments use metadata checkpoints without reading or hashing the data, including after reopen. A seeded live handle hashes only the appended suffix, while comparing existing prefix bytes on changed input; the first changed read by a cold handle and an explicit rebuild verify the full prefix. These are read-path bounds, not a latency or speedup promise.
+
+The following interfaces use an already initialized synthetic memory home. They do not authorize real-data migration. Bare `amem migrate` and `amem migrate --shards` preview; add `--apply` to write. `--dry-run` remains a preview alias, while `--resume` and `--deactivate` stay explicit operations. Use the same current project directory throughout planning and apply:
+
+```sh
+AMEM_HOME=/path/to/synthetic-memory amem migrate --dry-run
+AMEM_HOME=/path/to/synthetic-memory amem migrate --apply
+# If interrupted, resume the recorded generation rather than creating another:
+AMEM_HOME=/path/to/synthetic-memory amem migrate --resume
+umask 077
+AMEM_HOME=/path/to/synthetic-memory amem prune --cutoff 2026-10-01T00:00:00.000Z --dry-run --json > prune-plan.json
+AMEM_HOME=/path/to/synthetic-memory amem prune --apply --plan prune-plan.json
+# Explicitly select shared v1 again while preserving both histories:
+AMEM_HOME=/path/to/synthetic-memory amem migrate --deactivate
+```
+
+Migrate and prune retain reader-admission and split-marker fences; agent markers and missing stdin TTY no longer cause a general refusal. `--generation <32-hex-G>` selects an explicitly named generation during migration/join; it is never discovered and activated from a remote automatically. Invalid active metadata blocks access rather than silently opening shared v1. Existing handles remain bound to the profile they opened; a selector change does not restart or rebind a running hub.
+
+Explicit `--deactivate` is the recovery path even when the selected generation is corrupt or missing. It reads the selector under the home-wide profile lock, selects shared v1 and retains all generation and legacy data. Normal reads still refuse corrupt active state. Shared-v1 sync keeps its pre-generation Git invocation and caller environment; generation-only sync adds repository-environment isolation and a private child-process umask.
+
+A prune plan is a local JSON receipt containing exact target/basis hashes, selector/project/policy revisions, fixed row bytes, local counts and a seal. Apply commits that same receipt after revalidation; it is not an authorization token. Maximums are 256 KiB per plan, 16 rows, 256 targets, and 32 targets/16 KiB per row. Larger automatic selections report `hasMore`; another plan handles remaining targets. Keep redirected plans private and out of source control, model context and sync.
+
+Only explicit serialized expiry is eligible: a note's `expires`, or an exact demote/settle row's `by`. Implicit backstop or instance-TTL deadlines cannot prove prune eligibility. Exact pruned IDs stay unavailable after clock rollback, including get/alias/graph-start paths. A different later promotion or replacement ID remains an independent note; this is not text/family removal, log erasure or storage reclamation. Unpruned expiry still follows the clock.
+
+Standalone CLI prune is local-only, even over a synced target. No `--policy-free` escape enables public prune. A later policy-aware host integration must authenticate intent and attest the exact public payload and current policy revision; only verified public target/basis provenance may sync. Local masks, plans, journals, caches and sidecars never sync. Generation sync refuses public or unknown remote visibility. An interrupted apply resumes the same durable row IDs and exact partial tail; it never rewrites complete lines.
+
+Candidate/counter sidecars are not migrated. `amem review list` lists machine-local candidates under the selected generation. General memory, correction and fail candidates can be accepted into the selected project store after current standalone screening and applicable target checks.
+
+Real migration remains blocked until the separately reviewed generation-capable amem release and exact-pinned agent-hub integration are installed and their running stores prove the same home/G/selector revision. Synthetic cross-writes and exact prune readbacks precede separately confirmed real migration; known local handles must be quiesced/closed and reopened through the supported session-preserving lifecycle. Release, deployment, real migration, host evidence/capture receipts and real multi-machine sync are not established by these source changes. Deactivation omits generation-only notes/prunes from the v1 view and is not a lossless rollback.
+
+## Initial sync placement activation
+
+Available from 0.22.0. 0.21.0 contains the placement protocol but not this command.
+
+A person can activate per-row outbound placement on one whole memory home. It is forward-only, and never runs migrations, changes privacy policy or raises a reader floor automatically. Real-home activation still needs the person's separate authorization.
+
+1. Preview and complete the existing shard and public-prune migrations with `amem migrate --shards --dry-run` and `amem migrate --public-prune-view --dry-run` (then their separately reviewed `--apply` steps).
+2. On a 0.22 installation, have the person append the existing `home` floor at 0.22.0 in `formats.json`, preserving prior records, and close cooperating memory reader handles. This is recommended at activation and required before the first writer renewal, so old 0.21 readers refuse before opening a renewable home.
+3. Declare every local amem installation that writes this home, including an agent-hub library installation even if setup has no receipt for it. The CLI and current setup-receipt roots are mandatory members.
+
+```sh
+amem migrate --sync-placement --dry-run --writer-root '<cli-install-root>' --writer-root '<host-amem-install-root>' --json
+amem migrate --sync-placement --apply --writer-root '<cli-install-root>' --writer-root '<host-amem-install-root>' --json
+# Only for an interrupted initial activation, using its retained frozen inputs:
+amem migrate --sync-placement --resume --json
+# If inputs changed and BOTH marker files still have their original v2 bytes:
+amem migrate --sync-placement --abandon --json
+```
+
+Dry-run shows root versions/pins and safe policy counts, never row text or patterns, and writes nothing. Initial writer errors name the root category and cause, with upgrade/setup instructions. If a pre-marker interruption retained an intent and its inputs changed, person `--abandon` removes only its owned initial metadata so a fresh preview/apply can follow. It cannot remove a v3 marker, active fence or journal history. After apply, choose the private remote on the first v3 sync (`amem sync --remote <private-git-url>`); ordinary and cadence sync then read the immutable root locator and measure the installs afresh. Allowed originals can publish while declined originals remain in the local append-only history, with counts in the sync receipt. No writer roots need to be repeated on sync.
+
+A long first sync reports its phase, row counters and last progress on stderr when stderr is a terminal (`--progress json` for one versioned event per line, `--progress off` to silence it); stdout and `--json` output are unchanged. From another terminal, `amem sync --status` shows running, finished or interrupted operations without opening memory or taking a lock. One placement sync covers the effective home-wide inventory, publishing the user realm first and then project realms in key-hash order in batches of at most two realms. A failed publication stops the run; a retry resumes it first. Activation and each publication share a 64 MiB/20000-row source envelope; a refusal names its phase, bound kind, limit and observed size.
+
+To add a curated project realm that appears after activation, preview `amem migrate --sync-placement --admit <project> --dry-run`, then use `--apply` if the preview is acceptable. An interrupted admission uses `--resume`; `--abandon` previews removal of eligible unpublished intent bytes and `--abandon --confirm` applies that removal. It appends a same-epoch inventory extension and does not rewrite activation metadata. To discover remote-only curated project realms, run `amem migrate --sync-placement --list-remote`; it reports scope and key hash only, using the already configured private placement remote. Map a hash to a project key yourself, then preview `amem migrate --sync-placement --admit <project> --from-remote --dry-run` and use `--apply` to adopt it. Targeted rows withheld by a remote prune witness are omitted from the staged subset; the receipt counts omissions and names `amem sync` as the next step to import the remaining history and witnesses. The standard `--resume` and `--abandon` commands recognize a retained remote operation. See [the remote admission contract](contracts.md#remote-only-realm-discovery-and-admission-461).
+
+A placement sync that returns a refusal before publication names the failing check by a fixed category (`epoch`, `source-selection`, `policy`, `remote`, `writer-pin`, `size-bound`, `lock` or `other`) and the phase, with one next step; the result carries `placementPublication.refusal` and `amem sync --status` shows the category. No path, row or remote URL is printed (#426). Returned failures also expose a closed `failure.cause` in the library result (#462). Some early inventory failures instead throw before publication; for example an unknown epoch member raises `SyncPlacementJournalError` with code `corrupt` (#492).
+
+On an active home, the same dry-run/apply commands explicitly renew the writer inventory on its existing epoch (#282). Declare the complete new 0.22.0-or-later roots after updating host pins and managed setup receipts. Ordinary and cadence sync then locate the new inventory and measure it afresh; original activation data, holds and prior receipts are unchanged. Pending publication or source-recovery work must first be finished with the inventoried install, for example after `dot ai rollback amem` or restoring the host's previous pin.
+
+An interrupted renewal resumes only its exact intent. Before commit append starts, person `--abandon` can discard its unpublished metadata; after the first commit-log byte, only forward resume is supported. Unpublished intent staging requires explicit `--abandon`, then a fresh dry-run; it is never cleaned automatically. Compatible ordinary reads remain available while only renewal metadata is pending. After a crash, a retained `profile.lock` still blocks new reader admission until person `--resume` or, before commit append, `--abandon`. Never edit activation files, downgrade markers or start another epoch to discard a hold. See the [renewal contract](contracts.md#same-epoch-writer-inventory-renewal-282). Real-home renewal and release remain separately authorized person operations.
+
+When the live window reaches its revision or object bound, preview `amem migrate --sync-placement --checkpoint --writer-root '<install-root>' --json` with every writer root. The preview reports whether a new window leaves enough room for a renewal and the next observed plan; a plan too large for one window needs the separate multi-plan work. Confirming the saved preview requires a person-written `home` floor of 0.30.0 or later and every writer at or above the recorded floors. The checkpoint preserves the frozen history and carries one writer renewal into the new window. An interrupted checkpoint uses `--checkpoint --resume`, or `--checkpoint --abandon` before the first commit byte. See the [checkpoint contract](contracts.md#placement-history-checkpoint-windows-288).
