@@ -774,3 +774,22 @@ test("#510 AC2: another machine's fresh rows do not mask a stale local CLI", asy
   expect(report.sections.capture.clis.kimi).toMatchObject({ capture: "stale", machineCapture: "stale", machineRows: 1 });
   expect(report.sections.capture.status).toBe("attention");
 });
+
+test("#509: doctor names an unsafe configured native root without exposing its path or suggesting trust review", async () => {
+  const r = rig(), home = join(r.root, "home"), native = join(home, "private-profile"), outside = join(r.root, "outside");
+  mkdirSync(native, { recursive: true }); mkdirSync(outside);
+  symlinkSync(outside, join(native, "sessions"));
+  mkdirSync(join(r.memory, "setup"), { recursive: true });
+  writeFileSync(join(r.memory, "setup", "codex.json"), JSON.stringify({ target: "codex", phase: "applied" }));
+  const savedHome = process.env.HOME, savedCodex = process.env.CODEX_HOME;
+  process.env.HOME = home; process.env.CODEX_HOME = native;
+  try {
+    const report = await doctor(r), hint = report.sections.capture.clis.codex.hint;
+    expect(report.sections.capture.status).toBe("attention");
+    expect(hint).toContain("codex sessions root"); expect(hint).toContain("unsafe symlink"); expect(hint).toContain("amem ingest codex");
+    expect(hint).not.toContain("trust review");
+    for (const output of [JSON.stringify(report.sections.capture), await doctor(r, ["doctor"])]) {
+      expect(output).not.toContain(native); expect(output).not.toContain(outside); expect(output).toContain("unsafe symlink");
+    }
+  } finally { if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome; if (savedCodex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedCodex; }
+});
