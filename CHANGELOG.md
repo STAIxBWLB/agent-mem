@@ -2,16 +2,40 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.31.0
+
+### Added
+
+- `amem eval audit sample --project P --n N --seed S` draws a seeded sample of the project's curated notes, stratified by kind and age, with the status of each `path:` anchor (`present`, `changed since note time`, `missing`, `unavailable`, or `none` for a note without one), into a private `0600` sheet under `eval/` in the memory home. `amem eval audit score <sheet>` turns the filled labels (`correct`, `stale`, `wrong`, `unverifiable`) into content-free counts. No model or network call. Refs #326 (PR #500).
+- `amem review targets` lists notes to recheck first: stale ones, frequently rendered notes without a recent review, and old decisions and contracts. `amem decay --propose` queues unused-injection demotion candidates for explicit review and does not demote by itself. Machine `amem.config.json` accepts `review.recheck_days` (default 30), `review.unused_rendered` (20) and `review.unused_days` (30, at most 90). Refs #324 (PR #507).
+- A trusted host can pass a child's `processSignature` as `readerLeaseSignature` to `MemoryStore` or `openShardStore`, so a sandboxed process that cannot run `ps` still holds a reader lease. Refs #494 (PR #495).
 
 ### Changed
 
 - Answer a placement inventory that refuses the retained journal as the sync's own failure result instead of throwing it: an unknown epoch member in the activated epoch directory, or any other retained-journal refusal while resolving the retained plan, now returns `ok: false`, `pushed: false`, `failure.cause: unavailable` and `placementRealms: []` with the journal's fixed refusal text in `error`, before any publication, effect or cache, where 0.29.0 and 0.30.0 threw `SyncPlacementJournalError` code `corrupt` past the result shape a host branches on. A `checkpoint-pending` refusal keeps that cause. Refs #492.
 - Compatibility with N-1 (0.30.0), sync result and failure causes: `SYNC_FAILURE_CAUSES` is unchanged, so a host built for 0.30.0 has a next step for every cause it can still receive; journal records, publication plans, remote refs and the format floor are unchanged, and a 0.30.0 reader of the same home still refuses an unknown epoch member before any effect.
+- `amem doctor` judges each CLI's capture across this machine, not only the current project: the capture section adds `machineCapture`, `machineLastCaptureAt` and `machineRows` (counts and times only, this machine's capture directories only, `unknown` when another shard or the machine identity cannot be read). Attention follows the machine-wide state, and a CLI fresh elsewhere but absent here reads `not used in this project`. Refs #510 (PR #513).
+- Agent-marked CLI reads that fail now report a fixed, data-free class: an explicit policy denial, an ordinary failure, or an ambiguous MCP refusal. A missing and a withheld `show` result stay indistinguishable. Doctor tells the person to inspect stale examples with `amem show` from their own shell. Refs #511 (PR #519).
+- The README is now an overview with install, quick start, a command table and links. Command details, procedures and contracts moved unchanged to `docs/` (`setup.md`, `cli.md`, `sync.md`, `recall.md`, `development.md`). Refs #514 (PR #515).
+- A push to main skips the full CI suite when the merged PR head has the identical tree and a complete green check; the release gate refuses such a reused main run and names `gh workflow run check.yml --ref main`. Refs #503 (PR #506).
 
 ### Fixed
 
-- Reuse the console Recap snapshot only while its copied inputs remain unchanged, and retry a concurrent source change with a bounded, actionable refusal if writes do not settle. Refs #496.
+- Reuse the console Recap snapshot only while its copied inputs remain unchanged, and retry a concurrent source change with a bounded, actionable refusal if writes do not settle. Refs #496 (PR #499).
+- `amem setup codex|qwen|kimi|pi` recognizes any SessionEnd (Pi: `session_shutdown`) capture hook of the amem form, whatever its install root. The preview lists each entry it removes, apply leaves exactly one per target and keeps other hooks in order, undo restores the bytes, and a customized Pi extension is refused, never replaced. Doctor's setup section reports a capture hook whose launch path no longer exists by target, file and event. Refs #512 (PR #517).
+- Native transcript intake accepts a symlinked sessions root when it resolves inside the real HOME, is owned by the current user and is not group or world writable; doctor names an unsafe root by CLI and kind without its path. Refs #509 (PR #518).
+- Placement inventory sync holds a local-key project without an explicit remote opt-in with a named project and the opt-in or archive remedy, and continues the other publications instead of failing the whole run with a remote error. Refs #508 (PR #516).
+- `amem status` reads an activated placement-v3 home through its validated binding instead of refusing it as an invalid shard migration journal; an incomplete v3 home is still refused. Refs #511 (PR #519).
+
+### Compatibility with N-1 (0.30.0)
+
+- Storage and sync: curated logs, entry ids, capture schema, index version, transport row bytes, remote refs and the format floor are unchanged; no `formats.json` floor is raised.
+- Doctor JSON (`amem.doctor/v1`): the capture section only adds `machineCapture`, `machineLastCaptureAt`, `machineRows` and `note`; existing fields keep their meaning. A 0.30.0 reader of the same home is unaffected. Refs #510.
+- Agent-marked CLI read errors: the read-failure classes replace the earlier uniform message text; exit behavior and screening are unchanged, and person (unmarked) reads are unaffected. Refs #511.
+- Placement sync: a local-key realm without opt-in now gets the new realm outcome `held` (added to `PlacementRealmOutcome` and `SYNC_REALM_OUTCOMES`) with a remedy warning, and the run continues, where 0.30.0 stopped with a remote error. A host that switches exhaustively on realm outcomes must handle `held`. `SYNC_FAILURE_CAUSES` is unchanged. Refs #508.
+- Setup: a 0.30.0 receipt still restores. A 0.31.0 apply that retires an earlier-install capture hook writes a v2 receipt, which 0.30.0 already reads. Refs #512.
+- Review configuration: 0.30.0 rejects the new `review` key in `amem.config.json` as unknown, so upgrade every host sharing the home before setting it. Refs #324.
+- Reader leases: `readerLeaseSignature` is optional; without it the default identity path is unchanged. Refs #494.
 
 ## 0.30.0
 
