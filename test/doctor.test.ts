@@ -760,3 +760,17 @@ test("#510: an unreadable other-shard capture.db makes the machine-wide state un
   expect(report.sections.capture.clis.kimi).toMatchObject({ capture: "never", machineCapture: "unknown" });
   expect(report.sections.capture.clis.claude).toMatchObject({ capture: "fresh", machineCapture: "fresh" });
 });
+
+test("#510 AC2: another machine's fresh rows do not mask a stale local CLI", async () => {
+  const r = rig(); r.note("n");
+  mkdirSync(join(r.memory, "setup"), { recursive: true });
+  writeFileSync(join(r.memory, "setup", "kimi.json"), JSON.stringify({ target: "kimi", phase: "applied" }));
+  const other = otherProject(r, "c"), old = new Date(Date.now() - 30 * 86400_000).toISOString();
+  r.capture("kimi", old);
+  const { CaptureStore: Store } = await import("../src/memory/capture.ts");
+  const c = new Store({ memoryDir: r.memory, project: other.project, cwd: other.cwd, machine: "abcdefabcdefabcd", now: () => Date.now() });
+  try { c.append({ project: other.project, agent: "kimi", event: "PostToolUse", excerpt: "remote" }); } finally { c.close(); }
+  const report = await doctor(r);
+  expect(report.sections.capture.clis.kimi).toMatchObject({ capture: "stale", machineCapture: "stale", machineRows: 1 });
+  expect(report.sections.capture.status).toBe("attention");
+});

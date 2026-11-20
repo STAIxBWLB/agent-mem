@@ -317,6 +317,16 @@ function tallyInto(seen: Tally, row: { agent: string; n: number; last: string | 
   seen.set(row.agent, { rows: (prior?.rows ?? 0) + row.n, last: prior?.last && prior.last > (row.last ?? "") ? prior.last : row.last });
 }
 
+/** This home's machine id from machine.json, read-only (doctor never creates the identity); undefined when absent or invalid. */
+function localMachineId(home: string): string | undefined {
+  try {
+    const file = join(home, "machine.json"), stat = lstatSync(file);
+    if (!stat.isFile() || stat.size > 4096) return undefined;
+    const id = (JSON.parse(readFileSync(file, "utf8")) as { id?: unknown }).id;
+    return typeof id === "string" && /^[0-9a-f]{16}$/.test(id) ? id : undefined;
+  } catch { return undefined; }
+}
+
 function stateOf(last: string | null, now: number): CaptureState {
   return last === null ? "never" : now - Date.parse(last) > CAPTURE_STALE_MS ? "stale" : "fresh";
 }
@@ -340,20 +350,25 @@ function captureHint(cli: Cli, registered: boolean, state: CaptureState, trigger
 function captureSection(options: DoctorOptions): Section {
   const keys = [options.project, ...options.aliases];
   const here: Tally = new Map(), machine: Tally = new Map();
-  let readable = true, othersUnreadable = false;
+  // Machine-wide means this machine: only capture directories named by this home's machine.json count, read without creating it.
+  // Another machine's synced rows must not mask a stale local CLI (#510 AC2). No readable identity: the machine-wide state is unknown.
+  const local = localMachineId(options.home);
+  let readable = true, othersUnreadable = local === undefined;
   for (const shard of walkShards(options.home)) {
     const own = keys.includes(shard.key);
     for (const dir of shard.machineDirs) {
+      const thisMachine = local !== undefined && basename(dir) === local;
+      if (!own && !thisMachine) continue;
       const file = join(dir, "capture.db");
       if (!existsSync(file)) continue;
       let db: Database | undefined;
       try {
         db = new Database(file, { readonly: true }); db.run("PRAGMA busy_timeout = 1000");
         for (const row of db.query("SELECT agent, COUNT(*) AS n, MAX(at) AS last FROM rows GROUP BY agent").all() as { agent: string; n: number; last: string | null }[]) {
-          tallyInto(machine, row);
+          if (thisMachine) tallyInto(machine, row);
           if (own) tallyInto(here, row);
         }
-      } catch { if (own) readable = false; else othersUnreadable = true; } finally { db?.close(); }
+      } catch { if (own) readable = false; if (thisMachine) othersUnreadable = true; } finally { db?.close(); }
     }
   }
   const clis: Record<string, unknown> = {};
