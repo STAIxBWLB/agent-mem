@@ -47,15 +47,20 @@ function route(parsed: ParsedCommand, argv: readonly string[]): ReadCall | undef
   const flags = Object.keys(options).filter(key => key !== "--json" && key !== "--policy-free");
   const only = (...allowed: string[]) => flags.every(flag => allowed.includes(flag));
   const limit = positiveLimit(options["--limit"]);
-  if (options["--limit"] !== undefined && limit === undefined) throw new AgentUsageError("--limit takes a whole number from 1 to 100.");
+  const checkedLimit = () => {
+    if (options["--limit"] !== undefined && limit === undefined) throw new AgentUsageError("--limit takes a whole number from 1 to 100.");
+    return limit;
+  };
 
   if (path[0] === "search") {
     if (!only("--limit", "--since", "--explain")) return undefined;
+    checkedLimit();
     if (!positionals.join(" ").trim()) throw new AgentUsageError("agent-marked search needs a query.");
     return { tool: "amem_search", args: { query: positionals.join(" "), ...(limit === undefined ? {} : { limit }), ...(options["--since"] !== undefined ? { since: options["--since"] } : {}), ...(options["--explain"] === true ? { explain: true } : {}) } };
   }
   if (path[0] === "list") {
     if (!only("--limit", "--since")) return undefined;
+    checkedLimit();
     return { tool: "amem_timeline", args: { ...(limit === undefined ? {} : { limit }), ...(options["--since"] !== undefined ? { since: options["--since"] } : {}) } };
   }
   if (path[0] === "show") {
@@ -73,6 +78,7 @@ function route(parsed: ParsedCommand, argv: readonly string[]): ReadCall | undef
   }
   if (path[0] === "vault-candidates") {
     if (!only("--limit") || options["--all-projects"] !== undefined || options["--project"] !== undefined) return undefined;
+    checkedLimit();
     return { tool: "amem_vault_candidates", args: limit === undefined ? {} : { limit } };
   }
   if (path[0] === "capacity" && path.length === 1) {

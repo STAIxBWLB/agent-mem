@@ -30,6 +30,7 @@ test("review targets is deterministic and does not write the memory home", async
     expect(JSON.parse(first)).toMatchObject([{ id, reason: "rendered", counts: { rendered: 5, delivered: 1, cited: 0 } }]);
     expect(first).toBe(second);
     expect(JSON.parse(await runCli(["review", "targets", "--json"], { cwd: root, env: { CODEX_THREAD_ID: "fixture" } }))).toEqual([]);
+    expect(JSON.parse(await runCli(["review", "targets", "--limit", "101", "--json"], { cwd: root, env: { CODEX_THREAD_ID: "fixture" } }))).toEqual([]);
     expect(snapshot()).toEqual(before);
   } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; rmSync(root, { recursive: true, force: true }); }
 });
@@ -67,5 +68,28 @@ test("decay proposals are accepted through review and do not demote before accep
     restored.recordCounter({ entryId: id, project, deliveryId: "fixture" }, { cited: 0 }, "public"); restored.close();
     await cli(["review", "accept", candidate!.id, "--json"]);
     const after = new MemoryStore({ memoryDir: base, deferPromotions: true }); expect(after.get(id, project)?.tier).toBe("short"); after.close();
+  } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("decay proposals advance past existing candidates", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "amem-review-batch-"))), base = join(root, "memory"), project = memoryProjectKey(root), previous = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = base;
+  try {
+    const store = new MemoryStore({ memoryDir: base, deferPromotions: true });
+    const candidates = new CandidateStore({ memoryDir: base });
+    for (let i = 0; i < 65; i++) {
+      const id = store.note({ op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: `fixture ${i}`, about: [] });
+      candidates.recordCounter({ entryId: id, project, deliveryId: `fixture-${i}` }, { rendered: 20, delivered: 20, cited: 0 }, "public");
+    }
+    candidates.close(); store.close();
+    const cli = (args: string[]) => runCli(args, { cwd: root, env: {}, stdinTTY: false });
+    expect(JSON.parse(await cli(["decay", "--propose", "--json"]))).toEqual({ unusedInjection: 64 });
+    const first = new CandidateStore({ memoryDir: base });
+    for (const candidate of first.list({ project, kind: "decay" })) first.reject(candidate.id, { project, actor: "person", verdict: "public" });
+    first.close();
+    expect(JSON.parse(await cli(["decay", "--propose", "--json"]))).toEqual({ unusedInjection: 1 });
+    const next = new CandidateStore({ memoryDir: base });
+    expect(next.list({ project, kind: "decay" })).toHaveLength(1); next.close();
   } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; rmSync(root, { recursive: true, force: true }); }
 });

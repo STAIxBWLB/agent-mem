@@ -725,9 +725,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (options["--apply"] || options["--confirm"] || options["--forget"] || options["--days"] || parsed.positionals.length) throw Error("decay --propose cannot be combined with apply, age or ids; run it alone to queue candidates");
         const { readReviewSnapshot, REVIEW_DEFAULTS } = await import("./memory/review-targets.ts");
         const settings = loadAmemConfig(base, repoConfigRoot(policyCwd)).config.review;
-        const targets = unusedInjectionTargets(store, project, readReviewSnapshot(base, [project, ...aliases]), { now: store.readNow(), days: settings?.unused_days ?? REVIEW_DEFAULTS.unused_days, threshold: settings?.unused_rendered ?? REVIEW_DEFAULTS.unused_rendered, aliases, screen: view => policyOf().screenStandalone(view) });
         const candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
         try {
+          const { candidateInputId } = await import("./memory/candidates.ts");
+          const targets = unusedInjectionTargets(store, project, readReviewSnapshot(base, [project, ...aliases]), { now: store.readNow(), days: settings?.unused_days ?? REVIEW_DEFAULTS.unused_days, threshold: settings?.unused_rendered ?? REVIEW_DEFAULTS.unused_rendered, aliases, screen: view => policyOf().screenStandalone(view), exclude: target => candidates.get(candidateInputId({ project, kind: "decay", target, reason: UNUSED_INJECTION_REASON }), project) !== undefined });
           assertCurrent();
           for (const entry of targets) candidates.put({ project, kind: "decay", target: entry.target, reason: UNUSED_INJECTION_REASON }, "public");
           const receipt = { unusedInjection: targets.length };
