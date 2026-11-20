@@ -128,12 +128,13 @@ function entry(target: SetupTarget, file: string, name: string, reason: string, 
   return { target, file, entry: name, reason, kind };
 }
 
-/** #520: the receipt's managed MCP launcher names a runtime root that was positively identified as absent. */
+/** #520: the receipt's managed MCP launcher names a runtime root that was positively identified as absent (ENOENT/ENOTDIR).
+ * The identification is the writer inventory's own: a non-directory or unreadable root is not reported as a missing install. */
 function installMissing(target: SetupTarget, after: ConfigImage): boolean {
   try {
     const launch = mcpLauncher(mcpRecord(target, after), target);
     if (!launch) return false;
-    try { return !lstatSync(realPath(dirname(dirname(launch.entry)))).isDirectory(); }
+    try { realPath(dirname(dirname(launch.entry))); return false; }
     catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR"; }
   } catch { return false; }
 }

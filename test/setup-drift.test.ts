@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { SetupTarget } from "../src/setup.ts";
+import { readSetupWriterRoots, type SetupTarget } from "../src/setup.ts";
 import { readSetupDrift } from "../src/setup-drift.ts";
 import { resolveSetupPaths } from "../src/setup-paths.ts";
 import { HOOK_EVENTS } from "../src/hook-contract.ts";
@@ -223,6 +223,18 @@ test("prepared receipts do not claim that setup was applied", () => {
     { path: settingsPath!, before: null, after: "{}\n" },
   ], "prepared");
   expect(inspect(f)).toMatchObject({ status: "skipped", checked: 0, entries: [] });
+});
+
+test("#520: a runtime root that exists but is not a directory is not reported as a missing install", () => {
+  const f = fixture(), notADirectory = join(f.root, "not a directory");
+  writeFileSync(notADirectory, "fixture", { mode: 0o600 });
+  const [settingsPath] = f.paths.qwen, after = json({ mcpServers: { amem: { command: f.bun, args: ["--smol", join(notADirectory, "bin", "amem.js"), "mcp"] } } });
+  put(settingsPath!, after); receipt(f, "qwen", [{ path: settingsPath!, before: null, after }]);
+  // Doctor reports only what the writer inventory positively identified as absent, so an existing non-directory root stays silent here.
+  expect(inspect(f).entries.some(entry => entry.entry === "amem install")).toBe(false);
+  for (const [dir, mode] of [[f.memory, 0o700], [join(f.memory, "setup"), 0o700], [join(f.memory, "setup", "qwen.json"), 0o600]] as const) chmodSync(dir, mode);
+  let caught: unknown; try { readSetupWriterRoots(f.memory); } catch (error) { caught = error; }
+  expect(caught).toMatchObject({ category: "unavailable" }); expect((caught as { target?: string }).target).toBeUndefined();
 });
 
 test("#520: an applied receipt whose install root is gone is named by target and phase without a path, and apply makes it clean", async () => {
