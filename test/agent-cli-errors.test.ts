@@ -109,3 +109,13 @@ test("#511: a withheld read has a distinct policy cause", async () => {
     expect(result).toContain("policy_withheld"); expect(result).not.toContain("read_failed");
   } finally { spy.mockRestore(); }
 });
+
+test("#511: MCP's ambiguous refusal is not misclassified as failure or policy", async () => {
+  const { context } = agent();
+  const spy = spyOn(mcpMemory, "createMemoryMcp").mockImplementation(() => { throw new Error("memory operation unavailable"); });
+  try {
+    const output = await message(["search", "foo", "--json"], context);
+    expect(output).toContain("cause: unavailable"); expect(output).not.toContain("read_failed"); expect(output).not.toContain("policy_withheld");
+    expect(output).toContain("same command from their own shell");
+  } finally { spy.mockRestore(); }
+});

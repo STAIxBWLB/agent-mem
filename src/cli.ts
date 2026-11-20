@@ -3,7 +3,7 @@ import { assertFormatFloor } from "./memory/formats.ts";
 import { placementRuntimeRefusal, readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
 import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
 import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
-import { AgentReadFailure, AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
+import { AgentReadAmbiguous, AgentReadFailure, AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
@@ -348,7 +348,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const safe = new DecayApplyError(error.report, undefined); safe.jsonOutput = error.jsonOutput; throw safe;
     }
     // Data-free errors (decided before any store or file is opened) keep their own message.
-    if (marked && (error instanceof AgentUsageError || error instanceof AgentReadFailure)) throw error;
+    if (marked && (error instanceof AgentUsageError || error instanceof AgentReadFailure || error instanceof AgentReadAmbiguous)) throw error;
     if (marked && error instanceof RemoteRealmRefusal) throw error;
     // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
     if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);

@@ -220,3 +220,32 @@ test("#508: a held-realm warning preserves the publication warning", async () =>
   });
   expect(result.warning).toContain("publication warning"); expect(result.warning).toContain(local);
 }, 240_000);
+
+test("#511: status reads a verified active placement-v3 home for person and agent", async () => {
+  const f = await inventoryFixture(2, undefined, true), saved = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = f.home;
+  try {
+    const shards = JSON.parse(readFileSync(join(f.home, "shards.json"), "utf8"));
+    const machine = JSON.parse(readFileSync(join(f.home, "machine.json"), "utf8"));
+    writeFileSync(join(f.home, "migration.json"), JSON.stringify({ schema: "agent-mem.migration/v1", generation: shards.generation, phase: "active", selectorRevision: "absent", sources: [], machine }));
+    const { runCli } = await import("../src/cli.ts");
+    for (const env of [{}, { CODEX_THREAD_ID: "fixture" }]) {
+      const context = { cwd: f.root, env };
+      expect(await runCli(["status"], context)).toContain("shards active");
+      expect(JSON.parse(await runCli(["status", "--json"], context))).toMatchObject({ active: true, phase: "active" });
+    }
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}, 240_000);
+
+test("#511: incomplete v3 markers refuse status without a legacy fallback", async () => {
+  const f = await inventoryFixture(1, undefined, true), saved = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = f.home;
+  try {
+    const file = join(f.home, "shards.json"), shards = JSON.parse(readFileSync(file, "utf8"));
+    shards.schema = "agent-mem.shards/v2"; delete shards.publicationFormat; delete shards.placementHead;
+    writeFileSync(file, JSON.stringify(shards) + "\n");
+    const { runCli } = await import("../src/cli.ts");
+    await expect(runCli(["status"], { cwd: f.root, env: {} })).rejects.toThrow();
+    await expect(runCli(["status", "--json"], { cwd: f.root, env: {} })).rejects.toThrow();
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+}, 240_000);

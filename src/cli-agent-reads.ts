@@ -8,6 +8,9 @@ import type { ParsedCommand } from "./commands-table.ts";
 const UNAVAILABLE = "Memory operation unavailable or refused; no partial result is shown.";
 export const READ_FAILURE = "Memory read failed [cause: read_failed]; no partial result is shown. Ask the person to inspect the command and memory state.";
 export class AgentReadFailure extends Error { constructor() { super(READ_FAILURE); this.name = "AgentReadFailure"; } }
+export class AgentReadAmbiguous extends Error {
+  constructor() { super("Memory read unavailable [cause: unavailable]; failure and policy withholding cannot be distinguished. Ask the person to run the same command from their own shell."); this.name = "AgentReadAmbiguous"; }
+}
 const RESULT_BYTES = 262_144;
 
 /** A refusal decided from the parsed command alone, before any store or file is opened: safe to show as is. */
@@ -114,6 +117,10 @@ export async function agentCliRead(
     return output;
   } catch (error) {
     if(safeProfileLockMessage(error))throw error;
+    // The MCP handler deliberately uses one refusal for policy and operational guards; do not guess which occurred.
+    let ambiguous = false;
+    try { ambiguous = error instanceof Error && Object.getOwnPropertyDescriptor(error, "message")?.value === "memory operation unavailable"; } catch { /* An opaque error remains a generic failure. */ }
+    if (ambiguous) throw new AgentReadAmbiguous();
     throw new AgentReadFailure();
   } finally {
     try { memory?.close(); } catch { /* close failures do not expose partial reads */ }
