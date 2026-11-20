@@ -55,6 +55,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "never",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           },
           "codex": {
@@ -63,6 +66,9 @@
             "hook": "registered",
             "hookEvidence": "setup receipt",
             "lastCaptureAt": "string",
+            "machineCapture": "stale",
+            "machineLastCaptureAt": "string",
+            "machineRows": "number",
             "rows": "number"
           },
           "kimi": {
@@ -70,6 +76,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "never",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           },
           "pi": {
@@ -77,6 +86,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "never",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           },
           "qwen": {
@@ -84,6 +96,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "never",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           }
         },
@@ -228,6 +243,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "string",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           },
           "codex": {
@@ -235,6 +253,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "string",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           },
           "kimi": {
@@ -242,6 +263,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "string",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           },
           "pi": {
@@ -249,6 +273,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "string",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           },
           "qwen": {
@@ -256,6 +283,9 @@
             "hint": "string",
             "hook": "manual",
             "lastCaptureAt": "null",
+            "machineCapture": "string",
+            "machineLastCaptureAt": "null",
+            "machineRows": "number",
             "rows": "number"
           }
         },
