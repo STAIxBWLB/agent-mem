@@ -234,7 +234,7 @@ class CliPartialApplyError extends Error {
       : "Operation stopped; the failed target may have changed. Receipt withheld by policy. Inspect state before retrying.");
   }
   render(): string {
-    return this.jsonOutput ? JSON.stringify({ ok: false, partial: this.appliedCount > 0, appliedCount: this.appliedCount, failedMayHaveChanged: true, receiptWithheld: true }) : this.message;
+    return this.jsonOutput ? JSON.stringify({ ok: false, partial: this.appliedCount > 0, appliedCount: this.appliedCount, failedMayHaveChanged: true, receiptWithheld: true }, null, 2) : this.message;
   }
 }
 
@@ -403,7 +403,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // Preserve the value and the policy-screened result; only the JSON presentation changes.
     try {
       const parsed = parseCommand(argv);
-      if (parsed.options["--json"] === true) return JSON.stringify(JSON.parse(output));
+      if (parsed.options["--json"] === true) return JSON.stringify(JSON.parse(output), null, 2);
       if (parsed.path[0] === "status" || parsed.path[0] === "doctor") return wrapReport(output, reportWidth(context));
     } catch { /* Help and non-JSON special commands keep their existing output. */ }
     return output;
@@ -444,7 +444,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env),
       ...(typeof parsed.options["--since"] === "string" ? { since: parsed.options["--since"] as string } : {}),
     });
-    return parsed.options["--json"] === true ? JSON.stringify(result) : ingestText(kind as IngestKind, result, outputStyle(context, parsed.options));
+    return parsed.options["--json"] === true ? JSON.stringify(result, null, 2) : ingestText(kind as IngestKind, result, outputStyle(context, parsed.options));
   }
   // Help and version carry no memory data.
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;

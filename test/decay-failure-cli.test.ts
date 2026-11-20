@@ -54,7 +54,10 @@ for (const action of ["demote", "forget"] as const) for (const json of [false, t
   expect(caught).toBeInstanceOf(DecayApplyError); const error = caught as DecayApplyError;
   expect(calls).toEqual(f.ids.slice(0, 2)); expect(error.report).toMatchObject({ action, applied: [f.ids[0]], failed: f.ids[1], remaining: [f.ids[2]] });
   expect(prompts).toBe(0); const rendered = formatCliError(error); expect(rendered).toContain(f.ids[0]!); expect(rendered).not.toContain("private raw filesystem failure");
-  if (json) expect(JSON.parse(rendered)).toEqual({ ok: false, ...error.report, failedMayHaveChanged: true });
+  if (json) {
+    expect(JSON.parse(rendered)).toEqual({ ok: false, ...error.report, failedMayHaveChanged: true });
+    expect(rendered).toBe(JSON.stringify(JSON.parse(rendered), null, 2));
+  }
   else { expect(rendered).toContain(`applied: ${f.ids[0]}`); expect(rendered).toContain(`failed: ${f.ids[1]}`); expect(rendered).toContain(`remaining: ${f.ids[2]}`); expect(rendered).toContain("failed target may have changed"); }
   f.use(store => {
     const prefix = store.get(f.ids[0]!, f.project);
@@ -91,7 +94,8 @@ for (const action of ["demote", "forget"] as const) {
   test(`marked ${action} partial failure with a denied report returns only a generic counted outcome`, async () => {
     const f = fixture(), args = ["decay", ...f.ids, "--apply", "--confirm", ...(action === "forget" ? ["--forget"] : []), "--json"];
     writeFileSync(join(f.root, "memory", CONFIG_FILE), JSON.stringify({ piiPatterns: ["applied"] }));
-    const output = JSON.parse(await renderFailure(failSecondMarkedTarget(f, action, args)));
+    const rendered = await renderFailure(failSecondMarkedTarget(f, action, args)), output = JSON.parse(rendered);
+    expect(rendered).toBe(JSON.stringify(output, null, 2));
     expect(output).toEqual({ ok: false, partial: true, appliedCount: 1, failedMayHaveChanged: true, receiptWithheld: true });
     expect(JSON.stringify(output)).not.toContain(f.ids[0]!); expect(JSON.stringify(output)).not.toContain(f.ids[1]!); expect(JSON.stringify(output)).not.toContain(f.ids[2]!);
     expect(JSON.stringify(output)).not.toContain("private raw filesystem failure"); expectAppliedPrefix(f, action);

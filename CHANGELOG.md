@@ -6,7 +6,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Changed
 
-- `amem ingest` now prints human text on a pipe unless `--json` is passed, and `--json` output is compact while retaining its existing schemas. Human output uses the shared CLI output roles, status markers, ASCII fallback and color precedence. Compared with 0.31.0, scripts consuming piped ingest receipts must pass `--json`; parser usage errors now exit 2 instead of 1. Refs #398.
+- `amem ingest` now prints human text on a pipe unless `--json` is passed, and single-document `--json` output uses 2-space indentation while retaining its existing schemas. Human output uses the shared CLI output roles, status markers, ASCII fallback and color precedence. Compared with 0.31.0, scripts consuming piped ingest receipts must pass `--json`; parser usage errors now exit 2 instead of 1. Refs #398.
 
 ### Fixed
 

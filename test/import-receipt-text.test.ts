@@ -119,7 +119,7 @@ test("claude-mem CLI styles honor TTY and suppression while JSON keeps exact byt
   const work = { read: 0, added: 0, skipped: { invalid: 0, policy: 0 }, more: false, cursor: 0 };
   const capture = { read: 0, added: 0, spooled: 0, skipped: 0, more: false };
   for (const includeCapture of [false, true]) {
-    const expected = JSON.stringify({ ...notes, work, ...(includeCapture ? { capture } : {}) });
+    const expected = JSON.stringify({ ...notes, work, ...(includeCapture ? { capture } : {}) }, null, 2);
     for (const env of [{}, { NO_COLOR: "" }, { TERM: "dumb" }]) {
       const output = await runImportReceipt(h, ["--json", ...(includeCapture ? captureArgs : [])], env, true);
       expect(output).toBe(expected); expect(output).not.toMatch(ANSI);

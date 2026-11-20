@@ -322,7 +322,7 @@ async function readableCommand(h: ReturnType<typeof home>, args: string[], stdou
   finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }
 
-test("ingest JSON keeps exact compact bytes and agent capture entry remains allowed", async () => {
+test("ingest JSON keeps exact indented bytes and agent capture entry remains allowed", async () => {
   const h = home(), saved = process.env.CODEX_HOME; process.env.CODEX_HOME = join(h.root, "native-codex"); mkdirSync(join(process.env.CODEX_HOME, "sessions"), { recursive: true });
   try {
     const nonTTY = await readableCommand(h, ["ingest", "codex"]);
@@ -333,20 +333,20 @@ test("ingest JSON keeps exact compact bytes and agent capture entry remains allo
     expect(await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" })).toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true, { TERM: "dumb" })).toBe(plain);
     const json = await readableCommand(h, ["ingest", "codex", "--json"], true, { CODEX_THREAD_ID: "agent" }, false);
-    expect(json).toBe(JSON.stringify(emptyIngest)); expect(json).not.toMatch(ANSI);
+    expect(json).toBe(JSON.stringify(emptyIngest, null, 2)); expect(json).not.toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex", "--json"], false)).toBe(json);
   } finally { if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved; }
 }, 30_000);
 
-test("capacity apply CLI has readable two-step plans and compact JSON", async () => {
+test("capacity apply CLI has readable two-step plans and indented JSON", async () => {
   const h = home(), args = ["capacity", "apply", "--cap-mb", "64", "--retention-days", "7"];
   const human = await readableCommand(h, args);
   expect(human).toStartWith("amem capacity apply: preview\n"); expect(human).toContain("keeping all other arguments"); expect(human).not.toMatch(ANSI);
   expect(await readableCommand(h, args, true)).toMatch(ANSI);
   const json = await readableCommand(h, [...args, "--json"], true), preview = JSON.parse(readFileSync(join(h.memory, "capture-config.preview.json"), "utf8"));
-  expect(json).toBe(JSON.stringify({ preview, confirm: "re-run with --confirm to write" }));
+  expect(json).toBe(JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2));
   const written = await readableCommand(h, [...args, "--confirm", "--json"], true), result = JSON.parse(written);
-  expect(written).toBe(JSON.stringify({ preview: result.preview, written: { cap_mb: 64, retention_days: 7 } })); expect(written).not.toMatch(ANSI);
+  expect(written).toBe(JSON.stringify({ preview: result.preview, written: { cap_mb: 64, retention_days: 7 } }, null, 2)); expect(written).not.toMatch(ANSI);
 }, 30_000);
 
 test("generation/prune CLI keeps sealed JSON artifacts and a readable apply receipt", async () => {
@@ -355,13 +355,13 @@ test("generation/prune CLI keeps sealed JSON artifacts and a readable apply rece
   finally { store.close(); }
   expect(await readableCommand(h, ["migrate", "--dry-run"])).toStartWith("amem migrate: preview\n");
   const migrated = await readableCommand(h, ["migrate", "--generation", "a".repeat(32), "--apply", "--json"], true);
-  expect(migrated).toBe(JSON.stringify(JSON.parse(migrated))); expect(migrated).not.toMatch(ANSI);
+  expect(migrated).toBe(JSON.stringify(JSON.parse(migrated), null, 2)); expect(migrated).not.toMatch(ANSI);
   const selectedPreview = await readableCommand(h, ["migrate"]);
   expect(selectedPreview).toContain("profile generation"); expect(selectedPreview).toContain("Next action: none");
   const args = ["prune", "--dry-run", "--cutoff", new Date().toISOString()];
   expect(await readableCommand(h, args)).toStartWith("amem prune: preview\n");
   const plan = await readableCommand(h, [...args, "--json"], true);
-  expect(plan).toBe(JSON.stringify(JSON.parse(plan)));
+  expect(plan).toBe(JSON.stringify(JSON.parse(plan), null, 2));
   const file = join(h.root, "prune.json"); writeFileSync(file, plan, { mode: 0o600 });
   expect(await readableCommand(h, ["prune", "--apply", "--plan", file])).toStartWith("amem prune: complete\n");
 }, 30_000);
@@ -391,7 +391,7 @@ test("split capacity CLI previews in text and confirms the same JSON plan", asyn
   expect(human).toContain("--split command with --confirm, keeping all other arguments");
   const json = await readableCommand(h, [...args, "--json"], true);
   const saved = JSON.parse(readFileSync(join(h.memory, "capacity-split.preview.json"), "utf8"));
-  expect(json).toBe(JSON.stringify({ ...saved, confirm: "re-run with --confirm to write each shard's share" }));
+  expect(json).toBe(JSON.stringify({ ...saved, confirm: "re-run with --confirm to write each shard's share" }, null, 2));
   expect(json).not.toMatch(ANSI);
   const confirmed = await readableCommand(h, [...args, "--confirm"]);
   expect(confirmed).toStartWith("amem capacity apply --split: complete\n"); expect(confirmed).toContain("Next action: none");
