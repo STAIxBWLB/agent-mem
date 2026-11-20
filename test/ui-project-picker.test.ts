@@ -7,7 +7,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import * as fs from "node:fs";
 import { catalogKeys, readCatalogFresh } from "../src/memory/catalog.ts";
 import { appendLifecycle, projectState } from "../src/memory/lifecycle.ts";
-import { appendAlias, ensureShardDescriptor } from "../src/memory/shard.ts";
+import { appendAlias, ensureShardDescriptor, shardKeyHash } from "../src/memory/shard.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { plugin } from "../src/ui/plugin.ts";
@@ -97,4 +97,26 @@ test("catalogKeys throws on a non-absence read failure and returns [] when proje
   try { expect(() => catalogKeys(base)).toThrow("injected EIO"); } finally { scans.mockRestore(); }
   expect(real).toBe(fs.readdirSync);
   expect(catalogKeys(join(base, "missing"))).toEqual([]);
+});
+
+test("a single transient project.json read failure is not reused: the next panel recovers without a home write", async () => {
+  const { family, note } = fixture();
+  const projectsDir = join(realPath(family), "memory", "projects");
+  const real = fs.readFileSync;
+  let fail = false;
+  const reads = spyOn(fs, "readFileSync").mockImplementation(((path: fs.PathOrFileDescriptor, options?: unknown) => {
+    if (fail && typeof path === "string" && path.startsWith(projectsDir) && path === join(projectsDir, shardKeyHash("fixture/capture-only"), "project.json") && /catalogKeys/.test(Error().stack ?? "")) { fail = false; throw Object.assign(Error("injected EIO"), { code: "EIO" }); }
+    return (real as (p: fs.PathOrFileDescriptor, o?: unknown) => unknown)(path, options);
+  }) as typeof fs.readFileSync);
+  try {
+    const provider = await open(family);
+    await provider.snapshot({ panel: "goals", after: 0 });
+    note("fixture/after-open", "n"); // a new revision, so the next snapshot rebuilds the list
+    fail = true;
+    const cut = (await provider.snapshot({ panel: "goals", after: 0 })).projects as string[];
+    expect(cut).not.toContain("fixture/capture-only"); // its descriptor read failed once, in this rebuild
+    expect(fail).toBe(false);
+    const next = (await provider.snapshot({ panel: "capacity", after: 0 })).projects as string[];
+    for (const key of ["fixture/alpha", "fixture/zeta", "fixture/capture-only", "fixture/candidate-only"]) expect(next).toContain(key);
+  } finally { reads.mockRestore(); }
 });

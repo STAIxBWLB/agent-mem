@@ -3,7 +3,7 @@ import { indexFileName } from "./index-file.ts";
 import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { memoryBase } from "./home.ts";
-import { effectiveAliases, readShardDescriptor, SHARDED_SCHEMA, SHARDED_V2_SCHEMA } from "./shard.ts";
+import { effectiveAliases, readShardDescriptor, SHARD_SCHEMA, SHARDED_SCHEMA, SHARDED_V2_SCHEMA } from "./shard.ts";
 import { readProfileJSON, validGeneration } from "./generation.ts";
 import { captureShardStats, readCaptureConfig } from "./capture.ts";
 import { openShardStore } from "./store.ts";
@@ -115,10 +115,14 @@ export function catalogKeys(base: string): string[] {
   catch (e) { if (absent(e)) return []; throw e; }
   const keys: string[] = [];
   for (const hash of hashes) {
-    const descriptor = readShardDescriptor(base, hash);
-    if (descriptor) { keys.push(descriptor.key); continue; }
-    try { readFileSync(join(projectsDir, hash, "project.json")); }
-    catch (e) { if (absent(e)) continue; throw e; } // readable but invalid stays skipped, as in walkShards
+    // One read: a transient failure throws instead of reading as a skipped shard. Absent or readable-but-invalid stays skipped, as in walkShards.
+    let text: string;
+    try { text = readFileSync(join(projectsDir, hash, "project.json"), "utf8"); }
+    catch (e) { if (absent(e)) continue; throw e; }
+    let d: unknown;
+    try { d = JSON.parse(text); } catch { continue; }
+    const v = d as { schema?: unknown; key?: unknown; local?: unknown } | null;
+    if (v?.schema === SHARD_SCHEMA && typeof v.key === "string" && typeof v.local === "boolean") keys.push(v.key);
   }
   return keys.sort((a, b) => a.localeCompare(b));
 }
