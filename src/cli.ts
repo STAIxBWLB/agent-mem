@@ -13,7 +13,7 @@ import { recordCaptureLookup, recordSourceCheck, recordWindow } from "./memory/r
 import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
 import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
-import { DecayApplyError } from "./memory/decay-review.ts";
+import { DecayApplyError, UNUSED_INJECTION_REASON } from "./memory/decay-review.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
 import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./memory/sync-placement-journal-format.ts";
@@ -716,7 +716,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (sub === "decay") {
     const applying = options["--apply"] === true && options["--confirm"] === true;
     if (options["--confirm"] === true && options["--apply"] !== true) throw new Error("decay --confirm requires --apply");
-    const { decayPreview, applyDecay, readDecayCounters, DECAY_DEFAULT_DAYS, assertExactDecayForget, unusedInjectionTargets, UNUSED_INJECTION_REASON } = await import("./memory/decay-review.ts");
+    const { decayPreview, applyDecay, readDecayCounters, DECAY_DEFAULT_DAYS, assertExactDecayForget, unusedInjectionTargets } = await import("./memory/decay-review.ts");
     const project = boundProject(), base = memoryHome(), aliases = aliasedKeys(base, project);
     const store = curatedStore(project, { deferPromotions: true, screen: note => policyOf().screenStandalone(note) ? "promote" : "keep" });
     try {
@@ -864,6 +864,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const candidate = candidates.get(id!, project);
         if (!candidate || !candidatePermitted(candidate)) throw new Error("candidate unavailable");
         if (candidate.status !== "pending") throw new Error(`candidate is ${candidate.status}, not pending`);
+        if (decision === "accept" && candidate.input.kind === "decay" && candidate.input.reason !== UNUSED_INJECTION_REASON) throw new Error("decay candidates are listing-only unless proposed for unused injection; use amem decay to review current eligibility");
         if (decision === "accept" && candidate.input.kind === "model-answer") throw new Error("model answers cannot be accepted; author an independent note with amem note add");
         if (options["--confirm"] !== true) {
           const shown = terminalSafe(body(candidate)), overlaps = await overlapsFor(candidate);
@@ -958,6 +959,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const candidate = candidates.get(id!, project);
       if (!candidate) throw new Error("candidate unavailable");
       if (options["--kind"] !== undefined && candidate.input.kind !== options["--kind"]) throw new Error("candidate kind does not match --kind");
+      if (candidate.input.kind === "decay" && candidate.input.reason !== UNUSED_INJECTION_REASON) throw new Error("decay candidates are listing-only unless proposed for unused injection; use amem decay to review current eligibility");
       const store = curatedStore(project, { deferPromotions: true, screen: note => policyOf().screenStandalone(note) ? "promote" : "keep" });
       try {
         const assertCurrent = commandBinding(store.profile.home, project);

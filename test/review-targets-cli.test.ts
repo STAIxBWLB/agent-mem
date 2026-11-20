@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCli } from "../src/cli.ts";
@@ -8,14 +8,16 @@ import { memoryProjectKey } from "../src/memory/project.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { createHash } from "node:crypto";
+import { loadAmemConfig } from "../src/memory/config.ts";
 
 test("review targets is deterministic and does not write the memory home", async () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-review-targets-"))), base = join(root, "memory"), project = memoryProjectKey(root), previous = process.env.AMEM_HOME;
   process.env.AMEM_HOME = base;
   try {
     const store = new MemoryStore({ memoryDir: base, deferPromotions: true, now: () => Date.now() - 60 * 86400_000 });
-    const id = store.note({ op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "fixture", about: [] });
+    const id = store.note({ op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "fixture NEVER_PUBLIC_", about: [] });
     store.close();
+    writeFileSync(join(base, "amem.config.json"), JSON.stringify({ piiPatterns: ["NEVER_PUBLIC_"] }));
     const counters = new CandidateStore({ memoryDir: base });
     counters.recordCounter({ entryId: id, project, deliveryId: "read-only" }, { rendered: 5, delivered: 1, cited: 0 }, "public"); counters.close();
     const snapshot = () => readdirSync(base, { recursive: true, withFileTypes: true }).filter(row => row.isFile() && !row.name.endsWith("-shm")).flatMap(row => {
@@ -26,8 +28,21 @@ test("review targets is deterministic and does not write the memory home", async
     const first = await runCli(["review", "targets", "--json"], { cwd: root, env: {} });
     const second = await runCli(["review", "targets", "--json"], { cwd: root, env: {} });
     expect(JSON.parse(first)).toMatchObject([{ id, reason: "rendered", counts: { rendered: 5, delivered: 1, cited: 0 } }]);
-    expect(first).toBe(second); expect(snapshot()).toEqual(before);
+    expect(first).toBe(second);
+    expect(JSON.parse(await runCli(["review", "targets", "--json"], { cwd: root, env: { CODEX_THREAD_ID: "fixture" } }))).toEqual([]);
+    expect(snapshot()).toEqual(before);
   } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; rmSync(root, { recursive: true, force: true }); }
+});
+
+test("review settings are validated and loaded from the machine configuration", () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "amem-review-config-")));
+  try {
+    const file = join(root, "amem.config.json");
+    writeFileSync(file, JSON.stringify({ review: { recheck_days: 45, unused_rendered: 10, unused_days: 20 } }));
+    expect(loadAmemConfig(root).config.review).toEqual({ recheck_days: 45, unused_rendered: 10, unused_days: 20 });
+    writeFileSync(file, JSON.stringify({ review: { unused_days: 91 } }));
+    expect(() => loadAmemConfig(root)).toThrow("review.unused_days");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("decay proposals are accepted through review and do not demote before acceptance", async () => {

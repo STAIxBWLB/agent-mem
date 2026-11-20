@@ -3,10 +3,10 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { hashJSON } from "./generation.ts";
 import { candidateTargetRevision, type CandidateTarget, type Counter } from "./candidates.ts";
+export { UNUSED_INJECTION_REASON } from "./candidates.ts";
 import { MemoryStore, type View } from "./store.ts";
 import { reviewUse, type ReviewSnapshot } from "./review-targets.ts";
 
-export const UNUSED_INJECTION_REASON = "Unused injection: frequent rendered or delivered notes have no reported citations in the review window.";
 /** Select proposals only; caller must explicitly queue and accept them. */
 export function unusedInjectionTargets(store: MemoryStore, project: string, snapshot: ReviewSnapshot, options: { now: number; days: number; threshold: number; aliases?: readonly string[]; screen?: (view: View) => boolean; id?: string }): DecayEntry[] {
   const goals = store.goals(project).filter(goal => ["open", "active", "blocked"].includes(goal.state));

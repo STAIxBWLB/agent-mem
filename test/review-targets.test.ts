@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { reviewTargets } from "../src/memory/review-targets.ts";
+import { noRecentReview, reviewTargets } from "../src/memory/review-targets.ts";
 import type { View } from "../src/memory/store.ts";
 import { summarizeMemoryUse } from "../src/memory/use-telemetry.ts";
 import type { Counter } from "../src/memory/candidates.ts";
@@ -23,4 +23,11 @@ test("a missing metric remains unknown when delivery observations are combined",
   expect(summarizeMemoryUse([row(null, 0)]).delivered).toBeNull();
   expect(summarizeMemoryUse([row(1, null)]).cited).toBeNull();
   expect(summarizeMemoryUse([row(1, 0), row(1, 0)]).cited).toBe(0);
+});
+
+test("review recency uses retained decided candidate creation time", () => {
+  const snapshot = { counters: [], decided: [{ at: 100, targets: ["a", "b"] }, { at: 200, targets: ["c"] }] };
+  expect(noRecentReview(snapshot, "a", 100)).toBe(false);
+  expect(noRecentReview(snapshot, "a", 101)).toBe(true);
+  expect(noRecentReview(snapshot, "missing", 0)).toBe(true);
 });

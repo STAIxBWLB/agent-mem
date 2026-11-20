@@ -27,6 +27,7 @@ export class ConsolidationReviewLimit extends Error {
   }
 }
 export const COUNTER_RETENTION = { count: 10_000, ageMs: 90 * 86400_000 } as const;
+export const UNUSED_INJECTION_REASON = "Unused injection: frequent rendered or delivered notes have no reported citations in the review window.";
 export type CandidateVerdict = "public" | "private" | "pii" | "unknown";
 export interface CandidateTarget { id: string; revision: string }
 /** One capture `Record` row a candidate was derived from: the session hash, its row time and the hash of the stored line. */
@@ -492,8 +493,7 @@ export class CandidateStore {
     return context.store.withCurrentEntries([target.id], context.project, execute);
   }
   private acceptDecay(candidate: Candidate, data: Extract<CandidateInput, { kind: "decay" }>, context: CandidateAcceptance): CandidateAcceptanceResult {
-    const expectedReason = "Unused injection: frequent rendered or delivered notes have no reported citations in the review window.";
-    if (data.reason !== expectedReason || !context.unusedEligible) throw Error("decay candidate cannot be applied by this host; use amem decay to review current eligibility");
+    if (data.reason !== UNUSED_INJECTION_REASON || !context.unusedEligible) throw Error("decay candidates are listing-only unless proposed for unused injection; use amem decay to review current eligibility");
     return context.store.withCurrentEntries([data.target.id], context.project, () => {
       const target = context.store.get(data.target.id, context.project);
       if (!target || target.tier !== "long" || target.kind === "preference" || target.supersededBy || candidateTargetRevision(target) !== data.target.revision || !context.unusedEligible!(target)) throw Error("decay candidate is no longer eligible; run amem decay --propose again");
