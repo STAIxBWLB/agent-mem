@@ -230,8 +230,9 @@ test("#520: a runtime root that exists but is not a directory is not reported as
   writeFileSync(notADirectory, "fixture", { mode: 0o600 });
   const [settingsPath] = f.paths.qwen, after = json({ mcpServers: { amem: { command: f.bun, args: ["--smol", join(notADirectory, "bin", "amem.js"), "mcp"] } } });
   put(settingsPath!, after); receipt(f, "qwen", [{ path: settingsPath!, before: null, after }]);
-  // Doctor reports only what the writer inventory positively identified as absent, so an existing non-directory root stays silent here.
-  expect(inspect(f).entries.some(entry => entry.entry === "amem install")).toBe(false);
+  // The writer inventory refuses an existing non-directory root anonymously, so doctor reports it as unavailable, never as a missing install.
+  const row = inspect(f).entries.find(entry => entry.entry === "amem install");
+  expect(row?.kind).toBe("unavailable"); expect(row?.reason).not.toContain("no longer exists");
   for (const [dir, mode] of [[f.memory, 0o700], [join(f.memory, "setup"), 0o700], [join(f.memory, "setup", "qwen.json"), 0o600]] as const) chmodSync(dir, mode);
   let caught: unknown; try { readSetupWriterRoots(f.memory); } catch (error) { caught = error; }
   expect(caught).toMatchObject({ category: "unavailable" }); expect((caught as { target?: string }).target).toBeUndefined();
