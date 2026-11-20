@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -292,4 +292,61 @@ test("#399: Codex transcript tool arguments withhold answer values and retain un
   expect(captured).toContain("[withheld]");
   expect(captured.join("\n")).not.toContain("person-quote-canary");
   expect(captured.join("\n")).not.toContain("free-text-canary");
+});
+
+for (const kind of ["codex", "kimi", "pi"] as const) test(`#509: ${kind} ingests a safe linked root once and preserves existing real-path cursors`, async () => {
+  const f = fixture(), home = join(f.root, "home"), native = join(home, "profile"), target = join(home, "native-sessions"), savedHome = process.env.HOME;
+  const key = kind === "codex" ? "CODEX_HOME" : kind === "kimi" ? "KIMI_CODE_HOME" : "PI_CODING_AGENT_DIR", saved = process.env[key];
+  mkdirSync(native, { recursive: true }); mkdirSync(target, { recursive: true });
+  symlinkSync(target, join(native, "sessions"));
+  if (kind === "codex") symlinkSync(target, join(native, "archived_sessions"));
+  let file: string;
+  if (kind === "kimi") {
+    const session = join(target, "one"), main = join(session, "agents", "main"); mkdirSync(main, { recursive: true });
+    writeFileSync(join(session, "state.json"), JSON.stringify({ cwd: f.cwd })); file = join(main, "wire.jsonl");
+    writeFileSync(file, line({ type: "metadata", protocol_version: "1.5" }) + line({ type: "context.append_message", time: Date.parse(at), message: { role: "assistant", content: "linked kimi" } }));
+  } else {
+    file = join(target, "fixture.jsonl");
+    writeFileSync(file, kind === "codex" ? line(codexHeader(f.cwd)) + line(codexMessage("linked codex"))
+      : line({ type: "session", version: 3, id: "session", timestamp: at, cwd: f.cwd }) + line({ type: "message", id: "one", timestamp: at, message: { role: "assistant", content: "linked pi" } }));
+  }
+  const alias = join(f.root, "home-alias"); symlinkSync(home, alias);
+  const oldSpelling = file.replace(home, alias);
+  process.env.HOME = home; process.env[key] = native;
+  try {
+    const first = await ingestTranscript(kind, { cwd: f.cwd, base: f.base, files: [oldSpelling] });
+    expect(first.imported).toBe(1);
+    const again = await ingestTranscript(kind, { cwd: f.cwd, base: f.base });
+    expect(again.imported).toBe(0); expect(again.read).toBe(0); expect(again.files).toBe(1);
+    expect(rows(f)).toHaveLength(1);
+    const fresh = await ingestTranscript(kind, { cwd: f.cwd, base: join(f.root, "fresh-memory") });
+    expect(fresh.imported).toBe(1); expect(fresh.files).toBe(1);
+  } finally { if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome; if (saved === undefined) delete process.env[key]; else process.env[key] = saved; }
+});
+
+test("#509: unsafe linked roots and links beneath an accepted root are skipped", async () => {
+  const f = fixture(), home = join(f.root, "home"), native = join(home, "profile"), target = join(home, "source"), outside = join(f.root, "outside"), savedHome = process.env.HOME, saved = process.env.CODEX_HOME;
+  mkdirSync(native, { recursive: true }); mkdirSync(target, { recursive: true }); mkdirSync(outside);
+  const root = join(native, "sessions"); process.env.HOME = home; process.env.CODEX_HOME = native;
+  try {
+    symlinkSync(outside, root);
+    expect((await ingestTranscript("codex", { cwd: f.cwd, base: f.base })).reason).toBe("source_unavailable");
+    rmSync(root); chmodSync(target, 0o777); symlinkSync(target, root);
+    expect((await ingestTranscript("codex", { cwd: f.cwd, base: f.base })).reason).toBe("source_unavailable");
+    chmodSync(target, 0o700);
+    const source = join(outside, "foreign.jsonl"); writeFileSync(source, line(codexHeader(f.cwd)) + line(codexMessage("not followed")));
+    symlinkSync(source, join(target, "linked.jsonl")); symlinkSync(outside, join(target, "linked-folder"));
+    const result = await ingestTranscript("codex", { cwd: f.cwd, base: f.base });
+    expect(result.files).toBe(0); expect(rows(f)).toHaveLength(0);
+  } finally { if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome; if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved; }
+});
+
+
+test("#509: linked root with a different owner is refused", async () => {
+  const f = fixture(), home = join(f.root, "home"), target = join(home, "target"), link = join(home, "sessions");
+  mkdirSync(target, { recursive: true }); symlinkSync(target, link);
+  const { inspectNativeRoot } = await import("../src/memory/native-roots.ts");
+  const uid = process.getuid?.(); if (uid === undefined) return;
+  const mocked = spyOn(process, "getuid").mockReturnValue(uid + 1);
+  try { expect(inspectNativeRoot(link, home)).toEqual({ state: "unsafe" }); } finally { mocked.mockRestore(); }
 });

@@ -1,5 +1,5 @@
 // Single-source platform helpers. Hub, local and Pi modules re-export these functions unchanged.
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import type { SpawnSyncOptions, SpawnSyncOptionsWithBufferEncoding, SpawnSyncOptionsWithStringEncoding, SpawnSyncReturns } from "node:child_process";
 import { createRequire } from "node:module";
@@ -45,6 +45,14 @@ export function realPath(path: string): string {
   const r = childProcess().spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8" });
   if (r.status !== 0 || !r.stdout.endsWith("\n")) throw error ?? new Error(`Cannot resolve existing path: ${path}`);
   return r.stdout.slice(0, -1);
+}
+
+/** An existing physical directory must belong to this user and resist group/world writes. */
+export function ownedUnwritableDirectory(path: string): boolean {
+  try {
+    const stat = lstatSync(path), uid = process.getuid?.();
+    return uid !== undefined && stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === uid && (stat.mode & 0o022) === 0;
+  } catch { return false; }
 }
 
 /** One denylist for core extraction, hub path guards, sandbox rules and capture. */

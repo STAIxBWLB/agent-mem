@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { CaptureStore, type CaptureInput } from "./memory/capture.ts";
 import { memoryHome } from "./memory/home.ts";
+import { inspectNativeRoot, nativeRoots } from "./memory/native-roots.ts";
 import { canonicalPath, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, recordsEnabled } from "./memory/config.ts";
@@ -141,10 +142,7 @@ function lease(file: string): { position: Position; save(value: Position): void;
 /** Native roots only. Discovery never follows a directory symlink or enters an unbounded tree. */
 function discover(kind: IngestKind): { files: string[]; bounded: boolean; unavailable: boolean } {
   if (kind === "qwen") return discoverQwen();
-  const root = kind === "codex" ? process.env.CODEX_HOME?.trim() || join(homedir(), ".codex")
-    : kind === "kimi" ? process.env.KIMI_CODE_HOME?.trim() || join(homedir(), ".kimi-code")
-      : process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
-  const roots = [join(root, "sessions"), ...(kind === "codex" ? [join(root, "archived_sessions")] : [])];
+  const roots = nativeRoots(kind), seen = new Set<string>();
   const files: string[] = []; let visited = 0, bounded = false, rootsRead = 0;
   const walk = (folder: string, depth: number) => {
     if (depth > MAX_DEPTH) { bounded = true; return; }
@@ -161,7 +159,11 @@ function discover(kind: IngestKind): { files: string[]; bounded: boolean; unavai
       }
     } finally { dir.closeSync(); }
   };
-  for (const folder of roots) walk(folder, 0);
+  for (const { folder } of roots) {
+    const root = inspectNativeRoot(folder);
+    if (root.state !== "ready" || seen.has(root.path)) continue;
+    seen.add(root.path); walk(root.path, 0);
+  }
   return { files: files.sort(), bounded, unavailable: rootsRead === 0 };
 }
 
