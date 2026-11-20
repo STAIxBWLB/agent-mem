@@ -140,7 +140,7 @@ test("review command definitions feed parser, help and static completion togethe
   expect(() => parseCommand(["review", "--kind", "contract"])).toThrow();
   const definitions = completionDefinitions();
   for (const path of ["review", "review list", "review accept", "review reject"]) expect(definitions.some(row => row.path.join(" ") === path)).toBe(true);
-  expect(commandHelp()).toContain("review accept <full-candidate-id>");
+  expect(commandHelp(["review", "accept"])).toContain("review accept <full-candidate-id>");
   for (const shell of ["zsh", "bash", "fish"]) {
     const script = completionScript(shell);
     expect(script).toContain("children:review:"); expect(script).toContain("accept"); expect(script).toContain("reject");

@@ -120,7 +120,7 @@ export class DecayApplyError extends Error {
   get failed(): string { return this.report.failed; }
   get remaining(): readonly string[] { return this.report.remaining; }
   render(): string {
-    if (this.jsonOutput) return JSON.stringify({ ok: false, ...this.report, failedMayHaveChanged: this.failedMayHaveChanged });
+    if (this.jsonOutput) return JSON.stringify({ ok: false, ...this.report, failedMayHaveChanged: this.failedMayHaveChanged }, null, 2);
     return `${this.message}; applied: ${this.report.applied.join(", ") || "none"}; failed: ${this.report.failed}; remaining: ${this.report.remaining.join(", ") || "none"}${this.report.expiresAt ? `; completed demotions expire: ${this.report.expiresAt}` : ""}`;
   }
 }

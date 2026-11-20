@@ -15,6 +15,7 @@ const RESULT_BYTES = 262_144;
 
 /** A refusal decided from the parsed command alone, before any store or file is opened: safe to show as is. */
 export class AgentUsageError extends Error {
+  readonly exitCode = 2;
   constructor(message: string) { super(message); this.name = "AgentUsageError"; }
 }
 const accepts = (command: string, allowed: readonly string[]) => new AgentUsageError(allowed.length
@@ -49,7 +50,7 @@ function route(parsed: ParsedCommand, argv: readonly string[]): ReadCall | undef
   // through the person handler with its own preview/--confirm or --apply steps and policy screens.
   if (definition.mutates !== undefined) return undefined;
 
-  const flags = Object.keys(options).filter(key => key !== "--json" && key !== "--policy-free");
+  const flags = Object.keys(options).filter(key => key !== "--json" && key !== "--policy-free" && key !== "--color" && key !== "--ascii");
   const only = (...allowed: string[]) => flags.every(flag => allowed.includes(flag));
   const limit = positiveLimit(options["--limit"]);
   const checkedLimit = () => {

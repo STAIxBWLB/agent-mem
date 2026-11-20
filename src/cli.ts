@@ -68,7 +68,7 @@ import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, typ
 import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
 import { statusText, type StatusView } from "./memory/status-text.ts";
-import { colorEnabled, style, facts, label, PLAIN, type Style } from "./memory/style.ts";
+import { asciiMarkers, markerCell, paint, resolveColor, streamEnv, style, wrapReport, facts, label, PLAIN, type Style } from "./memory/style.ts";
 import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -234,7 +234,7 @@ class CliPartialApplyError extends Error {
       : "Operation stopped; the failed target may have changed. Receipt withheld by policy. Inspect state before retrying.");
   }
   render(): string {
-    return this.jsonOutput ? JSON.stringify({ ok: false, partial: this.appliedCount > 0, appliedCount: this.appliedCount, failedMayHaveChanged: true, receiptWithheld: true }) : this.message;
+    return this.jsonOutput ? JSON.stringify({ ok: false, partial: this.appliedCount > 0, appliedCount: this.appliedCount, failedMayHaveChanged: true, receiptWithheld: true }, null, 2) : this.message;
   }
 }
 
@@ -314,8 +314,21 @@ class ReadPolicyWithheld extends Error {
 export const AUDIT_SCORE_REFUSED = "Audit score refused [cause: policy_denied]: the configured policy denies a value in the rendered score (its seed, as-of or project digest); no partial result is shown. Next step: check the policy (amem.config.json in the memory home, narrowed by the repository's .amem/config) against those values, or sample again with a different --seed.";
 
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
+  if (argv.includes("-h")) argv = argv.map(arg => arg === "-h" ? "--help" : arg);
+  // The output flags may precede the command, but capture and MCP dispatch still need the command first.
+  const leading: string[] = [];
+  let offset = 0;
+  while (offset < argv.length) {
+    const token = argv[offset]!;
+    if (token === "--ascii" || token.startsWith("--color=")) { leading.push(token); offset++; continue; }
+    if (token === "--color" && argv[offset + 1] !== undefined && !argv[offset + 1]!.startsWith("--")) {
+      leading.push(token, argv[offset + 1]!); offset += 2; continue;
+    }
+    break;
+  }
+  if (leading.length && argv[offset] !== undefined && !argv[offset]!.startsWith("--")) argv = [...argv.slice(offset), ...leading];
   // Native capture and the MCP server retain their existing surfaces and attribution.
-  if (argv[0] === "hook" || argv[0] === "ingest" || argv.length === 1 && argv[0] === "mcp") return runCliCommand(argv, context);
+  if (argv[0] === "hook" || argv[0] === "ingest" || argv[0] === "mcp") return runCliCommand(argv, context);
   const env = context.env ?? process.env, marked = agentMarked(env);
   const peer = !marked ? "person" : env.AGENTHUB_PEER_ID !== undefined ? env.AGENTHUB_PEER_ID || "agent"
     : env.CLAUDECODE !== undefined || env.CLAUDE_CODE_SESSION_ID !== undefined ? "claude" : env.CODEX_THREAD_ID !== undefined ? "codex" : "pi";
@@ -386,6 +399,14 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // Marked administrative failures must not reveal a target's private state or native errors.
     if (marked) throw Error("Memory operation unavailable or refused; no partial result is shown.");
     throw error;
+  }).then(output => {
+    // Preserve the value and the policy-screened result; only the JSON presentation changes.
+    try {
+      const parsed = parseCommand(argv);
+      if (parsed.options["--json"] === true) return JSON.stringify(JSON.parse(output), null, 2);
+      if (parsed.path[0] === "status" || parsed.path[0] === "doctor") return wrapReport(output, reportWidth(context));
+    } catch { /* Help and non-JSON special commands keep their existing output. */ }
+    return output;
   });
 }
 /**
@@ -397,7 +418,8 @@ export const MCP_PRELOAD = ["./memory/store.ts", "./memory/capture.ts", "./memor
 // The boundary check admits only literal specifiers, so the list above is spelled out again here; the test compares the two.
 const preloadMcp = () => Promise.all([import("./memory/store.ts"), import("./memory/capture.ts"), import("./memory/sync.ts"), import("./memory/shard-sync.ts"), import("./memory/public-prune-advance.ts")]);
 async function runCliCommand(argv: readonly string[], context: CliContext): Promise<string> {
-  if (argv.length === 1 && argv[0] === "mcp") {
+  if (argv[0] === "mcp" && !argv.includes("--help")) {
+    parseCommand(argv);
     await preloadMcp();
     // #323: a host that knows the proposing session passes it; the CLI keys it like capture does, so a candidate points at the same session rows.
     const env = context.env ?? process.env;
@@ -409,7 +431,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if (argv[0] === "hook" && !argv.includes("--help")) {
     const { hookMain } = await import("./hooks.ts");
-    return hookMain(argv.slice(1));
+    return hookMain(argv.some(arg => arg === "--ascii" || arg === "--color" || arg.startsWith("--color=")) ? parseCommand(argv).positionals : argv.slice(1));
   }
   if (argv[0] === "ingest") {
     // Capture-only native intake: no project/home override, policy bypass or curated write capability.
@@ -422,13 +444,14 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       cwd: context.cwd ?? process.cwd(), base: memoryHome(context.env ?? process.env),
       ...(typeof parsed.options["--since"] === "string" ? { since: parsed.options["--since"] as string } : {}),
     });
-    return parsed.options["--json"] === true || !(context.stdoutTTY ?? process.stdout.isTTY) ? JSON.stringify(result) : ingestText(kind as IngestKind, result, outputStyle(context));
+    return parsed.options["--json"] === true ? JSON.stringify(result, null, 2) : ingestText(kind as IngestKind, result, outputStyle(context, parsed.options));
   }
   // Help and version carry no memory data.
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "help")) return commandHelp();
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
-  if (argv[0] === "--help" || argv[0] === "help" || argv.includes("--help")) return commandHelp(argv);
+  if (argv[0] === "help") return commandHelp(argv.slice(1));
+  if (argv[0] === "--help" || argv.includes("--help")) return commandHelp(argv);
   let parsed;
   try {
     parsed = parseCommand(argv);
@@ -484,7 +507,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
       ...(typeof options["--root"] === "string" ? { root: options["--root"] } : {}),
       ...(options["--adopt-current"] === true ? { adoptCurrent: true } : {}),
-      ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context),
+      ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context, options),
     });
   }
   if (identity.actor === "agent") {
@@ -642,12 +665,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");
       if (actor === "agent" && mode !== "dry-run") administrative(await migrateShards({ ...common, mode: "dry-run" }));
       const result = await migrateShards({ ...common, mode });
-      return options["--json"] ? JSON.stringify(result, null, 2) : shardMigrationText(result, outputStyle(context));
+      return options["--json"] ? JSON.stringify(result, null, 2) : shardMigrationText(result, outputStyle(context, options));
     }
     if (actor === "agent" && mode === "deactivate") administrative({ target: common.memoryDir, selector: readSelector(common.memoryDir), mode });
     else if (actor === "agent" && mode !== "dry-run") administrative(await migrate({ ...common, mode: "dry-run" }));
     const result = await migrate({ ...common, mode });
-    return options["--json"] ? JSON.stringify(result, null, 2) : migrationText(result, outputStyle(context));
+    return options["--json"] ? JSON.stringify(result, null, 2) : migrationText(result, outputStyle(context, options));
   }
   if (sub === "status") {
     // F1: say where the memory lives and which configuration is in effect. The migration fields keep their names and shape; `home` and `config` are added.
@@ -662,7 +685,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (summary === null) return { unavailable: "candidates.db exists but cannot be read" };
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
       ...shardMigrationStatus(where.home) };
-    return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context));
+    return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context, options));
   }
   if (parsed.path[0] === "formats" && parsed.path[1] === "raise") {
     const { planFormatRaise, applyFormatRaise, formatRaiseRefusal, installVersion, runningAmemRoots } = await import("./memory/formats-raise.ts");
@@ -705,7 +728,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const where = resolveMemoryHome(), project = boundProject();
     const report = await doctorReport({ home: where.home, homeSource: where.source, cwd: policyCwd, project, aliases: aliasedKeys(where.home, project), now: Date.now(),
       openCurated: base => curatedStoreAt(base, project, { deferPromotions: true }) });
-    return options["--json"] ? JSON.stringify(report, null, 2) : doctorText(report, outputStyle(context));
+    return options["--json"] ? JSON.stringify(report, null, 2) : doctorText(report, outputStyle(context, options));
   }
   if (sub === "prune") {
     const applying = options["--apply"] === true;
@@ -734,7 +757,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         administrative(port.snapshot().rows.filter(source => ids.has(source.row.id)).map(source => source.row));
       }
       const result = applying ? applyPrune(port, input, auth) : plan;
-      return options["--json"] ? JSON.stringify(result, null, 2) : pruneText(result, outputStyle(context));
+      return options["--json"] ? JSON.stringify(result, null, 2) : pruneText(result, outputStyle(context, options));
     } finally { store.close(); }
   }
   if (sub === "decay") {
@@ -1009,13 +1032,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (sub === "vault-candidates" && (options["--all-projects"] === true || options["--project"] !== undefined)) {
     if (options["--all-projects"] === true && options["--project"] !== undefined) throw new Error("choose either --all-projects or --project <key>, not both");
     const result = await vaultCandidatesAll(memoryHome(), { policy: policyOf(), ...(options["--project"] !== undefined ? { project: resolveAlias(memoryHome(), String(options["--project"])) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
-    return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesAllText(result, outputStyle(context));
+    return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesAllText(result, outputStyle(context, options));
   }
   if (sub === "vault-candidates") {
     const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
     try {
       const result = await vaultCandidates(store, { project, policy: policyOf(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
-      return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesText(result, outputStyle(context));
+      return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesText(result, outputStyle(context, options));
     } finally { store.close(); }
   }
   if (sub === "eval") {
@@ -1094,7 +1117,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (options["--cap-mb"] !== undefined || options["--retention-days"] !== undefined) throw new Error("--split computes each shard's values; do not combine it with --cap-mb or --retention-days");
       const diskShare = share !== undefined ? { diskShare: Number(share) } : {};
       const result = options["--confirm"] === true ? applySplit(memoryHome(), diskShare) : previewSplit(memoryHome(), diskShare);
-      return options["--json"] ? JSON.stringify(result, null, 2) : capacitySplitText(result, outputStyle(context));
+      return options["--json"] ? JSON.stringify(result, null, 2) : capacitySplitText(result, outputStyle(context, options));
     }
     // Preview first; --confirm writes the bound home default config.
     const file = join(memoryHome(), "capture-config.json");
@@ -1108,7 +1131,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (options["--confirm"] !== true) {
       writeFileSync(previewFile, JSON.stringify(preview) + "\n", { mode: 0o600 });
       const result = { preview, confirm: "re-run with --confirm to write" };
-      return options["--json"] ? JSON.stringify(result, null, 2) : capacityApplyText(result, outputStyle(context));
+      return options["--json"] ? JSON.stringify(result, null, 2) : capacityApplyText(result, outputStyle(context, options));
     }
     let approved: { file?: string; current?: unknown; target?: CaptureConfig };
     try { approved = JSON.parse(readFileSync(previewFile, "utf8")) as typeof approved; }
@@ -1120,7 +1143,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const written = writeCaptureConfigFile(file, target);
     rmSync(previewFile, { force: true });
     const result = { preview, written: { cap_mb: written.capMb, retention_days: written.retentionDays } };
-    return options["--json"] ? JSON.stringify(result, null, 2) : capacityApplyText(result, outputStyle(context));
+    return options["--json"] ? JSON.stringify(result, null, 2) : capacityApplyText(result, outputStyle(context, options));
   }
   if (sub === "projects") {
     // Archived projects stay listed (the person must see what is cold); a forgotten one is out of the default view, and --all brings it back with its state.
@@ -1444,7 +1467,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const work = await importClaudeMemWorkState({ base: memoryHome(), project: boundProject(), policy: row => policy.screen(row), ...db, ...limit, restart });
     const capture = captureDays === undefined ? undefined : await importClaudeMemCapture({ base: memoryHome(), project: boundProject(), cwd, days: captureDays, ...db, ...limit, restart, policy: { host: policy } });
     return options["--json"] ? JSON.stringify({ ...JSON.parse(output), work, ...(capture ? { capture } : {}) }, null, 2)
-      : claudeMemImportText(JSON.parse(output), work, capture, { captureDays, restart }, outputStyle(context));
+      : claudeMemImportText(JSON.parse(output), work, capture, { captureDays, restart }, outputStyle(context, options));
   }
   return !options["--json"] && receipt.bridgeStatus
     ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;
@@ -1463,7 +1486,16 @@ async function placementProgress(home: string, mode: string, context: CliContext
   const live = new Set(parts.keys());
   return new SyncProgress({ sink: snapshot => { for (const index of live) try { parts[index]!(snapshot); } catch { live.delete(index); } } });
 }
-function outputStyle(context: CliContext): Style { return style(colorEnabled(context.env ?? process.env, context.stdoutTTY ?? process.stdout.isTTY)); }
+function outputStyle(context: CliContext, options: Record<string, string | boolean>): Style {
+  const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv((context.stdoutTTY ?? process.stdout.isTTY) === true, context.env ?? process.env));
+  if (color instanceof Error) throw color;
+  return style(options["--json"] !== true && color, asciiMarkers(context.env ?? process.env, options["--ascii"] === true));
+}
+function reportWidth(context: CliContext): number | undefined {
+  const env = context.env ?? process.env, configured = Number(env.COLUMNS);
+  if (Number.isSafeInteger(configured) && configured >= 20) return configured;
+  return (context.stdoutTTY ?? process.stdout.isTTY) ? process.stdout.columns : undefined;
+}
 
 /** Native ingest remains capture-only and agent-reachable; this formats only its returned receipt. */
 export function ingestText(kind: IngestKind, result: IngestReceipt, s: Style = PLAIN): string {
@@ -1490,7 +1522,11 @@ export function ingestText(kind: IngestKind, result: IngestReceipt, s: Style = P
     `Next action: ${action}`].join("\n");
 }
 
-export function formatCliError(error: unknown): string { return error instanceof DecayApplyError || error instanceof CliPartialApplyError ? error.render() : `amem: ${(error as Error).message}`; }
+export function formatCliError(error: unknown, usage = false): string {
+  if (error instanceof DecayApplyError || error instanceof CliPartialApplyError) return error.render();
+  const message = `amem: ${(error as Error).message}`;
+  return usage || (error as { exitCode?: number }).exitCode === 2 ? `${message}\nUsage: amem <command> [options]\nRun 'amem --help' for details.` : message;
+}
 
 /** A completed write means rendered output, never evidence of host delivery or citation. */
 export async function writeCliOutput(text: string, output: Writable = process.stdout): Promise<void> { await writeConfirmed(output, text); }
@@ -1500,7 +1536,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const receipts: CliOutputReceipt[] = [], output = await runCli(argv, { onOutputReady: receipt => receipts.push(receipt), onPersonStop: name => { personStop ??= name; } });
     if (output) { await writeCliOutput(output + "\n"); for (const receipt of receipts) { try { receipt.rendered(); } catch { /* telemetry stays optional */ } } }
   } catch (error) {
-    console.error(formatCliError(error)); process.exitCode = (error as { exitCode?: number }).exitCode ?? 1;
+    let prefix = "";
+    if (process.stderr.isTTY) {
+      let options: Record<string, string | boolean> = {};
+      try { options = parseCommand(argv).options; } catch { /* Invalid options still report their usage error. */ }
+      const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv(true, process.env));
+      const ascii = asciiMarkers(process.env, options["--ascii"] === true);
+      prefix = `${paint("error", markerCell("fail", ascii), !argv.includes("--json") && color === true)} `;
+    }
+    const code = (error as { exitCode?: number }).exitCode ?? ((error as Error).message.startsWith("usage:") ? 2 : 1);
+    console.error(prefix + formatCliError(error, code === 2)); process.exitCode = code;
   }
   if (personStop !== undefined) endLikeSignal(personStop);   // after the report, with amem's own handlers already removed
 }

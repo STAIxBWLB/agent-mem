@@ -15,7 +15,7 @@ import {CONFIG_FILE as IMPORT_CONFIG_FILE} from "../src/memory/config.ts";
 const ANSI=/\x1b\[/,COLOR=style(true),WIDTH=160;
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const fn of cleanup.splice(0))fn();});
-const strip=(text:string)=>text.replace(/\x1b\[\d+m/g,"");
+const strip=(text:string)=>text.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]+m`, "g"), "");
 function home(){const root=realPath(mkdtempSync(join(tmpdir(),"amem-import-receipt-")));cleanup.push(()=>rmSync(root,{recursive:true,force:true}));const cwd=join(root,"repo");mkdirSync(cwd);return{root,cwd,memory:join(root,"memory")};}
 
 const importNotes = (more = false) => ({ read: 6, added: 2, skipped: { model: 1, pii: 1, secret: 1 }, more, cursor: 6 });
@@ -27,11 +27,11 @@ test("claude-mem import receipt labels every counter and only reported skip reas
     const output = claudeMemImportText(importNotes(), importWork(), importCapture(), { captureDays: 7 }, s);
     const plain = strip(output);
     expect(plain).toStartWith("amem import claude-mem: complete\n");
-    expect(plain).toMatch(/^OK +notes: read 6, added 2, skipped 4, spooled n\/a$/m);
+    expect(plain).toMatch(/^  ok OK +notes: read 6, added 2, skipped 4, spooled n\/a$/m);
     expect(plain).toContain("model 1, PII 1, secret 1, empty/malformed/already imported 1");
-    expect(plain).toMatch(/^OK +work lists: read 5, added 1, skipped 4, spooled n\/a$/m);
+    expect(plain).toMatch(/^  ok OK +work lists: read 5, added 1, skipped 4, spooled n\/a$/m);
     expect(plain).toContain("invalid 1, policy 1, already imported 2");
-    expect(plain).toMatch(/^ATTENTION +capture: read 4, added 1, skipped 2, spooled 1$/m);
+    expect(plain).toMatch(/^  !  ATTENTION +capture: read 4, added 1, skipped 2, spooled 1$/m);
     expect(plain).toContain("combined 2 (empty/invalid, policy or already imported; no breakdown reported)");
     expect(plain).toContain("Next action: 1 capture row was spooled while busy; the next capture write (hook event or import adding capture rows) replays them.");
     const action = plain.split("\n").find(line => line.startsWith("Next action:"))!;
@@ -70,7 +70,7 @@ test("claude-mem capture selection and restart caveats are explicit", () => {
   const notes = { ...importNotes(), read: 0, added: 0, skipped: { model: 0, pii: 0, secret: 0 } };
   const work = { ...importWork(), read: 0, added: 0, skipped: { invalid: 0, policy: 0 } };
   const none = claudeMemImportText(notes, work);
-  expect(none).toMatch(/^SKIPPED +capture: not requested/m);
+  expect(none).toMatch(/^  -  SKIPPED +capture: not requested/m);
   expect(none).toContain("read 0, added 0, skipped 0"); expect(none).not.toContain("Widening");
   const selected = claudeMemImportText(notes, work, { read: 0, added: 0, skipped: 0, spooled: 0, more: false }, { captureDays: 14, restart: true });
   expect(selected).toContain("Capture window: last 14 days. Widening --capture-days later requires --restart.");
@@ -101,8 +101,8 @@ test.each(["work", "capture"] as const)("claude-mem CLI follows %s-only paginati
   const h = importReceiptFixture(kind), before = importReceiptFs.readFileSync(h.file), args = ["--limit", "1", ...(kind === "capture" ? ["--capture-days", "7"] : [])];
   const first = await runImportReceipt(h, [...args, "--restart"]);
   expect(first).toStartWith("amem import claude-mem: run again\n");
-  expect(first).toMatch(kind === "work" ? /^ATTENTION +work lists: read 1, added 1/m : /^ATTENTION +capture: read 1, added 1/m);
-  expect(first).toMatch(/^OK +notes: read 0, added 0/m);
+  expect(first).toMatch(kind === "work" ? /^  !  ATTENTION +work lists: read 1, added 1/m : /^  !  ATTENTION +capture: read 1, added 1/m);
+  expect(first).toMatch(/^  ok OK +notes: read 0, added 0/m);
   expect(first).toContain("without --restart, keeping all other arguments");
   if (kind === "capture") expect(first).toContain("Widening --capture-days later requires --restart.");
   expect(await runImportReceipt(h, args)).toStartWith("amem import claude-mem: complete\n");
@@ -114,7 +114,7 @@ test("claude-mem CLI styles honor TTY and suppression while JSON keeps exact byt
   expect(await runImportReceipt(h, captureArgs, {}, true)).toMatch(ANSI);
   const plain = await runImportReceipt(h, captureArgs);
   expect(plain).not.toMatch(ANSI);
-  for (const env of [{ NO_COLOR: "" }, { TERM: "dumb" }]) expect(await runImportReceipt(h, captureArgs, env, true)).toBe(plain);
+  for (const env of [{ NO_COLOR: "1" }, { TERM: "dumb" }]) expect(await runImportReceipt(h, captureArgs, env, true)).toBe(plain);
   const notes = { read: 0, added: 0, skipped: { model: 0, pii: 0, secret: 0 }, more: false, cursor: 0 };
   const work = { read: 0, added: 0, skipped: { invalid: 0, policy: 0 }, more: false, cursor: 0 };
   const capture = { read: 0, added: 0, spooled: 0, skipped: 0, more: false };
