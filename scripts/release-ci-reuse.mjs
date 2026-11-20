@@ -7,7 +7,19 @@ const SHA=/^[a-f0-9]{40}$/, REQUIRED=["check (ubuntu-latest)","check (macos-late
 const ACTIVE=new Set(["queued","in_progress","waiting","pending","requested"]);
 const REMEDY="Push the release tree to main, or dispatch check on the tag commit, then retry the release.";
 // #503: a main push may skip its heavy jobs by reusing a PR proof; that run is never release evidence (PR runs are not).
-const HEAVY=/^(test|test-macos|measure|measure-macos) \(/,HEAVY_KINDS=["test (ubuntu-latest","test-macos (macos-latest","measure (ubuntu-latest","measure-macos (macos-latest"];
+const HEAVY=/^(test|test-macos|measure|measure-macos) \(/;
+/** Same complete-matrix rule as scripts/ci-scope.ts completeMatrix: shards 1..N of one N exactly once per test kind, each measure kind once. */
+function completeMatrix(names){
+  const heavy=names.filter(name=>HEAVY.test(name));
+  for(const [kind,os] of [["test","ubuntu-latest"],["test-macos","macos-latest"]]){
+    const rows=heavy.filter(name=>name.startsWith(`${kind} (`)),shards=rows.map(name=>new RegExp(`^${kind} \\(${os}, (\\d+), (\\d+)\\)$`).exec(name));
+    if(!shards.length||shards.some(match=>!match))return false;
+    const total=Number(shards[0][2]);if(!Number.isSafeInteger(total)||total<1||shards.some(match=>Number(match[2])!==total))return false;
+    const seen=new Set(shards.map(match=>Number(match[1])));
+    if(seen.size!==rows.length||rows.length!==total||[...seen].some(index=>index<1||index>total))return false;
+  }
+  return ["measure (ubuntu-latest)","measure-macos (macos-latest)"].every(name=>heavy.filter(row=>row.startsWith(name.slice(0,name.indexOf("(")+1))).length===1&&heavy.includes(name));
+}
 const SKIPPED_REMEDY="A matching main check skipped its test and measure jobs by reusing a pull request proof (#503), and pull request runs are not release evidence. Run gh workflow run check.yml --ref main, wait for it to succeed, then retry the release.";
 export class ReleaseProofError extends Error { constructor(kind,cause){super(kind==="reused"?cause:`${cause}. ${REMEDY}`);this.name="ReleaseProofError";this.kind=kind;} }
 const refuse=(kind,cause)=>{throw new ReleaseProofError(kind,cause);};
@@ -57,7 +69,7 @@ async function jobsOf(api,run){
   if(!REQUIRED.every(name=>{const matches=jobs.filter(job=>job.name===name);return matches.length===1&&passed(matches[0]);}))return "no";
   const heavy=jobs.filter(job=>HEAVY.test(job.name));
   if(heavy.length&&heavy.every(job=>job.status==="completed"&&job.conclusion==="skipped"))return "reused";
-  return HEAVY_KINDS.every(kind=>heavy.some(job=>job.name.startsWith(kind)))&&heavy.every(passed)?"yes":"no";
+  return completeMatrix(jobs.map(job=>job.name))&&heavy.every(passed)?"yes":"no";
 }
 /** ponytail: discovery is bounded to the latest 100 main runs and 100 exact-tag manual runs, 500 jobs/run.
  * Missing older proof fails closed; dispatch a fresh check rather than broadening the release trust boundary. */

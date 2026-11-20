@@ -44,7 +44,23 @@ export const MACOS_DEFERRED_ERROR = '::error title=macOS deferred::draft PR; mac
 // #503: a main push may skip its heavy jobs only when a pull_request `check` run already passed on an identical tree.
 export interface ProofJob { name?: unknown; status?: unknown; conclusion?: unknown }
 const HEAVY = /^(test|test-macos|measure|measure-macos) \(/;
-const HEAVY_KINDS = ['test (ubuntu-latest', 'test-macos (macos-latest', 'measure (ubuntu-latest', 'measure-macos (macos-latest'];
+/** Every heavy kind must be a complete, unambiguous matrix: test kinds name shards 1..N of one N exactly once each, measure kinds appear exactly once. */
+export function completeMatrix(names: readonly string[]): boolean {
+  const heavy = names.filter(name => HEAVY.test(name));
+  for (const [kind, os] of [['test', 'ubuntu-latest'], ['test-macos', 'macos-latest']] as const) {
+    const rows = heavy.filter(name => name.startsWith(`${kind} (`));
+    const shards = rows.map(name => new RegExp(`^${kind} \\(${os}, (\\d+), (\\d+)\\)$`).exec(name));
+    if (!shards.length || shards.some(match => !match)) return false;
+    const total = Number(shards[0]![2]);
+    if (!Number.isSafeInteger(total) || total < 1 || shards.some(match => Number(match![2]) !== total)) return false;
+    const seen = new Set(shards.map(match => Number(match![1])));
+    if (seen.size !== rows.length || rows.length !== total || [...seen].some(index => index < 1 || index > total)) return false;
+  }
+  for (const name of ['measure (ubuntu-latest)', 'measure-macos (macos-latest)']) {
+    if (heavy.filter(row => row.startsWith(name.slice(0, name.indexOf('(') + 1))).length !== 1 || !heavy.includes(name)) return false;
+  }
+  return true;
+}
 /** A full proof ran every heavy kind on both OSes and every job passed; a draft-deferred (macOS skipped) or scope-reduced (tests skipped) run never is. */
 export function fullProof(jobs: unknown): boolean {
   if (!Array.isArray(jobs) || jobs.length === 0) return false;
@@ -53,7 +69,7 @@ export function fullProof(jobs: unknown): boolean {
   const named = rows as { name: string; status?: unknown; conclusion?: unknown }[];
   const passed = (job: { status?: unknown; conclusion?: unknown }) => job.status === 'completed' && job.conclusion === 'success';
   const heavy = named.filter(job => HEAVY.test(job.name));
-  if (!HEAVY_KINDS.every(kind => heavy.some(job => job.name.startsWith(kind)))) return false;
+  if (!completeMatrix(named.map(job => job.name))) return false;
   if (!heavy.every(passed)) return false;
   return ['check (ubuntu-latest)', 'check (macos-latest)'].every(name => {
     const matches = named.filter(job => job.name === name);
@@ -72,10 +88,12 @@ export async function findTreeProof(api: GitHubRead, input: { repository: string
     const treeOf = async (commit: string) => {
       const value = record(await api(`repos/${repository}/git/commits/${commit}`));
       const tree = record(value?.tree)?.sha;
-      return value?.sha === commit && typeof tree === 'string' && SHA.test(tree) ? tree : undefined;
+      return value?.sha === commit && typeof tree === 'string' && SHA.test(tree) ? { tree, parents: Array.isArray(value.parents) ? value.parents.map(parent => record(parent)?.sha) : [] } : undefined;
     };
-    const pushed = await treeOf(sha);
-    if (!pushed) return null;
+    const pushedCommit = await treeOf(sha);
+    // A squash merge has one parent: main just before the merge. Anything else (merge commit, root) runs everything.
+    if (!pushedCommit || pushedCommit.parents.length !== 1 || typeof pushedCommit.parents[0] !== 'string' || !SHA.test(pushedCommit.parents[0])) return null;
+    const pushed = pushedCommit.tree, before = pushedCommit.parents[0];
     const pulls = await api(`repos/${repository}/commits/${sha}/pulls`);
     if (!Array.isArray(pulls)) return null;
     const merged = pulls.map(record).filter(pr => typeof pr?.merged_at === 'string' && record(pr.base)?.ref === 'main');
@@ -83,7 +101,12 @@ export async function findTreeProof(api: GitHubRead, input: { repository: string
     const pr = merged[0]!, head = record(pr.head), headSha = head?.sha;
     if (typeof pr.number !== 'number' || typeof headSha !== 'string' || !SHA.test(headSha)) return null;
     if (record(head?.repo)?.full_name !== repository) return null; // fork heads are never proof
-    if (await treeOf(headSha) !== pushed) return null;
+    if ((await treeOf(headSha))?.tree !== pushed) return null;
+    // A pull_request run tests the merge ref (head merged into the base of that moment), not the head. When the head already
+    // contains main as it was just before this push, every earlier base is an ancestor of the head and the tested merge tree
+    // equals the head tree, which equals the pushed tree. A head behind that main runs everything.
+    const compare = record(await api(`repos/${repository}/compare/${before}...${headSha}`));
+    if (compare?.behind_by !== 0 || record(compare.merge_base_commit)?.sha !== before || !['ahead', 'identical'].includes(String(compare.status))) return null;
     const listed = record(await api(`repos/${repository}/actions/workflows/check.yml/runs?event=pull_request&head_sha=${headSha}&status=success&per_page=100`));
     const runs = Array.isArray(listed?.workflow_runs) ? listed.workflow_runs.map(record) : undefined;
     if (!runs) return null;
@@ -92,7 +115,14 @@ export async function findTreeProof(api: GitHubRead, input: { repository: string
         || run.path !== '.github/workflows/check.yml' || record(run.head_repository)?.full_name !== repository) continue;
       const jobs = record(await api(`repos/${repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`));
       if (!Array.isArray(jobs?.jobs) || jobs.total_count !== jobs.jobs.length) continue; // an incomplete job read is never proof
-      if (fullProof(jobs.jobs)) return { runId: run.id, headSha, pr: pr.number };
+      if (!fullProof(jobs.jobs)) continue;
+      // The run's own recorded base must also be contained in the head, so its merge-ref tree is the head tree.
+      const bases = Array.isArray(run.pull_requests) ? run.pull_requests.map(record).filter(item => item?.number === pr.number) : [];
+      const base = record(bases[0]?.base)?.sha;
+      if (bases.length !== 1 || typeof base !== 'string' || !SHA.test(base)) continue;
+      const tested = record(await api(`repos/${repository}/compare/${base}...${headSha}`));
+      if (tested?.behind_by !== 0 || record(tested.merge_base_commit)?.sha !== base) continue;
+      return { runId: run.id, headSha, pr: pr.number };
     }
     return null;
   } catch {

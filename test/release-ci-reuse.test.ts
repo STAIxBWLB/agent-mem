@@ -6,7 +6,7 @@ import { proveRelease, frozenTag, githubReader } from "../scripts/release-ci-reu
 const commit="a".repeat(40),tree="b".repeat(40),other="c".repeat(40),tagObject="d".repeat(40),repository="acme/memory";
 const input={repository,commit};
 const run=(extra:Record<string,unknown>={})=>({id:42,workflow_id:9,path:".github/workflows/check.yml",repository:{full_name:repository},head_repository:{full_name:repository},head_branch:"main",event:"push",head_sha:other,status:"completed",conclusion:"success",run_attempt:1,...extra});
-const HEAVY_JOBS=["test (ubuntu-latest, 1, 4)","test-macos (macos-latest, 1, 4)","measure (ubuntu-latest)","measure-macos (macos-latest)"];
+const HEAVY_JOBS=[1,2,3,4].map(s=>`test (ubuntu-latest, ${s}, 4)`).concat([1,2,3,4].map(s=>`test-macos (macos-latest, ${s}, 4)`),["measure (ubuntu-latest)","measure-macos (macos-latest)"]);
 const jobs=(heavy:string="success")=>["check (ubuntu-latest)","check (macos-latest)",...HEAVY_JOBS].map((name,index)=>({id:index+1,run_id:42,name,status:"completed",conclusion:index<2?"success":heavy}));
 function fixture(options:{runs?:ReturnType<typeof run>[];jobRows?:ReturnType<typeof jobs>;otherTree?:string;active?:boolean;never?:boolean;offMain?:boolean;moveTag?:boolean;rerun?:boolean}={}){
   let time=0,slept=0,tagReads=0,runReads=0;const paths:string[]=[];
@@ -33,7 +33,8 @@ test("a main check that skipped its heavy jobs by reusing a PR proof is refused 
   expect(error.message).toContain("pull request runs are not release evidence");
   expect(error.message).toContain("gh workflow run check.yml --ref main");
   // Missing or failed heavy jobs on a main run are never proof either.
-  for(const rows of [jobs().filter(job=>!job.name.startsWith("measure-macos")),jobs().map(job=>job.name.startsWith("test (")?{...job,conclusion:"failure"}:job)]){
+  for(const rows of [jobs().filter(job=>!job.name.startsWith("measure-macos")),jobs().map(job=>job.name.startsWith("test (")?{...job,conclusion:"failure"}:job),
+    jobs().filter(job=>job.name!=="test (ubuntu-latest, 3, 4)"),jobs().filter(job=>!/^test-macos .*, [234], 4\)$/.test(job.name)),[...jobs(),{...jobs()[2]!,id:99}]]){
     const f=fixture({jobRows:rows});await expect(proveRelease(f.api,input,f.clock)).rejects.toThrow("Push the release tree to main");
   }
 });

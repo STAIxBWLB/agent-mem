@@ -281,17 +281,20 @@ test('workflow retains required names, conservative job conditions and install-f
 });
 
 describe('#503 identical-tree main push reuse', () => {
-  const REPO = 'STAIxBWLB/agent-mem', PUSHED = 'a'.repeat(40), HEAD = 'b'.repeat(40), TREE = 'c'.repeat(40);
+  const REPO = 'STAIxBWLB/agent-mem', PUSHED = 'a'.repeat(40), HEAD = 'b'.repeat(40), TREE = 'c'.repeat(40), BEFORE = 'e'.repeat(40), OLDBASE = 'f'.repeat(40);
   const ok = (name: string) => ({ name, status: 'completed', conclusion: 'success' });
   const fullJobs = () => [ok('decision'), ...[1, 2, 3, 4].map(s => ok(`test (ubuntu-latest, ${s}, 4)`)), ...[1, 2, 3, 4].map(s => ok(`test-macos (macos-latest, ${s}, 4)`)),
     ok('measure (ubuntu-latest)'), ok('measure-macos (macos-latest)'), ok('check (ubuntu-latest)'), ok('check (macos-latest)')];
   const skipped = (name: string) => ({ name, status: 'completed', conclusion: 'skipped' });
   const run = (id: number, extra: Record<string, unknown> = {}) => ({ id, head_sha: HEAD, event: 'pull_request', status: 'completed', conclusion: 'success',
+    pull_requests: [{ number: 7, base: { sha: OLDBASE } }],
     path: '.github/workflows/check.yml', head_repository: { full_name: REPO }, ...extra });
-  type World = { headTree?: string; pulls?: unknown; runs?: unknown[]; jobs?: Record<number, unknown[]>; fail?: RegExp };
+  type World = { headTree?: string; pulls?: unknown; runs?: unknown[]; jobs?: Record<number, unknown[]>; fail?: RegExp; parents?: unknown[]; behind?: Record<string, number> };
   const api = (world: World): GitHubRead => async path => {
     if (world.fail?.test(path)) throw new Error('GitHub API 502');
-    if (path === `repos/${REPO}/git/commits/${PUSHED}`) return { sha: PUSHED, tree: { sha: TREE } };
+    if (path === `repos/${REPO}/git/commits/${PUSHED}`) return { sha: PUSHED, tree: { sha: TREE }, parents: world.parents ?? [{ sha: BEFORE }] };
+    const compare = /compare\/([a-f0-9]{40})\.\.\.([a-f0-9]{40})$/.exec(path);
+    if (compare) { const behind = world.behind?.[compare[1]!] ?? 0; return { status: behind ? 'diverged' : 'ahead', behind_by: behind, merge_base_commit: { sha: behind ? 'd'.repeat(40) : compare[1] } }; }
     if (path === `repos/${REPO}/git/commits/${HEAD}`) return { sha: HEAD, tree: { sha: world.headTree ?? TREE } };
     if (path === `repos/${REPO}/commits/${PUSHED}/pulls`) return world.pulls ?? [{ number: 7, merged_at: '2026-11-20T00:00:00Z', base: { ref: 'main' }, head: { sha: HEAD, repo: { full_name: REPO } } }];
     if (path.startsWith(`repos/${REPO}/actions/workflows/check.yml/runs?`)) return { workflow_runs: world.runs ?? [run(41)] };
@@ -319,6 +322,12 @@ describe('#503 identical-tree main push reuse', () => {
       expect(await find({ jobs: { 41: jobs } })).toBeNull();
     }
     expect(fullProof([...fullJobs(), ok('check (ubuntu-latest)')])).toBe(false); // a duplicated aggregate is ambiguous
+    // Incomplete or ambiguous shard matrices are never full proof.
+    const shardless = (os: string, kind: string, keep: number[], total = 4) => fullJobs().filter(job => !job.name.startsWith(`${kind} (`)).concat(keep.map(s => ok(`${kind} (${os}, ${s}, ${total})`)));
+    for (const jobs of [shardless('ubuntu-latest', 'test', [1]), shardless('macos-latest', 'test-macos', [1, 2, 3]), shardless('ubuntu-latest', 'test', [1, 2, 3, 3]),
+      shardless('ubuntu-latest', 'test', [1, 2, 3, 5]), shardless('ubuntu-latest', 'test', [1, 2, 3, 4], 5), [...fullJobs(), ok('test (ubuntu-latest, 2, 3)')],
+      [...fullJobs(), ok('measure (ubuntu-latest)')], [...fullJobs(), ok('test (macos-latest, 1, 4)')]]) expect(fullProof(jobs)).toBe(false);
+    expect(fullProof(shardless('macos-latest', 'test-macos', [1, 2, 3], 3))).toBe(true); // an older complete 3-shard layout is still full
     expect(fullProof([{ name: 7 }])).toBe(false);
     expect(fullProof('jobs')).toBe(false);
   });
@@ -340,6 +349,11 @@ describe('#503 identical-tree main push reuse', () => {
     // A later full run is still found after an earlier non-proof run.
     expect(await find({ runs: [run(40), run(41)], jobs: { 40: fullJobs().slice(0, 3) } })).toEqual({ runId: 41, headSha: HEAD, pr: 7 });
     expect(await findTreeProof(api({}), { repository: REPO, sha: 'short' })).toBeNull();
+    // The tested merge ref must equal the pushed tree: a head behind main-before-merge, or behind its run's own base, is not proof.
+    expect(await find({ behind: { [BEFORE]: 1 } })).toBeNull();
+    expect(await find({ behind: { [OLDBASE]: 2 } })).toBeNull();
+    for (const parents of [[], [{ sha: BEFORE }, { sha: OLDBASE }], [{ sha: 'x' }]]) expect(await find({ parents })).toBeNull();
+    for (const pull_requests of [[], [{ number: 8, base: { sha: OLDBASE } }], [{ number: 7, base: {} }]]) expect(await find({ runs: [run(41, { pull_requests })] })).toBeNull();
   });
 
   test('only a push to main can reuse; pull requests and dispatch keep their full runs', async () => {
