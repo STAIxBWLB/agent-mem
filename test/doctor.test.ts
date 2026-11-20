@@ -5,9 +5,10 @@ import { readSelector } from "../src/memory/generation.ts";
 import { resolveShardProfile } from "../src/memory/shard.ts";
 import { publicPruneGraph } from "./fixtures/public-prune-graph.ts";
 import { indexFileName } from "../src/memory/index-file.ts";
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
@@ -17,6 +18,7 @@ import { CaptureStore } from "../src/memory/capture.ts";
 import { memoryGitSync, realPath } from "../src/memory/platform.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
+import { readSetupWriterRoots } from "../src/setup.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const fn of cleanup.splice(0).reverse()) fn(); });
@@ -808,4 +810,111 @@ test("#511: stale example IDs tell a marked reader that the person inspects them
     const shown = await runCli(["show", id, "--json"], context);
     expect(shown).not.toContain("PRIVATE_SENTINEL");
   } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+});
+
+// #520: placement sync reads every `agy-<hash>.json`, so another workspace's receipt with a missing install blocks the
+// whole writer inventory. Doctor reports it by target and phase, never by the recorded path, and never opens the other
+// workspace's native configuration.
+test("#520: doctor reports another workspace's agy receipt whose install is gone, and sync reads it too", async () => {
+  const r = rig(); r.note("n");
+  chmodSync(r.memory, 0o700); mkdirSync(join(r.memory, "setup"), { recursive: true, mode: 0o700 });
+  const removed = join(r.root, "removed agy release"), image = (value: unknown) => ({ mode: 0o600, bytes: Buffer.from(JSON.stringify(value)).toString("base64") });
+  const native = join(r.root, "another workspace", "settings.json");
+  mkdirSync(join(r.root, "another workspace"), { recursive: true, mode: 0o700 }); writeFileSync(native, "PRIVATE_OTHER_WORKSPACE", { mode: 0o600 });
+  const after = { mcpServers: { amem: { command: "/fixture/bin/bun", args: ["--smol", join(removed, "bin", "amem.js"), "mcp"] } } };
+  writeFileSync(join(r.memory, "setup", `agy-${"d".repeat(64)}.json`), JSON.stringify({ version: 2, target: "agy", intent: "a".repeat(64), phase: "applied",
+    changes: [{ key: "agy:0", path: native, before: { mode: 0o600, bytes: null }, after: image(after) }] }), { mode: 0o600 });
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toMatchObject({ category: "unavailable", target: "agy" });   // the same receipt refuses a placement sync
+  const opened: string[] = [], open = fs.openSync;
+  const guard = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
+    opened.push(String(args[0])); if (String(args[0]) === native) throw Error("another workspace's native configuration was opened");
+    return Reflect.apply(open, fs, args);
+  }) as typeof fs.openSync);
+  let report: any;
+  try { report = await doctor(r); } finally { guard.mockRestore(); }
+  const section = report.sections.setup as { status: string; entries: { file?: string; target?: string; phase?: string; entry?: string; reason?: string; kind?: string }[] };
+  expect(section.status).toBe("attention");
+  const row = section.entries.find(item => item.file === "setup receipt of another workspace")!;
+  expect(row).toMatchObject({ target: "agy", phase: "applied", entry: "amem install", kind: "drift" });
+  expect(row.reason).toContain("the applied agy setup receipt names an amem install that no longer exists");
+  expect(row.reason).toContain("amem setup agy --apply"); expect(row.reason).toContain("amem setup agy --undo");
+  expect(opened).toContain(join(r.memory, "setup", `agy-${"d".repeat(64)}.json`));   // the guard sees the receipt read itself
+  expect(opened).not.toContain(native); expect(JSON.stringify(section)).not.toContain(removed); expect(JSON.stringify(section)).not.toContain("PRIVATE_OTHER_WORKSPACE");
+});
+
+// #520: doctor never reports the setup inventory complete when sync's writer inventory would refuse it: an overflowing
+// setup directory, a malformed foreign agy receipt and a non-directory install root each give an explicit pathless entry.
+function setupRig() {
+  const r = rig(); r.note("n");
+  chmodSync(r.memory, 0o700); mkdirSync(join(r.memory, "setup"), { recursive: true, mode: 0o700 });
+  return r;
+}
+type SetupSection = { status: string; entries: { file?: string; target?: string; entry?: string; reason?: string; kind?: string }[] };
+test("#520: an overflowing setup directory is reported as incomplete, not ok", async () => {
+  const r = setupRig();
+  for (let i = 0; i < 300; i++) writeFileSync(join(r.memory, "setup", `stray-${i}.json.stale-0`), "", { mode: 0o600 });
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toMatchObject({ category: "bound" });
+  const section = (await doctor(r)).sections.setup as SetupSection;
+  expect(section.status).not.toBe("ok");
+  expect(section.entries).toContainEqual(expect.objectContaining({ target: "agy", entry: "receipts", kind: "unavailable" }));
+  expect(JSON.stringify(section)).not.toContain(r.memory);
+});
+test("#520: a malformed foreign agy receipt is reported, not skipped", async () => {
+  const r = setupRig();
+  writeFileSync(join(r.memory, "setup", `agy-${"e".repeat(64)}.json`), "{not json", { mode: 0o600 });
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toMatchObject({ category: "unsupported" });
+  const section = (await doctor(r)).sections.setup as SetupSection;
+  expect(section.status).not.toBe("ok");
+  const row = section.entries.find(item => item.file === "setup receipt of another workspace")!;
+  expect(row).toMatchObject({ target: "agy", kind: "unavailable" });
+  expect(row.reason).toContain("amem setup agy --undo"); expect(JSON.stringify(section)).not.toContain(r.memory);
+});
+test("#520: an existing non-directory install root is not called a missing install", async () => {
+  const r = setupRig();
+  const file = join(r.root, "not a release"); writeFileSync(file, "a file where the install root was", { mode: 0o600 });
+  const image = (value: unknown) => ({ mode: 0o600, bytes: Buffer.from(JSON.stringify(value)).toString("base64") });
+  // The recorded root (dirname(dirname(entry))) resolves to an existing regular file.
+  const after2 = { mcpServers: { amem: { command: "/fixture/bin/bun", args: ["--smol", join(file, "bin", "amem.js"), "mcp"] } } };
+  const native = join(r.root, "another workspace", "settings.json");
+  writeFileSync(join(r.memory, "setup", `agy-${"f".repeat(64)}.json`), JSON.stringify({ version: 2, target: "agy", intent: "a".repeat(64), phase: "applied",
+    changes: [{ key: "agy:0", path: native, before: { mode: 0o600, bytes: null }, after: image(after2) }] }), { mode: 0o600 });
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toMatchObject({ category: "unavailable" }); expect((caught as { target?: unknown }).target).toBeUndefined();
+  const section = (await doctor(r)).sections.setup as SetupSection;
+  expect(section.status).not.toBe("ok");
+  const row = section.entries.find(item => item.entry === "amem install")!;
+  expect(row.kind).toBe("unavailable"); expect(row.reason).not.toContain("no longer exists");
+  expect(JSON.stringify(section)).not.toContain(file);
+});
+test("#520: a foreign agy receipt without a supported launcher is reported, not ok", async () => {
+  const r = setupRig();
+  const image = (value: unknown) => ({ mode: 0o600, bytes: Buffer.from(JSON.stringify(value)).toString("base64") });
+  const native = join(r.root, "another workspace", "settings.json");
+  writeFileSync(join(r.memory, "setup", `agy-${"c".repeat(64)}.json`), JSON.stringify({ version: 2, target: "agy", intent: "a".repeat(64), phase: "applied",
+    changes: [{ key: "agy:0", path: native, before: { mode: 0o600, bytes: null }, after: image({ mcpServers: {} }) }] }), { mode: 0o600 });
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toMatchObject({ category: "unsupported" });
+  const section = (await doctor(r)).sections.setup as SetupSection;
+  expect(section.status).not.toBe("ok");
+  const row = section.entries.find(item => item.file === "setup receipt of another workspace")!;
+  expect(row).toMatchObject({ target: "agy", entry: "amem install", kind: "unavailable" });
+  expect(row.reason).toContain("amem setup agy --undo"); expect(JSON.stringify(section)).not.toContain(native);
+});
+test("#520: a linked setup directory is reported, never enumerated", async () => {
+  const r = rig(); r.note("n"); chmodSync(r.memory, 0o700);
+  const elsewhere = join(r.root, "elsewhere setup"); mkdirSync(elsewhere, { mode: 0o700 });
+  writeFileSync(join(elsewhere, `agy-${"b".repeat(64)}.json`), "{}", { mode: 0o600 });
+  symlinkSync(elsewhere, join(r.memory, "setup"));
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toBeDefined();
+  const opened: string[] = [], openDir = fs.opendirSync;
+  const guard = spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof fs.opendirSync>) => { opened.push(String(args[0])); return Reflect.apply(openDir, fs, args); }) as typeof fs.opendirSync);
+  let section: SetupSection;
+  try { section = (await doctor(r)).sections.setup as SetupSection; } finally { guard.mockRestore(); }
+  expect(section!.status).not.toBe("ok");
+  expect(section!.entries).toContainEqual(expect.objectContaining({ target: "agy", entry: "receipts", kind: "unavailable" }));
+  expect(opened).not.toContain(join(r.memory, "setup")); expect(JSON.stringify(section!)).not.toContain(elsewhere);
 });

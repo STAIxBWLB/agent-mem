@@ -648,8 +648,8 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
       `native ${kinds.native}, summaries ${kinds.summaries}, unclassified ${kinds.unclassified}; classification ${detail.classificationCoverage}${kinds.complete ? "" : " (native and summary counts are lower bounds)"}`];
   }
   if (name === "setup" && Array.isArray(detail.entries)) {
-    return (detail.entries as { target?: unknown; file?: unknown; entry?: unknown; reason?: unknown; expectedFile?: unknown }[]).map(item =>
-      singleLine(`${item.target} ${item.file}${item.expectedFile ? ` -> ${item.expectedFile}` : ""} ${item.entry}: ${item.reason}`));
+    return (detail.entries as { target?: unknown; file?: unknown; entry?: unknown; reason?: unknown; expectedFile?: unknown; phase?: unknown }[]).map(item =>
+      singleLine(`${item.target}${item.phase ? ` (${item.phase})` : ""} ${item.file}${item.expectedFile ? ` -> ${item.expectedFile}` : ""} ${item.entry}: ${item.reason}`));
   }
   if (name === "brief" && typeof detail.tokens === "number") return [`${detail.tokens} of ${detail.budget} tokens${detail.coverage ? `, coverage ${facts(detail.coverage as Record<string, unknown>) || "complete"}` : ""}`];
   const { examples, ...rest } = detail;

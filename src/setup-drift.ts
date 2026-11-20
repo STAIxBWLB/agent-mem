@@ -1,10 +1,10 @@
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, type Dir, existsSync, fstatSync, lstatSync, opendirSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { SetupTarget } from "./setup.ts";
+import { setupReceiptRemedy, type SetupTarget } from "./setup.ts";
 import { SETUP_CONFIG_BYTES } from "./setup-toml.ts";
-import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpRecord, type ConfigImage } from "./setup-owned.ts";
+import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpLauncher, mcpRecord, type ConfigImage } from "./setup-owned.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { realPath } from "./memory/platform.ts";
@@ -17,6 +17,8 @@ export interface SetupDriftEntry {
   reason: string;
   kind: "drift" | "unavailable" | "review-needed";
   expectedFile?: string;
+  /** Present only where the receipt itself is the finding, so the person sees which receipt state blocks use (#520). */
+  phase?: "applied";
 }
 export interface SetupDriftReport {
   status: SetupDriftStatus;
@@ -59,8 +61,8 @@ function parseImage(value: unknown): ConfigImage {
   return { bytes: value.bytes as string | null, mode: Number(value.mode) };
 }
 
-function parseReceipt(value: unknown, target: SetupTarget, expectedPaths: readonly string[]): Receipt {
-  if (!plain(value) || (value.version !== 1 && value.version !== 2) || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== expectedPaths.length && !(target === "jcode" && value.changes.length === 1)) throw Error("invalid receipt");
+function parseReceipt(value: unknown, target: SetupTarget, count: number): Receipt {
+  if (!plain(value) || (value.version !== 1 && value.version !== 2) || value.target !== target || !/^[a-f0-9]{64}$/.test(String(value.intent)) || !["applied", "prepared"].includes(String(value.phase)) || !Array.isArray(value.changes) || value.changes.length !== count && !(target === "jcode" && value.changes.length === 1)) throw Error("invalid receipt");
   const changes: ReceiptChange[] = [];
   for (let index = 0; index < value.changes.length; index++) {
     const item: unknown = value.changes[index];
@@ -126,6 +128,28 @@ function entry(target: SetupTarget, file: string, name: string, reason: string, 
   return { target, file, entry: name, reason, kind };
 }
 
+/** #520: the receipt's managed MCP launcher names a runtime root that was positively identified as absent (ENOENT/ENOTDIR).
+ * The identification is the writer inventory's own: a non-directory or unreadable root is not reported as a missing install. */
+function installMissing(target: SetupTarget, after: ConfigImage): "missing" | "unavailable" | false {
+  try {
+    // The writer inventory refuses an applied receipt without a supported launcher (unsupported), so it is never silently fine here.
+    const launch = mcpLauncher(mcpRecord(target, after), target);
+    if (!launch || launch.bun.includes("\0") || launch.entry.length > 4096 || launch.entry.includes("\0") || !["/bin/amem.js", "/src/cli.ts"].some(suffix => launch.entry.endsWith(suffix))
+      || target === "opencode" && [launch.bun, launch.entry].some(value => /\{(?:env|file):/.test(value))) return "unavailable";
+    let root: string;
+    try { root = realPath(dirname(dirname(launch.entry))); }
+    catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unavailable"; }
+    // An existing non-directory root is refused by the writer inventory anonymously; it is never called a missing install.
+    return lstatSync(root, { throwIfNoEntry: false })?.isDirectory() ? false : "unavailable";
+  } catch { return "unavailable"; }
+}
+
+const installUnavailable = (target: SetupTarget) => `the applied ${target} setup receipt's amem install cannot be confirmed; placement sync refuses until amem setup ${target} --apply or amem setup ${target} --undo repairs it`;
+function installEntry(target: SetupTarget, file: string, state: "missing" | "unavailable"): SetupDriftEntry {
+  return state === "missing" ? { ...entry(target, file, "amem install", setupReceiptRemedy(target, true), "drift"), phase: "applied" }
+    : entry(target, file, "amem install", installUnavailable(target), "unavailable");
+}
+
 /** Read setup receipts and only the resolver-selected native config files. This function never writes. */
 export function readSetupDrift(options: { home: string; env?: SetupEnvironment; cwd?: string }): SetupDriftReport {
   const env = options.env ?? process.env;
@@ -151,7 +175,7 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
       const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(raw.bytes, "base64")));
       if (plain(value) && value.target === target && value.phase === "prepared") continue;
       anyReceipt = true; checked++;
-      receipt = parseReceipt(value, target, expectedPaths);
+      receipt = parseReceipt(value, target, expectedPaths.length);
     } catch {
       entries.push(entry(target, receiptPath, "receipt", "receipt is invalid or unavailable", "unavailable")); unavailable = true; continue;
     }
@@ -163,6 +187,10 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
         expectedFile: expectedPaths[receipt.changes.indexOf(change)] });
       continue;
     }
+    // #520: an applied receipt whose recorded amem install root is gone blocks every placement sync, whatever its native files still say.
+    // The entry names the target and receipt phase only: the recorded path, version and command text are never diagnostics.
+    const install = installMissing(target, receipt.changes[0]!.after);
+    if (install) { entries.push(installEntry(target, "setup receipt", install)); if (install === "unavailable") unavailable = true; }
     const liveImages: (ConfigImage | undefined)[] = [];
     for (const change of receipt.changes) {
       let current: ConfigImage;
@@ -220,6 +248,43 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
         } catch { entries.push(entry(target, configPath, "hooks.state", "Codex hook trust could not be checked safely", "unavailable")); unavailable = true; }
       }
     }
+  }
+  // #520: placement sync reads every `agy-<hash>.json` under setup/, so another workspace's receipt whose install is gone
+  // blocks it too. Only that receipt and its launcher root are read; the other workspace's native files are never opened.
+  const ownAgy = root === undefined ? undefined : `agy-${hash(root)}.json`;
+  // Bounded the way the writer inventory is: more than 256 names in setup/ refuses there, so it is reported here, never sliced away.
+  const foreign: string[] = [];
+  const incomplete = (reason: string) => { entries.push(entry("agy", "setup receipt of another workspace", "receipts", reason, "unavailable")); unavailable = true; };
+  let scanned = 0, overflow = false, dir: Dir | undefined;
+  try {
+    // The writer inventory refuses a linked or non-directory setup/; never enumerate through one.
+    const stat = lstatSync(join(options.home, "setup"), { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) throw Object.assign(Error("setup is not a plain directory"), { code: "ENOTPLAIN" });
+    if (stat) dir = opendirSync(join(options.home, "setup"));
+    for (;dir;) {
+      const item = dir.readSync(); if (!item) break;
+      if (++scanned > 256) { overflow = true; break; }
+      if (/^agy-[a-f0-9]{64}\.json$/.test(item.name) && item.name !== ownAgy) foreign.push(item.name);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") incomplete("the setup receipt directory could not be listed; placement sync may refuse until it is readable");
+  } finally { dir?.closeSync(); }
+  if (overflow) incomplete("the setup receipt directory holds more entries than the inventory bound; placement sync refuses until receipts are removed with amem setup <target> --undo");
+  else for (const name of foreign.sort()) {
+    let raw: ConfigImage;
+    try { raw = safeImage(join(options.home, "setup", name), JOURNAL_BYTES, budget); }
+    catch { incomplete("an agy setup receipt of another workspace cannot be read safely; placement sync refuses until it is readable"); continue; }
+    if (raw.bytes === null) continue; // removed since the listing
+    let receipt: Receipt;
+    try {
+      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(raw.bytes, "base64")));
+      if (plain(value) && value.phase === "prepared") { incomplete("an agy setup receipt of another workspace is not applied; run amem setup agy --apply or amem setup agy --undo from that workspace"); continue; }
+      receipt = parseReceipt(value, "agy", 1);
+    } catch { incomplete("an agy setup receipt of another workspace is invalid; run amem setup agy --undo from that workspace"); continue; }
+    anyReceipt = true; checked++;
+    const install = installMissing("agy", receipt.changes[0]!.after);
+    if (install) { entries.push(installEntry("agy", "setup receipt of another workspace", install)); if (install === "unavailable") unavailable = true; }
   }
   const status: SetupDriftStatus = entries.some(value => value.kind === "drift" || value.kind === "review-needed") ? "attention"
     : unavailable ? "unavailable" : anyReceipt ? "ok" : "skipped";

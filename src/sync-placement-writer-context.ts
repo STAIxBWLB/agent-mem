@@ -3,7 +3,7 @@ import { types } from "node:util";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { canonicalJSON } from "./memory/generation.ts";
-import { readSetupWriterRoots } from "./setup.ts";
+import { readSetupWriterRoots, SETUP_TARGETS, setupReceiptRemedy, SetupWriterRootsError, type SetupTarget } from "./setup.ts";
 import { measureSyncPlacementWriters, extractSyncPlacementWriterFailure, type SyncPlacementWriterFailureDetail, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 import { PlacementHomeFloorError, requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites.ts";
@@ -18,18 +18,48 @@ const failureDetails:Record<SyncPlacementWriterFailureDetail,string>={
   "invalid-version":"package version is not a supported plain release", "invalid-inventory":"root inventory is invalid or duplicated", "unsafe-runtime":"runtime files have unsafe types or symlinks",
   "missing-runtime":"required bin/amem.js or src/index.ts is missing",bound:"inventory exceeds a supported bound",changed:"install changed during measurement",
 };
-function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable",phase:PlacementWriterContextPhase,detail?:SyncPlacementWriterFailureDetail,renewalState?:"pending"|"staging"|"checkpoint-pending"):string {
+function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"missing"|"changed"|"unavailable",phase:PlacementWriterContextPhase,detail?:SyncPlacementWriterFailureDetail,renewalState?:"pending"|"staging"|"checkpoint-pending",setupTarget?:SetupTarget):string {
   if(category==="writer renewal")return new SharedWriterRevisionError(renewalState==="staging"?"staging":renewalState==="checkpoint-pending"?"checkpoint-pending":"pending").message;
   if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); have the person inspect sync-placement-writer-roots.json and the matching activation metadata with a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
   if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); have the person inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
   const cause=detail?`; ${failureDetails[detail]}`:"";
-  if(phase==="initial")return `Sync placement initial writer proof is ${causeClass} (${category} category${cause}); ${category==="setup receipt"?"upgrade or repair the managed amem install and its host exact pin, then rerun amem setup <target> --apply":"upgrade or repair the amem install and its host exact pin"}. Declare the complete writer roots and rerun amem migrate --sync-placement --dry-run.`;
+  // #520: a receipt whose recorded install root is gone names its target and remedy, never the recorded path.
+  const receipt=category==="setup receipt"&&setupTarget?setupReceiptRemedy(setupTarget):undefined;
+  if(phase==="initial")return `Sync placement initial writer proof is ${causeClass} (${category} category${cause}); ${receipt??(category==="setup receipt"?"upgrade or repair the managed amem install and its host exact pin, then rerun amem setup <target> --apply":"upgrade or repair the amem install and its host exact pin")}. Declare the complete writer roots and rerun amem migrate --sync-placement --dry-run.`;
+  if(receipt)return `Sync placement writer proof is ${causeClass} (${category} category${cause}); ${receipt}; then rerun the sync.`;
   return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or have the person run amem migrate --sync-placement --dry-run and --apply with the complete --writer-root inventory after installing the required 0.22.0 home floor.`;
 }
 export class PlacementWriterContextError extends Error {
-  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail,readonly renewalState?:"pending"|"staging"|"checkpoint-pending") {
-    super(writerContextMessage(category,causeClass,phase,detail,renewalState)); this.name = "PlacementWriterContextError";
+  constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail,readonly renewalState?:"pending"|"staging"|"checkpoint-pending",readonly setupTarget?:SetupTarget) {
+    super(writerContextMessage(category,causeClass,phase,detail,renewalState,setupTarget)); this.name = "PlacementWriterContextError";
   }
+}
+/**
+ * #520: a later sync failure carries its placement refusal as fixed own data, never only as the message text a marked
+ * session masks, so the target and remedy survive the wrapper that adds the underlying transport error.
+ */
+export function placementSyncFailure(refusal: PlacementWriterContextError, failure: unknown): Error {
+  const error = new Error(`${refusal.message} ${(failure as Error).message}`);
+  Object.defineProperty(error, "placementRefusal", { value: refusal }); return error;
+}
+/**
+ * #520: the fixed-data text a marked session gets when a placement refusal comes from an applied setup receipt whose
+ * recorded amem install no longer exists. Fields are read as own properties and validated against closed sets, so a
+ * caught message, a recorded path or a forged target never reaches the text; every other failure returns undefined and
+ * keeps the generic masked refusal.
+ */
+export function markedSetupReceiptRefusal(error: unknown): string | undefined {
+  const target = setupReceiptTarget(error);
+  return target === undefined ? undefined : `Placement sync refused [cause: setup_receipt_missing_install]: ${setupReceiptRemedy(target)}; then rerun the sync.`;
+}
+function setupReceiptTarget(error: unknown): SetupTarget | undefined {
+  if (!error || typeof error !== "object" || types.isProxy(error)) return undefined;
+  const carried = Object.getOwnPropertyDescriptor(error, "placementRefusal")?.value;
+  const refusal: unknown = carried && typeof carried === "object" && !types.isProxy(carried) ? carried : error;
+  if (refusal === null || typeof refusal !== "object") return undefined;
+  const fields = Object.getOwnPropertyDescriptors(refusal), target: unknown = fields.setupTarget?.value;
+  return fields.category?.value === "setup receipt" && fields.causeClass?.value === "unavailable" && typeof target === "string"
+    && (SETUP_TARGETS as readonly string[]).includes(target) ? target as SetupTarget : undefined;
 }
 function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase:PlacementWriterContextPhase="active"): PlacementWriterContextError {
   if (error && typeof error === "object" && !types.isProxy(error) && (error instanceof PlacementHomeFloorError || error instanceof FormatFloorError)) return new PlacementWriterContextError("home floor","unavailable",phase);
@@ -40,17 +70,22 @@ function safeRefusal(error: unknown, category: PlacementWriterRootCategory,phase
     if (typeof category==="string" && ["running CLI","host package","setup receipt","declared writer","active locator","home floor","writer renewal"].includes(category)
       && typeof causeClass==="string" && ["missing","changed","unavailable"].includes(causeClass)) {
       const ownDetail=detail&&"value"in detail&&typeof detail.value==="string"&&Object.hasOwn(failureDetails,detail.value)?detail.value as SyncPlacementWriterFailureDetail:undefined;
-      const state=fields.renewalState?.value;
-      return new PlacementWriterContextError(category as PlacementWriterRootCategory,causeClass as PlacementWriterContextError["causeClass"],phase,ownDetail,state==="staging"||state==="pending"||state==="checkpoint-pending"?state:undefined);
+      const state=fields.renewalState?.value,target=fields.setupTarget?.value;
+      return new PlacementWriterContextError(category as PlacementWriterRootCategory,causeClass as PlacementWriterContextError["causeClass"],phase,ownDetail,state==="staging"||state==="pending"||state==="checkpoint-pending"?state:undefined,
+        typeof target==="string"&&(SETUP_TARGETS as readonly string[]).includes(target)?target as SetupTarget:undefined);
     }
   }
   return new PlacementWriterContextError(category,"unavailable",phase);
 }
-const fail = (category: PlacementWriterRootCategory, cause: PlacementWriterContextError["causeClass"],phase:PlacementWriterContextPhase="active",detail?:SyncPlacementWriterFailureDetail): never => { throw new PlacementWriterContextError(category,cause,phase,detail); };
+const fail = (category: PlacementWriterRootCategory, cause: PlacementWriterContextError["causeClass"],phase:PlacementWriterContextPhase="active",detail?:SyncPlacementWriterFailureDetail,setupTarget?:SetupTarget): never => { throw new PlacementWriterContextError(category,cause,phase,detail,undefined,setupTarget); };
 function required(home: string, ownRoot: string,phase:PlacementWriterContextPhase="active") {
   let own: string, receipt: string[];
   try { own = realPath(ownRoot); } catch { return fail("running CLI","unavailable",phase,"unreadable"); }
-  try { receipt = readSetupWriterRoots(home); } catch { return fail("setup receipt","unavailable",phase,"unreadable"); }
+  try { receipt = readSetupWriterRoots(home); }
+  catch (error) {
+    // #520: only a receipt naming a removed install carries its target; every other inventory refusal stays anonymous.
+    return fail("setup receipt","unavailable",phase,"unreadable",error instanceof SetupWriterRootsError?error.target:undefined);
+  }
   return { own, receipt, roots: [...new Set([own,...receipt])].sort() };
 }
 function rootCategory(root:string|undefined,needed:ReturnType<typeof required>):PlacementWriterRootCategory {

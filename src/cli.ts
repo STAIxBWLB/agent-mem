@@ -364,6 +364,12 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // #288 step 3: checkpoint refusals are fixed cause-and-next-step strings with numbers only (no path, row or project).
     if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
+    // #520: a placement refusal caused by an applied setup receipt for a removed install keeps its target and remedy as
+    // fixed data; every other placement and sync failure keeps the generic masked refusal below.
+    if (marked) {
+      const refusal = (await import("./sync-placement-writer-context.ts")).markedSetupReceiptRefusal(error);
+      if (refusal) throw new Error(refusal);
+    }
     if (marked) {
       // parseCommand is pure: when it rejects argv, the error it raised is a usage error, not memory data.
       let usage: Error | undefined, parsed: ReturnType<typeof parseCommand> | undefined;
@@ -1410,7 +1416,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   } catch (error) {
     if (sub === "sync") progress?.finish(stop?.cause() ? "cancelled" : "failed", stop?.cause() ? "cancelled" : "unavailable");
     if (sub === "sync") stampSync((error as Error).message, stop?.cause());
-    if (sub === "sync" && placementWriters?.lastRefusal) throw Error(`${placementWriters.lastRefusal.message} ${(error as Error).message}`);
+    if (sub === "sync" && placementWriters?.lastRefusal) throw (await import("./sync-placement-writer-context.ts")).placementSyncFailure(placementWriters.lastRefusal, error);
     throw error;
   }
   finally {

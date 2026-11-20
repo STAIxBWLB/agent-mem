@@ -8,6 +8,7 @@ export function setup202Rig(bun = process.execPath) {
   const home = realPath(mkdtempSync(join(tmpdir(), "amem-setup-202-")));
   const env: Record<string, string | undefined> = { HOME: home, AMEM_HOME: join(home, "memory"), PATH: "" };
   const entry = join(home, "package with space", "bin", "amem.js");
+  mkdirSync(dirname(entry), { recursive: true, mode: 0o700 });   // an applied receipt names an install root that exists
   const put = (file: string, value: string) => { mkdirSync(dirname(file), { recursive: true, mode: 0o700 }); writeFileSync(file, value, { mode: 0o600 }); chmodSync(file, 0o600); };
   const text = (file: string) => readFileSync(file, "utf8");
   const calls: string[][] = [];
