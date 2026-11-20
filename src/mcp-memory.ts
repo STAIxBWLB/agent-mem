@@ -67,6 +67,10 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
   const currentPolicy = () => calls.getStore()?.policy ?? createStandalonePolicy(policyOptions());
   const policyRevisionForCall = () => { const revision = policyKey(policyOptions()), active = calls.getStore(); if (active && active.revision !== revision) return unavailable(); return revision; };
   const policy = currentPolicy(), release = registerReaderLease(base);
+  // #354: a work read's per-row and per-view screens take this call's own snapshot, so a policy tightened after the
+  // server started still reaches them; outside a call it stays the startup policy, exactly as before, and no policy
+  // is built per row.
+  const screenPolicy = () => calls.getStore()?.policy ?? policy;
   const closers: (() => void)[] = [release]; let closed = false;
   const close = () => { if (closed) return; closed = true; let failure: unknown; for (const closer of closers.reverse()) { try { closer(); } catch (error) { failure ??= error; } } if (failure) throw failure; };
   try {
@@ -87,7 +91,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       return read.state === "ok" ? read.views : [];
     };
     const candidates = new CandidateStore({ memoryDir: base, ...(reconcile ? { reconcile } : {}) }); closers.push(() => candidates.close());
-    const work = new WorkListStore({ base, project, aliases, briefPolicyOptions: policyOptions, policy: async row => { const permitted = await policy.screen(row); guard(); return permitted; } }); closers.push(() => work.close());
+    const work = new WorkListStore({ base, project, aliases, briefPolicyOptions: policyOptions, policy: async row => { const permitted = await screenPolicy().screen(row); guard(); return permitted; } }); closers.push(() => work.close());
     const fullGuard = () => {
       if (!permitted()) unavailable();
       if (closed) unavailable(); options.assertCurrent?.();
@@ -311,7 +315,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         // Reduce complete views before policy: individually public appends can compose into private state.
         const result = await work.read(textOf(args, "list", true), true);
         const permitted: typeof result = [];
-        for (const view of result) if (await policy.screen(view)) permitted.push(view);
+        for (const view of result) if (await screenPolicy().screen(view)) permitted.push(view);
         guard();
         return args.includeClosed === true ? permitted : permitted.filter(view => !view.closed).map(view => ({ ...view, items: view.items.filter(item => item.fields.status !== "done" && item.fields.status !== "dropped") }));
       },
@@ -380,6 +384,21 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         try { if (window !== undefined) peaks.abort(window); } catch { /* nothing recorded, nothing to correct */ }
         throw error;
       }
+    };
+    // #354: the work read runs the same per-call context as the read tools, so its per-row guard() takes the cheap
+    // path instead of verifying the whole placement once per row. It is not one of the #485 sampled read tools, so it
+    // takes neither the metrics sample nor the recall-source preparation; the checks around the call are the read
+    // wrapper's: one full guard at entry, one after, and a policy revision that moved during the call refuses.
+    exposed.amem_work_state_read = async args => {
+      fullGuard();
+      const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
+      if (policyKey(policyOptions()) !== revision) return unavailable();
+      return calls.run({ policy: snapshot, revision, configured }, async () => {
+        const value = await tools.amem_work_state_read(args);
+        fullGuard();
+        if (policyKey(policyOptions()) !== revision) return unavailable();
+        return value;
+      });
     };
     return { tools: exposed, close, onEmitted };
   } catch (error) { close(); throw error; }
