@@ -102,6 +102,15 @@ export function walkShards(base: string): { hash: string; key: string; local: bo
   return out;
 }
 
+/**
+ * #359: the catalog's project keys, in scanCatalog's order, without per-shard stats (no store open, no SQLite read, no directory sizing).
+ * It keeps scanCatalog's placement selection guard, so a home scanCatalog refuses is refused here too. For pickers; `amem projects`/usage keep scanCatalog.
+ */
+export function catalogKeys(base: string): string[] {
+  capturedSelection(base);
+  return walkShards(base).map(shard => shard.key).sort((a, b) => a.localeCompare(b));
+}
+
 /** What the shards and the alias log say, before anything is persisted. */
 export function scanCatalog(base: string): CatalogProject[] {
   const captured = capturedSelection(base);

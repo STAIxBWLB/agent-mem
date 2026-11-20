@@ -21,7 +21,7 @@ import { pendingSummary } from "../memory/candidate-pending.ts";
 import { candidateOverlapsBatch } from "../memory/candidate-overlaps.ts";
 import { capacityReport } from "../memory/capacity.ts";
 import { readCaptureConfigFile, writeCaptureConfigFile } from "../memory/capture.ts";
-import { readCatalogFresh } from "../memory/catalog.ts";
+import { catalogKeys, readCatalogFresh } from "../memory/catalog.ts";
 import { configuredPolicy, configuredPolicyOptions } from "../memory/config.ts";
 import { openCuratedForRead, requireShard } from "../memory/curated-read.ts";
 import { applyDecay, assertExactDecayForget, decayPreview, DECAY_DEFAULT_DAYS, readDecayCounters } from "../memory/decay-review.ts";
@@ -133,7 +133,7 @@ export const plugin = {
       catalogExpiry = Infinity;
       if (!existsSync(base)) return [];
       const keys = new Set<string>(), waiting = new Set<string>();
-      try { for (const p of readCatalogFresh(base)) keys.add(p.key); } catch (e) { ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
+      try { for (const key of catalogKeys(base)) keys.add(key); } catch (e) { ctx.log(`amem: project catalog unavailable: ${errorText(e)}`); }
       try { for (const key of sharedStoreProjects()) keys.add(resolveAlias(base, key)); } catch (e) { ctx.log(`amem: shared store projects unavailable: ${errorText(e)}`); }
       if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
@@ -457,7 +457,8 @@ export const plugin = {
             }
           }
         }
-        const selection = cachedPanels.has(input.panel) ? projectList() : { list: projects(), cacheable: false };
+        // #359: every panel reuses the project list behind the snapshotRevision witness; only result caching stays limited to cachedPanels.
+        const listed = projectList(), selection = cachedPanels.has(input.panel) ? listed : { list: listed.list, cacheable: false };
         if (input.panel === "recap" && !selection.cacheable) noteMiss("uncacheable selection");
         list = selection.list; project = pick(args, list);
         if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
