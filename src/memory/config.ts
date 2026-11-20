@@ -17,10 +17,11 @@ export const CONFIG_FILE = "amem.config.json";
 export const REPO_CONFIG_DIR = ".amem";
 export const REPO_CONFIG_FILE = "config";
 const MAX_CONFIG_BYTES = 64 * 1024;
-const MACHINE_KEYS = ["home", "denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "capture", "records", "privateRemotes"] as const;
+const MACHINE_KEYS = ["home", "denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "capture", "records", "privateRemotes", "review"] as const;
 const REPO_KEYS = ["denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "records"] as const;
 
 export interface AmemConfig {
+  review?: { recheck_days?: number; unused_rendered?: number; unused_days?: number };
   /** Static SessionStart record instruction; absent means enabled. Repository false only narrows. */
   records?: boolean;
   /** The memory home, when the file moves it (a pointer file: see `configuredHome`). `AMEM_HOME` still wins. Machine file only. */
@@ -111,6 +112,16 @@ function parseFile(raw: unknown, label: string, keys: readonly string[]): Partia
     if (capMb !== undefined) out.capture.capMb = capMb;
     if (retentionDays !== undefined) out.capture.retentionDays = retentionDays;
   }
+  if (body.review !== undefined) {
+    if (!body.review || typeof body.review !== "object" || Array.isArray(body.review) || Object.keys(body.review).some(key => !["recheck_days", "unused_rendered", "unused_days"].includes(key))) return fail(label, "review takes only recheck_days, unused_rendered and unused_days");
+    const rawReview = body.review as Record<string, unknown>;
+    const review: NonNullable<AmemConfig["review"]> = {};
+    for (const key of ["recheck_days", "unused_rendered", "unused_days"] as const) {
+      const value = countOf(rawReview[key], `review.${key}`, label, key === "unused_rendered" ? 1_000_000 : key === "unused_days" ? 90 : 36_500);
+      if (value !== undefined) review[key] = value;
+    }
+    out.review = review;
+  }
   return out;
 }
 
@@ -163,6 +174,7 @@ export function loadAmemConfig(base: string, repoRoot?: string): LoadedConfig {
   if (denyPaths.length > 64) fail(machinePath, "denyPaths and the repository's denyPaths name more than 64 entries together");
   if (piiPatterns.length > 64) fail(machinePath, "piiPatterns and the repository's piiPatterns name more than 64 entries together");
   const config: AmemConfig = { denyPaths, piiPatterns, capture: { ...(machine?.capture ?? {}) } };
+  if (machine?.review !== undefined) config.review = { ...machine.review };
   if (machine?.home !== undefined) config.home = machine.home;
   if (machine?.privateRemotes?.length) config.privateRemotes = machine.privateRemotes;
   if (machine?.records !== undefined || repo?.records !== undefined) config.records = machine?.records !== false && repo?.records !== false;

@@ -8,6 +8,20 @@ const entry = (id: string): string => { const normalized = id.replace(/^mem:/, "
 const projectKey = (project: string): string => { if (typeof project !== "string" || !project.trim() || project.length > 400 || project.includes("\0")) throw Error("invalid memory use project"); return project; };
 function guard(context: MemoryUseContext): void { if (context.allowed?.() === false) throw Error("memory use unavailable"); context.assertCurrent?.(); }
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) >= 0;
+/** Sum a bounded delivery snapshot without treating a missing metric as an observed zero. */
+export function summarizeMemoryUse(rows: readonly Counter[]): MemoryUseSummary {
+  if (!rows.length) return { state: "known", records: 0, rendered: null, delivered: null, cited: null };
+  const metric = (name: keyof CounterValues): number | null => {
+    let total = 0;
+    for (const row of rows) {
+      const value = row[name];
+      if (!count(value) || !Number.isSafeInteger(total + value)) return null;
+      total += value;
+    }
+    return total;
+  };
+  return { state: "known", records: rows.length, rendered: metric("rendered"), delivered: metric("delivered"), cited: metric("cited") };
+}
 /** Counts are explicit per-delivery totals, never increments or inferred delivery/citation events. */
 export function recordMemoryUse(port: MemoryUsePort, key: CounterKey, values: CounterValues, context: MemoryUseContext = {}): boolean {
   try {
@@ -34,13 +48,7 @@ export function readMemoryUse(port: MemoryUsePort, project: string, id: string, 
         rows.set(row.id, row);
       }
     }
-    const metric = (name: keyof CounterValues): number | null => {
-      if (!rows.size) return null;
-      let total = 0;
-      for (const row of rows.values()) { const value = row[name]; if (!count(value) || !Number.isSafeInteger(total + value)) return null; total += value; }
-      return total;
-    };
-    const result: MemoryUseSummary = { state: "known", records: rows.size, rendered: metric("rendered"), delivered: metric("delivered"), cited: metric("cited") };
+    const result = summarizeMemoryUse([...rows.values()]);
     guard(context); return result;
   } catch { return unknown(); }
 }
