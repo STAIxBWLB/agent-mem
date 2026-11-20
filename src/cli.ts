@@ -31,7 +31,7 @@ import { originLine, originRecheck } from "./memory/candidate-origin.ts";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
-import { CandidateStore, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
+import { CandidateStore, candidateInputId, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
 import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-overlaps.ts";
 import { openCuratedForRead } from "./memory/curated-read.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
@@ -727,7 +727,6 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const settings = loadAmemConfig(base, repoConfigRoot(policyCwd)).config.review;
         const candidates = new CandidateStore({ memoryDir: base, reconcile: { canonical: project, aliases } });
         try {
-          const { candidateInputId } = await import("./memory/candidates.ts");
           const targets = unusedInjectionTargets(store, project, readReviewSnapshot(base, [project, ...aliases]), { now: store.readNow(), days: settings?.unused_days ?? REVIEW_DEFAULTS.unused_days, threshold: settings?.unused_rendered ?? REVIEW_DEFAULTS.unused_rendered, aliases, screen: view => policyOf().screenStandalone(view), exclude: target => candidates.get(candidateInputId({ project, kind: "decay", target, reason: UNUSED_INJECTION_REASON }), project) !== undefined });
           assertCurrent();
           for (const entry of targets) candidates.put({ project, kind: "decay", target: entry.target, reason: UNUSED_INJECTION_REASON }, "public");
