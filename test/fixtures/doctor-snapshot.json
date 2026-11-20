@@ -184,6 +184,7 @@
         "examples": [
           "string"
         ],
+        "hint": "string",
         "missingReferences": "number",
         "status": "attention"
       }

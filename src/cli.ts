@@ -3,7 +3,7 @@ import { assertFormatFloor } from "./memory/formats.ts";
 import { placementRuntimeRefusal, readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
 import { readActivePlacementBinding } from "./memory/sync-placement-active.ts";
 import { activatePublicPruneView } from "./memory/public-prune-activation.ts";
-import { AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
+import { AgentReadFailure, AgentUsageError, agentCliRead } from "./cli-agent-reads.ts";
 import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
@@ -199,7 +199,7 @@ function assertAgentAdministrative(value: unknown, policy: ReturnType<typeof con
   if (cliAttribution()?.actor !== "agent") return;
   let plain: unknown;
   try { plain = JSON.parse(JSON.stringify(value)); } catch { throw Error("Memory operation unavailable or refused; no partial result is shown."); }
-  if (!policy.screenStandalone(plain)) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+  if (!policy.screenStandalone(plain)) throw new ReadPolicyWithheld();
 }
 function shardStatePresent(): boolean {
   try { lstatSync(join(memoryHome(), "shards.json")); return true; }
@@ -299,6 +299,10 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
   return safe;
 }
 
+class ReadPolicyWithheld extends Error {
+  constructor() { super("Memory read withheld [cause: policy_withheld]; no partial result is shown. Ask the person to check the configured policy."); }
+}
+
 /** #326: a marked score read the policy refuses names its cause class and where to check it, never the matched value. */
 export const AUDIT_SCORE_REFUSED = "Audit score refused [cause: policy_denied]: the configured policy denies a value in the rendered score (its seed, as-of or project digest); no partial result is shown. Next step: check the policy (amem.config.json in the memory home, narrowed by the repository's .amem/config) against those values, or sample again with a different --seed.";
 
@@ -321,10 +325,12 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
           try { receipt = JSON.parse(output); } catch { /* human receipts remain strings */ }
         }
         try { assertAgentAdministrative(receipt, configuredPolicy(parsed.path[0] === "setup" ? memoryHome({ ...process.env, ...env }) : memoryHome(), context.cwd ?? process.cwd())); }
-        catch {
+        catch (error) {
+          if (parsed.definition.mutates === undefined && parsed.path[0] !== "setup" && !(error instanceof ReadPolicyWithheld)) throw error;
           // A score leaves nothing behind, so an output the policy refuses refuses the read; a sample has written its private sheet already, and withholding
           // the receipt reports exactly that without naming the file.
           if (parsed.path[0] === "eval" && parsed.path[2] === "score") throw Error(AUDIT_SCORE_REFUSED);
+          if (parsed.definition.mutates === undefined && parsed.path[0] !== "setup") throw new ReadPolicyWithheld();
           // The command returned successfully: withholding its receipt cannot undo its effects.
           const failed = receipt !== null && typeof receipt === "object" && "ok" in receipt && receipt.ok === false;
           return parsed.options["--json"] === true ? JSON.stringify({ ok: !failed, completed: !failed, receiptWithheld: true })
@@ -342,7 +348,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const safe = new DecayApplyError(error.report, undefined); safe.jsonOutput = error.jsonOutput; throw safe;
     }
     // Data-free errors (decided before any store or file is opened) keep their own message.
-    if (marked && error instanceof AgentUsageError) throw error;
+    if (marked && (error instanceof AgentUsageError || error instanceof AgentReadFailure)) throw error;
     if (marked && error instanceof RemoteRealmRefusal) throw error;
     // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
     if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
@@ -358,6 +364,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       if (usage) throw Object.assign(new Error(usage.message), (error as { exitCode?: number }).exitCode === undefined ? {} : { exitCode: (error as { exitCode?: number }).exitCode });
       const setupError = parsed && markedSetupApplyError(parsed, error);
       if (setupError) throw setupError;
+      if (parsed && parsed.definition.mutates === undefined && parsed.path[0] !== "setup") {
+        if (error instanceof ReadPolicyWithheld) throw error;
+        if (error instanceof Error && error.message === "Memory operation unavailable or refused; no partial result is shown.") throw Error(error.message);
+        throw new AgentReadFailure();
+      }
     }
     // Marked administrative failures must not reveal a target's private state or native errors.
     if (marked) throw Error("Memory operation unavailable or refused; no partial result is shown.");

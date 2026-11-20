@@ -278,7 +278,7 @@ function duplicatesAndStale(options: DoctorOptions, rows: View[], store: MemoryS
   if (!root) stale = skipped("run doctor from inside this project's repository to check its path references");
   else {
     const missing = rows.filter(row => { const paths = row.about.filter(node => node.startsWith("path:")).map(node => node.slice(5)); return paths.length > 0 && paths.every(path => !existsSync(join(root, path))); });
-    stale = { status: missing.length ? "attention" : "ok", checked: rows.length, missingReferences: missing.length, ...(missing.length ? { examples: ids(missing.map(row => row.id)) } : {}) };
+    stale = { status: missing.length ? "attention" : "ok", checked: rows.length, missingReferences: missing.length, ...(missing.length ? { examples: ids(missing.map(row => row.id)), hint: "The person can inspect these examples with amem show <id> from their own shell." } : {}) };
   }
   return { duplicates, stale };
 }

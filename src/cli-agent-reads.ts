@@ -6,6 +6,8 @@ import { memoryHome } from "./memory/home.ts";
 import type { ParsedCommand } from "./commands-table.ts";
 
 const UNAVAILABLE = "Memory operation unavailable or refused; no partial result is shown.";
+export const READ_FAILURE = "Memory read failed [cause: read_failed]; no partial result is shown. Ask the person to inspect the command and memory state.";
+export class AgentReadFailure extends Error { constructor() { super(READ_FAILURE); this.name = "AgentReadFailure"; } }
 const RESULT_BYTES = 262_144;
 
 /** A refusal decided from the parsed command alone, before any store or file is opened: safe to show as is. */
@@ -112,7 +114,7 @@ export async function agentCliRead(
     return output;
   } catch (error) {
     if(safeProfileLockMessage(error))throw error;
-    throw new Error(UNAVAILABLE);
+    throw new AgentReadFailure();
   } finally {
     try { memory?.close(); } catch { /* close failures do not expose partial reads */ }
   }
