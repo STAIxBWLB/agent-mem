@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { isAbsolute } from "node:path";
 import { SETUP_CONFIG_BYTES, insertTomlArrayItems, restoreRemovedItems, setTomlPath, updateTomlArray } from "./setup-toml.ts";
 import { readJcodeMcp, putJcodeMcp, restoreJcodeMcp, jcodeHooksManaged, jcodeRetiresOriginalHook, restoreJcodeHooks } from "./setup-jcode.ts";
 import { readAgyMcp, putAgyMcp, restoreAgyMcp } from "./setup-agy.ts";
@@ -248,6 +249,19 @@ export function piExtensionCommand(image: ConfigImage): string | undefined {
   const match = /^\/\/ amem setup managed session-end ingest;[\s\S]*?spawnSync\(("(?:[^"\\]|\\.)*"), \['--smol', ("(?:[^"\\]|\\.)*"), 'ingest', 'pi'\]/.exec(text(image));
   if (!match) return undefined;
   try { const q = (v: string) => "'" + v.replaceAll("'", "'\\''") + "'"; return `${q(JSON.parse(match[1]!))} --smol ${q(JSON.parse(match[2]!))} ingest pi`; } catch { return undefined; }
+}
+
+/** The runtime of a generated `<bun> --smol <entry> mcp` server record, if the record is exactly that shape. */
+export function mcpLauncher(value: unknown, target?: string): { bun: string; entry: string } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const server = value as Record<string, unknown>;
+  if (target === "opencode") {
+    if (server.type !== "local" || !Array.isArray(server.command) || server.command.length !== 4) return;
+    return mcpLauncher({ command: server.command[0], args: server.command.slice(1) });
+  }
+  const args = server.args;
+  return typeof server.command === "string" && isAbsolute(server.command) && Array.isArray(args) && args.length === 3
+    && args[0] === "--smol" && typeof args[1] === "string" && isAbsolute(args[1]) && args[2] === "mcp" ? { bun: server.command, entry: args[1] } : undefined;
 }
 
 /** Every amem capture hook of `target` in a hook surface image, with its event, in file order (#512). */

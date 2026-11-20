@@ -1,7 +1,7 @@
 import { cliAttribution } from "./memory/cli-attribution.ts";
 import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
-import { amemCaptureCommand, amemCaptureHooks, managedAfter, mcpRecord, putMcpRecord, restoreOwned, retiresOriginalHook, sameImage, type ConfigImage } from "./setup-owned.ts";
+import { amemCaptureCommand, amemCaptureHooks, managedAfter, mcpLauncher, mcpRecord, putMcpRecord, restoreOwned, retiresOriginalHook, sameImage, type ConfigImage } from "./setup-owned.ts";
 import { opencodeServer } from "./setup-opencode.ts";
 import { assertGeminiHome, assertGeminiRuntime, GEMINI_REMOVE, geminiAddCommand } from "./setup-gemini.ts";
 import { resolveSetupPaths, opencodeConfigRoot } from "./setup-paths.ts";
@@ -425,22 +425,10 @@ function piExtension(bun: string, entry: string): string {
 function previousRuntimes(target: SetupTarget, images: readonly Image[], bun: string, entry: string): { bun: string; entry: string }[] {
   const found = new Map<string, { bun: string; entry: string }>();
   for (const image of images) {
-    const runtime = launcher(mcpRecord(target, image));
+    const runtime = mcpLauncher(mcpRecord(target, image));
     if (runtime && (runtime.bun !== bun || runtime.entry !== entry)) found.set(JSON.stringify([runtime.bun, runtime.entry]), runtime);
   }
   return [...found.values()];
-}
-/** The runtime of a generated `<bun> --smol <entry> mcp` server record, if the record is exactly that shape. */
-function launcher(value: unknown, target?: SetupTarget): { bun: string; entry: string } | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return;
-  const server = value as Record<string, unknown>;
-  if (target === "opencode") {
-    if (server.type !== "local" || !Array.isArray(server.command) || server.command.length !== 4) return;
-    return launcher({ command: server.command[0], args: server.command.slice(1) });
-  }
-  const args = server.args;
-  return typeof server.command === "string" && isAbsolute(server.command) && Array.isArray(args) && args.length === 3
-    && args[0] === "--smol" && typeof args[1] === "string" && isAbsolute(args[1]) && args[2] === "mcp" ? { bun: server.command, entry: args[1] } : undefined;
 }
 /** Generated capture commands of a prior runtime, current and pre-#145 (no `--json`) forms. */
 const priorCaptures = (launches: readonly string[], kind: string) => launches.flatMap(launch => [`${launch} ingest ${kind} --json`, `${launch} ingest ${kind}`]);
@@ -453,7 +441,7 @@ function staleReceipt(target: SetupTarget, prior: Receipt): boolean {
   let files: Image[];
   try {
     files = prior.changes.map(change => read(change.path));
-    const owned = launcher(mcpRecord(target, prior.changes[0]!.after)), live = launcher(mcpRecord(target, files[0]!));
+    const owned = mcpLauncher(mcpRecord(target, prior.changes[0]!.after)), live = mcpLauncher(mcpRecord(target, files[0]!));
     if (!owned || !live || live.entry === owned.entry) return false;
     // Raw and shell-quoted entry, searched in the raw text (with JSON escaping, for the Pi extension source)
     // and in every decoded JSON/TOML string value, so escapes such as `\/` cannot hide a live entry.
@@ -757,17 +745,23 @@ export async function runSetup(target: string, mode: SetupPlan["mode"], options:
 }
 
 
-/** Fixed safe category only; receipt text, native paths and external error messages are never diagnostics. */
+/**
+ * Fixed safe category only; receipt text, native paths and external error messages are never diagnostics.
+ * `target` is set only when an applied receipt names a runtime root that no longer exists, so the refusal can
+ * name the setup target and its remedy without exposing the recorded path (#520).
+ */
 export class SetupWriterRootsError extends Error {
   readonly code = "setup_writer_roots_unavailable";
-  constructor(readonly category: "unsafe" | "changed" | "bound" | "unsupported" | "pending" | "unavailable") {
-    super(`Setup writer inventory ${category}; have the person inspect setup receipts and rerun setup before activation.`);
+  constructor(readonly category: "unsafe" | "changed" | "bound" | "unsupported" | "pending" | "unavailable", readonly target?: SetupTarget) {
+    super(target
+      ? `Setup writer inventory has a setup receipt for ${target} whose recorded amem install no longer exists; run amem setup ${target} --apply to refresh the receipt, or amem setup ${target} --undo to remove it.`
+      : `Setup writer inventory ${category}; have the person inspect setup receipts and rerun setup before activation.`);
     this.name = "SetupWriterRootsError";
   }
 }
 /** Current managed MCP AFTER images only. Native configuration paths and historical BEFORE/START images are never opened. */
 export function readSetupWriterRoots(home: string): string[] {
-  function fail(category: SetupWriterRootsError["category"]): never { throw new SetupWriterRootsError(category); }
+  function fail(category: SetupWriterRootsError["category"], target?: SetupTarget): never { throw new SetupWriterRootsError(category, target); }
   try {
     const owned = (stat: BigIntStats) => { if (stat.isSymbolicLink() || stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n) fail("unsafe"); };
     const stamp = (stat: BigIntStats) => JSON.stringify([stat.dev, stat.ino, stat.uid, stat.mode, stat.nlink, stat.size, stat.mtimeNs, stat.ctimeNs].map(String));
@@ -805,10 +799,20 @@ export function readSetupWriterRoots(home: string): string[] {
       let value: Receipt;
       try { value = decodeReceipt(record(JSON.parse(text)), target, counts[target], true); } catch { return fail("unsupported"); }
       if (value.phase !== "applied") fail("pending");
-      const runtime = launcher(mcpRecord(target, value.changes[0]!.after), target);
+      const runtime = mcpLauncher(mcpRecord(target, value.changes[0]!.after), target);
       if (!runtime || runtime.bun.includes("\0") || runtime.entry.length > 4096 || runtime.entry.includes("\0") || !["/bin/amem.js", "/src/cli.ts"].some(suffix => runtime.entry.endsWith(suffix))
         || target === "opencode" && [runtime.bun, runtime.entry].some(value => /\{(?:env|file):/.test(value))) fail("unsupported");
-      const root = realPath(dirname(dirname(runtime.entry))); if (!lstatSync(root).isDirectory()) fail("unavailable");
+      // #520: a recorded runtime root that no longer exists names its setup target; every other unreadable state stays anonymous.
+      let root: string;
+      try { root = realPath(dirname(dirname(runtime.entry))); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") fail("unavailable", target);
+        fail("unavailable");
+      }
+      const present = lstatSync(root, { throwIfNoEntry: false });
+      if (!present) fail("unavailable", target);
+      if (!present.isDirectory()) fail("unavailable");
       roots.add(root); launchers.push({ entry: runtime.entry, root });
     }
     const finalHome = lstatSync(home, { bigint: true }); owned(finalHome);
@@ -822,8 +826,9 @@ export function readSetupWriterRoots(home: string): string[] {
     return [...roots].sort();
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SetupWriterRootsError) {
-      const category = Object.getOwnPropertyDescriptor(error, "category");
-      if (category && "value" in category && ["unsafe", "changed", "bound", "unsupported", "pending", "unavailable"].includes(category.value)) throw new SetupWriterRootsError(category.value);
+      const category = Object.getOwnPropertyDescriptor(error, "category"), target = Object.getOwnPropertyDescriptor(error, "target")?.value;
+      if (category && "value" in category && ["unsafe", "changed", "bound", "unsupported", "pending", "unavailable"].includes(category.value))
+        throw new SetupWriterRootsError(category.value, typeof target === "string" && (SETUP_TARGETS as readonly string[]).includes(target) ? target as SetupTarget : undefined);
     }
     throw new SetupWriterRootsError("unavailable");
   }

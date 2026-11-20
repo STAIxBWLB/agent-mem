@@ -18,7 +18,7 @@ function fixture(){
   const own=install("own"),managed=install("managed"),declared=install("declared");
   // This isolated port tests category mapping; real receipt decoding/completeness has its own fixtures.
   const receipts=spyOn(setup,"readSetupWriterRoots").mockReturnValue([managed]);cleanup.push(()=>receipts.mockRestore());
-  return{home,own,managed,declared,roots:[own,managed,declared]};
+  return{home,own,managed,declared,roots:[own,managed,declared],receipts};
 }
 function failure(work:()=>unknown){let caught:unknown;try{work();}catch(error){caught=error;}expect(caught).toBeInstanceOf(PlacementWriterContextError);return caught as PlacementWriterContextError;}
 
@@ -40,6 +40,25 @@ test("initial callback drift retains its root category and initial remedy",()=>{
   const f=fixture(),context=initialPlacementWriterContext(f.home,f.roots,f.own);writeFileSync(join(f.own,"src/index.ts"),"changed bytes\n");
   const error=failure(()=>context.attest());expect(error.category).toBe("running CLI");expect(error.phase).toBe("initial");
   expect(context.lastRefusal).toBe(error);expect(error.message).toContain("upgrade or repair");expect(error.message).not.toContain("supports renewal");
+});
+
+test("a setup receipt naming a removed install names its target and both remedies, never the recorded path",()=>{
+  const f=fixture();f.receipts.mockImplementation(()=>{throw new setup.SetupWriterRootsError("unavailable","agy");});
+  const error=failure(()=>initialPlacementWriterContext(f.home,f.roots,f.own));
+  expect(error.category).toBe("setup receipt");expect(error.causeClass).toBe("unavailable");expect(error.phase).toBe("initial");expect(error.setupTarget).toBe("agy");
+  expect(error.message).toContain("the agy setup receipt names an amem install that no longer exists");
+  expect(error.message).toContain("amem setup agy --apply");expect(error.message).toContain("amem setup agy --undo");
+  expect(error.message).not.toContain(f.home);expect(error.message).not.toContain("host exact pin");
+});
+
+test("the attest callback keeps the mapped setup target, and an anonymous receipt refusal keeps the old text",()=>{
+  const f=fixture(),context=initialPlacementWriterContext(f.home,f.roots,f.own);
+  f.receipts.mockImplementation(()=>{throw new setup.SetupWriterRootsError("unavailable","qwen");});
+  const error=failure(()=>context.attest());expect(context.lastRefusal).toBe(error);
+  expect(error.category).toBe("setup receipt");expect(error.setupTarget).toBe("qwen");expect(error.message).toContain("amem setup qwen --apply");
+  f.receipts.mockImplementation(()=>{throw new setup.SetupWriterRootsError("unsupported");});
+  const anonymous=failure(()=>initialPlacementWriterContext(f.home,f.roots,f.own));
+  expect(anonymous.setupTarget).toBeUndefined();expect(anonymous.message).toContain("amem setup <target> --apply");
 });
 
 test("active diagnostics keep restore-or-renew and locator recovery never invents a backup",()=>{

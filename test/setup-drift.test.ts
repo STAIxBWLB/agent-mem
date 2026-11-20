@@ -29,6 +29,7 @@ function fixture(extra: Record<string, string | undefined> = {}) {
   const memory = join(root, "memory"), env = { HOME: userHome, AMEM_HOME: memory, ...extra };
   const resolved = resolveSetupPaths(env);
   const bun = join(root, "runtime", "bun"), entry = join(root, "installed package", "bin", "amem.js");
+  mkdirSync(dirname(entry), { recursive: true });   // an applied receipt names an install that really exists
   return { root, userHome, memory, env, paths: resolved.paths, legacyPaths: resolved.legacyPaths, bun, entry };
 }
 
@@ -222,6 +223,53 @@ test("prepared receipts do not claim that setup was applied", () => {
     { path: settingsPath!, before: null, after: "{}\n" },
   ], "prepared");
   expect(inspect(f)).toMatchObject({ status: "skipped", checked: 0, entries: [] });
+});
+
+test("#520: an applied receipt whose install root is gone is named by target and phase without a path, and apply makes it clean", async () => {
+  const { applySetup, planSetup } = await import("../src/setup.ts");
+  const f = fixture(), root = dirname(dirname(f.entry));
+  mkdirSync(dirname(f.entry), { recursive: true }); put(f.entry, "// fixture install\n");
+  const native = (argv: string[], staged: Record<string, string | undefined>, cwd: string) => {
+    const marker = argv.indexOf("--"), launch = argv.slice(marker + 1), file = join(staged.CLAUDE_CONFIG_DIR ?? cwd, ".claude.json");
+    const document = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown> : {};
+    document.mcpServers = { amem: { command: launch[0], args: launch.slice(1) } };
+    put(file, json(document));
+  };
+  const options = { env: f.env, entry: f.entry, bun: f.bun, native } as never;
+  applySetup(planSetup("claude", "apply", options), options);
+  expect(inspect(f)).toMatchObject({ status: "ok", entries: [] });
+
+  rmSync(root, { recursive: true });
+  const missing = inspect(f);
+  expect(missing.status).toBe("attention");
+  expect(missing.entries).toContainEqual(expect.objectContaining({ target: "claude", file: "setup receipt", entry: "amem install", phase: "applied", kind: "drift" }));
+  const row = missing.entries.find(entry => entry.entry === "amem install")!;
+  expect(row.reason).toContain("amem setup claude --apply"); expect(row.reason).toContain("amem setup claude --undo");
+  expect(allText(missing)).not.toContain(f.root);
+
+  const cwd = join(f.root, "repo"); mkdirSync(cwd, { recursive: true });
+  const saved = { HOME: process.env.HOME, GIT_CONFIG_NOSYSTEM: process.env.GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL };
+  process.env.HOME = f.userHome; process.env.GIT_CONFIG_NOSYSTEM = "1"; process.env.GIT_CONFIG_GLOBAL = join(f.root, "gitconfig"); put(process.env.GIT_CONFIG_GLOBAL, "");
+  try {
+    expect(memoryGitSync(["init", "-q", cwd], { encoding: "utf8" }).status).toBe(0);
+    const report = await doctorReport({ home: f.memory, homeSource: "test", cwd, project: memoryProjectKey(cwd), aliases: [], now: Date.now(), env: f.env,
+      openCurated: base => new MemoryStore({ memoryDir: base, deferPromotions: true }) });
+    expect(report.sections.setup!.status).toBe("attention");
+    expect(allText(report.sections.setup)).not.toContain(f.root);
+    expect((report.sections.setup!.entries as { target?: string; phase?: string }[]).some(entry => entry.target === "claude" && entry.phase === "applied")).toBe(true);
+
+    const fresh = join(f.root, "fresh install", "bin", "amem.js"); mkdirSync(dirname(fresh), { recursive: true }); put(fresh, "// fixture install\n");
+    const reinstalled = { env: f.env, entry: fresh, bun: f.bun, native } as never;
+    applySetup(planSetup("claude", "apply", reinstalled), reinstalled);
+    const { readSetupWriterRoots } = await import("../src/setup.ts");
+    expect(readSetupWriterRoots(f.memory)).toEqual([dirname(dirname(fresh))]);
+    expect(inspect(f)).toMatchObject({ status: "ok", entries: [] });
+    const after = await doctorReport({ home: f.memory, homeSource: "test", cwd, project: memoryProjectKey(cwd), aliases: [], now: Date.now(), env: f.env,
+      openCurated: base => new MemoryStore({ memoryDir: base, deferPromotions: true }) });
+    expect(after.sections.setup).toMatchObject({ status: "ok", entries: [] });
+  } finally {
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });
 
 test("doctor surfaces setup drift and leaves the memory home unchanged", async () => {

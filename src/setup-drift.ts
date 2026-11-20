@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { SetupTarget } from "./setup.ts";
 import { SETUP_CONFIG_BYTES } from "./setup-toml.ts";
-import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpRecord, type ConfigImage } from "./setup-owned.ts";
+import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpLauncher, mcpRecord, type ConfigImage } from "./setup-owned.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { realPath } from "./memory/platform.ts";
@@ -17,6 +17,8 @@ export interface SetupDriftEntry {
   reason: string;
   kind: "drift" | "unavailable" | "review-needed";
   expectedFile?: string;
+  /** Present only where the receipt itself is the finding, so the person sees which receipt state blocks use (#520). */
+  phase?: "applied";
 }
 export interface SetupDriftReport {
   status: SetupDriftStatus;
@@ -163,6 +165,19 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
         expectedFile: expectedPaths[receipt.changes.indexOf(change)] });
       continue;
     }
+    // #520: an applied receipt whose recorded amem install root is gone blocks every placement sync, whatever its native files still say.
+    // The entry names the target and receipt phase only: the recorded path, version and command text are never diagnostics.
+    try {
+      const launch = mcpLauncher(mcpRecord(target, receipt.changes[0]!.after), target);
+      if (launch) {
+        let missing = false;
+        try { missing = !lstatSync(realPath(dirname(dirname(launch.entry)))).isDirectory(); }
+        catch (error) { const code = (error as NodeJS.ErrnoException).code; missing = code === "ENOENT" || code === "ENOTDIR"; }
+        if (missing) entries.push({ ...entry(target, "setup receipt", "amem install",
+          `the applied setup receipt names an amem install that no longer exists; run amem setup ${target} --apply to refresh the receipt or amem setup ${target} --undo to remove it`, "drift"),
+          phase: "applied" });
+      }
+    } catch { /* A malformed managed MCP record is reported by the live-file check below. */ }
     const liveImages: (ConfigImage | undefined)[] = [];
     for (const change of receipt.changes) {
       let current: ConfigImage;

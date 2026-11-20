@@ -117,6 +117,25 @@ test("setup namespace has a fixed entry ceiling without reading ignored history"
   expect(category(() => readSetupWriterRoots(f.home))).toBe("bound");
 });
 
+test("a receipt naming a removed install root keeps the category, names its target and remedy, and never its path", () => {
+  const f = fixture(), removed = join(f.root, "removed release"); save(f.dir, receipt("agy", join(removed, "bin", "amem.js")));
+  const before = tree(f.root); let caught: unknown;
+  try { readSetupWriterRoots(f.home); } catch (error) { caught = error; }
+  expect(caught).toBeInstanceOf(SetupWriterRootsError);
+  const error = caught as SetupWriterRootsError;
+  expect(error.category).toBe("unavailable"); expect(error.target).toBe("agy");
+  expect(error.message).toContain("agy"); expect(error.message).toContain("amem setup agy --apply"); expect(error.message).toContain("amem setup agy --undo");
+  expect(error.message).not.toContain(removed); expect(error.message).not.toContain("/bin/amem.js");
+  expect(tree(f.root)).toEqual(before);
+});
+
+test("a runtime root that exists but is not a directory stays an anonymous refusal", () => {
+  const f = fixture(), root = join(f.root, "not a directory"); writeFileSync(root, "", { mode: 0o600 }); save(f.dir, receipt("claude", join(root, "bin", "amem.js")));
+  let caught: unknown; try { readSetupWriterRoots(f.home); } catch (error) { caught = error; }
+  expect(caught).toBeInstanceOf(SetupWriterRootsError);
+  expect((caught as SetupWriterRootsError).category).toBe("unavailable"); expect((caught as SetupWriterRootsError).target).toBeUndefined();
+});
+
 test("a same-stamp newly registered receipt cannot be omitted from completeness", () => {
   const f = fixture(), first = f.install("first"), second = f.install("second"); save(f.dir, receipt("claude", join(first,"bin","amem.js")));
   const original = fs.readSync, nativeStat = fs.lstatSync, directoryStat = lstatSync(f.dir,{bigint:true}); let changed = false;

@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Report a setup receipt whose recorded amem install root no longer exists instead of collapsing it into an anonymous `unavailable` refusal: placement sync still refuses before any effect for every realm, and now names the setup target and `amem setup <target> --apply` (refresh the receipt) or `amem setup <target> --undo` (remove it), while `amem doctor` reports the same receipt with its target and phase in the `setup` section. The error category vocabulary, sync result shape and failure causes are unchanged, and no path, version or command text is printed. Refs #520.
+
 ## 0.31.0
 
 ### Added
