@@ -127,3 +127,19 @@ test("#511: effectful audit sample and project export keep the existing failure 
     expect(await message(args, context)).toBe(UNAVAILABLE);
   }
 });
+
+test("#511: missing and policy-hidden show IDs are indistinguishable in current and historical reads", async () => {
+  const { cwd, home, context } = agent();
+  const { MemoryStore } = await import("../src/memory/store.ts"), { memoryProjectKey } = await import("../src/memory/project.ts");
+  const { writeFileSync } = await import("node:fs");
+  const store = new MemoryStore({ memoryDir: home, deferPromotions: true });
+  let hidden: string;
+  try { hidden = store.note({ op: "note", project: memoryProjectKey(cwd), scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "HIDDEN_FIXTURE_MARKER", about: [] }); } finally { store.close(); }
+  writeFileSync(join(home, "amem.config.json"), JSON.stringify({ piiPatterns: ["HIDDEN_FIXTURE_MARKER"] }));
+  const absent = "f".repeat(32), asOf = new Date(Date.now() + 60_000).toISOString();
+  for (const command of ["show", "graph"]) for (const options of [[], ["--history"], ["--as-of", asOf]]) for (const json of [[], ["--json"]]) {
+    const outcome = async (id: string) => { try { return { output: await runCli([command, id, ...options, ...json], context) }; } catch (error) { return { error: (error as Error).message }; } };
+    const expected = await outcome(absent), actual = await outcome(hidden);
+    expect(actual).toEqual(expected); expect(JSON.stringify(actual)).not.toContain("HIDDEN_FIXTURE_MARKER");
+  }
+});

@@ -176,7 +176,8 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
       case "show": {
         const asOf = flag("--as-of"), history = rest.includes("--history"); if (history) rest.splice(rest.indexOf("--history"), 1);
         const id = rest[0] ?? fail(`usage: ${names.memory} show <id>`), shown = recallShow(store, project, id, { person: opts.person, history, asOf });
-        if (!shown.ids.length) return fail(`no memory entry ${id} (${names.memory} list shows the ids)`);
+        if (!shown.ids.length) return cliAttribution()?.actor === "agent" ? fail("Memory operation unavailable or refused; no partial result is shown.") : fail(`no memory entry ${id} (${names.memory} list shows the ids)`);
+        if (cliAttribution()?.actor === "agent" && (!shown.entry || !opts.readable([shown.entry]).some(view => view.id === shown.entry!.id))) fail("Memory operation unavailable or refused; no partial result is shown.");
         if (shown.state) {
           const rows = opts.readable(shown.state.views), ids = new Set(rows.map(view => view.id)); ready(rows);
           const state = { ...recallForViews(shown.state, rows), views: rows.map(decorated), relations: shown.state.relations.filter(edge => ids.has(edge.from) && ids.has(edge.to)) };

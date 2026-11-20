@@ -203,8 +203,8 @@ test("amem eval refuses a bad set, a bad --k and an unknown flag; marked reads f
   await expect(cli(h, ["eval", "--k", "0"])).rejects.toThrow("--k must be");
   await expect(cli(h, ["eval", "--bogus"])).rejects.toThrow("--bogus");
   await expect(cli(h, ["eval", "--set", join(h.root, "missing.json")])).rejects.toThrow("ENOENT");
-  // #431: an agent-marked session evaluates like a person; its bad input keeps the uniform marked message.
-  await expect(runCli(["eval", "--k", "0"], { cwd: h.cwd, env: { CLAUDECODE: "1", HOME: h.root, AMEM_HOME: h.memory }, stdinTTY: true })).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+  // #511: an agent-marked read with bad input reports a fixed read failure, without the caught details.
+  await expect(runCli(["eval", "--k", "0"], { cwd: h.cwd, env: { CLAUDECODE: "1", HOME: h.root, AMEM_HOME: h.memory }, stdinTTY: true })).rejects.toThrow("cause: read_failed");
 });
 
 test("amem eval is listed in help and completion, and takes no --policy-free", async () => {
