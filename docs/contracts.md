@@ -1062,3 +1062,7 @@ Shared segments retain the `agent-hub.memory/v1` profile. `OP_CONTRACTS` and `V1
 The shared-v1 contract suites run the published 0.1.1 reader and compare all six v1 derived tables after replay and rebuild; generation fixtures cover their expanded derived state separately. Privacy and evidence matrices test the core's actual callbacks and sidecar boundaries; model-facing reads, PII turns, staleness checks and capture remain the host's responsibility. Direct person reads remain unscreened. Expiry after a wall-clock rollback retains the existing C05 ceiling: a rebuild can restore a previously expired row until its deadline passes again. A generation can persist exact-entry prune; shared-v1 and unpruned entries retain their existing expiry limitations.
 
 See [the contract and coverage tables](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/contracts.md) for the fixtures, host-owned rows and declared ceilings. These are automated synthetic checks, not proof of the separate multi-machine or managed-agent live legs.
+
+## Capture hooks of a removed install (#512)
+
+One matcher (`amemCaptureCommand` in `src/setup-owned.ts`) decides amem ownership of a capture hook for Codex, Qwen, Kimi and Pi; there is no per-CLI matcher. Setup apply leaves exactly one capture entry per target and never reorders or rewrites other hooks; undo is the receipt's byte restore. A Pi extension is amem-owned only when byte-identical to setup's output. The drift check names target, file and event, never command text. User procedure: [setup](setup.md#setup--plugin).
