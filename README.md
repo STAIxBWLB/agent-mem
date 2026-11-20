@@ -1,7 +1,5 @@
 # agent-mem
 
-`amem review targets` prioritizes stale notes, frequently rendered notes without a recent review, and old decisions and contracts. `amem decay --propose` queues unused-injection demotion candidates for explicit review; it does not demote notes. Machine `amem.config.json` accepts `review.recheck_days` (default 30), `review.unused_rendered` (20), and `review.unused_days` (30, maximum 90). Older amem versions reject unknown configuration keys, so upgrade every host sharing the home before setting `review`. Recent review uses a decided candidate's creation time as a proxy: an older candidate decided recently can be listed again, and decisions older than the 30-day candidate retention are unknown and treated as absent.
-
 Curated memory with append-only JSONL logs, a derived SQLite index, short- and long-term tiers, a typed graph, goals with leases, and git sync between machines. Extracted from [agent-hub](https://github.com/STAIxBWLB/agent-hub), with compatible storage and entry IDs.
 
 <!-- facts:version -->
@@ -39,7 +37,7 @@ From a checkout, install development dependencies with `bun install` and run `bu
 | Area | Commands | Details |
 | --- | --- | --- |
 | Setup and hooks | `amem setup <client> [--apply\|--undo]`, `amem ingest <client>`, `amem completion <shell>` | [docs/setup.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/setup.md) |
-| Notes and review | `amem note add`, `amem review list\|accept\|reject\|walk\|decide`, `amem consolidate` | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md), [docs/recall.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/recall.md) |
+| Notes and review | `amem note add`, `amem review list\|accept\|reject\|walk\|decide\|targets`, `amem decay --propose`, `amem consolidate` | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md), [docs/recall.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/recall.md) |
 | Read and search | `amem list`, `amem search`, `amem show`, `amem graph`, `amem brief`, `amem eval` | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md), [docs/recall.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/recall.md) |
 | Health | `amem status`, `amem doctor`, `amem capacity`, `amem projects`, `amem usage`, `amem gc` | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md) |
 | Sync and migration | `amem sync`, `amem migrate`, `amem prune`, `amem formats raise` | [docs/sync.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/sync.md), [docs/curated-shard-migration.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/curated-shard-migration.md) |
