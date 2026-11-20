@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryMcp, type MemoryMcp } from "../src/mcp-memory.ts";
 import { CONFIG_FILE } from "../src/memory/config.ts";
-import { appendLifecycle } from "../src/memory/lifecycle.ts";
+import { appendAlias } from "../src/memory/aliases.ts";
 import type { StandalonePolicyOptions } from "../src/memory/policy.ts";
 
 const roots: string[] = [];
@@ -38,21 +38,25 @@ test("a work read runs the full placement guard a constant number of times per c
   expect(items).toEqual([10, 2000]);
   // One guard at entry and one after the read, whatever the row count: the per-row callback takes the cheap path.
   expect(counts).toEqual([2, 2]);
-});
+  // 2000 appends dominate the fixture: about 2.7 s here and 7.5 s on the remote runner, against the default 5 s.
+}, 30_000);
 
-test("a binding change made during the read is refused at the post-read guard", async () => {
+test("an alias change made during the read is refused at the post-read guard", async () => {
   const { root, base } = fixture();
   let guards = 0, armed = false;
-  const mcp = createMemoryMcp({ cwd: root, base, project: "work-guard", assertCurrent: () => {
-    if (!armed) return;
-    guards++;
-    if (guards === 2) appendLifecycle(base, { op: "archive", key: "work-guard", actor: "test", machine: "test-machine" });
-  } });
+  const policy: StandalonePolicyOptions = { host: { screen: async value => {
+    const task = (value as { fields?: { task?: unknown } } | null)?.fields?.task;
+    // The alias lands while the rows are being read. The per-row guard is the cheap path, so the post-read guard is
+    // the next full check, and it is the one that has to refuse.
+    if (armed && task === "work 0/1") appendAlias(base, { alias: "alias-of-work-guard", key: "work-guard", actor: "test", machine: "test-machine" });
+    return true;
+  } } };
+  const mcp = createMemoryMcp({ cwd: root, base, project: "work-guard", policy, assertCurrent: () => { if (armed) guards++; } });
   try {
     await seed(mcp, spread(3, 1));
     armed = true;
     await expect(mcp.tools.amem_work_state_read({})).rejects.toThrow(/memory operation unavailable/);
-    // The read ran to completion and the second guard is the one that refused, so the refusal is the post-read check.
+    // The rows were read and the second guard refused, so the refusal is the post-read check and not the entry one.
     expect(guards).toBe(2);
   } finally { mcp.close(); }
 });
@@ -77,12 +81,26 @@ test("a session that stops being permitted refuses that row inside the call", as
   } finally { mcp.close(); }
 });
 
-test("a closed session refuses its work read", async () => {
+test("a session closed during a row callback refuses the read and stays closed", async () => {
   const { root, base } = fixture();
-  const mcp = createMemoryMcp({ cwd: root, base, project: "work-guard" });
-  await seed(mcp, spread(2, 1));
-  mcp.close();
-  await expect(mcp.tools.amem_work_state_read({})).rejects.toThrow(/memory operation unavailable/);
+  const seen: string[] = [];
+  let armed = false;
+  let mcp!: MemoryMcp;
+  const policy: StandalonePolicyOptions = { host: { screen: async value => {
+    const task = (value as { fields?: { task?: unknown } } | null)?.fields?.task;
+    // The session is closed from inside the row loop, so the refusal has to land mid-read rather than at the entry guard.
+    if (armed && typeof task === "string") { seen.push(task); if (seen.length === 2) mcp.close(); }
+    return true;
+  } } };
+  mcp = createMemoryMcp({ cwd: root, base, project: "work-guard", policy });
+  try {
+    await seed(mcp, spread(3, 1));
+    armed = true;
+    await expect(mcp.tools.amem_work_state_read({})).rejects.toThrow(/work-list store is closed/);
+    // The third row was never screened, and the closed session's own guard refuses the next call.
+    expect(seen).toHaveLength(2);
+    await expect(mcp.tools.amem_work_state_read({})).rejects.toThrow(/memory operation unavailable/);
+  } finally { mcp.close(); }
 });
 
 test("a policy tightened after the server started hides the row it now declines", async () => {
