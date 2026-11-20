@@ -889,3 +889,32 @@ test("#520: an existing non-directory install root is not called a missing insta
   expect(row.kind).toBe("unavailable"); expect(row.reason).not.toContain("no longer exists");
   expect(JSON.stringify(section)).not.toContain(file);
 });
+test("#520: a foreign agy receipt without a supported launcher is reported, not ok", async () => {
+  const r = setupRig();
+  const image = (value: unknown) => ({ mode: 0o600, bytes: Buffer.from(JSON.stringify(value)).toString("base64") });
+  const native = join(r.root, "another workspace", "settings.json");
+  writeFileSync(join(r.memory, "setup", `agy-${"c".repeat(64)}.json`), JSON.stringify({ version: 2, target: "agy", intent: "a".repeat(64), phase: "applied",
+    changes: [{ key: "agy:0", path: native, before: { mode: 0o600, bytes: null }, after: image({ mcpServers: {} }) }] }), { mode: 0o600 });
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toMatchObject({ category: "unsupported" });
+  const section = (await doctor(r)).sections.setup as SetupSection;
+  expect(section.status).not.toBe("ok");
+  const row = section.entries.find(item => item.file === "setup receipt of another workspace")!;
+  expect(row).toMatchObject({ target: "agy", entry: "amem install", kind: "unavailable" });
+  expect(row.reason).toContain("amem setup agy --undo"); expect(JSON.stringify(section)).not.toContain(native);
+});
+test("#520: a linked setup directory is reported, never enumerated", async () => {
+  const r = rig(); r.note("n"); chmodSync(r.memory, 0o700);
+  const elsewhere = join(r.root, "elsewhere setup"); mkdirSync(elsewhere, { mode: 0o700 });
+  writeFileSync(join(elsewhere, `agy-${"b".repeat(64)}.json`), "{}", { mode: 0o600 });
+  symlinkSync(elsewhere, join(r.memory, "setup"));
+  let caught: unknown; try { readSetupWriterRoots(r.memory); } catch (error) { caught = error; }
+  expect(caught).toBeDefined();
+  const opened: string[] = [], openDir = fs.opendirSync;
+  const guard = spyOn(fs, "opendirSync").mockImplementation(((...args: Parameters<typeof fs.opendirSync>) => { opened.push(String(args[0])); return Reflect.apply(openDir, fs, args); }) as typeof fs.opendirSync);
+  let section: SetupSection;
+  try { section = (await doctor(r)).sections.setup as SetupSection; } finally { guard.mockRestore(); }
+  expect(section!.status).not.toBe("ok");
+  expect(section!.entries).toContainEqual(expect.objectContaining({ target: "agy", entry: "receipts", kind: "unavailable" }));
+  expect(opened).not.toContain(join(r.memory, "setup")); expect(JSON.stringify(section!)).not.toContain(elsewhere);
+});

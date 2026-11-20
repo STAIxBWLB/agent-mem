@@ -132,20 +132,22 @@ function entry(target: SetupTarget, file: string, name: string, reason: string, 
  * The identification is the writer inventory's own: a non-directory or unreadable root is not reported as a missing install. */
 function installMissing(target: SetupTarget, after: ConfigImage): "missing" | "unavailable" | false {
   try {
+    // The writer inventory refuses an applied receipt without a supported launcher (unsupported), so it is never silently fine here.
     const launch = mcpLauncher(mcpRecord(target, after), target);
-    if (!launch) return false;
+    if (!launch || launch.bun.includes("\0") || launch.entry.length > 4096 || launch.entry.includes("\0") || !["/bin/amem.js", "/src/cli.ts"].some(suffix => launch.entry.endsWith(suffix))
+      || target === "opencode" && [launch.bun, launch.entry].some(value => /\{(?:env|file):/.test(value))) return "unavailable";
     let root: string;
     try { root = realPath(dirname(dirname(launch.entry))); }
     catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unavailable"; }
     // An existing non-directory root is refused by the writer inventory anonymously; it is never called a missing install.
     return lstatSync(root, { throwIfNoEntry: false })?.isDirectory() ? false : "unavailable";
-  } catch { return false; }
+  } catch { return "unavailable"; }
 }
 
-const INSTALL_UNAVAILABLE = "the recorded amem install cannot be confirmed as a directory; placement sync refuses until it is readable";
+const installUnavailable = (target: SetupTarget) => `the applied ${target} setup receipt's amem install cannot be confirmed; placement sync refuses until amem setup ${target} --apply or amem setup ${target} --undo repairs it`;
 function installEntry(target: SetupTarget, file: string, state: "missing" | "unavailable"): SetupDriftEntry {
   return state === "missing" ? { ...entry(target, file, "amem install", setupReceiptRemedy(target, true), "drift"), phase: "applied" }
-    : entry(target, file, "amem install", INSTALL_UNAVAILABLE, "unavailable");
+    : entry(target, file, "amem install", installUnavailable(target), "unavailable");
 }
 
 /** Read setup receipts and only the resolver-selected native config files. This function never writes. */
@@ -255,8 +257,11 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
   const incomplete = (reason: string) => { entries.push(entry("agy", "setup receipt of another workspace", "receipts", reason, "unavailable")); unavailable = true; };
   let scanned = 0, overflow = false, dir: Dir | undefined;
   try {
-    dir = opendirSync(join(options.home, "setup"));
-    for (;;) {
+    // The writer inventory refuses a linked or non-directory setup/; never enumerate through one.
+    const stat = lstatSync(join(options.home, "setup"), { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) throw Object.assign(Error("setup is not a plain directory"), { code: "ENOTPLAIN" });
+    if (stat) dir = opendirSync(join(options.home, "setup"));
+    for (;dir;) {
       const item = dir.readSync(); if (!item) break;
       if (++scanned > 256) { overflow = true; break; }
       if (/^agy-[a-f0-9]{64}\.json$/.test(item.name) && item.name !== ownAgy) foreign.push(item.name);
