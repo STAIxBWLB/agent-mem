@@ -10,6 +10,7 @@ import { openCuratedForRead } from "./curated-read.ts";
 import { pendingSummary } from "./candidate-pending.ts";
 import { inspectNativeRoot, nativeRoots, type NativeRootKind } from "./native-roots.ts";
 import { readCaptureDrops } from "./metrics.ts";
+import { isRecapTelemetry } from "./recap-telemetry.ts";
 import { walkShards } from "./catalog.ts";
 import { loadAmemConfig, repoConfigRoot } from "./config.ts";
 import { readSelector } from "./generation.ts";
@@ -153,11 +154,11 @@ function copyTree(from: string, to: string, budget: CopyBudget, skipNames: Reado
 }
 
 /** The curated side of the home, without any database: the logs of this project (and its aliases), and the small files that bind them. */
-function copyCurated(options: Pick<DoctorOptions, "home" | "project" | "aliases">, layout: Layout, scratch: string, budget: CopyBudget): void {
+function copyCurated(options: Pick<DoctorOptions, "home" | "project" | "aliases">, layout: Layout, scratch: string, budget: CopyBudget, recap = false): void {
   const home = options.home;
-  observeDirectory(home, budget, name => !SKIP.test(name) && regularFile(join(home, name)));
+  observeDirectory(home, budget, name => !SKIP.test(name) && !(recap && isRecapTelemetry(name)) && regularFile(join(home, name)));
   for (const name of readdirSync(home)) {      // top-level plain files: machine.json, shards.json, profile.json, aliases.jsonl, lifecycle.jsonl, the configuration
-    if (SKIP.test(name) || !regularFile(join(home, name))) continue;
+    if (SKIP.test(name) || recap && isRecapTelemetry(name) || !regularFile(join(home, name))) continue;
     observedCopy(join(home, name), join(scratch, name), budget);
   }
   const selected = readSelector(home).selector;
@@ -218,7 +219,7 @@ export async function withBriefSnapshot<T>(home: string, project: string, read: 
             const options = { home, project, aliases }, workBase = join(scratch, "work-base"); mkdirSync(workBase, { mode: 0o700 });
             copyWork(options, workBase, budget);
             if (curatedPresent(home, project, layout)) {
-              const copy = join(scratch, "home"); copyCurated(options, layout, copy, budget);
+              const copy = join(scratch, "home"); copyCurated(options, layout, copy, budget, true);
               curated = openCuratedForRead(copy, project);
               if (!curated) throw Error("recap curated snapshot unavailable");
             }

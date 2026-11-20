@@ -11,6 +11,7 @@ import { DENY_SEGMENTS } from "../src/memory/platform.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import * as curatedRead from "../src/memory/curated-read.ts";
 import { writeCaptureConfigFile } from "../src/memory/capture.ts";
+import { appendMetrics } from "../src/memory/metrics.ts";
 import { appendAlias, ensureShardDescriptor } from "../src/memory/shard.ts";
 import { appendLifecycle } from "../src/memory/lifecycle.ts";
 import { plugin } from "../src/ui/plugin.ts";
@@ -193,6 +194,19 @@ test("a changed home capture config does not reuse old capacity advice inside it
   const current = computeInbox(base, memo);
   expect(current.capacity.captureConfig).not.toBe(memo.captureConfig);
   expect(current.items.some(value => value.title === "Old cached proposal")).toBe(false);
+}, 20_000);
+
+test("inbox capacity memo keeps its existing five-minute bound across observation appends", () => {
+  const base = home(), now = Date.now(), clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const item: InboxItem = { id: "capacity:proposal", group: "alert", kind: "capacity", title: "Synthetic memo", at: new Date(now).toISOString(),
+      verbs: [{ id: "capacity_apply", label: "Apply..." }], link: { panel: "capacity" } };
+    const memo: CapacityMemo = { policy: policy(base), captureConfig: inboxCaptureConfigVersion(base), until: now + CAPACITY_CACHE_MS, item };
+    appendMetrics(base, [{ at: new Date(now).toISOString(), kind: "hook", wallMs: 123 }]);
+    expect(computeInbox(base, memo).capacity).toEqual(memo);
+    clock.mockImplementation(() => now + CAPACITY_CACHE_MS);
+    expect(computeInbox(base, memo).capacity.until).toBe(now + 2 * CAPACITY_CACHE_MS);
+  } finally { clock.mockRestore(); }
 }, 20_000);
 
 test("UTF-8 payload trimming preserves the visible overflow count under the full envelope bound", () => {

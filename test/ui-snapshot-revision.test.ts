@@ -5,6 +5,7 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { snapshotRevision } from "../src/ui/snapshot-revision.ts";
+import { isRecapTelemetry } from "../src/memory/recap-telemetry.ts";
 
 const roots: string[] = [], project = "a".repeat(16), machine = "b".repeat(16), generation = "c".repeat(32), now = 1_800_000_000_000;
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -37,7 +38,7 @@ test("authoritative append, same-size rewrite with restored mtime, replacement a
 
 test("external configs, lifecycle, aliases, new projects, work and every generation/prune binding are observed", () => {
   const base = home();
-  for (const name of ["amem.config.json", "capture-config.json", "formats.json", "profile.json", "shards.json", "aliases.jsonl", "lifecycle.jsonl", "machine.json", "metrics.jsonl", "profile.lock", "public-prune-view.intent.json",
+  for (const name of ["amem.config.json", "capture-config.json", "formats.json", "profile.json", "shards.json", "aliases.jsonl", "lifecycle.jsonl", "machine.json", "profile.lock", "public-prune-view.intent.json",
     `projects/${project}/project.json`, `projects/${project}/work/log/peer.jsonl`, `projects/${project}/machine/${machine}/config.json`,
     `projects/${project}/legacy/log/peer.jsonl`, "user/local/peer.jsonl", `generations/${generation}/generation-seal.json`,
     `generations/${generation}/bridge-snapshot.json`, `generations/${generation}/bridge-snapshots/${"d".repeat(40)}/log/peer.jsonl`,
@@ -47,6 +48,19 @@ test("external configs, lifecycle, aliases, new projects, work and every generat
     expect(revision(base), name).not.toBe(before);
   }
   const before = revision(base); rmSync(join(base, `projects/${project}/work/log/peer.jsonl`)); expect(revision(base)).not.toBe(before);
+});
+
+test("only observation journals and their exact variant temporary names leave reusable panel revisions unchanged", () => {
+  const base = home(), before = revision(base), temp = "record-variants.jsonl.tmp-12345678-1234-4abc-8abc-123456789abc";
+  for (const name of ["metrics.jsonl", "record-variants.jsonl", temp]) {
+    expect(isRecapTelemetry(name)).toBe(true);
+    put(base, name); expect(revision(base), name).toBe(before);
+    appendFileSync(join(base, name), "append\n"); expect(revision(base), name).toBe(before);
+    rmSync(join(base, name)); expect(revision(base), name).toBe(before);
+  }
+  expect(isRecapTelemetry("record-variants.jsonl.tmp-not-a-uuid")).toBe(false);
+  expect(isRecapTelemetry("metrics.jsonl.extra")).toBe(false);
+  put(base, "other-metrics.jsonl"); expect(revision(base)).not.toBe(before);
 });
 
 test("capture WAL commits and checkpoints change the revision without opening a read-write store in the probe", () => {
