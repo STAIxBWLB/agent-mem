@@ -308,36 +308,86 @@ function receiptPhase(home: string, cli: Cli): "applied" | "prepared" | null {
  * Per CLI: is a capture hook registered, and when did it last capture. "Registered" is what the setup receipt says (`hookEvidence`): a hook the person removed by hand
  * afterwards still shows as registered until `amem setup <cli> --apply` or `--undo` is run again. A CLI without a receipt is `manual`.
  */
+type CaptureState = "fresh" | "stale" | "never";
+type MachineState = CaptureState | "unknown";
+type Tally = Map<string, { rows: number; last: string | null }>;
+
+function tallyInto(seen: Tally, row: { agent: string; n: number; last: string | null }): void {
+  const prior = seen.get(row.agent);
+  seen.set(row.agent, { rows: (prior?.rows ?? 0) + row.n, last: prior?.last && prior.last > (row.last ?? "") ? prior.last : row.last });
+}
+
+/** This home's machine id from machine.json, read-only (doctor never creates the identity); undefined when absent or invalid. */
+function localMachineId(home: string): string | undefined {
+  try {
+    const file = join(home, "machine.json"), stat = lstatSync(file);
+    if (!stat.isFile() || stat.size > 4096) return undefined;
+    const id = (JSON.parse(readFileSync(file, "utf8")) as { id?: unknown }).id;
+    return typeof id === "string" && /^[0-9a-f]{16}$/.test(id) ? id : undefined;
+  } catch { return undefined; }
+}
+
+function stateOf(last: string | null, now: number): CaptureState {
+  return last === null ? "never" : now - Date.parse(last) > CAPTURE_STALE_MS ? "stale" : "fresh";
+}
+
+/**
+ * The one place a capture hint is chosen (#509 extends it). `trigger` names the state that raised it: the machine-wide one (#510), this project's one
+ * (the fallback when another shard could not be read), or a missing setup for a CLI that has never captured anywhere.
+ */
+function captureHint(cli: Cli, registered: boolean, state: CaptureState, trigger: "machine" | "project" | "setup"): string {
+  if (trigger === "setup") return cli === "claude" ? "run amem setup claude --apply to register the capture hooks" : `run amem setup ${cli} --apply, or amem ingest ${cli} by hand`;
+  const where = trigger === "machine" ? "on this machine (all projects)" : "in this project (other projects could not be read)";
+  if (registered && cli === "codex" && state === "never") return `the codex hook is registered but has never captured ${where}: approve it in Codex's /hooks trust review (setup never grants hook trust), then open a session`;
+  return `the ${cli} ${registered ? "hook is registered but its capture" : "capture"} is ${state} ${where}: open a session${cli === "claude" ? "" : `, or run amem ingest ${cli}`}`;
+}
+
+/**
+ * Per CLI: this project's state (its shard and aliases, as before) and a machine-wide state over every shard's capture.db (#510).
+ * Both come from the same read-only aggregate in one walkShards pass; the machine-wide values are counts and times only, never another project's key, path or rows.
+ * An other-shard database that is busy, missing rows table or unreadable makes the machine-wide state `unknown` (not `never`) and is not an error.
+ */
 function captureSection(options: DoctorOptions): Section {
   const keys = [options.project, ...options.aliases];
-  const seen = new Map<string, { rows: number; last: string | null }>();
-  let readable = true;
+  const here: Tally = new Map(), machine: Tally = new Map();
+  // Machine-wide means this machine: only capture directories named by this home's machine.json count, read without creating it.
+  // Another machine's synced rows must not mask a stale local CLI (#510 AC2). No readable identity: the machine-wide state is unknown.
+  const local = localMachineId(options.home);
+  let readable = true, othersUnreadable = local === undefined;
   for (const shard of walkShards(options.home)) {
-    if (!keys.includes(shard.key)) continue;
+    const own = keys.includes(shard.key);
     for (const dir of shard.machineDirs) {
+      const thisMachine = local !== undefined && basename(dir) === local;
+      if (!own && !thisMachine) continue;
       const file = join(dir, "capture.db");
       if (!existsSync(file)) continue;
       let db: Database | undefined;
       try {
         db = new Database(file, { readonly: true }); db.run("PRAGMA busy_timeout = 1000");
         for (const row of db.query("SELECT agent, COUNT(*) AS n, MAX(at) AS last FROM rows GROUP BY agent").all() as { agent: string; n: number; last: string | null }[]) {
-          const prior = seen.get(row.agent);
-          seen.set(row.agent, { rows: (prior?.rows ?? 0) + row.n, last: prior?.last && prior.last > (row.last ?? "") ? prior.last : row.last });
+          if (thisMachine) tallyInto(machine, row);
+          if (own) tallyInto(here, row);
         }
-      } catch { readable = false; } finally { db?.close(); }
+      } catch { if (own) readable = false; if (thisMachine) othersUnreadable = true; } finally { db?.close(); }
     }
   }
   const clis: Record<string, unknown> = {};
   const attention: string[] = [];
   for (const cli of CLIS) {
-    const phase = receiptPhase(options.home, cli), registered = phase === "applied", entry = seen.get(cli);
-    const last = entry?.last ?? null, ageMs = last === null ? null : options.now - Date.parse(last);
-    const state = last === null ? "never" : ageMs! > CAPTURE_STALE_MS ? "stale" : "fresh";
-    // A registered hook that is not fresh, or any CLI whose capture went stale, needs a look. A CLI without a hook that never captured is just not used here: reported, not flagged.
-    const needs = registered ? state !== "fresh" : state === "stale";
+    const phase = receiptPhase(options.home, cli), registered = phase === "applied", entry = here.get(cli), wide = machine.get(cli);
+    const last = entry?.last ?? null, state = stateOf(last, options.now);
+    const wideLast = wide?.last ?? null, wideKnown = stateOf(wideLast, options.now);
+    // A fresh row anywhere is definitive; stale or never is only known when every other shard was read.
+    const machineState: MachineState = wideKnown === "fresh" || !othersUnreadable ? wideKnown : "unknown";
+    // Attention follows the machine-wide state (#510): a registered hook not fresh anywhere, or any CLI whose capture went stale everywhere.
+    // When that state is unknown, this project's state decides, as before. A CLI fresh elsewhere but absent here is reported, not flagged.
+    const decided: CaptureState = machineState === "unknown" ? state : machineState, trigger = machineState === "unknown" ? "project" : "machine";
+    const needs = registered ? decided !== "fresh" : decided === "stale";
     if (needs) attention.push(cli);
+    const unusedHere = state !== "fresh" && machineState === "fresh";
+    const hint = needs ? captureHint(cli, registered, decided, trigger) : !registered && decided === "never" ? captureHint(cli, registered, decided, "setup") : undefined;
     clis[cli] = { hook: registered ? "registered" : "manual", ...(registered ? { hookEvidence: "setup receipt" } : {}), ...(phase === "prepared" ? { setup: "prepared, not applied" } : {}), capture: state, lastCaptureAt: last, rows: entry?.rows ?? 0,
-      ...(needs || (!registered && state === "never") ? { hint: registered ? cli === "codex" && state === "never" ? "the codex hook is registered but has never captured: approve it in Codex's /hooks trust review (setup never grants hook trust), then open a session" : `the ${cli} hook is registered but its capture is ${state}: open a session${cli === "claude" ? "" : `, or run amem ingest ${cli}`}` : cli === "claude" ? "run amem setup claude --apply to register the capture hooks" : `run amem setup ${cli} --apply, or amem ingest ${cli} by hand` } : {}) };
+      machineCapture: machineState, machineLastCaptureAt: wideLast, machineRows: wide?.rows ?? 0, ...(unusedHere ? { note: "not used in this project" } : {}), ...(hint ? { hint } : {}) };
   }
   return { status: !readable ? "unavailable" : attention.length ? "attention" : "ok", ...(readable ? {} : { reason: "a capture database could not be read" }), clis };
 }
@@ -569,7 +619,7 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
   if (name === "capture" && detail.clis && typeof detail.clis === "object") {
     return Object.entries(detail.clis as Record<string, Record<string, unknown>>).map(([cli, row]) => {
       const capture = String(row.capture), mark = capture === "fresh" ? s.ok(capture) : capture === "stale" ? s.attention(capture) : s.dim(capture);
-      return `${cli.padEnd(7)} hook ${row.hook}${row.setup ? ` (${row.setup})` : ""}, capture ${mark}${row.lastCaptureAt ? ` (last ${row.lastCaptureAt})` : ""}, ${row.rows} rows`;
+      return `${cli.padEnd(7)} hook ${row.hook}${row.setup ? ` (${row.setup})` : ""}, capture ${mark}${row.lastCaptureAt ? ` (last ${row.lastCaptureAt})` : ""}, ${row.rows} rows; machine-wide ${row.machineCapture}${row.machineLastCaptureAt ? ` (last ${row.machineLastCaptureAt})` : ""}, ${row.machineRows} rows${row.note ? `, ${row.note}` : ""}`;
     });
   }
   if (name === "cadence") {

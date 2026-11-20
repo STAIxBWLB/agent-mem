@@ -704,3 +704,73 @@ test("#453: admission rejects an unrelated directory and a replaced scratch inod
   });
   expect(doctorScratchBinding(other)).toBeUndefined();
 }, 120_000);
+
+function otherProject(r: ReturnType<typeof rig>, name: string) {
+  const cwd = join(r.root, name); mkdirSync(cwd, { recursive: true });
+  expect(memoryGitSync(["init", "-q", cwd], { encoding: "utf8" }).status).toBe(0);
+  const project = memoryProjectKey(cwd);
+  const capture = (agent: string, at: string, excerpt: string) => { const c = new CaptureStore({ memoryDir: r.memory, project, cwd, now: () => Date.parse(at) }); try { c.append({ project, agent, event: "PostToolUse", excerpt }); } finally { c.close(); } };
+  return { cwd, project, capture };
+}
+
+function captureDbs(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) { const p = join(dir, name); if (statSync(p).isDirectory()) out.push(...captureDbs(p)); else if (name === "capture.db") out.push(p); }
+  return out;
+}
+
+test("#510 AC1/AC3: a CLI fresh in another project is not used here, unflagged, and nothing of that project leaks", async () => {
+  const r = rig(); r.note("n");
+  mkdirSync(join(r.memory, "setup"), { recursive: true });
+  writeFileSync(join(r.memory, "setup", "qwen.json"), JSON.stringify({ target: "qwen", phase: "applied" }));
+  const other = otherProject(r, "elsewhere-secret-repo"), now = new Date().toISOString();
+  other.capture("qwen", now, "SECRET-ROW-TEXT-qwen"); other.capture("qwen", now, "SECRET-ROW-TEXT-qwen-2");
+  r.capture("claude", now);
+  const report = await doctor(r);
+  const qwen = report.sections.capture.clis.qwen;
+  expect(qwen).toMatchObject({ hook: "registered", capture: "never", rows: 0, machineCapture: "fresh", machineRows: 2, note: "not used in this project" });
+  expect(qwen.hint).toBeUndefined();
+  expect(report.sections.capture.status).toBe("ok");
+  const text = await doctor(r, ["doctor"]);
+  expect(text).toContain("not used in this project");
+  for (const out of [JSON.stringify(report), String(text)]) for (const leak of [other.project, other.cwd, "elsewhere-secret-repo", "SECRET-ROW-TEXT"]) expect(out).not.toContain(leak);
+});
+
+test("#510 AC2: a registered CLI stale across every shard is flagged, with a machine-wide hint", async () => {
+  const r = rig(); r.note("n");
+  mkdirSync(join(r.memory, "setup"), { recursive: true });
+  writeFileSync(join(r.memory, "setup", "kimi.json"), JSON.stringify({ target: "kimi", phase: "applied" }));
+  const old = new Date(Date.now() - 30 * 86400_000).toISOString();
+  otherProject(r, "a").capture("kimi", old, "x"); r.capture("kimi", old);
+  const report = await doctor(r);
+  expect(report.sections.capture.clis.kimi).toMatchObject({ capture: "stale", machineCapture: "stale", machineRows: 2 });
+  expect(report.sections.capture.clis.kimi.hint).toContain("on this machine");
+  expect(report.sections.capture.status).toBe("attention");
+});
+
+test("#510: an unreadable other-shard capture.db makes the machine-wide state unknown, not never, and is not an error", async () => {
+  const r = rig(); r.note("n");
+  const other = otherProject(r, "b"); other.capture("pi", new Date().toISOString(), "x");
+  const own = new Set(captureDbs(r.memory));
+  r.capture("claude", new Date().toISOString());
+  const mine = captureDbs(r.memory).filter(p => !own.has(p));
+  for (const p of captureDbs(r.memory)) if (!mine.includes(p)) { rmSync(p, { force: true }); for (const s of ["-wal", "-shm"]) rmSync(p + s, { force: true }); writeFileSync(p, "not a database"); }
+  const report = await doctor(r);
+  expect(report.sections.capture.status).toBe("ok");
+  expect(report.sections.capture.clis.kimi).toMatchObject({ capture: "never", machineCapture: "unknown" });
+  expect(report.sections.capture.clis.claude).toMatchObject({ capture: "fresh", machineCapture: "fresh" });
+});
+
+test("#510 AC2: another machine's fresh rows do not mask a stale local CLI", async () => {
+  const r = rig(); r.note("n");
+  mkdirSync(join(r.memory, "setup"), { recursive: true });
+  writeFileSync(join(r.memory, "setup", "kimi.json"), JSON.stringify({ target: "kimi", phase: "applied" }));
+  const other = otherProject(r, "c"), old = new Date(Date.now() - 30 * 86400_000).toISOString();
+  r.capture("kimi", old);
+  const { CaptureStore: Store } = await import("../src/memory/capture.ts");
+  const c = new Store({ memoryDir: r.memory, project: other.project, cwd: other.cwd, machine: "abcdefabcdefabcd", now: () => Date.now() });
+  try { c.append({ project: other.project, agent: "kimi", event: "PostToolUse", excerpt: "remote" }); } finally { c.close(); }
+  const report = await doctor(r);
+  expect(report.sections.capture.clis.kimi).toMatchObject({ capture: "stale", machineCapture: "stale", machineRows: 1 });
+  expect(report.sections.capture.status).toBe("attention");
+});
