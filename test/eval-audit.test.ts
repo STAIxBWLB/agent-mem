@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCli } from "../src/cli.ts";
+import { AUDIT_SCORE_REFUSED, runCli } from "../src/cli.ts";
 import { AUDIT_KINDS, AUDIT_LABELS, MAX_AUDIT_NOTES, auditAge, cohenKappa, foldAnchorStatus } from "../src/memory/eval.ts";
 import { appendAlias } from "../src/memory/aliases.ts";
 import { auditAsOf, auditSample, auditScore, auditScoreText, parseAuditSheet, readAuditSheet, writeAuditSheet, type AuditNote, type AuditSheet } from "../src/memory/eval-audit.ts";
@@ -75,6 +75,10 @@ test("AC1: the age bucket is the spec's <30, 30-90 and >90 days, and the anchor 
   expect(auditAge(new Date(NOW - 90 * DAY).toISOString(), NOW)).toBe("d30to90");
   expect(auditAge(new Date(NOW - 91 * DAY).toISOString(), NOW)).toBe("gt90");
   expect(auditAge("not a date", NOW)).toBeUndefined();
+  // A note written after the as-of did not exist at that instant: it is outside the frame, never a negative age counted as <30.
+  expect(auditAge(new Date(NOW + 1).toISOString(), NOW)).toBeUndefined();
+  expect(auditAge(new Date(NOW + 5 * DAY).toISOString(), NOW)).toBeUndefined();
+  expect(auditAge(new Date(NOW).toISOString(), NOW)).toBe("lt30");
   expect(foldAnchorStatus([])).toBe("none");
   expect(foldAnchorStatus(["present", "present"])).toBe("present");
   expect(foldAnchorStatus(["present", "changed"])).toBe("changed");
@@ -484,7 +488,10 @@ test("#326: a marked session's audit output is screened by the configured policy
   expect(JSON.parse(await cli(r, ["eval", "audit", "score", file, "--json"]))).toMatchObject({ seed: "never_public_seed" });
   // A marked read is screened like every other: the policy denies the token the seed carries, so the score is refused rather than printed.
   await expect(cli(r, ["eval", "audit", "score", file, "--json"], { CODEX_THREAD_ID: "fixture" }))
-    .rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
+    .rejects.toThrow(AUDIT_SCORE_REFUSED);
+  // The refusal names its cause class and where to check it, never the value the policy matched.
+  expect(AUDIT_SCORE_REFUSED).toContain("[cause: policy_denied]"); expect(AUDIT_SCORE_REFUSED).toContain("Next step:");
+  expect(AUDIT_SCORE_REFUSED).not.toContain("never_public");
   // A sample has already written its private sheet, so its summary is withheld rather than reporting a draw that did not fail.
   expect(JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "never_public_seed", "--n", "1", "--out", join(r.root, "screened-sample.json"), "--json"], { CODEX_THREAD_ID: "fixture" })))
     .toEqual({ ok: true, completed: true, receiptWithheld: true });

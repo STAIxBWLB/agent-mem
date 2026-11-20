@@ -106,10 +106,13 @@ export function parseKs(value: string | undefined): number[] {
   return [...new Set(ks)].sort((a, b) => a - b);
 }
 
-/** The spec's age bucket for one note: <30 days, 30-90 days, >90 days, measured from `now` to the note's own timestamp. */
+/**
+ * The spec's age bucket for one note: <30 days, 30-90 days, >90 days, measured from `now` to the note's own timestamp. A note written after `now` did not
+ * exist at that instant and has no age, so it is outside the frame rather than in `<30`.
+ */
 export function auditAge(at: string, now: number): AuditAgeBucket | undefined {
   const written = Date.parse(at);
-  if (!Number.isFinite(written)) return undefined;
+  if (!Number.isFinite(written) || written > now) return undefined;
   const days = Math.floor((now - written) / AUDIT_DAY);
   return days < 30 ? "lt30" : days <= 90 ? "d30to90" : "gt90";
 }

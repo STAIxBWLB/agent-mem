@@ -299,6 +299,9 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
   return safe;
 }
 
+/** #326: a marked score read the policy refuses names its cause class and where to check it, never the matched value. */
+export const AUDIT_SCORE_REFUSED = "Audit score refused [cause: policy_denied]: the configured policy denies a value in the rendered score (its seed, as-of or project digest); no partial result is shown. Next step: check the policy (amem.config.json in the memory home, narrowed by the repository's .amem/config) against those values, or sample again with a different --seed.";
+
 export async function runCli(argv: readonly string[], context: CliContext = {}): Promise<string> {
   // Native capture and the MCP server retain their existing surfaces and attribution.
   if (argv[0] === "hook" || argv[0] === "ingest" || argv.length === 1 && argv[0] === "mcp") return runCliCommand(argv, context);
@@ -323,7 +326,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
         catch {
           // A score leaves nothing behind, so an output the policy refuses refuses the read; a sample has written its private sheet already, and withholding
           // the receipt reports exactly that without naming the file.
-          if (parsed.path[0] === "eval" && parsed.path[2] === "score") throw Error("Memory operation unavailable or refused; no partial result is shown.");
+          if (parsed.path[0] === "eval" && parsed.path[2] === "score") throw Error(AUDIT_SCORE_REFUSED);
           // The command returned successfully: withholding its receipt cannot undo its effects.
           const failed = receipt !== null && typeof receipt === "object" && "ok" in receipt && receipt.ok === false;
           return parsed.options["--json"] === true ? JSON.stringify({ ok: !failed, completed: !failed, receiptWithheld: true })
@@ -345,6 +348,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (marked && error instanceof RemoteRealmRefusal) throw error;
     // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
     if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
+    // #326: the audit score refusal is a fixed cause-class string that names no matched value.
+    if (marked && error instanceof Error && error.message === AUDIT_SCORE_REFUSED) throw new Error(AUDIT_SCORE_REFUSED);
     // #288 step 3: checkpoint refusals are fixed cause-and-next-step strings with numbers only (no path, row or project).
     if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
