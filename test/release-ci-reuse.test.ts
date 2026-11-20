@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { proveRelease, frozenTag, githubReader, workflowShards, completeMatrix } from "../scripts/release-ci-reuse.mjs";
+import { proveRelease, frozenTag, githubReader, workflowShards, completeMatrix, releaseShards } from "../scripts/release-ci-reuse.mjs";
 
 const commit="a".repeat(40),tree="b".repeat(40),other="c".repeat(40),tagObject="d".repeat(40),repository="acme/memory";
 const input={repository,commit,shards:{test:4,"test-macos":4}};
@@ -48,6 +48,15 @@ test("a main check that skipped its heavy jobs by reusing a PR proof is refused 
   expect(workflowShards(workflow)).toEqual({test:4,"test-macos":4});
   expect(workflowShards(workflow.replace("shard: [1, 2, 3, 4]","shard: [1, 2, 4]"))).toBeNull();
   expect(workflowShards("jobs: {}")).toBeNull();
+});
+test("the release matrix is read at the target commit through the API, so a shallow checkout's older dispatch target still proves (#503 AC4)",async()=>{
+  const workflow=readFileSync(join(import.meta.dir,"..",".github","workflows","check.yml"),"utf8"),paths:string[]=[];
+  const api=(body:unknown)=>async(path:string)=>{paths.push(path);return body;};
+  expect(await releaseShards(api({type:"file",encoding:"base64",content:Buffer.from(workflow).toString("base64")}),commit)).toEqual({test:4,"test-macos":4});
+  expect(paths).toEqual([`contents/.github/workflows/check.yml?ref=${commit}`]);
+  for(const body of [{type:"dir"},{type:"file",encoding:"none",content:""},{type:"file",encoding:"base64",content:Buffer.from("jobs: {}").toString("base64")}])
+    await expect(releaseShards(api(body),commit)).rejects.toThrow("Push the release tree to main");
+  await expect(releaseShards(api({}),"main")).rejects.toThrow("Commit/tree identity is unavailable");
 });
 test("release reuses a successful main check for an identical whole tree, even at a different commit",async()=>{
   const f=fixture(),proof=await proveRelease(f.api,input,f.clock);

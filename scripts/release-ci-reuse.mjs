@@ -21,6 +21,14 @@ export function workflowShards(text){
   }
   return out;
 }
+/** Reads the release commit's check.yml through the API: a shallow release checkout lacks an older dispatch target (#503 AC4). */
+export async function releaseShards(api,commit){
+  const file=await api(`contents/.github/workflows/check.yml?ref=${sha(commit)}`);
+  if(file?.type!=="file"||file.encoding!=="base64"||typeof file.content!=="string")refuse("invalid","The release tree's check.yml is unreadable through the GitHub contents API");
+  const shards=workflowShards(Buffer.from(file.content,"base64").toString("utf8"));
+  if(!shards)refuse("invalid","The release tree's check.yml does not declare a plain test shard matrix");
+  return shards;
+}
 export function completeMatrix(names,expected){
   const heavy=names.filter(name=>HEAVY.test(name));
   const want=[...["test","test-macos"].flatMap(kind=>{const os=kind==="test"?"ubuntu-latest":"macos-latest",n=expected[kind];return Array.from({length:n},(_,index)=>`${kind} (${os}, ${index+1}, ${n})`);}),"measure (ubuntu-latest)","measure-macos (macos-latest)"].sort();
@@ -138,10 +146,8 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
       await frozenTag(api,tag,commit,process.env.RELEASE_TAG_OBJECT);console.log("release: frozen tag still names the verified commit");
     }else{
       if(process.env.RELEASE_DRY_RUN!=="true"&&execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).trim()!==commit)refuse("invalid","Release checkout differs from the immutable event commit");
-      // The proven run has this commit's tree, so the checked-out check.yml declares the matrix it must have run.
-      const shards=workflowShards(execFileSync("git",["show",`${commit}:.github/workflows/check.yml`],{encoding:"utf8"}));
-      if(!shards)refuse("invalid","The release tree's check.yml does not declare a plain test shard matrix");
-      const proof=await proveRelease(api,{repository,commit,tag,tagObject:process.env.RELEASE_TAG_OBJECT,shards});
+      // The proven run has this commit's tree, so this commit's check.yml declares the matrix it must have run.
+      const proof=await proveRelease(api,{repository,commit,tag,tagObject:process.env.RELEASE_TAG_OBJECT,shards:await releaseShards(api,commit)});
       console.log(JSON.stringify({diagnostic:"release-ci-reuse",...proof}));
       if(process.env.GITHUB_OUTPUT)for(const [key,value] of Object.entries(proof))if(value!==undefined)appendFileSync(process.env.GITHUB_OUTPUT,`${key}=${value}\n`);
       if(process.env.GITHUB_STEP_SUMMARY)appendFileSync(process.env.GITHUB_STEP_SUMMARY,`Verified identical-tree check: ${proof.url}\n\nTree: \`${proof.tree}\`. No release test shards were launched.\n`);
