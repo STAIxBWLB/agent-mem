@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runCli } from "../src/cli.ts";
 import { readCatalogFresh } from "../src/memory/catalog.ts";
 import { withBriefSnapshot } from "../src/memory/doctor.ts";
-import { ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
+import { ensureShardDescriptor, placementRealmGap, placementRealmView, shardDir } from "../src/memory/shard.ts";
 import { applyRealmAdmission } from "../src/memory/sync-placement-realm-admission.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { sessionStartBrief } from "../src/session-brief.ts";
@@ -90,4 +90,31 @@ test("catalog never uses its narrow selector probe to open an unadmitted curated
   const dir = shardDir(f.home, outside), before = inspectionFilesystemSnapshot(dir);
   expect(() => readCatalogFresh(f.home)).toThrow("admit");
   expect(inspectionFilesystemSnapshot(dir)).toEqual(before);
+}, 120_000);
+
+test("#525: a restored curated realm and an unreadable scaffold are each classified, and neither is opened", async () => {
+  const inside = "example.test/catalog/inside", restored = "example.test/catalog/restored", shadow = "example.test/catalog/shadow";
+  const f = await inventoryFixture(1, [inside], true);
+  const generation = JSON.parse(readFileSync(join(f.home, "profile.json"), "utf8")).generation;
+  // A curated realm this machine already holds but never admitted: the state a key form cannot tell from capture-only.
+  installSyntheticRealm(f.home, generation, restored);
+  // A scaffold whose only curated marker is a link: the class check must not follow it, and must not guess either.
+  ensureShardDescriptor(f.home, shadow);
+  const shadowDir = shardDir(f.home, shadow);
+  symlinkSync(join(shadowDir, "project.json"), join(shadowDir, "generation.json"));
+  const view = placementRealmView(f.home);
+  expect(view?.kind).toBe("inventory");
+  expect(placementRealmGap(f.home, inside, view)).toBeUndefined();
+  expect(placementRealmGap(f.home, restored, view)).toBe("curated-unadmitted");
+  expect(placementRealmGap(f.home, shadow, view)).toBe("unverified");
+  const before = inspectionFilesystemSnapshot(f.home);
+  // The refusal a console panel prints names the class, and neither the project key nor any path.
+  let message = "";
+  try { openShardStore({ memoryDir: f.home, project: restored, deferPromotions: true }); } catch (error) { message = (error as Error).message; }
+  expect(message).toContain("class=curated-unadmitted");
+  expect(message).not.toContain(restored);
+  expect(message).not.toContain(f.home);
+  // #448 keeps its shape: listing still refuses this home rather than opening either realm, and nothing is written.
+  expect(() => readCatalogFresh(f.home)).toThrow("admit");
+  expect(inspectionFilesystemSnapshot(f.home)).toEqual(before);
 }, 120_000);

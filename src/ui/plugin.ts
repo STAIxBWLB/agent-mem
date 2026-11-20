@@ -31,7 +31,7 @@ import { appendLifecycle, assertProjectActive, projectState } from "../memory/li
 import { hasFailLabel, noteAdd, parseFailTemplate } from "../memory/note-add.ts";
 import type { StandalonePolicy } from "../memory/policy.ts";
 import { applyPrune, planPrune, pruneText } from "../memory/prune.ts";
-import { aliasedKeys, readShardedSelection, resolveAlias } from "../memory/shard.ts";
+import { aliasedKeys, PlacementRealmRefusal, placementRealmGap, placementRealmView, readShardedSelection, resolveAlias, type PlacementRealmGap, type PlacementRealmView } from "../memory/shard.ts";
 import { machineId, MemoryStore, openShardStore, type StoreOptions, type View } from "../memory/store.ts";
 
 // The contract types this module uses, copied from agent-console src/contract.ts (api 1, additive only): src/ takes no
@@ -139,24 +139,47 @@ export const plugin = {
       if (hasCandidates()) for (const key of withCandidates(undefined, store => store.projects())) { const canonical = resolveAlias(base, key); keys.add(canonical); waiting.add(canonical); }
       return [...keys].filter(key => projectState(base, key) === "active").sort((a, b) => Number(waiting.has(b)) - Number(waiting.has(a)) || a.localeCompare(b));
     }
-    function projectList(): { list: string[]; cacheable: boolean } {
+    // #525: a project realm outside the activated inventory cannot open its memory panels, and the class says why. It rides
+    // the same revision-cached listing; reuse re-proves the inventory, and a failed proof claims `unverified`, never a class.
+    // An unproved view is never cached and a payload carrying one is never cached either, so a transient binding or inventory
+    // failure is retried on the next call even when the revision has not moved.
+    let realmView: { revision: string; view: PlacementRealmView; gaps: Record<string, PlacementRealmGap> } | undefined;
+    function projectGaps(revision: string | undefined, list: string[]): { gaps: Record<string, PlacementRealmGap>; proved: boolean } {
+      if (revision !== undefined && realmView?.revision === revision) {
+        try { if (realmView.view.kind === "inventory") realmView.view.assertCurrent(); return { gaps: realmView.gaps, proved: true }; }
+        catch { realmView = undefined; }
+      }
+      let view: PlacementRealmView | undefined;
+      try { view = placementRealmView(base); } catch { view = undefined; }
+      const gaps: Record<string, PlacementRealmGap> = {};
+      for (const key of list) { const gap = placementRealmGap(base, key, view); if (gap) gaps[key] = gap; }
+      if (view === undefined) { realmView = undefined; return { gaps, proved: false }; }
+      if (revision !== undefined) realmView = { revision, view, gaps };
+      return { gaps, proved: true };
+    }
+    function projectList(): { list: string[]; gaps: Record<string, PlacementRealmGap>; cacheable: boolean } {
       let revision: string;
       try { revision = snapshotRevision(base); }
-      catch { catalog = undefined; return { list: projects(), cacheable: false }; }
+      catch { catalog = undefined; const list = projects(), marks = projectGaps(undefined, list); return { list, gaps: marks.gaps, cacheable: false }; }
       const now = Date.now();
-      if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) return { list: [...catalog.list], cacheable: true };
+      if (catalog?.revision === revision && now >= catalog.sampledAt && now < catalog.until) {
+        const marks = projectGaps(revision, catalog.list);
+        return { list: [...catalog.list], gaps: marks.gaps, cacheable: marks.proved };
+      }
       const list = projects();
       // #359: an inventory a read failure cut short serves this snapshot only; the next one reads again, write or not.
-      if (inventoryIncomplete) { catalog = undefined; return { list, cacheable: false }; }
+      if (inventoryIncomplete) { catalog = undefined; return { list, gaps: projectGaps(undefined, list).gaps, cacheable: false }; }
       // A missing witness affects reuse only; ordinary fresh reads remain available.
       try {
         if (snapshotRevision(base) === revision) {
+          const marks = projectGaps(revision, list);
           catalog = { revision, list: [...list], sampledAt: now, until: catalogExpiry };
-          return { list, cacheable: true };
+          return { list, gaps: marks.gaps, cacheable: marks.proved };
         }
       } catch { /* Uncacheable; do not turn an inventory race into a panel failure. */ }
       catalog = undefined;
-      return { list, cacheable: false };
+      const marks = projectGaps(undefined, list);
+      return { list, gaps: marks.gaps, cacheable: false };
     }
     // The shell's tabs navigate without params, so the project chosen on one panel is kept for the others and the palette.
     // ponytail: one choice per provider; fine for H0's single person, per session once a console serves several.
@@ -444,7 +467,9 @@ export const plugin = {
         for (const item of value.items) if (item.group === "candidate" && item.link.params?.project) projectOf.set(item.id, item.link.params.project);
         return { ...value };
       }
-      let list: string[] = [], project: string | undefined;
+      let list: string[] = [], project: string | undefined, gaps: Record<string, PlacementRealmGap> = {};
+      // #525: every payload that lists projects carries the class of the ones whose memory panels cannot open.
+      const framed = (extra: Args): Args => ({ projects: list, ...(Object.keys(gaps).length ? { gaps } : {}), ...extra });
       try {
         if (input.panel === "timeline" || input.panel === "work") {
           const requested = str(args.project), selected = requested ? resolveAlias(base, requested) : chosen;
@@ -454,17 +479,19 @@ export const plugin = {
             // This is ordinary setup, never a published revision or a retained lease.
             const initial = pick(args, projects());
             if (initial) {
-              const prepared = createMemoryMcp({ cwd: base, base, project: initial }); prepared.close();
+              // #525: a realm outside the activated inventory cannot warm its curated store. The panel read below reports
+              // that realm's class, so a failed warm must not pre-empt the selection the payload frames.
+              try { createMemoryMcp({ cwd: base, base, project: initial }).close(); } catch { /* reported by the panel read */ }
               if (preparedReads.size >= 16) preparedReads.delete(preparedReads.values().next().value!);
               preparedReads.add(bindingOf(initial)); catalog = undefined;
             }
           }
         }
-        // #359: every panel reuses the project list behind the snapshotRevision witness; only result caching stays limited to cachedPanels.
-        const listed = projectList(), selection = cachedPanels.has(input.panel) ? listed : { list: listed.list, cacheable: false };
+        // #359: every panel reuses the project list (and its #525 class marks) behind the snapshotRevision witness; only result caching stays limited to cachedPanels.
+        const listed = projectList(), selection = cachedPanels.has(input.panel) ? listed : { ...listed, cacheable: false };
         if (input.panel === "recap" && !selection.cacheable) noteMiss("uncacheable selection");
-        list = selection.list; project = pick(args, list);
-        if (str(args.project) && !project) return { projects: list, project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." };
+        list = selection.list; gaps = selection.gaps; project = pick(args, list);
+        if (str(args.project) && !project) return framed({ project: null, error: "The requested memory project is unavailable; choose an active project from the project selector." });
         if (input.panel === "search") {
           const q = str(args.q);
           if (!q || !project) return { hits: [], total: 0 };
@@ -474,8 +501,8 @@ export const plugin = {
           return { hits, total: hits.length };
         }
         const load = async (onExpiry?: (at: number) => void, onValidate?: (validate: () => void, retries: number, bytes: number) => void): Promise<Args> => input.panel === "capacity"
-          ? { projects: list, project: project ?? null, ...(await capacity() ?? { report: null }) }
-          : !project ? { projects: list, project: null } : { projects: list, project, ...(await panel(input.panel, args, project, onExpiry, onValidate)) };
+          ? framed({ project: project ?? null, ...(await capacity() ?? { report: null }) })
+          : !project ? framed({ project: null }) : framed({ project, ...(await panel(input.panel, args, project, onExpiry, onValidate)) });
         // Capacity samples resources/time; Timeline probes arbitrary referenced files.
         // Neither has a cheap complete revision, so both stay uncached.
         if (!cachedPanels.has(input.panel)) return await load();
@@ -484,7 +511,8 @@ export const plugin = {
         let sourceRetried = false;
         const projection = async () => {
           if (projectionVersion !== actionVersion) {
-            list = projects(); project = pick(args, list); catalog = undefined;
+            const keys = projects(), marks = projectGaps(undefined, keys);
+            list = keys; gaps = marks.gaps; project = pick(args, list); catalog = undefined;
             projectionVersion = actionVersion;
           }
           let until = Math.min(catalogExpiry,
@@ -501,10 +529,11 @@ export const plugin = {
       } catch (e) {
         if (input.panel === "recap" && e instanceof RecapSourceChangedError) {
           noteMiss("failed copy");
-          return { projects: list, project: project ?? null, error: e.message };
+          return framed({ project: project ?? null, error: e.message });
         }
         ctx.log(`amem: ${input.panel} for ${project ?? "project"} failed: ${errorText(e)}`);
-        return { projects: list, project: project ?? null, error: "Memory is unavailable for this project right now; details are in the terminal." };
+        // #525: a realm outside the activated inventory names its class and remedy; everything else keeps the generic sentence.
+        return framed({ project: project ?? null, error: e instanceof PlacementRealmRefusal ? e.message : "Memory is unavailable for this project right now; details are in the terminal." });
       } finally {
         if (retryCache && input.panel === "recap" && diagnostic.reason) try { ctx.log(`amem: recap cache miss: ${diagnostic.reason}`); } catch { /* diagnostics never fail a snapshot */ }
       }

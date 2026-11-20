@@ -11,12 +11,24 @@ export default (host) => {
   const line = (text, max = 120) => { const flat = String(text ?? "").replace(/\s+/g, " ").trim(); return flat.length > max ? `${flat.slice(0, max - 3)}...` : flat; };
   const act = (input) => host.action({ ...input, ...(project ? { project } : {}) });
 
+  // #525: how the picker marks a project whose memory panels cannot open, by the class the provider proved.
+  const GAP_LABEL = {
+    "local-key": "local-key, outside inventory",
+    "capture-only": "capture only, outside inventory",
+    "no-memory": "no memory yet, outside inventory",
+    "curated-unadmitted": "curated, not admitted",
+    "unverified": "state unverified",
+  };
+
+  // #525: a project whose memory panels cannot open carries the class the provider proved, in every list shape.
+  const gapLabel = (key, gaps) => (gaps?.[key] ? `${key} (${GAP_LABEL[gaps[key]] ?? gaps[key]})` : key);
+
   const picker = (s) => {
     const list = s.projects ?? [];
-    if (s.error && !s.project && list.length === 1) return btn(`Choose project ${list[0]}`, () => go(panel, { project: list[0] }));
-    if (list.length < 2) return list.length ? h("p", { class: "amem-sub", text: `Project ${list[0]}` }) : null;
+    if (s.error && !s.project && list.length === 1) return btn(`Choose project ${gapLabel(list[0], s.gaps)}`, () => go(panel, { project: list[0] }));
+    if (list.length < 2) return list.length ? h("p", { class: "amem-sub", text: `Project ${gapLabel(list[0], s.gaps)}` }) : null;
     const select = h("select", { name: "project", class: "amem-input", "aria-label": "Project", onchange: () => { project = select.value; go(panel); } },
-      [...(!s.project ? [h("option", { value: "", text: "Choose an active project", disabled: true, selected: true })] : []), ...list.map((key) => { const o = h("option", { value: key, text: key }); if (key === s.project) o.selected = true; return o; })]);
+      [...(!s.project ? [h("option", { value: "", text: "Choose an active project", disabled: true, selected: true })] : []), ...list.map((key) => { const o = h("option", { value: key, text: gapLabel(key, s.gaps) }); if (key === s.project) o.selected = true; return o; })]);
     return h("label", { class: "amem-bar" }, h("span", { text: "Project" }), select);
   };
 

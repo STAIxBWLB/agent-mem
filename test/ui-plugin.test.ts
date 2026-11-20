@@ -21,6 +21,7 @@ import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore, writeCaptureConfig } from "../src/memory/capture.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { appendAlias, ensureShardDescriptor, shardDir } from "../src/memory/shard.ts";
+import * as shardModule from "../src/memory/shard.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { consoleSetup } from "../src/setup-console.ts";
@@ -789,6 +790,133 @@ test("an unavailable explicit project never falls back to another project's memo
   // An omitted project still uses the person's previous valid selection.
   expect(await provider.snapshot({ after: 0, panel: "find", q: "console" })).toMatchObject({ project: f.project });
 });
+
+test("#525: the picker marks projects outside the activated inventory by class, and each marked project's panels name that class", async () => {
+  // A real activated placement home, so the inventory proof is the production one, not a stub.
+  const { closeInventoryFixtures, inventoryFixture } = await import("./fakes/sync-placement-inventory.ts");
+  const { applyRealmAdmission } = await import("../src/memory/sync-placement-realm-admission.ts");
+  const admitted = "example.test/placement/admitted", localKey = "scratch/widget@1a2b3c4d",
+    captured = "https://github.com/acme/captured.git", scaffold = "https://github.com/acme/scaffold.git",
+    overfull = "https://github.com/acme/overfull.git";
+  try {
+    const f = await inventoryFixture(1, [admitted], true);
+    // The three states #525 measured, each proved by its own evidence: a local-key project, a capture-only store and an
+    // empty scaffold a candidate put on the list. None holds a curated marker, so none is opened here.
+    for (const key of [localKey, captured, scaffold, overfull]) ensureShardDescriptor(f.home, key);
+    const rows = new CaptureStore({ memoryDir: f.home, project: captured });
+    try { rows.append({ project: captured, agent: "fixture", event: "PostToolUse", excerpt: "fixture capture row" }); } finally { rows.close(); }
+    // More machine directories than the class scan's bound (64) and no store among them: the scan cannot rule capture out,
+    // so the class is unverified rather than the empty scaffold's no-memory, whatever order the filesystem lists them in.
+    const machineRoot = join(shardDir(f.home, overfull), "machine");
+    for (let index = 0; index < 65; index++) mkdirSync(join(machineRoot, `m${String(index).padStart(2, "0")}`), { recursive: true });
+    const provider = await open(f.root);
+    const snapshot = await provider.snapshot({ after: 0, panel: "review" });
+    // AC1: all five listed, and exactly the four that cannot open are marked with their own class.
+    expect([...(snapshot.projects as string[])].sort()).toEqual([admitted, captured, scaffold, localKey, overfull].sort());
+    expect(snapshot.gaps).toEqual({ [localKey]: "local-key", [captured]: "capture-only", [scaffold]: "no-memory", [overfull]: "unverified" });
+    // AC2 and AC3: each marked project's Timeline and Work state the class and the next step for that class, with no key,
+    // path or name in the text.
+    const classes: Record<string, string> = { [localKey]: "class=local-key", [captured]: "class=capture-only", [scaffold]: "class=no-memory", [overfull]: "class=unverified" };
+    for (const [key, cls] of Object.entries(classes)) for (const panel of ["timeline", "work"]) {
+      const refused = await provider.snapshot({ after: 0, panel, project: key }), text = String(refused.error);
+      expect(refused.project, `${panel} ${cls}`).toBe(key);
+      expect(text, `${panel} ${cls}`).toContain("outside the activated inventory");
+      expect(text, `${panel} ${cls}`).toContain(cls);
+      expect(text, `${panel} ${cls}`).toContain(`keyHash=${createHash("sha256").update(key).digest("hex")}`);
+      expect(text, `${panel} ${cls}`).not.toContain(key);
+      expect(text, `${panel} ${cls}`).not.toContain(f.home);
+      expect(text, `${panel} ${cls}`).not.toContain(".git");
+      expect(text, `${panel} ${cls}`).not.toContain("/projects/");
+    }
+    // AC2: an admitted project keeps its memory, and every listing carries the same marks.
+    const timeline = await provider.snapshot({ after: 0, panel: "timeline", project: admitted });
+    expect(timeline.error).toBeUndefined();
+    expect(JSON.stringify(timeline)).toContain(`inventory note for ${admitted}`);
+    expect(timeline.gaps).toEqual(snapshot.gaps);
+    expect((await provider.snapshot({ after: 0, panel: "work", project: admitted })).error).toBeUndefined();
+    // The class comes from the activated inventory, so admitting the realm re-derives the marks on the next snapshot.
+    expect(await applyRealmAdmission(f.home, captured, { mode: "apply" })).toMatchObject({ state: "admitted" });
+    const afterAdmission = await provider.snapshot({ after: 0, panel: "review" });
+    expect(afterAdmission.projects).toContain(captured);
+    expect(afterAdmission.gaps).toEqual({ [localKey]: "local-key", [scaffold]: "no-memory", [overfull]: "unverified" });
+  } finally { closeInventoryFixtures(); }
+}, 120_000);
+
+test("#525: an unavailable inventory proof is retried at the same revision and never enters a cached payload", async () => {
+  const { closeInventoryFixtures, inventoryFixture } = await import("./fakes/sync-placement-inventory.ts");
+  const admitted = "example.test/placement/admitted", localKey = "scratch/widget@1a2b3c4d";
+  // The proof is unavailable for the whole first call, which is what a transient binding or inventory read error looks like.
+  const spy = spyOn(shardModule, "placementRealmView").mockReturnValue(undefined);
+  try {
+    const f = await inventoryFixture(1, [admitted]);
+    ensureShardDescriptor(f.home, localKey);
+    const provider = await open(f.root);
+    const blocked = await provider.snapshot({ after: 0, panel: "review" });
+    // Nothing was proved, so no realm claims a class: every project reads unverified.
+    expect(blocked.gaps).toEqual({ [admitted]: "unverified", [localKey]: "unverified" });
+    expect(Number.isSafeInteger(blocked.cursor)).toBe(true);
+    spy.mockRestore();
+    // Same revision and the cursor of the unproved reply: neither the view nor its payload was retained.
+    const recovered = await provider.snapshot({ after: Number(blocked.cursor), panel: "review" });
+    expect(recovered.changed).toBeUndefined();
+    expect(recovered.gaps).toEqual({ [localKey]: "local-key" });
+  } finally { spy.mockRestore(); closeInventoryFixtures(); }
+}, 120_000);
+
+test("#525: capture evidence that cannot be proved is unverified, and a store inside the scan still proves capture", async () => {
+  const { closeInventoryFixtures, inventoryFixture } = await import("./fakes/sync-placement-inventory.ts");
+  const admitted = "example.test/placement/admitted", linked = "https://github.com/acme/linked.git",
+    loose = "https://github.com/acme/loose.git", stray = "https://github.com/acme/stray.git",
+    dense = "https://github.com/acme/dense.git", empty = "https://github.com/acme/empty.git", denseLast = "https://github.com/acme/dense-last.git",
+    linkedMachine = "https://github.com/acme/linked-machine.git";
+  try {
+    const f = await inventoryFixture(1, [admitted]);
+    for (const key of [linked, loose, stray, dense, empty, denseLast]) ensureShardDescriptor(f.home, key);
+    // A real capture store, then its database loosened to group/world write: present bytes this user no longer alone owns.
+    const looseStore = new CaptureStore({ memoryDir: f.home, project: loose });
+    let looseDir: string;
+    try { looseStore.append({ project: loose, agent: "fixture", event: "PostToolUse", excerpt: "fixture capture row" }); looseDir = looseStore.dir; } finally { looseStore.close(); }
+    fs.chmodSync(join(looseDir, "capture.db"), 0o666);
+    // A machine id that is a link to that same store: the store exists, but not at a path this class may follow.
+    const linkedRoot = join(shardDir(f.home, linked), "machine");
+    mkdirSync(linkedRoot, { recursive: true });
+    symlinkSync(looseDir, join(linkedRoot, "m00"));
+    // A machine directory holding 100 plain files and no store: every entry counts toward the scan bound.
+    const strayRoot = join(shardDir(f.home, stray), "machine");
+    mkdirSync(strayRoot, { recursive: true });
+    for (let index = 0; index < 100; index++) writeFileSync(join(strayRoot, `s${String(index).padStart(3, "0")}`), "x");
+    // Exactly the bound of machine directories, with the store in the first name (dense) or the last (denseLast): at or
+    // under the bound every directory is scanned, so the store proves capture wherever the listing puts it.
+    const denseStore = new CaptureStore({ memoryDir: f.home, project: dense });
+    let denseDir: string;
+    try { denseStore.append({ project: dense, agent: "fixture", event: "PostToolUse", excerpt: "fixture capture row" }); denseDir = denseStore.dir; } finally { denseStore.close(); }
+    const denseRoot = join(shardDir(f.home, dense), "machine");
+    fs.renameSync(denseDir, join(denseRoot, "d00"));
+    for (let index = 1; index < 64; index++) mkdirSync(join(denseRoot, `d${String(index).padStart(2, "0")}`));
+    const lastStore = new CaptureStore({ memoryDir: f.home, project: denseLast });
+    let lastDir: string;
+    try { lastStore.append({ project: denseLast, agent: "fixture", event: "PostToolUse", excerpt: "fixture capture row" }); lastDir = lastStore.dir; } finally { lastStore.close(); }
+    const lastRoot = join(shardDir(f.home, denseLast), "machine");
+    fs.renameSync(lastDir, join(lastRoot, "d63"));
+    for (let index = 0; index < 63; index++) mkdirSync(join(lastRoot, `d${String(index).padStart(2, "0")}`));
+    // A machine/ that is a link to a real capture scope is not followed: unverified. (A linked shard directory is not
+    // listed by the picker at all; the refusal path's classification of one is pinned in sync-placement-realm-refusal.)
+    ensureShardDescriptor(f.home, linkedMachine);
+    symlinkSync(join(shardDir(f.home, dense), "machine"), join(shardDir(f.home, linkedMachine), "machine"));
+    const provider = await open(f.root);
+    const snapshot = await provider.snapshot({ after: 0, panel: "review" });
+    expect(snapshot.gaps).toEqual({ [linked]: "unverified", [loose]: "unverified", [stray]: "unverified", [dense]: "capture-only", [empty]: "no-memory",
+      [denseLast]: "capture-only", [linkedMachine]: "unverified" });
+    // The class reaches each panel unchanged: an unsafe entry asks for inspection instead of naming an effect.
+    for (const key of [linked, loose, stray]) {
+      const text = String((await provider.snapshot({ after: 0, panel: "timeline", project: key })).error);
+      expect(text, key).toContain("class=unverified");
+      expect(text, key).not.toContain("--admit");
+      expect(text, key).not.toContain(key);
+    }
+    expect(String((await provider.snapshot({ after: 0, panel: "timeline", project: dense })).error)).toContain("class=capture-only");
+  } finally { closeInventoryFixtures(); }
+}, 120_000);
 
 test("acon refuses a changed module hash until setup refreshes the manifest", () => {
   const root = mkdtempSync(join(tmpdir(), "amem-console-hash-")); roots.push(root);

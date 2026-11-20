@@ -5,7 +5,7 @@ import { assertPlacementRuntime, doctorScratchBinding, doctorScratchInventory, S
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, opendirSync, readFileSync, rmSync, writeFileSync, type Dir } from "node:fs";
 import { join } from "node:path";
 import { canonicalJSON, generationDescriptor, hashJSON, readProfileJSON, readSelector, validGeneration, PROFILE_LOCK_TIMEOUT_MS, type BoundProfile, type GenerationSeal } from "./generation.ts";
 import { SHARD_SCHEMA, resolveAlias } from "./aliases.ts";
@@ -34,6 +34,13 @@ export function shardKeyHash(key: string): string {
 
 /** A key in the no-remote path-hash form (`chain@hash8`) is this machine's only; the catalog flags it. */
 export const isLocalKey = (key: string): boolean => /.+@[0-9a-f]{8}$/.test(key);
+
+/**
+ * #525: why a project realm is outside the activated inventory. The class comes from the realm's own evidence, never
+ * from its key form alone: a restored curated realm can be GitHub-keyed and unadmitted, and an absent curated marker
+ * only means capture *might* be the case. `unverified` answers whenever a check could not run safely.
+ */
+export type PlacementRealmGap = "local-key" | "capture-only" | "no-memory" | "curated-unadmitted" | "unverified";
 
 export function localKeyOptInMessage(key: string): string {
   return `Local project ${JSON.stringify(key)} requires an explicit amem sync --remote <url> opt-in, or run amem project archive with that project key.`;
@@ -158,12 +165,25 @@ export function readShardedSelection(memoryDir: string): ShardedSelection {
   }catch(error){if(safeProfileLockMessage(error))throw error;throw profileLockRecoveryError(memoryDir)??error;}
 }
 
+/** #525: each class carries its own next step. No path, project name or key appears here; the key hash stays the identifier. */
+function realmGapRemedy(gap: PlacementRealmGap | undefined): string {
+  const admit = "admit it with amem migrate --sync-placement --admit <project> --dry-run, then --apply";
+  switch (gap) {
+    // Admission alone does not publish a local-key realm: sync needs an explicit remote opt-in per invocation.
+    case "local-key": return `class=local-key; to keep it, ${admit} when you want curated memory, then give sync an explicit remote opt-in with amem sync --remote <url>; otherwise remove it with amem project archive <project>`;
+    case "capture-only": return `class=capture-only; it holds capture rows and no curated memory, so capture stays readable; ${admit} if you want curated memory for it`;
+    case "no-memory": return `class=no-memory; it holds no captured rows and no curated notes yet; ${admit} if you want curated memory for it, or remove it with amem project archive <project>`;
+    case "curated-unadmitted": return `class=curated-unadmitted; it holds curated notes that are not part of the activated inventory, and ${admit} opens them`;
+    case "unverified": return "class=unverified; neither its curated state nor the activated inventory could be verified safely; have the person inspect the home before changing anything";
+    default: return admit;
+  }
+}
+
 /** Bounded identifiers only, safe to surface without exposing a project key or row. */
 export class PlacementRealmRefusal extends Error {
-  constructor(readonly scope: "user" | "project", readonly keyHash: string | undefined, readonly origin: "cwd binding" | "remote" | "local binding") {
+  constructor(readonly scope: "user" | "project", readonly keyHash: string | undefined, readonly origin: "cwd binding" | "remote" | "local binding", readonly gap?: PlacementRealmGap) {
     // A same-epoch extension record describes a project realm only, so the user realm is fixed by activation and has no admission command.
-    const next = scope === "user" ? "the user realm is fixed at activation; review it with amem migrate --sync-placement --dry-run"
-      : "admit it with amem migrate --sync-placement --admit <project> --dry-run, then --apply";
+    const next = scope === "user" ? "the user realm is fixed at activation; review it with amem migrate --sync-placement --dry-run" : realmGapRemedy(gap);
     super(`sync placement realm is outside the activated inventory: scope=${scope}${keyHash ? ` keyHash=${keyHash}` : ""}; origin=${origin}; ${next}`);
   }
 }
@@ -202,12 +222,124 @@ export function assertCuratedShardPaths(memoryDir: string, opts: { project?: str
     // An appended same-epoch extension is part of the inventory a curated write may open (#448); a realm it does not name stays refused.
     const inventory = scratch ? doctorScratchInventory(memoryDir) : active ? readEffectiveRealmInventory(memoryDir, active) : undefined;
     if (!inventory?.realms.some(realm => opts.user ? realm.scope === "user" : realm.scope === "project" && realm.keyHash === keyHash))
-      throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin);
+      throw new PlacementRealmRefusal(opts.user ? "user" : "project", keyHash, origin, opts.user ? undefined : placementRealmGap(memoryDir, opts.project!, inventoryView(inventory)));
     inventory.assertCurrent();
     recheckInventory = inventory.assertCurrent;
   }
   assertCuratedShardLayout(memoryDir, opts);
   recheckInventory?.();
+}
+
+type RealmInventory = ReturnType<typeof readEffectiveRealmInventory>;
+
+function inventoryView(inventory: RealmInventory | undefined): PlacementRealmView | undefined {
+  return inventory
+    ? { kind: "inventory", admitted: keyHash => inventory.realms.some(realm => realm.scope === "project" && realm.keyHash === keyHash), assertCurrent: inventory.assertCurrent }
+    : undefined;
+}
+
+/**
+ * #525: the activated inventory as the console sees it, built the way the curated preflight builds it. `undefined` means a
+ * placement-v3 home whose proof could not be established, where no class may be claimed. A home that is not placement-v3
+ * gates no curated open, so it answers `none` and nothing is marked.
+ */
+export type PlacementRealmView = { readonly kind: "none" } | { readonly kind: "inventory"; admitted(keyHash: string): boolean; assertCurrent(): void };
+
+export function placementRealmView(base: string): PlacementRealmView | undefined {
+  let selector: { schema?: unknown } | undefined;
+  try { selector = readProfileJSON(join(base, "profile.json")) as { schema?: unknown } | undefined; } catch { return undefined; }
+  if (selector?.schema !== "agent-mem.profile/v3") return { kind: "none" };
+  // No fallback to `none` here: a malformed v3 home is unproved, not ungated.
+  try {
+    const scratch = doctorScratchBinding(base);
+    const active = scratch ?? readActivePlacementBinding(base, selector, readProfileJSON(join(base, "shards.json")));
+    return inventoryView(scratch ? doctorScratchInventory(base) : active ? readEffectiveRealmInventory(base, active) : undefined);
+  } catch { return undefined; }
+}
+
+/**
+ * #525: why this project realm is outside the activated inventory, from the realm's own evidence. The key form decides only
+ * the local-key class; capture is proved by a machine-scope capture store and curated memory by its seal or generation record,
+ * so an absent curated marker never implies capture. Anything unreadable or incompletely scanned stays `unverified` rather
+ * than guessed.
+ */
+export function placementRealmGap(base: string, key: string, view: PlacementRealmView | undefined): PlacementRealmGap | undefined {
+  if (view?.kind === "none") return undefined;
+  if (!view) return "unverified";
+  if (view.admitted(createHash("sha256").update(key).digest("hex"))) return undefined;
+  if (isLocalKey(key)) return "local-key";
+  // Never follow a linked projects/ or shard directory while deriving a class: evidence behind a link is not this home's.
+  // ponytail: a same-user parent replacement between this lstat and the marker reads is not fenced; descriptor-relative opens are the upgrade.
+  for (const dir of [join(base, "projects"), shardDir(base, key)]) {
+    try { const stat = lstatSync(dir); if (stat.isSymbolicLink() || !stat.isDirectory()) return "unverified"; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") break; return "unverified"; }
+  }
+  const curated = curatedMarker(base, key);
+  if (curated === "present") return "curated-unadmitted";
+  if (curated === "unreadable") return "unverified";
+  const capture = captureMarker(base, key);
+  if (capture === "unreadable" || capture === "incomplete") return "unverified";
+  return capture === "present" ? "capture-only" : "no-memory";
+}
+
+/**
+ * One owned regular file, never followed: `present` only for a regular file of this user without group or world write, and
+ * `unreadable` for a link, a foreign or loosened file, a platform that cannot name the owner, and any error but a missing one.
+ */
+function ownedFileState(path: string): "present" | "absent" | "unreadable" {
+  try {
+    const stat = lstatSync(path), uid = process.getuid?.();
+    return uid !== undefined && !stat.isSymbolicLink() && stat.isFile() && stat.uid === uid && (stat.mode & 0o022) === 0 ? "present" : "unreadable";
+  } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable"; }
+}
+
+/** The curated marker is the seal or the generation record. Neither is opened, so a malformed one still reads as presence. */
+function curatedMarker(base: string, key: string): "present" | "absent" | "unreadable" {
+  const dir = shardDir(base, key);
+  const states = ["generation.json", "generation-seal.json"].map(name => ownedFileState(join(dir, name)));
+  if (states.includes("present")) return "present";
+  return states.includes("unreadable") ? "unreadable" : "absent";
+}
+
+/** Machine-scope entries one shard may hold and still be scanned completely; at most one more entry than this is read. */
+// ponytail: ceiling is 64 machine entries; a shard with more and no store in the scanned prefix reads unverified. Upgrade: a full streaming scan or a per-shard capture index.
+const MACHINE_SCAN_LIMIT = 64;
+
+/**
+ * #525: capture is proved by a machine-scope capture store, never inferred from an absent curated marker. Every entry the
+ * listing yields counts toward the bound, so a directory full of stray names cannot make the scan unbounded; a shard with
+ * more entries, or with an entry that is not a plain directory (a link could hold the store elsewhere), cannot establish
+ * absence and answers `incomplete` or `unreadable`. A store found inside the scanned prefix still proves capture.
+ */
+function captureMarker(base: string, key: string): "present" | "absent" | "unreadable" | "incomplete" {
+  const root = join(shardDir(base, key), "machine");
+  try { const stat = lstatSync(root); if (stat.isSymbolicLink() || !stat.isDirectory()) return "unreadable"; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable"; }
+  let handle: Dir;
+  try { handle = opendirSync(root); } catch { return "unreadable"; }
+  const names: string[] = [];
+  let seen = 0, unsafe = false, overflow = false;
+  try {
+    for (;;) {
+      if (seen > MACHINE_SCAN_LIMIT) { overflow = true; break; }
+      const entry = handle.readSync();
+      if (!entry) break;
+      seen++;
+      // Only a plain directory is a machine scope; a link or any other entry leaves the store unproved.
+      if (!entry.isDirectory()) { unsafe = true; continue; }
+      names.push(entry.name);
+    }
+  } catch { return "unreadable"; }
+  finally { try { handle.closeSync(); } catch { /* already closed */ } }
+  // Sorted, so "the scanned prefix" is a fact about the names rather than the filesystem's listing order.
+  let unreadable = unsafe;
+  for (const name of names.sort().slice(0, MACHINE_SCAN_LIMIT)) {
+    const state = ownedFileState(join(root, name, "capture.db"));
+    if (state === "present") return "present";
+    if (state === "unreadable") unreadable = true;
+  }
+  if (unreadable) return "unreadable";
+  return overflow ? "incomplete" : "absent";
 }
 
 /** Open one already-sealed shard without consulting the legacy home or the catalog. */
