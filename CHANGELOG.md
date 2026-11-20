@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.32.0
 
 ### Changed
 
@@ -14,6 +14,15 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Report a setup receipt whose recorded amem install root no longer exists instead of collapsing it into an anonymous `unavailable` refusal: placement sync still refuses before any effect for every realm, and now names the setup target and `amem setup <target> --apply` (refresh the receipt) or `amem setup <target> --undo` (remove it), while `amem doctor` reports the same receipt with its target and phase in the `setup` section, including another workspace's `agy` receipt, which placement sync reads for every workspace. An agent-marked session receives that target and remedy as fixed cause text, or in the failed sync receipt, instead of the generic masked refusal, and no path, version or command text is printed. Refs #520.
 - The console project picker no longer opens every project shard on each panel snapshot. It lists the same projects from the shard descriptors, lifecycle, aliases and candidates, and every panel reuses it until the memory home changes (the `snapshotRevision` witness). On a home with 81 shards this is projected to remove a near-constant ~2 s (3.8 s cold) per snapshot, from the task 350 attribution of that floor to the full catalog scan; the after side was measured only on synthetic fixtures (an 80-shard picker build fell from about 600 ms to 2-3 ms), and a later read-only run timed the new key list at 2.5 ms against 3.5 s for the full scan on the same home; `amem projects` and `amem usage` keep the full per-shard statistics. Refs #359.
 - Verify the placement guard once per work-list read instead of once per work row: `amem_work_state_read` now enters the same per-call context as the other MCP reads, so a read of 2000 rows runs two full guards rather than 2002, and the per-row guard keeps its closed and no-longer-permitted refusal. Its rows and reduced views are screened by that call's own policy snapshot, so a policy tightened after the server started still hides a row it now declines, a policy that changes during the call refuses the call, and no policy is built per row. The console Work snapshot takes the same route. Refs #359.
+
+### Compatibility with N-1 (0.31.0)
+
+- CLI: piped `amem ingest` now prints human text unless `--json` is passed; every capture hook `amem setup` writes for Codex, Kimi and Qwen already passes `--json`, and the Pi extension ignores stdout, so only a hand-written or pre-#145 hook without `--json` must add it or rerun setup. Usage errors exit 2 instead of 1. `--json` output is 2-space indented on every command with unchanged schemas, and `amem list`, `show` and `graph` still match the ahub parity fixture byte for byte. Human `status` and `doctor` text is reordered and wrapped; scripts should read `--json`. Refs #398.
+- MCP: tool names, arguments and result shapes are unchanged. `amem_work_state_read` now screens rows with the call's policy snapshot, so a policy tightened after the server started now hides rows a 0.31.0 server still returned until restart; a policy change during that call refuses it. Refs #359.
+- Console: the picker payload adds an optional `gaps` map beside the unchanged `projects` list, and Timeline and Work refusals for a project outside the activated inventory now state its class (`local-key`, `capture-only`, `no-memory`, `curated-unadmitted` or `unverified`) and that class's next step instead of one generic admission hint. `PlacementRealmRefusal` keeps its scope, key hash and origin, and gains an optional class. Refs #525.
+- Storage and sync: curated logs, entry ids, capture schema, index version, transport row bytes, remote refs and the format floor are unchanged; no `formats.json` floor is raised. Placement sync still refuses before any effect when a setup receipt's recorded install root is gone; the refusal now names the setup target and `amem setup <target> --apply` or `--undo`, with the same error categories, sync result shape and failure causes. Refs #520.
+- Hooks and setup: receipts keep versions 1 and 2, and a 0.31.0 receipt still restores. Doctor's `setup` section entries may carry a new optional `phase` field, and another workspace's `agy` receipt is now reported there. Refs #520.
+- Library: additive only. `catalogKeys`, `placementRealmView`, `placementRealmGap`, `PlacementRealmGap` and `PlacementRealmView` are new exports; `SetupWriterRootsError` gains an optional `target` and `PlacementRealmRefusal` an optional class argument, both with unchanged categories. Refs #359, #525, #520.
 
 ## 0.31.0
 
