@@ -159,5 +159,5 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
   const base: SyncResult = last ? { ...last } : { ok: true, pushed: false, entries: 0 };
   return { ...base, ok: !stopped, pushed: totals.pushed, entries: totals.entries,
     ...(base.placementPublication ? { placementPublication: { ...base.placementPublication, exported: totals.exported, withheld: totals.withheld } } : {}),
-    ...(stopped?.error !== undefined ? { error: stopped.error } : {}), ...(held.length ? { warning: held.map(realm => localKeyOptInMessage(realm.key)).join(" ") } : {}), placementRealms: realms };
+    ...(stopped?.error !== undefined ? { error: stopped.error } : {}), ...(held.length ? { warning: [base.warning, ...held.map(realm => localKeyOptInMessage(realm.key))].filter(Boolean).join(" ") } : {}), placementRealms: realms };
 }

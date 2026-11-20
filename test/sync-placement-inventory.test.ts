@@ -211,3 +211,12 @@ test("#508: retained local-key publication is not reshaped without opt-in", asyn
     expect(refs(remote)).toEqual([]);
   } finally { target.close(); }
 }, 240_000);
+
+test("#508: a held-realm warning preserves the publication warning", async () => {
+  const local = "fixture@12345678", f = await inventoryFixture(1, [local]), user = f.entry();
+  const result = await syncPlacementInventory(f.home, {}, {
+    open: () => user, close: () => {},
+    publish: async () => ({ ok: true, pushed: false, entries: 0, warning: "publication warning" }),
+  });
+  expect(result.warning).toContain("publication warning"); expect(result.warning).toContain(local);
+}, 240_000);
