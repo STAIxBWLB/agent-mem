@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { aggregate, ALLOWLIST, classify, draftDeferred, MACOS_DEFERRED_ERROR, main } from '../scripts/ci-scope.ts';
+import { aggregate, ALLOWLIST, classify, draftDeferred, findTreeProof, fullProof, MACOS_DEFERRED_ERROR, main, reuseOutputs, type GitHubRead } from '../scripts/ci-scope.ts';
 
 const event = (changed_files: number) => ({ pull_request: { changed_files } });
 const listed = (filename: string, previous_filename?: string) => ({ filename, ...(previous_filename === undefined ? {} : { previous_filename }) });
@@ -229,7 +229,7 @@ test('workflow retains required names, conservative job conditions and install-f
   const { decision, test: tests, measure, check } = workflow.jobs;
   const testsMac = workflow.jobs['test-macos']!;
   const measureMac = workflow.jobs['measure-macos']!;
-  expect(decision!.permissions).toEqual({ contents: 'read', 'pull-requests': 'read' });
+  expect(decision!.permissions).toEqual({ contents: 'read', 'pull-requests': 'read', actions: 'read' });
   expect(decision!['timeout-minutes']).toBe(5);
   expect(decision!.steps[0]!.with).toEqual({ 'sparse-checkout': 'scripts/ci-scope.ts', 'sparse-checkout-cone-mode': false });
   expect(decision!.steps.some(step => step.run?.includes('git show HEAD:.bun-version'))).toBe(true);
@@ -278,4 +278,91 @@ test('workflow retains required names, conservative job conditions and install-f
   const script = await Bun.file(new URL('../scripts/ci-scope.ts', import.meta.url)).text();
   for (const match of script.matchAll(/from ['"]([^'"]+)['"]/g)) expect(match[1]?.startsWith('node:')).toBe(true);
   expect(script).not.toMatch(/\bBun\./);
+});
+
+describe('#503 identical-tree main push reuse', () => {
+  const REPO = 'STAIxBWLB/agent-mem', PUSHED = 'a'.repeat(40), HEAD = 'b'.repeat(40), TREE = 'c'.repeat(40);
+  const ok = (name: string) => ({ name, status: 'completed', conclusion: 'success' });
+  const fullJobs = () => [ok('decision'), ...[1, 2, 3, 4].map(s => ok(`test (ubuntu-latest, ${s}, 4)`)), ...[1, 2, 3, 4].map(s => ok(`test-macos (macos-latest, ${s}, 4)`)),
+    ok('measure (ubuntu-latest)'), ok('measure-macos (macos-latest)'), ok('check (ubuntu-latest)'), ok('check (macos-latest)')];
+  const skipped = (name: string) => ({ name, status: 'completed', conclusion: 'skipped' });
+  const run = (id: number, extra: Record<string, unknown> = {}) => ({ id, head_sha: HEAD, event: 'pull_request', status: 'completed', conclusion: 'success',
+    path: '.github/workflows/check.yml', head_repository: { full_name: REPO }, ...extra });
+  type World = { headTree?: string; pulls?: unknown; runs?: unknown[]; jobs?: Record<number, unknown[]>; fail?: RegExp };
+  const api = (world: World): GitHubRead => async path => {
+    if (world.fail?.test(path)) throw new Error('GitHub API 502');
+    if (path === `repos/${REPO}/git/commits/${PUSHED}`) return { sha: PUSHED, tree: { sha: TREE } };
+    if (path === `repos/${REPO}/git/commits/${HEAD}`) return { sha: HEAD, tree: { sha: world.headTree ?? TREE } };
+    if (path === `repos/${REPO}/commits/${PUSHED}/pulls`) return world.pulls ?? [{ number: 7, merged_at: '2026-11-20T00:00:00Z', base: { ref: 'main' }, head: { sha: HEAD, repo: { full_name: REPO } } }];
+    if (path.startsWith(`repos/${REPO}/actions/workflows/check.yml/runs?`)) return { workflow_runs: world.runs ?? [run(41)] };
+    const jobs = /actions\/runs\/(\d+)\/jobs/.exec(path);
+    if (jobs) { const list = world.jobs?.[Number(jobs[1])] ?? fullJobs(); return { total_count: list.length, jobs: list }; }
+    throw new Error(`unexpected ${path}`);
+  };
+  const find = (world: World) => findTreeProof(api(world), { repository: REPO, sha: PUSHED });
+
+  test('a full green PR check at an identical tree is proof and names its run and head', async () => {
+    expect(fullProof(fullJobs())).toBe(true);
+    expect(await find({})).toEqual({ runId: 41, headSha: HEAD, pr: 7 });
+    const env = { GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main', GITHUB_REPOSITORY: REPO, GITHUB_SHA: PUSHED };
+    expect(await reuseOutputs(api({}), env)).toEqual(['run_full=false', 'reused_run=41', `reused_head=${HEAD}`]);
+  });
+
+  test('draft-deferred, scope-reduced, missing-job and failed-job runs are never proof', async () => {
+    const without = (prefix: string) => fullJobs().filter(job => !job.name.startsWith(prefix));
+    const draftDeferredRun = [...without('test-macos'), ...[1, 2, 3, 4].map(s => skipped(`test-macos (macos-latest, ${s}, 4)`))].filter(job => !job.name.startsWith('measure-macos')).concat(skipped('measure-macos (macos-latest)'));
+    const scopeReduced = fullJobs().filter(job => !/^(test|measure)/.test(job.name)).concat([skipped('test (ubuntu-latest, 1, 4)'), skipped('measure (ubuntu-latest)')]);
+    const failed = fullJobs().map(job => job.name === 'test (ubuntu-latest, 3, 4)' ? { ...job, conclusion: 'failure' } : job);
+    const checkFailed = fullJobs().map(job => job.name === 'check (macos-latest)' ? { ...job, conclusion: 'failure' } : job);
+    for (const jobs of [draftDeferredRun, scopeReduced, without('measure (ubuntu'), without('test (ubuntu'), without('check (macos'), failed, checkFailed, []]) {
+      expect(fullProof(jobs)).toBe(false);
+      expect(await find({ jobs: { 41: jobs } })).toBeNull();
+    }
+    expect(fullProof([...fullJobs(), ok('check (ubuntu-latest)')])).toBe(false); // a duplicated aggregate is ambiguous
+    expect(fullProof([{ name: 7 }])).toBe(false);
+    expect(fullProof('jobs')).toBe(false);
+  });
+
+  test('API errors, a different tree, ambiguity and foreign evidence all run everything', async () => {
+    for (const fail of [/git\/commits/, /\/pulls$/, /workflows/, /jobs/]) expect(await find({ fail })).toBeNull();
+    expect(await find({ headTree: 'd'.repeat(40) })).toBeNull();
+    const pr = (n: number, repo = REPO) => ({ number: n, merged_at: '2026-11-20T00:00:00Z', base: { ref: 'main' }, head: { sha: HEAD, repo: { full_name: repo } } });
+    expect(await find({ pulls: [] })).toBeNull();
+    expect(await find({ pulls: [pr(7), pr(8)] })).toBeNull();
+    expect(await find({ pulls: [pr(7, 'someone/fork')] })).toBeNull();
+    expect(await find({ pulls: [{ ...pr(7), merged_at: null }] })).toBeNull();
+    expect(await find({ pulls: 'not a list' })).toBeNull();
+    for (const runs of [[], [run(41, { event: 'push' })], [run(41, { conclusion: 'failure' })], [run(41, { head_sha: PUSHED })],
+      [run(41, { path: '.github/workflows/release.yml' })], [run(41, { head_repository: { full_name: 'someone/fork' } })]]) expect(await find({ runs })).toBeNull();
+    // An incomplete job page is never proof.
+    const partial: GitHubRead = async path => /jobs/.test(path) ? { total_count: 99, jobs: fullJobs() } : api({})(path);
+    expect(await findTreeProof(partial, { repository: REPO, sha: PUSHED })).toBeNull();
+    // A later full run is still found after an earlier non-proof run.
+    expect(await find({ runs: [run(40), run(41)], jobs: { 40: fullJobs().slice(0, 3) } })).toEqual({ runId: 41, headSha: HEAD, pr: 7 });
+    expect(await findTreeProof(api({}), { repository: REPO, sha: 'short' })).toBeNull();
+  });
+
+  test('only a push to main can reuse; pull requests and dispatch keep their full runs', async () => {
+    const base = { GITHUB_REPOSITORY: REPO, GITHUB_SHA: PUSHED };
+    for (const env of [{ ...base, GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/heads/main' }, { ...base, GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main' },
+      { ...base, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/other' }])
+      expect(await reuseOutputs(api({}), env)).toEqual(['run_full=true', 'reused_run=', 'reused_head=']);
+    expect(await reuseOutputs(api({ fail: /pulls/ }), { ...base, GITHUB_EVENT_NAME: 'push', GITHUB_REF: 'refs/heads/main' })).toEqual(['run_full=true', 'reused_run=', 'reused_head=']);
+  });
+
+  test('a reused main run passes both aggregates only when every heavy job was skipped', () => {
+    const needs = (heavy: string) => ({ decision: { result: 'success', outputs: { run_full: 'false', macos_deferred: 'false', reused_run: '41' } },
+      test: { result: heavy }, measure: { result: heavy }, 'test-macos': { result: heavy }, 'measure-macos': { result: heavy } });
+    for (const os of ['ubuntu-latest', 'macos-latest']) { expect(aggregate(needs('skipped'), os)).toEqual([]); expect(aggregate(needs('success'), os)).not.toEqual([]); }
+  });
+
+  test('the decision step runs reuse only on push and the check job names the reused run in its summary', async () => {
+    const workflow = Bun.YAML.parse(await Bun.file(new URL('../.github/workflows/check.yml', import.meta.url)).text()) as { jobs: Record<string, { outputs?: Record<string, string>; steps: { id?: string; run?: string; if?: string; env?: Record<string, string> }[] }> };
+    const scope = workflow.jobs.decision!.steps.find(step => step.id === 'scope')!.run!;
+    expect(scope).toContain('if [ "$GITHUB_EVENT_NAME" = push ]; then\n  bun scripts/ci-scope.ts reuse >> "$GITHUB_OUTPUT"');
+    expect(workflow.jobs.decision!.outputs).toMatchObject({ reused_run: '${{ steps.scope.outputs.reused_run }}', reused_head: '${{ steps.scope.outputs.reused_head }}' });
+    const summary = workflow.jobs.check!.steps.find(step => step.if === "needs.decision.outputs.reused_run != ''")!;
+    expect(summary.run).toContain('GITHUB_STEP_SUMMARY');
+    expect(summary.env).toEqual({ REUSED_RUN: '${{ needs.decision.outputs.reused_run }}', REUSED_HEAD: '${{ needs.decision.outputs.reused_head }}' });
+  });
 });

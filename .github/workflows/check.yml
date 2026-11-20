@@ -1,5 +1,5 @@
 name: check
-# Main push and dispatch always run fully: docs/contracts.md Release gate reuse uses the main push as identical-tree release evidence.
+# Main pushes reuse an identical-tree full PR check (#503); dispatch always runs fully. See docs/contracts.md Release gate reuse.
 on:
   push:
     branches: [main]
@@ -19,8 +19,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     outputs:
       run_full: ${{ steps.scope.outputs.run_full }}
+      reused_run: ${{ steps.scope.outputs.reused_run }}
+      reused_head: ${{ steps.scope.outputs.reused_head }}
       macos_deferred: ${{ steps.draft.outputs.macos_deferred }}
     steps:
       - uses: actions/checkout@v7
@@ -34,13 +37,16 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ steps.runtime.outputs.version }}
-      - name: Classify pull request scope (uncertainty runs everything)
+      # #503: a main push whose tree equals a merged PR head with a full green PR check reuses that proof; any doubt runs everything.
+      - name: Classify scope (uncertainty runs everything)
         id: scope
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" != pull_request ]; then
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            bun scripts/ci-scope.ts reuse >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" != pull_request ]; then
             echo 'run_full=true' >> "$GITHUB_OUTPUT"
           elif gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" > "$RUNNER_TEMP/ci-scope-files.json"; then
             bun scripts/ci-scope.ts classify "$RUNNER_TEMP/ci-scope-files.json" "$GITHUB_EVENT_PATH" >> "$GITHUB_OUTPUT"
@@ -251,6 +257,16 @@ jobs:
           CI_NEEDS: ${{ toJSON(needs) }}
           CI_OS: ${{ matrix.os }}
         run: bun scripts/ci-scope.ts aggregate
+      - name: Name the reused identical-tree proof
+        if: needs.decision.outputs.reused_run != ''
+        env:
+          REUSED_RUN: ${{ needs.decision.outputs.reused_run }}
+          REUSED_HEAD: ${{ needs.decision.outputs.reused_head }}
+        run: |
+          {
+            echo '## Identical-tree proof reused (#503)'
+            echo "Test and measure jobs were skipped: this tree passed the full check in ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${REUSED_RUN} at PR head ${REUSED_HEAD}."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Fetch ancestry for light documentation checks
         if: needs.decision.outputs.run_full == 'false'
         run: |
