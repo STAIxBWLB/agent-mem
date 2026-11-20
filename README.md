@@ -522,6 +522,8 @@ npm pack --dry-run
 
 CI runs the typecheck, boundary check, README facts and documentation stamp checks and tests on Ubuntu and macOS with Bun 1.4.4. Tests use synthetic fixtures and isolated homes, not personal memory stores.
 
+Agents working in this repository run only the typecheck, boundary check, the test files their change affects and `npm pack --dry-run` before reporting a change (#502). The full suite is about 365 files and roughly 43 minutes serial on Linux, and CI already runs it on both operating systems as a merge gate. In one test-only PR, a local full run held this repository's heavy slot for over 30 minutes while other heavy work waited. A local or remote full run is kept for when CI cannot run or a reviewer asks for it. Implement tasks that touch the CLI and policy boundary, a privacy screen or a storage format have their plan reviewed before code is written. Of 34 recently approved board tasks, 14 needed rework over 25 change-request rounds, and most review-loop time went to three tasks whose findings were acceptance-criteria readings and privacy-boundary gaps a plan review catches early. Each rejected round also costs an Ubuntu CI run of about 60 runner minutes.
+
 ## Publishing
 
 0.1.0 was published once by hand, because npm trusted publishing requires an existing package; the trusted publisher for repository `STAIxBWLB/agent-mem` and workflow `release.yml` was configured after it. Every later release goes through the tag workflow.

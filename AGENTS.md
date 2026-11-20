@@ -3,8 +3,7 @@
 ## Commands and verification
 
 - Install with `bun install` (Bun 1.4.4, `.bun-version`).
-- Before reporting completion, run `bun x tsc --noEmit`, `bun scripts/check-boundary.ts`, `bun test` and `npm pack --dry-run`; report their results. Boundary success prints `boundary: OK`.
-- Run one focused file with `bun test test/<name>.test.ts`.
+- Before reporting completion, run `bun x tsc --noEmit`, `bun scripts/check-boundary.ts` (prints `boundary: OK`), `bun test <file>...` for the test files the change affects, and `npm pack --dry-run`; report their results. The full suite is CI's proof at the PR head; run it locally or on dgx02 only when CI cannot run or a reviewer asks for it.
 - On the Mac, keep one heavy job per repository, including its worktrees. Remote runs on dgx02 (`dot remote run|verify`) take one slot per worktree, up to the `max_runs` that `dot remote status` reports; announce the slot in an `[FYI]` hub message before starting one, and never reply to another peer's slot or progress notice.
 
 ## Conventions and structure
@@ -26,6 +25,7 @@
 - This repository runs its own hub from its real path `dev/agent-mem/`. Work on its board runs from a session started here, and the `AGENT_HUB` marker block that `ahub init` adds to this file binds it. Owner decision 2026-10-25.
 - The person runs `ahub init` and `ahub up` in a terminal outside any agent session; the CLI refuses agent shells.
 - Work assigned on the agent-hub board runs from an agent-hub session (`../agent-hub`) under that repo's `AGENTS.md` §agent-hub, including when a pull-only session reads `hub_inbox`.
+- An implement task that touches the CLI and policy boundary, a privacy screen or a storage format gets its plan reviewed before code is written: send the plan with `hub_task_accept` and wait for the reviewer's answer on it.
 
 ## Pull requests
 
