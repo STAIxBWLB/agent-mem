@@ -30,7 +30,7 @@ amem review accept CANDIDATE_ID  # or: amem review reject CANDIDATE_ID
 
 Replace `CANDIDATE_ID` with an id from the list. MCP remains proposal-only: it never accepts a candidate or writes a curated note.
 
-Claude's registered hooks capture events during the session. The configured Codex/Kimi/Qwen SessionEnd hooks and Pi shutdown extension ingest transcript tails incrementally at session end. If those integrations are unavailable, run `amem ingest codex` (or `kimi` / `pi` / `qwen`) after each session, then repeat the review loop. The [setup section](docs/setup.md#setup--plugin) describes the registration and native trust steps.
+Claude's registered hooks capture events during the session. The configured Codex/Kimi/Qwen SessionEnd hooks and Pi shutdown extension ingest transcript tails incrementally at session end. If those integrations are unavailable, run `amem ingest codex` (or `kimi` / `pi` / `qwen`) after each session, then repeat the review loop. The [setup section](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/setup.md#setup--plugin) describes the registration and native trust steps.
 
 From a checkout, install development dependencies with `bun install` and run `bun src/cli.ts --help`.
 
@@ -38,12 +38,12 @@ From a checkout, install development dependencies with `bun install` and run `bu
 
 | Area | Commands | Details |
 | --- | --- | --- |
-| Setup and hooks | `amem setup <client> [--apply\|--undo]`, `amem ingest <client>`, `amem completion <shell>` | [docs/setup.md](docs/setup.md) |
-| Notes and review | `amem note add`, `amem review list\|accept\|reject\|walk\|decide`, `amem consolidate` | [docs/cli.md](docs/cli.md), [docs/recall.md](docs/recall.md) |
-| Read and search | `amem list`, `amem search`, `amem show`, `amem graph`, `amem brief`, `amem eval` | [docs/cli.md](docs/cli.md), [docs/recall.md](docs/recall.md) |
-| Health | `amem status`, `amem doctor`, `amem capacity`, `amem projects`, `amem usage`, `amem gc` | [docs/cli.md](docs/cli.md) |
-| Sync and migration | `amem sync`, `amem migrate`, `amem prune`, `amem formats raise` | [docs/sync.md](docs/sync.md), [docs/curated-shard-migration.md](docs/curated-shard-migration.md) |
-| Console | `amem setup console`, plugin for <!-- facts:console-pin -->`@staix/agent-console` 0.1.3<!-- /facts:console-pin --> | [docs/cli.md](docs/cli.md#console-acon) |
+| Setup and hooks | `amem setup <client> [--apply\|--undo]`, `amem ingest <client>`, `amem completion <shell>` | [docs/setup.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/setup.md) |
+| Notes and review | `amem note add`, `amem review list\|accept\|reject\|walk\|decide`, `amem consolidate` | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md), [docs/recall.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/recall.md) |
+| Read and search | `amem list`, `amem search`, `amem show`, `amem graph`, `amem brief`, `amem eval` | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md), [docs/recall.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/recall.md) |
+| Health | `amem status`, `amem doctor`, `amem capacity`, `amem projects`, `amem usage`, `amem gc` | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md) |
+| Sync and migration | `amem sync`, `amem migrate`, `amem prune`, `amem formats raise` | [docs/sync.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/sync.md), [docs/curated-shard-migration.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/curated-shard-migration.md) |
+| Console | `amem setup console`, plugin for <!-- facts:console-pin -->`@staix/agent-console` 0.1.3<!-- /facts:console-pin --> | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md#console-acon) |
 
 Run `amem --help` or `amem <command> --help` for every option.
 
@@ -70,11 +70,11 @@ Run `amem --help` or `amem <command> --help` for every option.
 
 ## Docs
 
-- [Setup, hooks and native intake](docs/setup.md), with the per-client pages for [Jcode](docs/jcode.md), [Qwen Code](docs/qwen-code.md), [Gemini CLI](docs/gemini-cli.md), [OpenCode](docs/opencode.md) and [Antigravity](docs/antigravity.md)
-- [CLI reference](docs/cli.md): configuration and privacy policy, review, console, capture and search, repo scope, project shards, doctor, library, session MCP
-- [Recall, consolidation and records](docs/recall.md)
-- [Generation migration, prune and sync placement](docs/sync.md), [curated shard migration](docs/curated-shard-migration.md)
-- [Contracts](docs/contracts.md) and [purging a leaked entry](docs/purge.md)
-- [Development and publishing](docs/development.md)
+- [Setup, hooks and native intake](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/setup.md), with the per-client pages for [Jcode](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/jcode.md), [Qwen Code](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/qwen-code.md), [Gemini CLI](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/gemini-cli.md), [OpenCode](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/opencode.md) and [Antigravity](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/antigravity.md)
+- [CLI reference](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md): configuration and privacy policy, review, console, capture and search, repo scope, project shards, doctor, library, session MCP
+- [Recall, consolidation and records](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/recall.md)
+- [Generation migration, prune and sync placement](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/sync.md), [curated shard migration](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/curated-shard-migration.md)
+- [Contracts](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/contracts.md) and [purging a leaked entry](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/purge.md)
+- [Development and publishing](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/development.md)
 
 License: MIT.
