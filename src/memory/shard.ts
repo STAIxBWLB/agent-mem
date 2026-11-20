@@ -302,6 +302,7 @@ function curatedMarker(base: string, key: string): "present" | "absent" | "unrea
 }
 
 /** Machine-scope entries one shard may hold and still be scanned completely; at most one more entry than this is read. */
+// ponytail: ceiling is 64 machine entries; a shard with more and no store in the scanned prefix reads unverified. Upgrade: a full streaming scan or a per-shard capture index.
 const MACHINE_SCAN_LIMIT = 64;
 
 /**
