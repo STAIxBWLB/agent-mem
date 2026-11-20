@@ -142,7 +142,8 @@ test("#288 step 3: confirm refuses below the person floor, never writes it, then
   expect(existsSync(f.checkpoints)).toBe(false); expect(readFileSync(join(f.base, "formats.json"))).toEqual(formats);
   // The reviewed plan can be confirmed after the person raises the home floor.
   f.floor(FLOOR);
-  expect(JSON.parse(readFileSync(join(activationOwnRoot, "package.json"), "utf8")).version).toBe(FLOOR);
+  // This release meets the checkpoint floor (PLACEMENT_CHECKPOINT_MIN_READER); later releases stay above it.
+  expect(Bun.semver.order(JSON.parse(readFileSync(join(activationOwnRoot, "package.json"), "utf8")).version, FLOOR)).toBeGreaterThanOrEqual(0);
   // Confirm must retain the reviewed headroom envelope, not accept a bare or edited plan.
   expect(await cause(() => confirmPlacementCheckpoint(f.base, preview.plan, { ...f.opts }))).toBe("changed");
   expect(await cause(() => confirmPlacementCheckpoint(f.base, { ...preview, headroom: { ...preview.headroom, remaining: preview.headroom.remaining + 1 } }, { ...f.opts }))).toBe("changed");
@@ -172,9 +173,9 @@ test("#288: a sync-only floor cannot authorize a checkpoint", async () => {
   expect(existsSync(f.checkpoints)).toBe(false);
 }, 180_000);
 
-test("#288: release 0.30.0 confirms a checkpoint using its real home floor", async () => {
+test("#288: a release at or above 0.30.0 confirms a checkpoint using its real home floor", async () => {
   const f = await fixture();
-  expect(JSON.parse(readFileSync(join(activationOwnRoot, "package.json"), "utf8")).version).toBe("0.30.0");
+  expect(Bun.semver.order(JSON.parse(readFileSync(join(activationOwnRoot, "package.json"), "utf8")).version, FLOOR)).toBeGreaterThanOrEqual(0);
   const formats = readFileSync(join(f.base, "formats.json"));
   const preview = await previewPlacementCheckpoint(f.base, f.opts);
   expect(preview.floorReady).toBe(true);
