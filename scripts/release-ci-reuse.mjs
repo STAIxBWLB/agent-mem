@@ -6,7 +6,10 @@ import { pathToFileURL } from "node:url";
 const SHA=/^[a-f0-9]{40}$/, REQUIRED=["check (ubuntu-latest)","check (macos-latest)"];
 const ACTIVE=new Set(["queued","in_progress","waiting","pending","requested"]);
 const REMEDY="Push the release tree to main, or dispatch check on the tag commit, then retry the release.";
-export class ReleaseProofError extends Error { constructor(kind,cause){super(`${cause}. ${REMEDY}`);this.name="ReleaseProofError";this.kind=kind;} }
+// #503: a main push may skip its heavy jobs by reusing a PR proof; that run is never release evidence (PR runs are not).
+const HEAVY=/^(test|test-macos|measure|measure-macos) \(/,HEAVY_KINDS=["test (ubuntu-latest","test-macos (macos-latest","measure (ubuntu-latest","measure-macos (macos-latest"];
+const SKIPPED_REMEDY="A matching main check skipped its test and measure jobs by reusing a pull request proof (#503), and pull request runs are not release evidence. Run gh workflow run check.yml --ref main, wait for it to succeed, then retry the release.";
+export class ReleaseProofError extends Error { constructor(kind,cause){super(kind==="reused"?cause:`${cause}. ${REMEDY}`);this.name="ReleaseProofError";this.kind=kind;} }
 const refuse=(kind,cause)=>{throw new ReleaseProofError(kind,cause);};
 const sha=value=>{if(typeof value!=="string"||!SHA.test(value))refuse("invalid","Commit/tree identity is unavailable");return value;};
 const integer=value=>Number.isSafeInteger(value)&&value>0;
@@ -50,7 +53,11 @@ async function jobsOf(api,run){
   }
   if(new Set(jobs.map(job=>job?.id)).size!==jobs.length||jobs.some(job=>!integer(job?.id)||job.run_id!==run.id||typeof job.name!=="string"))
     refuse("invalid","CI job identities are malformed or duplicated");
-  return REQUIRED.every(name=>{const matches=jobs.filter(job=>job.name===name);return matches.length===1&&matches[0].status==="completed"&&matches[0].conclusion==="success";});
+  const passed=job=>job.status==="completed"&&job.conclusion==="success";
+  if(!REQUIRED.every(name=>{const matches=jobs.filter(job=>job.name===name);return matches.length===1&&passed(matches[0]);}))return "no";
+  const heavy=jobs.filter(job=>HEAVY.test(job.name));
+  if(heavy.length&&heavy.every(job=>job.status==="completed"&&job.conclusion==="skipped"))return "reused";
+  return HEAVY_KINDS.every(kind=>heavy.some(job=>job.name.startsWith(kind)))&&heavy.every(passed)?"yes":"no";
 }
 /** ponytail: discovery is bounded to the latest 100 main runs and 100 exact-tag manual runs, 500 jobs/run.
  * Missing older proof fails closed; dispatch a fresh check rather than broadening the release trust boundary. */
@@ -71,7 +78,7 @@ export async function proveRelease(api,input,{now=Date.now,sleep=ms=>new Promise
   for(;;){
     const inventory=page(await read("actions/workflows/check.yml/runs?branch=main&per_page=100"),"workflow_runs");
     if(tag!==undefined)inventory.push(...page(await read(`actions/workflows/check.yml/runs?event=workflow_dispatch&head_sha=${commit}&per_page=100`),"workflow_runs"));
-    let active=false;const visited=new Set();
+    let active=false,reused=false;const visited=new Set();
     for(const candidate of inventory){
       if(!eligible(candidate,workflow.id,repository,commit,tag)||visited.has(candidate.id))continue;visited.add(candidate.id);
       if(!ACTIVE.has(candidate.status)&&!(candidate.status==="completed"&&candidate.conclusion==="success"))continue;
@@ -80,13 +87,14 @@ export async function proveRelease(api,input,{now=Date.now,sleep=ms=>new Promise
       if(!eligible(run,workflow.id,repository,commit,tag)||run.id!==candidate.id||run.head_sha!==candidate.head_sha||!integer(run.run_attempt))refuse("changed","CI run identity changed during proof");
       if(ACTIVE.has(run.status)){active=true;continue;}
       if(run.status!=="completed"||run.conclusion!=="success")continue;
-      if(!await jobsOf(read,run))continue;
+      const verdict=await jobsOf(read,run);if(verdict==="reused")reused=true;if(verdict!=="yes")continue;
       const final=await read(`actions/runs/${run.id}`);
       if(!eligible(final,workflow.id,repository,commit,tag)||final.id!==run.id||final.status!=="completed"||final.conclusion!=="success"||final.head_sha!==run.head_sha||final.run_attempt!==run.run_attempt)
         refuse("changed","CI was rerun or changed while release evidence was read");
       await onMain(read,commit);if(tag!==undefined)await frozenTag(read,tag,commit,tagObject);
       return {commit,tree,tagObject,runId:run.id,runCommit:run.head_sha,runAttempt:run.run_attempt,url:`https://github.com/${repository}/actions/runs/${run.id}`,requests};
     }
+    if(!active&&reused)refuse("reused",SKIPPED_REMEDY);
     if(!active)refuse("missing","No successful identical-tree main check with both OS gates was found within the bounded inventory");
     if(now()+pollMs>=deadline)refuse("deadline","Matching main CI is still in progress at the release wait deadline");
     await sleep(pollMs);

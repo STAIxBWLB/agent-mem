@@ -6,7 +6,8 @@ import { proveRelease, frozenTag, githubReader } from "../scripts/release-ci-reu
 const commit="a".repeat(40),tree="b".repeat(40),other="c".repeat(40),tagObject="d".repeat(40),repository="acme/memory";
 const input={repository,commit};
 const run=(extra:Record<string,unknown>={})=>({id:42,workflow_id:9,path:".github/workflows/check.yml",repository:{full_name:repository},head_repository:{full_name:repository},head_branch:"main",event:"push",head_sha:other,status:"completed",conclusion:"success",run_attempt:1,...extra});
-const jobs=()=>["check (ubuntu-latest)","check (macos-latest)"].map((name,index)=>({id:index+1,run_id:42,name,status:"completed",conclusion:"success"}));
+const HEAVY_JOBS=["test (ubuntu-latest, 1, 4)","test-macos (macos-latest, 1, 4)","measure (ubuntu-latest)","measure-macos (macos-latest)"];
+const jobs=(heavy:string="success")=>["check (ubuntu-latest)","check (macos-latest)",...HEAVY_JOBS].map((name,index)=>({id:index+1,run_id:42,name,status:"completed",conclusion:index<2?"success":heavy}));
 function fixture(options:{runs?:ReturnType<typeof run>[];jobRows?:ReturnType<typeof jobs>;otherTree?:string;active?:boolean;never?:boolean;offMain?:boolean;moveTag?:boolean;rerun?:boolean}={}){
   let time=0,slept=0,tagReads=0,runReads=0;const paths:string[]=[];
   const api=async(path:string):Promise<unknown>=>{
@@ -25,6 +26,17 @@ function fixture(options:{runs?:ReturnType<typeof run>[];jobRows?:ReturnType<typ
   };
   return{api,paths,clock:{now:()=>time,sleep:async(ms:number)=>{time+=ms;slept++;},waitMs:100,pollMs:10},sleepCount:()=>slept};
 }
+test("a main check that skipped its heavy jobs by reusing a PR proof is refused with the dispatch remedy (#503)",async()=>{
+  const reused=fixture({jobRows:jobs("skipped")});
+  const error=await proveRelease(reused.api,input,reused.clock).then(()=>{throw Error("expected a refusal");},(value:unknown)=>value as Error & {kind:string});
+  expect(error.kind).toBe("reused");
+  expect(error.message).toContain("pull request runs are not release evidence");
+  expect(error.message).toContain("gh workflow run check.yml --ref main");
+  // Missing or failed heavy jobs on a main run are never proof either.
+  for(const rows of [jobs().filter(job=>!job.name.startsWith("measure-macos")),jobs().map(job=>job.name.startsWith("test (")?{...job,conclusion:"failure"}:job)]){
+    const f=fixture({jobRows:rows});await expect(proveRelease(f.api,input,f.clock)).rejects.toThrow("Push the release tree to main");
+  }
+});
 test("release reuses a successful main check for an identical whole tree, even at a different commit",async()=>{
   const f=fixture(),proof=await proveRelease(f.api,input,f.clock);
   expect(proof).toMatchObject({commit,tree,runId:42,runCommit:other,runAttempt:1});expect(f.sleepCount()).toBe(0);
