@@ -8,6 +8,7 @@ import { Database } from "bun:sqlite";
 import { sessionStartBrief, type BriefOptions } from "../session-brief.ts";
 import { openCuratedForRead } from "./curated-read.ts";
 import { pendingSummary } from "./candidate-pending.ts";
+import { inspectNativeRoot, nativeRoots, type NativeRootKind } from "./native-roots.ts";
 import { readCaptureDrops } from "./metrics.ts";
 import { walkShards } from "./catalog.ts";
 import { loadAmemConfig, repoConfigRoot } from "./config.ts";
@@ -335,7 +336,8 @@ function stateOf(last: string | null, now: number): CaptureState {
  * The one place a capture hint is chosen (#509 extends it). `trigger` names the state that raised it: the machine-wide one (#510), this project's one
  * (the fallback when another shard could not be read), or a missing setup for a CLI that has never captured anywhere.
  */
-function captureHint(cli: Cli, registered: boolean, state: CaptureState, trigger: "machine" | "project" | "setup"): string {
+function captureHint(cli: Cli, registered: boolean, state: CaptureState, trigger: "machine" | "project" | "setup", unsafeRoots: readonly NativeRootKind[] = []): string {
+  if (unsafeRoots.length) return `the ${cli} ${unsafeRoots.join(" and ")} root is an unsafe symlink and was skipped: use a directory inside HOME owned by this user without group or world write access, then rerun amem ingest ${cli}`;
   if (trigger === "setup") return cli === "claude" ? "run amem setup claude --apply to register the capture hooks" : `run amem setup ${cli} --apply, or amem ingest ${cli} by hand`;
   const where = trigger === "machine" ? "on this machine (all projects)" : "in this project (other projects could not be read)";
   if (registered && cli === "codex" && state === "never") return `the codex hook is registered but has never captured ${where}: approve it in Codex's /hooks trust review (setup never grants hook trust), then open a session`;
@@ -382,10 +384,13 @@ function captureSection(options: DoctorOptions): Section {
     // Attention follows the machine-wide state (#510): a registered hook not fresh anywhere, or any CLI whose capture went stale everywhere.
     // When that state is unknown, this project's state decides, as before. A CLI fresh elsewhere but absent here is reported, not flagged.
     const decided: CaptureState = machineState === "unknown" ? state : machineState, trigger = machineState === "unknown" ? "project" : "machine";
-    const needs = registered ? decided !== "fresh" : decided === "stale";
+    const env = options.env ?? process.env;
+    const unsafeRoots = registered && (cli === "codex" || cli === "kimi" || cli === "pi")
+      ? nativeRoots(cli, env).filter(root => inspectNativeRoot(root.folder, env.HOME?.trim() || undefined).state === "unsafe").map(root => root.kind) : [];
+    const needs = unsafeRoots.length > 0 || (registered ? decided !== "fresh" : decided === "stale");
     if (needs) attention.push(cli);
     const unusedHere = state !== "fresh" && machineState === "fresh";
-    const hint = needs ? captureHint(cli, registered, decided, trigger) : !registered && decided === "never" ? captureHint(cli, registered, decided, "setup") : undefined;
+    const hint = needs ? captureHint(cli, registered, decided, trigger, unsafeRoots) : !registered && decided === "never" ? captureHint(cli, registered, decided, "setup") : undefined;
     clis[cli] = { hook: registered ? "registered" : "manual", ...(registered ? { hookEvidence: "setup receipt" } : {}), ...(phase === "prepared" ? { setup: "prepared, not applied" } : {}), capture: state, lastCaptureAt: last, rows: entry?.rows ?? 0,
       machineCapture: machineState, machineLastCaptureAt: wideLast, machineRows: wide?.rows ?? 0, ...(unusedHere ? { note: "not used in this project" } : {}), ...(hint ? { hint } : {}) };
   }
