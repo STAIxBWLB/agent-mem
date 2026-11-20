@@ -6,7 +6,7 @@ import { canonicalJSON, hashJSON, readSelector } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
 import { generationSyncGit, generationSyncGitBytes, remoteVisibility, type SyncFailureCause, type SyncOptions, type SyncResult } from "./sync.ts";
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
-import { isLocalKey, PlacementRealmRefusal, resolveShardProfile } from "./shard.ts";
+import { isLocalKey, localKeyOptInMessage, PlacementRealmRefusal, resolveShardProfile } from "./shard.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { outboundPolicyEvaluator } from "./sync-screen.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
@@ -63,6 +63,7 @@ const oid = (v: unknown): v is string => typeof v === "string" && v.length === 4
 const sameRealm = (a: PlacementRealm, b: PlacementRealm) => canonicalJSON(a) === canonicalJSON(b);
 const physical = (target: Target): PlacementRealm => target.realm.scope === "user" ? { scope: "user" } : { scope: "project", keyHash: digest(target.realm.key) };
 function refuse(category: PlacementRefusalCategory = "other"): never { throw new PlacementSyncRefusal(category); }
+class LocalKeyOptInRefusal extends Error {}
 function remoteRefusal(error: unknown, fallback: RemoteRealmCause = "other"): never {
   if (error instanceof RemoteRealmRefusal) throw error;
   if (error instanceof SyncPlacementFormatError || error instanceof Error && error.message === "sync placement activation metadata unavailable or changed; inspect the retained activation before continuing") throw new RemoteRealmRefusal("epoch");
@@ -330,7 +331,8 @@ class PlacementTransport {
         git: args => this.required(args), blob: (object, path) => this.blob(object, path), object: (oid,type) => this.rawHistoryObject(oid,type) }); this.targets.push(target);
     }
     if (new Set(this.targets.map(target => shardSyncRef(target.realm))).size !== this.targets.length) refuse("source-selection");
-    if (this.targets.some(target => target.realm.scope === "project" && isLocalKey(target.realm.key)) && this.opts.remote === undefined) refuse("remote");
+    const local = this.targets.find(target => target.realm.scope === "project" && isLocalKey(target.realm.key));
+    if (local?.realm.scope === "project" && this.opts.remote === undefined) throw new LocalKeyOptInRefusal(localKeyOptInMessage(local.realm.key));
     if (existsSync(this.root)) placementCacheRootStamp(this.home);
     const existing = existsSync(this.root) ? await this.independent() : false;
     if (!existing && !this.opts.remote) refuse("remote");
@@ -770,6 +772,7 @@ class PlacementTransport {
       if(bound){this.bound=bound;const detail=placementSyncBoundDetail(error);return this.result(false,"not-needed",placementSyncBoundMessage(bound)+(detail?` ${detail}`:""));}
       if(this.attemptHash)return this.result(false,"unknown","Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.");
       if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementRealmRefusal && error.origin === "remote") { this.failureCause = "remote"; return this.result(false, "not-needed", error.message); }
+      if (error instanceof LocalKeyOptInRefusal) { this.failureCause = "unavailable"; return this.result(false, "not-needed", error.message); }
       // #426: name the failing check by a fixed category and the phase; never the error's own text, which may carry a path.
       this.refusal=placementRefusalCategoryOf(error)??classifyPlacementError(error)??"other";
       return this.result(false,"not-needed",placementRefusalMessage(this.refusal,this.phaseNow));

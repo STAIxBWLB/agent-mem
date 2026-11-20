@@ -22,7 +22,7 @@ function copyHome(): string {
   } finally { store.close(); }
   return parent;
 }
-const env = (parent: string) => ({ AMEM_HOME: join(parent, "elsewhere-live"), HOME: parent });
+const env = (parent: string) => ({ AMEM_HOME: join(parent, "elsewhere-live"), AGENTHUB_HOME: join(parent, "test-hub"), HOME: parent });
 const shape = (report: Awaited<ReturnType<typeof recheckStore>>) => report.queries.map(q => ({ n: q.n, query: q.query, hits: q.hits.map(h => h.title) }));
 
 test("single-layout copy: corpus and hits as before", () => {
@@ -53,9 +53,9 @@ test("--mcp: the same per-query result shape through amem mcp amem_search on the
 
 test("the live home is refused: the one AMEM_HOME names and the default one", () => {
   const parent = copyHome();
-  expect(() => assertCopyHome(parent, { AMEM_HOME: join(parent, "memory"), HOME: parent })).toThrow(/refusing the live memory home/);
+  expect(() => assertCopyHome(parent, { AMEM_HOME: join(parent, "memory"), AGENTHUB_HOME: join(parent, "test-hub"), HOME: parent })).toThrow(/refusing the live memory home/);
   expect(() => assertCopyHome(parent, { AGENTHUB_HOME: parent, HOME: parent })).toThrow(/refusing the live memory home/);
-  expect(() => recheckStore({ home: parent, project: PROJECT, limit: 10, env: { AMEM_HOME: join(parent, "memory") } })).toThrow(/refusing the live memory home/);
+  expect(() => recheckStore({ home: parent, project: PROJECT, limit: 10, env: { AMEM_HOME: join(parent, "memory"), AGENTHUB_HOME: join(parent, "test-hub"), HOME: parent } })).toThrow(/refusing the live memory home/);
   expect(() => assertCopyHome(join(parent, "missing"), env(parent))).toThrow(/no memory directory/);
   expect(assertCopyHome(parent, env(parent))).toBe(join(parent, "memory"));
 });
@@ -63,7 +63,7 @@ test("the live home is refused: the one AMEM_HOME names and the default one", ()
 test("a copy whose memory directory is a symlink to the live home is refused", () => {
   const live = copyHome(), parent = realPath(mkdtempSync(join(tmpdir(), "amem-ac4-link-"))); roots.push(parent);
   symlinkSync(join(live, "memory"), join(parent, "memory"));
-  expect(() => assertCopyHome(parent, { AMEM_HOME: join(live, "memory"), HOME: parent })).toThrow(/refusing the live memory home/);
+  expect(() => assertCopyHome(parent, { AMEM_HOME: join(live, "memory"), AGENTHUB_HOME: join(parent, "test-hub"), HOME: parent })).toThrow(/refusing the live memory home/);
 });
 
 test("AMEM_HOME=A with a default home pointing to B refuses A, B and the original default directory", () => {
