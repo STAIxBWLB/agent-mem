@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "package.json",
         "bin/",
@@ -30,7 +30,7 @@
       ]
     },
     "docs/purge.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "src/memory/forget-nearby.ts",
         "src/memory/commands.ts",
@@ -48,7 +48,7 @@
       ]
     },
     "docs/curated-shard-migration.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "src/memory/shard-migration.ts",
         "src/memory/migrate.ts",
@@ -114,7 +114,7 @@
       ]
     },
     "docs/setup.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "package.json",
         ".bun-version",
@@ -128,7 +128,7 @@
       ]
     },
     "docs/cli.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "package.json",
         ".bun-version",
@@ -142,7 +142,7 @@
       ]
     },
     "docs/sync.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "package.json",
         ".bun-version",
@@ -156,7 +156,7 @@
       ]
     },
     "docs/development.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "package.json",
         ".bun-version",
@@ -170,7 +170,7 @@
       ]
     },
     "docs/recall.md": {
-      "verifiedAgainst": "7d1adb9f7b024e202f6d03b5f8c2f1e94f3db745",
+      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
       "paths": [
         "package.json",
         ".bun-version",
