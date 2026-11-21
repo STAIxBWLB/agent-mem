@@ -130,6 +130,9 @@ await import(${JSON.stringify(observer.preload)});`);
     const result = f.runFunctional(event, { transcript_path: transcript }, { BUN_OPTIONS: `--preload=${preload}` });
     expect(result.exitCode, result.stderr.toString()).toBe(0); expect(readFileSync(entered, "utf8")).toBe("entered");
     const metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1)!;
+    expect(metric.transcriptTiming?.killAtMs).toBeGreaterThanOrEqual(0);
+    expect(metric.transcriptTiming?.reapAtMs).toBeGreaterThanOrEqual(metric.transcriptTiming!.killAtMs!);
+    expect(metric.transcriptTiming?.metricSampleAtMs).toBeGreaterThanOrEqual(metric.transcriptTiming!.reapAtMs!);
     // Bound relative to the 2000 ms functional host deadline with the contract's post-deadline allowance; the real 140 ms
     // behaviour under kill is the hosted budget harness's (scripts/measure-transcript-budget.ts).
     const evidence=observer.evidence().filter(row=>row.pid===result.pid);
