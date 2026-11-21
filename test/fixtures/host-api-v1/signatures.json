@@ -1,4 +1,5 @@
 {
+  "typescriptVersion": "5.9.3",
   "platform": {
     "DENY_NAMES": {
       "calls": [],

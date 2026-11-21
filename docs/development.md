@@ -18,6 +18,16 @@ CI runs the typecheck, boundary check, README facts and documentation stamp chec
 
 The agent rule for local checks (#502) is in `AGENTS.md`; its rationale is in [agents-background.md](agents-background.md#commands-and-verification).
 
+## Host API fixture
+
+The v1 host API signature fixture records the TypeScript version that generated it. When TypeScript changes, regenerate it from the repository root with:
+
+```sh
+bun test/fixtures/host-api-v1/generate.ts > test/fixtures/host-api-v1/signatures.json
+```
+
+Diff and review the result against the frozen v1 contract before committing. Removing or narrowing a member, or changing a closed enum, requires a host API version raise rather than regeneration. The signature check is conservative and may also flag compatible additions for review.
+
 ## Publishing
 
 0.1.0 was published once by hand, because npm trusted publishing requires an existing package; the trusted publisher for repository `STAIxBWLB/agent-mem` and workflow `release.yml` was configured after it. Every later release goes through the tag workflow.

@@ -45,7 +45,7 @@ export function fingerprint(file: string, values: readonly string[], types: read
   };
   const output: Record<string, unknown> = {};
   for (const name of [...values, ...types]) {
-    const symbol = exports.get(name); if (!symbol) throw Error(`host API export removed: ${name}; restore it or raise the host API version`);
+    const symbol = exports.get(name); if (!symbol) throw Error(`host API export removed: ${name}; review docs/development.md#host-api-fixture and restore it or raise the host API version`);
     const actual = symbol.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol;
     const decl = actual.valueDeclaration ?? actual.declarations?.[0]; if (!decl) throw Error(`host API declaration missing: ${name}`);
     const type = values.includes(name) ? checker.getTypeOfSymbolAtLocation(actual, decl) : checker.getDeclaredTypeOfSymbol(actual);
