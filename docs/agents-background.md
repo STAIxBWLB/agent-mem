@@ -17,3 +17,4 @@ Agents working in this repository run only the typecheck, boundary check, the te
 - 2026-11-16: #431 removed the agent actor gates (read allowlist, sync-placement activation, history reads, brief cache, model consolidation, review walk refusal) and replaced the person-only `formats.json` rule with `amem formats raise`.
 - 2026-11-20: #502 replaced the local full-suite completion check with the affected test files (CI holds the full suite) and added plan review before boundary, privacy-screen or storage-format changes; rationale in §Commands and verification above.
 - 2026-11-20: #514 added the README-overview rule to §Conventions and structure; the #502 rationale moved here from README §Development.
+- 2026-11-21: #538 permits a checked host API range for vault-link-capable hosts while retaining the P2 minimum.

@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Added
+
+- Library hosts can negotiate the versioned host API via `HOST_API_VERSION` and `HOST_API_MIN` from the package root or platform entry point. Hosts built against the previous release retain their existing exact pins and do not gain a load-time check until updated. Format floors and placement writer attestation are unchanged. Refs #538.
+
 ## 0.32.1
 
 ### Fixed
