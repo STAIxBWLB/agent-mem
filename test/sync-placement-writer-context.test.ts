@@ -64,6 +64,9 @@ test("the attest callback keeps the mapped setup target, and an anonymous receip
 
 test("the marked diagnostic reports only a positively identified setup-receipt refusal, as fixed text",()=>{
   const refusal=new PlacementWriterContextError("setup receipt","unavailable","active","unreadable",undefined,"qwen"),text=markedSetupReceiptRefusal(refusal)!;
+  // #551 AC1: the fixed category and cause class lead #520's marker and remedy, in one sentence.
+  expect(text).toContain("(setup receipt category; runtime files are unreadable or missing)");
+  expect(text).toContain("proof is unavailable");
   expect(text).toContain("[cause: setup_receipt_missing_install]");
   expect(text).toContain("the qwen setup receipt names an amem install that no longer exists");
   expect(text).toContain("amem setup qwen --apply");expect(text).toContain("amem setup qwen --undo");expect(text).toContain("then rerun the sync");
@@ -157,11 +160,46 @@ test("#551 AC1: the text is rebuilt from fixed own data, so a tampered message o
   expect(placementWriterRefusalText(new Proxy(new PlacementWriterContextError("running CLI","missing"),{}))).toBeUndefined();
 });
 
-test("#551 AC1: every other exception keeps the masked refusal, and #520's receipt text is unchanged",()=>{
+test("#551 AC1: every other exception keeps the masked refusal, and #520's receipt remedy stays inside the #551 sentence",()=>{
   for(const value of [Error("Memory operation unavailable or refused; no partial result is shown."),new Error("transport refused at /private/home"),undefined,null,"refusal",42,{}])
     expect(placementWriterRefusalText(value)).toBeUndefined();
-  const receipt=new PlacementWriterContextError("setup receipt","unavailable","active",undefined,undefined,"qwen");
-  expect(placementWriterRefusalText(receipt)).toBe(markedSetupReceiptRefusal(receipt)!);   // the existing #520 text wins for this case
-  expect(placementWriterRefusalText(receipt)).toContain("[cause: setup_receipt_missing_install]");
   expect(placementWriterRefusalText(new PlacementWriterContextError("setup receipt","missing","active",undefined,undefined,"qwen"))).toContain("(setup receipt category)");
+});
+
+// #551 AC1: the text a surface prints for a receipt refusal is read here, from `placementWriterRefusalText` rather than from
+// the error constructor, so the #520 remedy, the marker and the fixed category and cause class are pinned where a run reads
+// them - directly, through the wrapper a later sync failure throws, and through a refusal built by another module copy.
+test("#551 AC1: the receipt text a surface prints carries both #520's remedy and the fixed category and cause class",()=>{
+  const refusal=new PlacementWriterContextError("setup receipt","unavailable","active","unreadable",undefined,"qwen"),text=placementWriterRefusalText(refusal)!;
+  expect(text).toContain("(setup receipt category; runtime files are unreadable or missing)");
+  expect(text).toContain("proof is unavailable");
+  expect(text).toContain("[cause: setup_receipt_missing_install]");
+  expect(text).toContain("the qwen setup receipt names an amem install that no longer exists");
+  expect(text).toContain("amem setup qwen --apply");expect(text).toContain("amem setup qwen --undo");expect(text).toContain("then rerun the sync");
+  expect(text).toBe(markedSetupReceiptRefusal(refusal)!);   // the marked diagnostic and the sync surface print one sentence
+  // The wrapper a later attestation failure throws reports the same sentence, never its own transport message.
+  const later=placementSyncFailure(refusal,Error("transport refused at /private/home"));
+  expect(placementWriterRefusalText(later)).toBe(text);
+  // A refusal whose own fields were built by another copy of this module still names its target, marker and remedy.
+  const carrier=Object.assign(Error("caught message"),{category:"setup receipt",causeClass:"unavailable",phase:"active",detail:"unreadable",setupTarget:"qwen"});
+  expect(placementWriterRefusalText(carrier)).toBe(text);
+  expect(placementWriterRefusalText(Object.assign(Error("recorded path"),{category:"setup receipt",causeClass:"unavailable",setupTarget:"/private/install"}))).toBeUndefined();
+});
+
+// #551 AC1: a proxy reaches no instanceof, prototype or own-property read, including one carried as `placementRefusal`, so a
+// throwing trap surfaces as the anonymous masked refusal instead of an exception of its own.
+test("#551 AC1: a proxy is refused before any prototype or property inspection, including one carried as placementRefusal",()=>{
+  const traps: ProxyHandler<object> = {
+    getPrototypeOf(){ throw Error("proxy trap: getPrototypeOf"); }, getOwnPropertyDescriptor(){ throw Error("proxy trap: getOwnPropertyDescriptor"); },
+    get(){ throw Error("proxy trap: get"); }, has(){ throw Error("proxy trap: has"); }, ownKeys(){ throw Error("proxy trap: ownKeys"); } };
+  const refusal=new PlacementWriterContextError("setup receipt","unavailable","active","unreadable",undefined,"qwen"),thrown=new Proxy(refusal,traps);
+  expect(()=>placementWriterRefusalText(thrown)).not.toThrow(); expect(placementWriterRefusalText(thrown)).toBeUndefined();
+  expect(()=>markedSetupReceiptRefusal(thrown)).not.toThrow(); expect(markedSetupReceiptRefusal(thrown)).toBeUndefined();
+  for(const carried of [new Proxy(refusal,traps),new Proxy(Error("carried"),traps)]){
+    const wrapper=Error("carrier"); Object.defineProperty(wrapper,"placementRefusal",{value:carried});
+    expect(()=>placementWriterRefusalText(wrapper)).not.toThrow(); expect(placementWriterRefusalText(wrapper)).toBeUndefined();
+  }
+  // A revoked proxy is refused the same way, because `types.isProxy` reads no trap.
+  const revocable=Proxy.revocable(refusal,{}); revocable.revoke();
+  expect(placementWriterRefusalText(revocable.proxy)).toBeUndefined();
 });

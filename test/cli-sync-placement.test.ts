@@ -228,6 +228,9 @@ test("#520: a marked session names the setup target whose recorded install is go
   // so `--json` reports it in the body instead of exiting 1 with the text on stderr.
   const marked=run(f,["sync","--json"],true), receipt=JSON.parse(marked.stdout.toString()) as {ok:boolean;failure:{cause:string};error:string}, text=receipt.error;
   expect(marked.exitCode).toBe(0); expect(receipt).toMatchObject({ok:false,failure:{cause:"refusal"}});
+  // #551 AC1: the fixed category and cause class ride in front of #520's own marker and remedy, in the one text both surfaces print.
+  expect(text).toContain("(setup receipt category; runtime files are unreadable or missing)");
+  expect(text).toContain("proof is unavailable");
   expect(text).toContain("[cause: setup_receipt_missing_install]");
   expect(text).toContain("the qwen setup receipt names an amem install that no longer exists");
   expect(text).toContain("amem setup qwen --apply"); expect(text).toContain("amem setup qwen --undo"); expect(text).toContain("then rerun the sync");
@@ -341,6 +344,16 @@ test("#551 AC1: a running-CLI refusal reaches both surfaces, and any other failu
   expect(masked.exitCode).not.toBe(0);
   expect(masked.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
   expect(masked.stderr.toString()).not.toContain(f.base); expect(masked.stdout.toString()).toBe("");
+  // #551 AC1: the same masking holds for a refusal carried as `placementRefusal` behind a throwing proxy - the run ends in
+  // the anonymous line with no trap text, no category and no target. This arm pins that outcome; the adapter's own order is
+  // pinned by the unit test, because a trap that fires there is still masked by this catch and would show the same line.
+  const trap=`{getPrototypeOf(){throw new Error("proxy trap")},getOwnPropertyDescriptor(){throw new Error("proxy trap")},get(){throw new Error("proxy trap")},has(){throw new Error("proxy trap")}}`;
+  const hostile=`()=>{const carrier=new Error("carrier");Object.defineProperty(carrier,"placementRefusal",{value:new Proxy(new context.PlacementWriterContextError("setup receipt","unavailable","active",undefined,undefined,"qwen"),${trap})});throw carrier}`;
+  const trapped=runWriterContext(f,["sync","--json"],true,hostile);
+  expect(trapped.exitCode).not.toBe(0); expect(trapped.stdout.toString()).toBe("");
+  expect(trapped.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
+  expect(trapped.stderr.toString()).not.toContain("proxy trap");
+  expect(trapped.stderr.toString()).not.toContain("setup receipt"); expect(trapped.stderr.toString()).not.toContain("qwen");
 },180_000);
 
 // #551: an inventory that cannot be read far enough proves no category, so it is reported as unverified - never as a root
