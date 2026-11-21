@@ -699,14 +699,14 @@ export function quarantineHookScope(options: { cwd: string; base: string; scope:
 /** Only screened normalized capture fields are retained, never the native input envelope. */
 export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {
   if (!(HOOK_EVENTS as readonly string[]).includes(event) || options.policy?.host || belowFloor(options.base)) return undefined;
-  // #540: amem's own read calls are recall, not work; their rows would echo the running query back to it and flood timeline.
-  // Exact amem-owned names only; the hook outcome is unchanged. Rows captured before this stay until retention ages them out.
-  if ((event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure") && input && typeof input === "object"
-    && isOwnAmemReadTool((input as { tool_name?: unknown }).tool_name)) return undefined;
   const policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
   if (!await policy.screen(input)) return undefined;
   const value = structuredClone(input) as {[key: string]: unknown};
   if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > HOOK_INPUT_BYTES || !await policy.screen(value)) return undefined;
+  // #540: amem's own read calls are recall, not work; their rows would echo the running query back to it and flood timeline.
+  // Read from the screened plain clone, never the native input (no accessor runs before the policy screen). Exact amem-owned
+  // names only; the hook outcome is unchanged. Rows captured before this stay until retention ages them out.
+  if ((event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure") && isOwnAmemReadTool(value.tool_name)) return undefined;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   if (value.hook_event_name !== undefined && value.hook_event_name !== event) return undefined;
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return undefined;

@@ -59,3 +59,12 @@ test("search and timeline through MCP never return the running read call's own c
     expect(timeline).toContain("Bash"); expect(timeline).not.toContain("mcp__amem__");
   } finally { mcp.close(); }
 });
+
+test("the own-read skip runs no native input accessor before the existing policy screen", async () => {
+  const f = fixture(); let reads = 0;
+  const input = { tool_input: { query: "accessor-order" } } as Record<string, unknown>;
+  Object.defineProperty(input, "tool_name", { enumerable: true, get: () => { reads++; return "mcp__amem__amem_search"; } });
+  // The existing screen refuses an accessor envelope without invoking it; the classifier only reads the screened plain clone.
+  expect(await stageHookCapture("PreToolUse", input, f.options)).toBeUndefined();
+  expect(reads).toBe(0);
+});
