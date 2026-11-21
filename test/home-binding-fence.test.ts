@@ -54,19 +54,28 @@ const verdict = (result: BriefResult) => JSON.stringify({ empty: result.context.
 /**
  * A brief whose guard calls are counted. The counters are installed through the module registry and the brief is
  * imported fresh afterwards, so every count is the guard's own: `collects` is one full comparison, `snapshots` is one
- * fence pass. `cap` overrides the caller's bound without touching the code under test.
+ * fence pass. `cap` overrides the caller's bound, `afterComparison` fires inside the adoption window, and `grow` adds a
+ * path from a chosen snapshot on, the way a reader that reports an input for the first time does.
  */
-async function counted(cap?: number, label = "", afterComparison?: () => void) {
+async function counted(hooks: { cap?: number; label?: string; afterComparison?: () => void; onSnapshot?: (index: number) => void; grow?: (paths: readonly string[]) => string[] } = {}) {
+  const { cap, label = "", afterComparison, onSnapshot, grow } = hooks;
   const fenceSpecifier = "../src/memory/home-binding-fence.ts", readSetSpecifier = "../src/memory/binding-read-set.ts";
   const counts = { snapshots: 0, collects: 0 };
   mock.module(fenceSpecifier, () => ({ ...realFence, ...(cap === undefined ? {} : { FENCE_MAX_PATHS: cap }),
-    snapshotHomeBinding: (paths: readonly string[]) => { counts.snapshots++; return realFence.snapshotHomeBinding(paths); } }));
+    homeBindingPaths: (home: string, selector: Parameters<typeof realFence.homeBindingPaths>[1], reported: readonly string[] = []) => {
+      const paths = realFence.homeBindingPaths(home, selector, reported);
+      return grow ? grow(paths) : paths;
+    },
+    snapshotHomeBinding: (paths: readonly string[]) => {
+      const snapshot = realFence.snapshotHomeBinding(paths);
+      counts.snapshots++;
+      onSnapshot?.(counts.snapshots);
+      return snapshot;
+    } }));
   mock.module(readSetSpecifier, () => ({ ...realReadSet,
     collectBindingReads: <T,>(work: () => T) => {
       counts.collects++;
       const value = realReadSet.collectBindingReads(work);
-      // `afterComparison` runs inside the adoption's own window: the comparison proved the old bytes, the second hash
-      // has not run yet.
       afterComparison?.();
       return value;
     } }));
@@ -75,25 +84,67 @@ async function counted(cap?: number, label = "", afterComparison?: () => void) {
 }
 
 /** Selected once: this module instance keeps the bound it was imported with, so every row's fallback run stays real. */
-const unboundedBrief = (await counted(0)).sessionStartBrief;
+const unboundedBrief = (await counted({ cap: 0 })).sessionStartBrief;
 
 test("a change between the adoption's two hashes is never stamped", async () => {
   const fixture = await activated();
   let armed = true;
-  const { counts, sessionStartBrief: fenced } = await counted(undefined, "midread", () => {
+  const { counts, sessionStartBrief: fenced } = await counted({ label: "midread", afterComparison: () => {
     if (!armed) return;
     armed = false;
     appendAlias(fixture.base, { alias: "https://example.test/fence/midread.git", key: fixture.project, actor: "person", machine: "a".repeat(16) });
-  });
+  } });
   try {
     const result = await fenced(briefOptions(fixture.base, fixture.project));
     expect(armed, "the mid-read change never ran, so nothing was proved").toBe(false);
-    // The next guard reads the moved binding for real instead of trusting a half-stamped home: two fence passes around
-    // the refused comparison, and none after it, because nothing was adopted. An adopted stale stamp would be consulted
-    // by every later guard instead (three more passes per guarded step) and would surface only at assembly.
-    expect(counts.snapshots).toBe(2);
+    // The pair around the comparison disagreed, so nothing was stamped: the next guard hashes the moved set against no
+    // stamp, reads the binding for real and refuses. An adopted stale stamp would be consulted by every later guard
+    // instead and would surface only at assembly.
+    expect(counts.snapshots).toBe(3);
+    expect(counts.collects).toBe(2);
     expect(result.context, JSON.stringify(result)).toBe("");
     expect(result.coverage.work).toBe("unavailable");
+  } finally { mock.restore(); }
+});
+
+test("a change after the adoption's second hash refuses at the next guard", async () => {
+  const fixture = await activated();
+  let armed = true, mutations = 0;
+  const { counts, sessionStartBrief: fenced } = await counted({ label: "afterhash", onSnapshot: index => {
+    // The adoption's second hash is pass 2. A change landing right after it must not be inside the stamped state, so the
+    // next guard hashes the moved set against the stamp, misses, and reads the binding for real.
+    if (index !== 2 || !armed) return;
+    armed = false;
+    mutations++;
+    appendAlias(fixture.base, { alias: "https://example.test/fence/afterhash.git", key: fixture.project, actor: "person", machine: "a".repeat(16) });
+  } });
+  try {
+    const result = await fenced(briefOptions(fixture.base, fixture.project));
+    expect(armed, "the after-hash change never ran, so nothing was proved").toBe(false);
+    expect(mutations).toBe(1);
+    // Passes 1-2 bracket the adopting comparison, pass 3 is the next guard's look at the stamp, pass 4 the pair it starts
+    // once that look misses. A third hash taken after pass 2 would have absorbed the change instead.
+    expect(counts.snapshots).toBe(4);
+    expect(counts.collects).toBe(2);
+    expect(result.context, JSON.stringify(result)).toBe("");
+    expect(result.coverage.work).toBe("unavailable");
+  } finally { mock.restore(); }
+});
+
+test("a path a reader reports for the first time waits one guard before it is trusted", async () => {
+  const fixture = await activated(), late = join(realPath(fixture.base), "reported-late.json");
+  // A reader that starts reporting an input mid-brief: the opening list predates the first pass, and from then on every
+  // list carries one more path.
+  let armed = false;
+  const { counts, sessionStartBrief: fenced } = await counted({ label: "grown",
+    onSnapshot: index => { if (index === 1) armed = true; },
+    grow: paths => (armed && !paths.includes(late) ? [...paths, late] : [...paths]) });
+  try {
+    const result = await fenced(briefOptions(fixture.base, fixture.project));
+    expect(result.context.length, JSON.stringify(result)).toBeGreaterThan(0);
+    // The grown set is not adopted on sight: one comparison proves it against a pair before the fence is trusted, then the
+    // check before assembly. The fixture has two screens, so two guards before that point.
+    expect(counts.collects).toBe(3);
   } finally { mock.restore(); }
 });
 
@@ -209,14 +260,14 @@ test("a set above the caller's bound hands every guard back to the full comparis
   // This fixture is one the fence can describe, so only the caller's bound can latch it off; the cap below is real.
   expect(fenceIsComplete(snapshotHomeBinding(paths))).toBe(true);
   expect(paths.length).toBeGreaterThan(8);
-  const { counts, sessionStartBrief: bounded } = await counted(8);
+  const { counts, sessionStartBrief: bounded } = await counted({ cap: 8 });
   try {
     const result = await bounded({ cwd: fixture.base, base: fixture.base, project: fixture.project, repository: false, policy: configuredPolicyOptions(fixture.base) });
     expect(result.context.length, JSON.stringify(result)).toBeGreaterThan(0);
     // One full comparison for the whole brief: the bound is read on the first guard, the fence gives up there, and
     // neither the checks before assembly nor any later guard pays for a hash pass it never adopted.
     expect(counts.collects).toBe(1);
-    expect(counts.snapshots).toBe(3);
+    expect(counts.snapshots).toBe(2);
   } finally { mock.restore(); }
 });
 
@@ -224,7 +275,7 @@ test("a byte-identical replacement re-adopts with one full comparison, not one p
   const fixture = await activated(), target = join(fixture.base, "shards.json"), replacement = join(fixture.base, "shards.copy");
   copyFileSync(target, replacement);
   let screens = 0;
-  const { counts, sessionStartBrief: fenced } = await counted();
+  const { counts, sessionStartBrief: fenced } = await counted({ label: "replacement" });
   try {
     const result = await fenced({ cwd: fixture.base, base: fixture.base, project: fixture.project, repository: false,
       policy: { ...configuredPolicyOptions(fixture.base), host: { screen: async () => { if (screens++ === 0) renameSync(replacement, target); return true; } } } });

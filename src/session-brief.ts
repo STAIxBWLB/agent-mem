@@ -134,15 +134,18 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         if (!fenceSupported) { compareBinding(); return; }
         const known = fence?.paths ?? fencePaths;
         if (!full && fence !== undefined && sameHomeBinding(snapshotHomeBinding(known), fence)) return;
-        // Adoption needs the bytes to be the ones the comparison just validated: hash, compare, hash again.
+        // Adoption stamps the second hash itself, so no byte is trusted that the comparison did not bracket, and a path
+        // the reader reports for the first time has not been through that pair yet: a grown set waits one guard.
         const before = snapshotHomeBinding(known);
         const { paths: reported } = collectBindingReads(compareBinding);
         const after = snapshotHomeBinding(known);
         const next = homeBindingPaths(fenceHome!, fenceSelector, reported);
-        fence = sameHomeBinding(before, after) ? snapshotHomeBinding(next) : undefined;
+        const sameSet = next.length === known.length && next.every((path, index) => path === known[index]);
+        // A set this fence cannot describe gives up for the rest of the brief; a moved or grown one is retried on the
+        // next guard, which runs the pair over the whole `next`.
+        fenceSupported = fenceIsComplete(after) && next.length <= FENCE_MAX_PATHS;
+        fence = fenceSupported && sameSet && sameHomeBinding(before, after) ? after : undefined;
         fencePaths = next;
-        if (fence !== undefined && (next.length > FENCE_MAX_PATHS || !fenceIsComplete(fence))) fence = undefined;
-        fenceSupported = fence !== undefined;
       } catch { drifted = true; throw new BindingChanged(); }
     };
     // Fixed native screening has no host callback to observe intermediate rows. Buffer
