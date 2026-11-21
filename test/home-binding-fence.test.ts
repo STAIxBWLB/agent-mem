@@ -18,7 +18,7 @@ import { collectBindingReads, reportBindingRead } from "../src/memory/binding-re
 import { configuredPolicyOptions } from "../src/memory/config.ts";
 import { canonicalJSON, hashJSON, readSelector } from "../src/memory/generation.ts";
 import { FENCE_MAX_PATHS, FENCE_UNSAFE, fenceIsComplete, homeBindingPaths, sameHomeBinding, snapshotHomeBinding } from "../src/memory/home-binding-fence.ts";
-import { projectState } from "../src/memory/lifecycle.ts";
+import { appendLifecycle, projectState } from "../src/memory/lifecycle.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { readPublicPruneInputSetChain } from "../src/memory/public-prune-input-chain.ts";
 import { publicPruneViewHash, readPublicPruneViewForActivation, validatePublicPruneView } from "../src/memory/public-prune-view.ts";
@@ -61,7 +61,7 @@ function comparison(memoryDir: string, project: string) {
 /** Run `work` under an `node:fs` spy, so the recorded paths are the ones the file system really saw. */
 async function observe<T>(work: () => T | Promise<T>): Promise<{ value: T; opened: string[]; statted: string[] }> {
   const opened: string[] = [], statted: string[] = [];
-  const openSync = fs.openSync, lstatSync = fs.lstatSync;
+  const openSync = fs.openSync, lstatSync = fs.lstatSync, readFileSync = fs.readFileSync, statSync = fs.statSync;
   const openSpy = spyOn(fs, "openSync").mockImplementation(((...args: Parameters<typeof fs.openSync>) => {
     if (typeof args[0] === "string") opened.push(args[0]);
     return Reflect.apply(openSync, fs, args) as number;
@@ -70,7 +70,17 @@ async function observe<T>(work: () => T | Promise<T>): Promise<{ value: T; opene
     if (typeof args[0] === "string") statted.push(args[0]);
     return Reflect.apply(lstatSync, fs, args) as ReturnType<typeof fs.lstatSync>;
   }) as typeof fs.lstatSync);
-  try { return { value: await work(), opened, statted }; } finally { openSpy.mockRestore(); statSpy.mockRestore(); }
+  // readFileSync and statSync too: aliases.jsonl and lifecycle.jsonl are read whole, never through openSync.
+  const readSpy = spyOn(fs, "readFileSync").mockImplementation(((...args: Parameters<typeof fs.readFileSync>) => {
+    if (typeof args[0] === "string") opened.push(args[0]);
+    return Reflect.apply(readFileSync, fs, args) as ReturnType<typeof fs.readFileSync>;
+  }) as typeof fs.readFileSync);
+  const fullStatSpy = spyOn(fs, "statSync").mockImplementation(((...args: Parameters<typeof fs.statSync>) => {
+    if (typeof args[0] === "string") statted.push(args[0]);
+    return Reflect.apply(statSync, fs, args) as ReturnType<typeof fs.statSync>;
+  }) as typeof fs.statSync);
+  try { return { value: await work(), opened, statted }; }
+  finally { openSpy.mockRestore(); statSpy.mockRestore(); readSpy.mockRestore(); fullStatSpy.mockRestore(); }
 }
 
 const under = (root: string, paths: string[]) => [...new Set(paths.filter(path => path === root || path.startsWith(root + sep)))];
@@ -458,6 +468,65 @@ test("a change held inside the adoption's comparison window refuses instead of r
     expect(counts.collects).toBe(2);
     expect(counts.snapshots).toBe(4);
     expect(state.screens, "a screen callback ran after the pair disagreed twice").toBe(state.screensAtMutation);
+    expect(result.context, JSON.stringify(result)).toBe("");
+    expect(result.coverage.work).toBe("unavailable");
+  } finally { mock.restore(); }
+});
+
+/** Paths the file system saw under `home` that `list` does not cover. */
+const uncovered = (home: string, seen: string[], list: readonly string[]) => under(home, seen).filter(path => !list.includes(path));
+
+test("the full guard's whole-file reads of aliases.jsonl and lifecycle.jsonl are observed and fenced", async () => {
+  const fixture = await activated(), home = realPath(fixture.base), selector = fenceSelector(home);
+  appendAlias(home, { alias: "https://example.test/fence/readset.git", key: fixture.project, actor: "person", machine: "a".repeat(16) });
+  appendLifecycle(home, { op: "archive", key: fixture.project, actor: "person", machine: "a".repeat(16) });
+  appendLifecycle(home, { op: "unarchive", key: fixture.project, actor: "person", machine: "a".repeat(16) });
+  const aliasesFile = join(home, "aliases.jsonl"), lifecycleFile = join(home, "lifecycle.jsonl");
+  const compare = comparison(home, fixture.project);
+  const { opened, statted } = await observe(() => compare());
+  const seen = [...opened, ...statted];
+  // Observed at the file system through readFileSync and statSync, not through the readers' own report.
+  expect(opened).toContain(aliasesFile);
+  expect(opened).toContain(lifecycleFile);
+  expect(statted).toContain(lifecycleFile);
+  const { paths: reported } = realReadSet.collectBindingReads(() => compare());
+  const list = realFence.homeBindingPaths(home, selector, reported);
+  expect(list).toContain(aliasesFile);
+  expect(list).toContain(lifecycleFile);
+  expect(uncovered(home, seen, list)).toEqual([]);
+  // Red proof: a fence set missing either file leaves an observed read uncovered, so this witness would fail.
+  for (const dropped of [aliasesFile, lifecycleFile]) {
+    expect(uncovered(home, seen, list.filter(path => path !== dropped))).toEqual([dropped]);
+  }
+});
+
+test("an input that turns unsafe after the comparison gets a fresh comparison before the screen", async () => {
+  const fixture = await activated(), home = realPath(fixture.base), aliasesFile = join(home, "aliases.jsonl"), target = join(home, "shards.json");
+  const state = { screens: 0, screensAtMutation: -1, armed: false, moved: false, fired: false };
+  const { counts, sessionStartBrief: fenced } = await counted({ label: "unsafe-after",
+    // The first fence look after screen 1 is its post-screen guard, which still matches the stamp. Replacing shards.json
+    // with identical bytes right after it moves the stamp, so the next guard (screen 2's pre-screen guard) compares.
+    onSnapshot: () => {
+      if (!state.armed || state.moved) return;
+      state.moved = true; const copy = join(home, "shards.copy"); copyFileSync(target, copy); renameSync(copy, target);
+    },
+    afterComparison: () => {
+    if (!state.moved || state.fired) return;
+    if (!state.armed || state.fired) return;
+    state.fired = true; state.screensAtMutation = state.screens;
+    // Between the comparison and the after snapshot: the binding moves and its file becomes one the fence cannot describe.
+    appendAlias(home, { alias: "https://example.test/fence/unsafe-after.git", key: fixture.project, actor: "person", machine: "a".repeat(16) });
+    chmodSync(aliasesFile, 0o644);
+  } });
+  try {
+    const result = await fenced(briefOptions(home, fixture.project, undefined, () => {
+      if (++state.screens === 1) state.armed = true;
+    }));
+    expect(state.fired, "the change never ran inside a guard, so nothing was proved").toBe(true);
+    // The fallback compares again instead of returning on the earlier comparison, and that comparison refuses before
+    // the next host screen.
+    expect(state.screens, "a screen callback ran on a binding no comparison covered").toBe(state.screensAtMutation);
+    expect(counts.collects).toBe(2);
     expect(result.context, JSON.stringify(result)).toBe("");
     expect(result.coverage.work).toBe("unavailable");
   } finally { mock.restore(); }

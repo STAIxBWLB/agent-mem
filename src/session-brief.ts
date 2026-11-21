@@ -145,8 +145,10 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           const next = homeBindingPaths(fenceHome!, fenceSelector, reported);
           // A set this fence cannot describe keeps today's cost: the comparison inside this bracket is the proof today's
           // guard offers too, and every later guard reads the binding itself.
+          // The comparison above ran before the unsafe or over-limit observation, so it does not cover this instant: latch
+          // off, then compare once more before this caller proceeds. A throw lands in the catch below and refuses.
           if (next.length > FENCE_MAX_PATHS || !fenceIsComplete(before) || !fenceIsComplete(after)) {
-            fence = undefined; fencePaths = next; fenceSupported = false; return;
+            fence = undefined; fencePaths = next; fenceSupported = false; compareBinding(); return;
           }
           const sameSet = next.length === paths.length && next.every((path, index) => path === paths[index]);
           // Only a set that did not move while it was compared, and whose two hashes agree, is stamped. Anything else is
