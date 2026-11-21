@@ -35,7 +35,8 @@ export class PlacementSourceBoundError extends SyncPlacementJournalError {
   constructor(readonly bound?: InspectionBound) {
     super("bound");
     const detail = bound ? `${bound.kind} bound (observed ${bound.observed}, limit ${bound.limit})` : "read bound";
-    this.message = `Sync placement source capture exceeds its supported ${detail}; no journal, marker or source was changed. This is not journal corruption; retain the inputs and report this bound.`;
+    this.message = `Sync placement source capture exceeds its supported ${detail}; no journal, marker or source was changed. This is not journal corruption; retain the inputs and report this bound.`
+      + (bound?.kind === "source-files" ? " Each project shard directory and the user realm hold at most 16 metadata objects, and the home at most 4096; no file was skipped to fit." : "");
     this.name = "PlacementSourceBoundError";
   }
 }
@@ -81,8 +82,16 @@ function ownedDirectory(dir: string): BigIntStats {
   if (!s.isDirectory() || s.isSymbolicLink() || s.uid !== BigInt(process.getuid!()) || (s.mode & 0o022n) !== 0n) fail();
   return s;
 }
-/** ponytail: capture holds the whole home in memory, capped at 256 metadata objects and 64 MiB/20000 source rows
- * across all realms (#414 raised 8 MiB; a 23 MB/10,248-row home was refused). Larger homes need a reviewed
+/** Metadata objects are counted per scope (#550): the home markers form one scope, and each project shard
+ * directory (its project.json reads included, an activated realm's second read too) or the user realm forms
+ * another. An optional file that is absent opens nothing and counts nothing. */
+export const PLACEMENT_METADATA_OBJECTS_PER_SCOPE = 16;
+/** Whole-home safety cap on metadata objects; the 8 MiB metadata-bytes cap below stays the memory ceiling. */
+export const PLACEMENT_METADATA_OBJECTS_TOTAL = 4096;
+/** ponytail: capture holds the whole home in memory, capped at 16 metadata objects per scope, 4096 and 8 MiB of
+ * metadata across the home, 256 entries per listed directory (so at most 256 project shards and 256 selected
+ * realms) and 64 MiB/20000 source rows across all realms (#414 raised 8 MiB; a 23 MB/10,248-row home was refused).
+ * #550 measured 250 activated realms (about 2,250 objects) at 257 ms and +15 MB RSS. Larger homes need a reviewed
  * chunked/streaming activation proof; no input is silently omitted at this ceiling. */
 function* sourcePreviewSteps(homeInput: string, selected?: readonly PlacementRealm[], pending: readonly PlacementPendingSource[] = [], policyVersion?: string, ownerProof?: PlacementActivationCaptureProof, sourceOwner?:PlacementActivationOwner): Generator<void, PlacementSourcePreview, void> {
   let selection: PlacementRealm[] | undefined;
@@ -95,7 +104,7 @@ function* sourcePreviewSteps(homeInput: string, selected?: readonly PlacementRea
   }
   const home = realPath(homeInput), root = ownedDirectory(home);
   if(sourceOwner)assertPlacementActivationOwner(sourceOwner,home);
-  let metadataObjects = 0, metadataBytes = 0;
+  let metadataObjects = 0, scopeObjects = 0, metadataBytes = 0;
   const facts: unknown[] = [], sourceChecks: (() => void)[] = [];
   const pendingByPath = new Map(pending.map(item => [canonicalJSON(item.realm)+":"+item.pathHash,item]));
   if (pendingByPath.size !== pending.length) fail();
@@ -106,7 +115,8 @@ function* sourcePreviewSteps(homeInput: string, selected?: readonly PlacementRea
   const bytes = (file: string, optional = false): Buffer | undefined => {
     const before = lstatSync(file, { bigint: true, throwIfNoEntry: false });
     if (!before) { if (!optional) fail(); facts.push([file, null]); sourceChecks.push(() => { if(lstatSync(file,{throwIfNoEntry:false})) fail(); }); return undefined; }
-    if (++metadataObjects > 256) throw new PlacementSourceBoundError({ kind: "source-files", limit: 256, observed: metadataObjects });
+    if (++scopeObjects > PLACEMENT_METADATA_OBJECTS_PER_SCOPE) throw new PlacementSourceBoundError({ kind: "source-files", limit: PLACEMENT_METADATA_OBJECTS_PER_SCOPE, observed: scopeObjects });
+    if (++metadataObjects > PLACEMENT_METADATA_OBJECTS_TOTAL) throw new PlacementSourceBoundError({ kind: "source-files", limit: PLACEMENT_METADATA_OBJECTS_TOTAL, observed: metadataObjects });
     if (before.size > 262144n) throw new PlacementSourceBoundError({ kind: "metadata-bytes", limit: 262144, observed: Number(before.size) });
     if (metadataBytes + Number(before.size) > 8 * 1024 * 1024) throw new PlacementSourceBoundError({ kind: "metadata-bytes", limit: 8 * 1024 * 1024, observed: metadataBytes + Number(before.size) });
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.uid !== root.uid || (before.mode & 0o022n) !== 0n) fail();
@@ -282,11 +292,12 @@ function* sourcePreviewSteps(homeInput: string, selected?: readonly PlacementRea
     const bindingHash = hashJSON(facts.slice(beforeFacts));
     realms.push({ ...identity, bindingHash });
   };
-  if (!selection || selection.some(item => item.scope === "user")) yield* realm(join(home, "user"), { scope: "user" });
+  if (!selection || selection.some(item => item.scope === "user")) { scopeObjects = 0; yield* realm(join(home, "user"), { scope: "user" }); }
   for (const name of listing(join(home, "projects"), true)) {
     yield;
     if (!/^[a-f0-9]{16}$/.test(name)) fail();
     if (selection && !selection.some(item => item.scope === "project" && item.keyHash.slice(0,16) === name)) continue;
+    scopeObjects = 0;
     const dir = join(home, "projects", name), project = json(join(dir, "project.json"));
     if (typeof project?.key !== "string" || shardKeyHash(project.key) !== name) fail();
     // Capture scaffolds are not curated realms, but their identity still binds this inventory.
