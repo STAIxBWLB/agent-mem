@@ -26,6 +26,7 @@ export function timeoutReceiptEvidence(input: { workers: readonly HookWorkerProc
     const relation = !good ? "ambiguous" : after! < kill! - RECEIPT_CLOCK_TOLERANCE_MS ? "before-kill"
       : before > kill! + RECEIPT_CLOCK_TOLERANCE_MS && after! < reap! - RECEIPT_CLOCK_TOLERANCE_MS ? "between-kill-and-reap"
       : before > reap! + RECEIPT_CLOCK_TOLERANCE_MS ? "after-reap" : "ambiguous";
+    // The entry marker is also the pre-write bound; these two labels refer to the same filesystem observation.
     return { pid: child.pid, ownerPid: child.ownerPid, fixtureEntryMarkerAtMs: before, receiptBeforeMs: before, receiptAfterMs: after,
       beforeMinusKillMs: kill === null ? null : before - kill, afterMinusKillMs: after === null || kill === null ? null : after - kill,
       beforeMinusReapMs: reap === null ? null : before - reap, afterMinusReapMs: after === null || reap === null ? null : after - reap, relation };

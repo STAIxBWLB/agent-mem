@@ -56,13 +56,19 @@ test("diagnostic overflow is explicit and bounded rather than silently claiming 
   value.workers=Array.from({length:129},(_,i)=>({pid:i+20,kind:"worker",detached:true,argv:[]}));
   const diagnostic=hookProcessDiagnostic(value);expect(diagnostic.truncated).toBe(true);expect(diagnostic.children).toHaveLength(128);expect(diagnostic.observedOwnedChildren).toBe(129);
 });
-test("the default observer retains the exact pre-diagnostic preload template",()=>{
+test("the default observer retains the preload template except the timeout receipt markers",()=>{
   const before=Bun.spawnSync(["git","show","265f509557b1aca4f08f015724595c94641de47e:test/fakes/hooks-process-observer.ts"],
     {cwd:resolve(import.meta.dir,".."),stdout:"pipe",stderr:"pipe",env:{...process.env,GIT_CONFIG_GLOBAL:"/dev/null",GIT_CONFIG_SYSTEM:"/dev/null"}});
   expect(before.exitCode,before.stderr.toString()).toBe(0);
-  const original=before.stdout.toString().split("  writeFileSync(preload, `")[1]!.split("`, { mode: 0o600 });")[0];
-  const current=readFileSync(join(import.meta.dir,"fakes/hooks-process-observer.ts"),"utf8").split("  let rendered = `")[1]!.split("`;\n  if(lifecycleEnabled)")[0];
-  expect(current).toBe(original);
+  const original=before.stdout.toString().split("  writeFileSync(preload, `")[1]!.split("`, { mode: 0o600 });")[0]!;
+  const current=readFileSync(join(import.meta.dir,"fakes/hooks-process-observer.ts"),"utf8").split("  let rendered = `")[1]!.split("`;\n  if(lifecycleEnabled)")[0]!;
+  const oldSleeper=original.split("\n").find(line=>line.includes("const sleeper='sleep 30 &"))!;
+  const newSleeper=current.split("\n").find(line=>line.includes("const sleeper='sleep 30 &"))!;
+  expect(newSleeper).toContain("$leader"); expect(newSleeper).toContain("$child.before"); expect(newSleeper).toContain("$child.after");
+  const markerLines=current.split("\n").filter(line=>line.includes("sleeper.pid+'.before'") || line.includes("sleeper.pid+'.after'"));
+  expect(markerLines).toHaveLength(2);
+  const normalized=current.replace(newSleeper,oldSleeper).split("\n").filter(line=>!markerLines.includes(line)).join("\n");
+  expect(normalized).toBe(original);
   const f=hookFixture();try{const observer=hookProcessObserver(f.root);expect(readFileSync(observer.preload,"utf8")).not.toContain("__hookChildLife");}finally{f.close();}
 });
 test("the real preload records spawn, native and worker exit/reap receipts without changing hook assertions",async()=>{
