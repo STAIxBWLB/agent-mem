@@ -12,6 +12,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Changed
 
+- `amem_timeline` keeps curated notes in the window ahead of capture and summarizes a session's consecutive tool calls as one `capture-run` entry (agent, session, span, counts, top tools; no excerpt), so tool calls no longer crowd out decisions and conversation. Collapsing never reads more rows, so a timeline can return fewer than `limit` entries. `expand: true` returns the previous raw output. The agent-marked CLI `list` gets the new default. Refs #544.
 - Stale recall hints identify whether a path is missing in this checkout or all present paths have newer mtimes; either can result from branch or checkout activity rather than invalid memory. Existing consumers retain the boolean and may ignore the new reason; current CLI JSON parity remains unchanged. Refs #541.
 
 ## 0.33.0

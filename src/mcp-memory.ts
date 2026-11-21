@@ -51,6 +51,36 @@ const textOf = (args: Record<string, unknown>, key: string, optional = false): s
   return typeof value === "string" && value.trim() && !value.includes("\0") ? value : unavailable();
 };
 const sinceOf = (args: Record<string, unknown>): string | undefined => { const since = textOf(args, "since", true); if (since !== undefined && !Number.isFinite(Date.parse(since))) unavailable(); return since === undefined ? undefined : new Date(since).toISOString(); };
+interface TimelineEntry { at: string; ref: string; value: unknown; memoryId?: string; capture?: CaptureRow; key?: string }
+const TOOL_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+/** #544: one pass over rows already read and screened (screened-out rows were never returned, so they neither count nor break a run).
+ * A run is consecutive tool-event capture rows in time order with one agent and one non-empty session; any other entry breaks it.
+ * A run of two or more becomes one marked `capture-run` entry with counts only: no excerpt, paths or stale fields. */
+function collapseToolRuns(entries: readonly TimelineEntry[], distance: (at: string) => number): TimelineEntry[] {
+  const chronological = [...entries].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
+  const out: TimelineEntry[] = []; let run: TimelineEntry[] = [];
+  const flush = () => {
+    if (run.length === 1) out.push(run[0]!);
+    else if (run.length > 1) {
+      const rows = run.map(entry => entry.capture!), events: Record<string, number> = {}, tools = new Map<string, number>();
+      for (const row of rows) { events[row.event] = (events[row.event] ?? 0) + 1; if (row.tool) tools.set(row.tool, (tools.get(row.tool) ?? 0) + 1); }
+      const top = [...tools].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 3).map(([tool, count]) => ({ tool, count }));
+      const first = rows[0]!, last = rows[rows.length - 1]!;
+      const key = run.reduce((best, entry) => distance(entry.at) < distance(best) ? entry.at : best, run[0]!.at);
+      out.push({ at: last.at, key, ref: `capture-run:${first.id}`, value: { source: "capture-run", evidence: false,
+        run: { agent: first.agent, session: first.session!, from: first.at, to: last.at, count: rows.length, events, tools: top, first: `capture:${first.id}`, last: `capture:${last.id}` } } });
+    }
+    run = [];
+  };
+  for (const entry of chronological) {
+    const row = entry.capture;
+    const tool = !!row && TOOL_EVENTS.has(row.event) && !!row.session;
+    const head = run[0]?.capture;
+    if (tool && head && (row!.agent !== head.agent || row!.session !== head.session)) flush();
+    if (tool) run.push(entry); else { flush(); out.push(entry); }
+  }
+  flush(); return out;
+}
 
 /** All identities are resolved once. Per-call arguments cannot change projects, homes, profiles or policy. */
 export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
@@ -282,18 +312,29 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         guard(); return view ? observed(decorate(view, stale()), [view.id], [view]) : null;
       },
       async amem_timeline(args) {
-        bound(args, ["id", "since", "limit"]);
+        bound(args, ["id", "since", "limit", "expand"]);
         const id = textOf(args, "id", true), since = sinceOf(args), limit = limitOf(args);
+        if (args.expand !== undefined && typeof args.expand !== "boolean") unavailable();
         guard();
         const anchor = id ? await anchorAt(id) : undefined;
         if (id && !anchor) { guard(); return []; }
         const rows = await readPermitted(window => store.readPage(window), { since, anchor }, limit, view => recallViewIsLive(view, store.readNow()));
         const recalls = await readPermitted(window => capture.readPage(window), { since, anchor }, limit);
-        const entries: { at: string; ref: string; value: unknown; memoryId?: string }[] = [...rows.map(row => ({ at: row.at, ref: row.id, value: row as unknown, memoryId: row.id })),
-          ...recalls.map(row => ({ at: row.at, ref: `capture:${row.id}`, value: { source: "capture", evidence: false, capture: row } as unknown }))];
+        const entries: TimelineEntry[] = [...rows.map(row => ({ at: row.at, ref: row.id, value: row as unknown, memoryId: row.id })),
+          ...recalls.map(row => ({ at: row.at, ref: `capture:${row.id}`, value: { source: "capture", evidence: false, capture: row } as unknown, capture: row }))];
         const currentEntries = entries.filter(row => !row.memoryId || recallViewIsLive(row.value as View, store.readNow()));
-        currentEntries.sort((a, b) => (anchor ? Math.abs(Date.parse(a.at) - Date.parse(anchor)) - Math.abs(Date.parse(b.at) - Date.parse(anchor)) : Date.parse(b.at) - Date.parse(a.at)) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0));
-        const selected = currentEntries.slice(0, limit), probe = stale();
+        const distance = (at: string): number => anchor ? Math.abs(Date.parse(at) - Date.parse(anchor)) : -Date.parse(at);
+        const order = (a: TimelineEntry, b: TimelineEntry): number => (distance(a.key ?? a.at) - distance(b.key ?? b.at)) || (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0);
+        let selected: TimelineEntry[];
+        if (args.expand === true) selected = currentEntries.sort(order).slice(0, limit); // #544: today's raw algorithm and shapes.
+        else {
+          // #544: collapse only reduces entries and never reads again, so a collapsed result may hold fewer than `limit`.
+          const collapsed = collapseToolRuns(currentEntries, distance);
+          const curated = collapsed.filter(row => row.memoryId).sort(order).slice(0, limit);
+          const rest = collapsed.filter(row => !row.memoryId).sort(order).slice(0, limit - curated.length);
+          selected = [...curated, ...rest].sort(order);
+        }
+        const probe = stale();
         const values = selected.map(row => row.memoryId ? decorate(row.value as View, probe) : row.value);
         guard(); return observed(values, selected.flatMap(row => row.memoryId ? [row.memoryId] : []), selected.map(row => row.value));
       },
