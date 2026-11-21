@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
+      "verifiedAgainst": "d604cac949bfc7e7d0f4f7d1109304ee4956794c",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
+      "verifiedAgainst": "d604cac949bfc7e7d0f4f7d1109304ee4956794c",
       "paths": [
         "package.json",
         "bin/",
@@ -114,7 +114,7 @@
       ]
     },
     "docs/setup.md": {
-      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
+      "verifiedAgainst": "d604cac949bfc7e7d0f4f7d1109304ee4956794c",
       "paths": [
         "package.json",
         ".bun-version",
@@ -128,7 +128,7 @@
       ]
     },
     "docs/cli.md": {
-      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
+      "verifiedAgainst": "d604cac949bfc7e7d0f4f7d1109304ee4956794c",
       "paths": [
         "package.json",
         ".bun-version",
@@ -142,7 +142,7 @@
       ]
     },
     "docs/sync.md": {
-      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
+      "verifiedAgainst": "d604cac949bfc7e7d0f4f7d1109304ee4956794c",
       "paths": [
         "package.json",
         ".bun-version",
@@ -156,7 +156,7 @@
       ]
     },
     "docs/development.md": {
-      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
+      "verifiedAgainst": "d604cac949bfc7e7d0f4f7d1109304ee4956794c",
       "paths": [
         "package.json",
         ".bun-version",
@@ -170,7 +170,7 @@
       ]
     },
     "docs/recall.md": {
-      "verifiedAgainst": "a0cd4caddbeb9db835027aceb12e26987df5afcd",
+      "verifiedAgainst": "d604cac949bfc7e7d0f4f7d1109304ee4956794c",
       "paths": [
         "package.json",
         ".bun-version",
