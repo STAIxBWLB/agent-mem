@@ -1,6 +1,7 @@
 /** Metadata-only input-set ancestry for the generation reader's cold path. Never loads proof bodies. */
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
+import { reportBindingRead } from "./binding-read-set.ts";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { realPath } from "./platform.ts";
 
@@ -40,14 +41,16 @@ const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.
 export function readPublicPruneInputSetChain(input: { dir: string; receivingGeneration: string; inputSetHash: string }): { commitments: string[]; inputs: string[] } {
   return protectedCall(() => {
     guard(hex(input.receivingGeneration, 32) && hex(input.inputSetHash, 64));
+    reportBindingRead(input.dir);
     const original = lstatSync(input.dir, { bigint: true }); owned(original, true);
     const dir = realPath(input.dir), root = lstatSync(dir, { bigint: true }); owned(root, true); guard(root.dev === original.dev && root.ino === original.ino);
     const folder = join(dir, "public-prune-input-sets"), parent = lstatSync(folder, { bigint: true }); owned(parent, true);
+    reportBindingRead(dir); reportBindingRead(folder);
     const frontier = new Map<string, BigIntStats>(), commitments: string[] = [], seen = new Set<string>();
     let id: string | null = input.inputSetHash, later: Set<string> | undefined, inputs: string[] = [], total = 0;
     while (id !== null) {
       guard(!seen.has(id)); guard(seen.size < PUBLIC_PRUNE_MAX_SETS, true); seen.add(id); commitments.push(id);
-      const file = join(folder, id + ".json"), before = lstatSync(file, { bigint: true }); owned(before);
+      const file = join(folder, id + ".json"), before = lstatSync(file, { bigint: true }); owned(before); reportBindingRead(file);
       guard(before.size > 0n && before.size <= BigInt(PUBLIC_PRUNE_INPUT_MAX_BYTES), true);
       total += Number(before.size); guard(total <= PUBLIC_PRUNE_REPLAY_MAX_BYTES, true);
       const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); let bytes: Buffer;

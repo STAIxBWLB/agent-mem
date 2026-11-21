@@ -1,6 +1,7 @@
 /** Metadata-only v3 admission. Publication still requires the complete journal/source/policy proof. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
+import { reportBindingRead } from "./binding-read-set.ts";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { realPath } from "./platform.ts";
 import { homeIdentityHash } from "./home-identity.ts";
@@ -52,6 +53,7 @@ export function readActivePlacementBinding(homeInput: string, profileInput: unkn
     for (const [file, isDir] of [[home, true], [join(home, "sync-placement"), true], [join(home, "sync-placement", "epochs"), true], [dir, true], [join(dir, "epoch.json"), false],
       [join(dir, "activation.json"), false], [join(home, "sync-placement", "active.json"), false], [join(home, "profile.json"), false], [join(home, "shards.json"), false]] as const) {
       const st = lstatSync(file, { bigint: true, throwIfNoEntry: false }); if (!st) return undefined; owned(st, isDir);
+      reportBindingRead(file);
       stamps.push([st.dev, st.ino, st.size, st.mtimeNs, st.ctimeNs].map(String).join(":"));
     }
     return canonicalJSON([home, canonicalJSON(profile), canonicalJSON(shards), stamps]);
@@ -62,11 +64,12 @@ export function readActivePlacementBinding(homeInput: string, profileInput: unkn
   }
   const checks: (() => void)[] = [() => { const now = lstatSync(home, { bigint: true }); owned(now, true); if (now.dev !== root.dev || now.ino !== root.ino) fail(); }];
   const directory = (dir: string): boolean => {
-    const s = lstatSync(dir, { bigint: true, throwIfNoEntry: false }); if (!s) return false; owned(s, true);
+    const s = lstatSync(dir, { bigint: true, throwIfNoEntry: false }); if (!s) return false; owned(s, true); reportBindingRead(dir);
     checks.push(() => { const now = lstatSync(dir, { bigint: true }); owned(now, true); if (s.dev !== now.dev || s.ino !== now.ino) fail(); }); return true;
   };
   const read = (file: string): { value: unknown; text: string } | undefined => {
     const before = lstatSync(file, { bigint: true, throwIfNoEntry: false }); if (!before) return undefined;
+    reportBindingRead(file);
     owned(before); if (before.size <= 0n || before.size > 262144n) fail();
     const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {

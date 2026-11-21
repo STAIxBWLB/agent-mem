@@ -9,6 +9,8 @@ import { curatedProfileBinding } from "./memory/curated-cache-state.ts";
 import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
 import { readWorkBrief, workLogSegments, workPolicyRevision } from "./brief-work.ts";
 import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
+import { collectBindingReads } from "./memory/binding-read-set.ts";
+import { FENCE_MAX_PATHS, fenceIsComplete, homeBindingPaths, sameHomeBinding, snapshotHomeBinding, type HomeBindingSnapshot } from "./memory/home-binding-fence.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -105,19 +107,42 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const effectivePolicy = configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy);
     const policy = createStandalonePolicy(effectivePolicy), release = options.measureOnly ? Object.assign(() => {}, { verify: () => {} }) : registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
     closers.push(release);
-    const selection = readSelector(base).revision;
+    const initial = readSelector(base), selection = initial.revision;
     const sharded = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
     const shardSelection = sharded ? JSON.stringify(readShardedSelection(base)) : undefined;
     const aliases = aliasedKeys(base, project), reconcile = aliases.length ? { canonical: project, aliases } : undefined;
+    // #396: every value the guard compares is derived from the binding's own bytes, so the per-value fence pays for a
+    // full read of those bytes twice per screened row. This fence answers the same question by hashing them instead,
+    // and hands the call back to the full comparison whenever an input moved, could not be read safely, or the reader
+    // reported more paths than the caller bounds. `fenceSupported` latches off, so a home this fence cannot describe
+    // keeps exactly today's cost.
+    const fenceHome = (() => { try { return realPath(base); } catch { return undefined; } })();
+    const fenceSelector = initial.selector as { pruneInputSetHash?: string; placementHead?: string } | undefined;
+    let fenceSupported = fenceHome !== undefined, fence: HomeBindingSnapshot | undefined;
+    let fencePaths = homeBindingPaths(fenceHome ?? base, fenceSelector);
     let drifted = false;
-    const guard = () => {
+    const compareBinding = () => {
+      if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")
+        || readSelector(base).revision !== selection || projectState(base, project) !== "active") throw new BindingChanged();
+      const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
+      if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) throw new BindingChanged();
+    };
+    const guard = (full = false) => {
       try {
         if (drifted) throw new BindingChanged();
         release.verify();
-        if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")
-          || readSelector(base).revision !== selection || projectState(base, project) !== "active") throw new BindingChanged();
-        const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
-        if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) throw new BindingChanged();
+        if (!fenceSupported) { compareBinding(); return; }
+        const known = fence?.paths ?? fencePaths;
+        if (!full && fence !== undefined && sameHomeBinding(snapshotHomeBinding(known), fence)) return;
+        // Adoption needs the bytes to be the ones the comparison just validated: hash, compare, hash again.
+        const before = snapshotHomeBinding(known);
+        const { paths: reported } = collectBindingReads(compareBinding);
+        const after = snapshotHomeBinding(known);
+        const next = homeBindingPaths(fenceHome!, fenceSelector, reported);
+        fence = sameHomeBinding(before, after) ? snapshotHomeBinding(next) : undefined;
+        fencePaths = next;
+        if (fence !== undefined && (next.length > FENCE_MAX_PATHS || !fenceIsComplete(fence))) fence = undefined;
+        fenceSupported = fence !== undefined;
       } catch { drifted = true; throw new BindingChanged(); }
     };
     // Fixed native screening has no host callback to observe intermediate rows. Buffer
@@ -412,7 +437,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           emitReserved(); coverage.capture = "partial";
         }
       }
-      guard();
+      guard(true);
       let context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
       while (Buffer.byteLength(context) > maximum && lines.length) {
         const repoIndex = lines.findLastIndex(line => line.startsWith('{"section":"repo",'));
