@@ -90,10 +90,7 @@ export default (host) => {
     },
     timeline(s) {
       return [ui.rows(s.entries ?? [], (x) => {
-        const c = x.capture, r = x.run;
-        // #544: a session's consecutive tool calls arrive as one capture-run summary (counts only, never an excerpt).
-        if (x.source === "capture-run" && r) return ui.row({ title: `${r.count} tool calls · ${(r.tools ?? []).map((t) => `${t.tool} ×${t.count}`).join(", ") || "no tool name"}`,
-          sub: `capture run · ${r.agent} · ${day(r.from)}–${day(r.to)}` });
+        const c = x.capture;
         return c ? ui.row({ title: line(c.excerpt), sub: `capture · ${c.event} · ${day(c.at)}` }) : ui.row({ title: line(x.title ?? x.text), sub: `${x.kind} · ${x.tier} · ${x.peer} · ${day(x.at)}` });
       }) ?? ui.empty("Nothing on the timeline yet")];
     },
