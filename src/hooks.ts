@@ -174,6 +174,8 @@ let drainSkipped = 0;
 let lastDrain: { startMs: number; drained: number } | undefined;
 /** Hook start on the performance clock, set by the entry points, so a worker can report times relative to it. */
 let hookStartedAt = performance.now();
+let transcriptKillAtMs: number | undefined, transcriptReapAtMs: number | undefined;
+const monotonicMs = () => performance.now();
 
 /** Only capture work uses a short-lived owned child; native handles remain in this CLI.
  * #226 (ruling b): a transcript hook boots that one worker at hook start, in parallel with native metadata. The worker
@@ -214,6 +216,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
     if (!owned || exited) return;
     tracker!.captureLive();
     killed = true;
+    if (early && transcriptKillAtMs === undefined) transcriptKillAtMs = monotonicMs();
     // The still-live leader is the detached process we just spawned, so its group is ours.
     // The capture-only worker owns no native helper; those handles were reaped in this parent.
     try { process.kill(-owned.pid, "SIGKILL"); } catch { try { owned.kill("SIGKILL"); } catch { /* Already exited. */ } }
@@ -254,6 +257,7 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
       stop();
       // #226: bounded reap; a worker stuck in uninterruptible I/O is abandoned after REAP_BOUND_MS, never awaited.
       const reaped = exited || !(await boundedWait(exit!)).late;
+      if (early) transcriptReapAtMs = monotonicMs();
       const body = reaped ? await boundedWait(output!) : { late: true };
       if (!reaped || body.late) { cancelOutput?.(); owned.unref(); }
       if (!reaped) abandonedChildren++;
@@ -424,6 +428,7 @@ export async function runHook(event: string, input: unknown, options: HookOption
 export async function hookMain(args: readonly string[], startedAt = performance.now(), host?: HookHostPorts): Promise<string> {
   const deadlineMs = handlerMs(host);
   hookStartedAt = startedAt;
+  transcriptKillAtMs = undefined; transcriptReapAtMs = undefined;
   let cleanup: (() => Promise<void>) | undefined;
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   let childSources = emptyRssSources();
@@ -483,7 +488,8 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     try { appendRecordVariant(canonicalPath(memoryHome()), args[0] ?? "", { at: new Date().toISOString(), kind: "hook", ...recordMetric, ...emittedCost }); } catch { /* Observations never change tool outcomes. */ }
     try {
       const self = hookRssReading();
-      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", ...(brief ? { brief } : {}), wallMs: performance.now() - startedAt, recordInstructionBytes: emittedCost.recordInstructionBytes, recordInstructionEstimatedTokens: emittedCost.recordInstructionEstimatedTokens,
+      const transcriptTiming = (args[0] === "Stop" || args[0] === "SessionEnd") ? { metricSampleAtMs: monotonicMs(), ...(transcriptKillAtMs === undefined ? {} : { killAtMs: transcriptKillAtMs }), ...(transcriptReapAtMs === undefined ? {} : { reapAtMs: transcriptReapAtMs }) } : undefined;
+      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", ...(transcriptTiming ? { transcriptTiming } : {}), ...(brief ? { brief } : {}), wallMs: performance.now() - startedAt, recordInstructionBytes: emittedCost.recordInstructionBytes, recordInstructionEstimatedTokens: emittedCost.recordInstructionEstimatedTokens,
         rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
         ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }

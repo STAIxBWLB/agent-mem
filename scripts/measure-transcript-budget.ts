@@ -11,6 +11,7 @@ import { drainHookCaptures, hookCaptureScope } from "../src/hook-spool.ts";
 import { HOOK_TRANSCRIPT_BYTES } from "../src/hook-transcript.ts";
 import { stallAdvisory, budgetFailureAdvisory, reportBudgetAdvisory, notDurableFailureReceipt } from "./hook-timing-check.ts";
 import { budgetGroup, R2_WALL_MAX_MS, r2Verdict, runnerFingerprint, TRANSCRIPT_WALL_MAX_ENFORCED, transcriptWallLimit } from "./budget-attempt.ts";
+import { transcriptTiming } from "./transcript-timing.ts";
 
 const RUNS = 40, MAX_FOLLOW_UPS = 64;
 /** #226 ruling (Q1): R1 judges the hook's owned children after a fixed post-exit window. Within it a SIGKILLed child still
@@ -111,11 +112,15 @@ async function measure() {
       let previousAvailable = new Set<string>();
       for (let followUp = 0; followUp <= MAX_FOLLOW_UPS; followUp++) {
         Bun.gc(true);
+        const previousMetric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
         const started = performance.now(), result = f.run(event === "StopBurst" ? "Stop" : event, { session_id: session, transcript_path: transcript });
         const wallMs = performance.now() - started, metric = readMetrics(f.base).filter(row => row.kind === "hook").at(-1);
         await judgeR1(metric?.abandonedChildren ?? 0, { event, logicalRun, followUp });
         console.log(JSON.stringify({ diagnostic: "transcript-budget-invocation", event, logicalRun, followUp, wallMs,
-          exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric }));
+          exitCode: result.exitCode, stdoutBytes: result.stdout.length, cliRssMB: result.resourceUsage.maxRSS / 1048576, metric,
+          intervals: { pid: result.pid, event, logicalRun, followUp, invocation: samples.filter(row => row.event === event).length + 1,
+            processCpuUserUs: Number(result.resourceUsage.cpuTime.user), processCpuSystemUs: Number(result.resourceUsage.cpuTime.system),
+            contextSwitches: result.resourceUsage.contextSwitches, ...transcriptTiming(metric, previousMetric, wallMs) } }));
         if (result.exitCode !== 0 || result.stdout.length || !metric || !Number.isFinite(metric.wallMs) || metric.wallMs! < 0) throw Error("transcript budget hook unavailable");
         const stopReason = metric.transcriptStopReason;
         let offset = 0, offsetSource: "cursor" | "uncreated" | "rollback_pending" = "uncreated";
