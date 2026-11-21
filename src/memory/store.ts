@@ -1,3 +1,4 @@
+import { RECAP_SCRATCH } from "./recap-scratch.ts";
 import { buildCuratedBriefCache, buildPreferenceBriefCache } from "../brief-curated.ts";
 import { PREFERENCE_SLOT } from "./preference-brief.ts";
 import { curatedProfileBinding, invalidateCuratedCaches } from "./curated-cache-state.ts";
@@ -250,8 +251,10 @@ export class MemoryStore {
   private readonly reconcile?: { canonical: string; aliases: readonly string[] };
   /** A full rebuild refills FTS in one resync instead of one derived transaction per entry. */
   private rebuildingSearch = false;
+  private readonly recapScratch: boolean;
 
   constructor(opts: StoreOptions = {}, bootstrap?: BootstrapBinding) {
+    this.recapScratch = (opts as StoreOptions & { [RECAP_SCRATCH]?: true })[RECAP_SCRATCH] === true;
     if (bootstrap && bootstrap.token !== MIGRATION_BOOTSTRAP) throw new Error("invalid migration bootstrap");
     this.bootstrapOnly = bootstrap ? bootstrap.authoring !== true : false;
     this.userOverlay = bootstrap?.userOverlay;
@@ -309,7 +312,7 @@ export class MemoryStore {
       this.db = db;
       this.mutationDb = openedMutation = mutationDatabase(this.dir);
       // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
-      this.searchIndex = openedSearch = new SearchIndex(this.profile.sharded ? join(this.dir, "search.db") : join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
+      this.searchIndex = openedSearch = new SearchIndex(this.recapScratch ? ":memory:" : this.profile.sharded ? join(this.dir, "search.db") : join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
       this.memoryBaseDir = home;
       try { chmodSync(indexFile, 0o600); } catch { /* best effort */ }
       if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,
@@ -1054,7 +1057,7 @@ export class MemoryStore {
       // The FTS copy follows the committed row. `changes` is only a hint here (bun:sqlite misreports it for ignored
       // inserts inside a transaction): addCurated is idempotent by entry id, and a missed hint becomes a count drift
       // the next search resyncs.
-      if (inserted && !this.rebuildingSearch) this.searchIndex.addCurated({ id, at: e.at, project: e.project, tier: e.tier === "long" ? "long" : "short", scope: e.scope === "shared" ? "shared" : "project", body: `${e.title ?? ""}\n${e.text}\n${e.about.map(String).join(" ")}` });
+      if (inserted && !this.rebuildingSearch && !this.recapScratch) this.searchIndex.addCurated({ id, at: e.at, project: e.project, tier: e.tier === "long" ? "long" : "short", scope: e.scope === "shared" ? "shared" : "project", body: `${e.title ?? ""}\n${e.text}\n${e.about.map(String).join(" ")}` });
       for (const node of e.about) this.db.query("INSERT OR IGNORE INTO edges (src, dst) VALUES (?, ?)").run(id, String(node));
     } else if (e.op === "goal") {
       if (!str(e.title, 400) || !Array.isArray(e.milestones) || !Array.isArray(e.dependsOn) || !str(e.project, 400) || !opt(e.actor) || !opt(e.scope)) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
@@ -1295,6 +1298,7 @@ export class MemoryStore {
 
   /** Entries visible from `project` (its own, and `shared` ones of any project), newest first, filtered. */
   list(f: Filter = {}): View[] {
+    if (this.recapScratch && f.q !== undefined) throw new Error("search unavailable for a Recap scratch store; open a normal store to search");
     const q = f.q?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
     return this.live(f).filter((v) => (!f.project || this.inScope(v.project, f.project) || v.scope === "shared") && (!f.tier || v.tier === f.tier) && (!f.kind || v.kind === f.kind)
       && (!f.peer || v.peer === f.peer) && (!f.machine || v.machine === f.machine) && (!f.since || Date.parse(v.at) >= Date.parse(f.since)) && (f.includeSuperseded || !v.supersededBy)
@@ -1352,6 +1356,7 @@ export class MemoryStore {
 
   /** Exact-project body pages for policy-aware callers. Relations still fold over complete metadata. */
   readPage(window: ReadWindow & { query?: string; includeSuperseded?: boolean }): { rows: View[]; next?: ReadRef } {
+    if (this.recapScratch && window.query !== undefined) throw new Error("search unavailable for a Recap scratch store; open a normal store to search");
     this.ensureFresh(); this.prune();
     const refs: ReadRef[] = [];
     for (const store of this.readStores()) {
@@ -1378,6 +1383,7 @@ export class MemoryStore {
    * R3 cost of the fallback is the pre-#13 behavior: same scan, same memory).
    */
   search(q: string, f: SearchFilter = {}): SearchResult {
+    if (this.recapScratch) throw new Error("search unavailable for a Recap scratch store; open a normal store to search");
     const limit = f.limit ?? 200;
     if (!this.searchIndex.available) {
       const listed = this.list({ ...f, q, limit: f.groupTasks === false ? f.limit : Number.MAX_SAFE_INTEGER });
@@ -1473,6 +1479,7 @@ export class MemoryStore {
 
   /** Bring the derived FTS copy level with the curated rows when a prune, a crash, a lock or a rebuild drifted them apart. */
   private syncSearchIndex(): void {
+    if (this.recapScratch) return; // This disposable store never exposes its unpopulated search index.
     if (!this.searchIndex.available) return;
     const curated = (this.db.query("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
     if (!this.searchIndex.needsResync(curated)) return;

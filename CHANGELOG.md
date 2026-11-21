@@ -6,6 +6,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- Uncached Recap no longer builds an unused search index in its private curated scratch copy. Live warm Recap timing remains to be measured. Refs #359.
+
 - Recap no longer retries a scratch copy just because the observation-only hook metrics or record-variant journals changed, and those journals no longer invalidate reusable console panels by themselves. Curated, work, policy, placement and capture database/WAL changes remain witnessed. Live warm Recap timing remains to be measured. Refs #359.
 - A reader's path `lstat` of the public prune intent or `profile.lock` that lands on an inode a cooperating writer has just unlinked reports a zero link count rather than `ENOENT`; the reader's wait loop, its before-stat of each file it opens and its final unresolved-intent check now read that count as the same normal disappearance instead of refusing the store open, and the bounded wait still stops at its original deadline. A second link outside the owned create-once phase, a foreign owner, a foreign mode and a symlink still refuse, and a zero-link `profile.json` still ends as unavailable. Refs #302.
 

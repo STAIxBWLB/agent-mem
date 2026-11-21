@@ -87,7 +87,7 @@ export class SearchIndex {
       db.run("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(body, ref UNINDEXED, project UNINDEXED, tier UNINDEXED, at UNINDEXED, scope UNINDEXED)");
       // FTS5 has no unique constraint: refs remembers what is indexed, so a repeated or rebuilt row is never doubled.
       db.run("CREATE TABLE IF NOT EXISTS refs (ref TEXT PRIMARY KEY)");
-      try { chmodSync(file, 0o600); } catch { /* best effort */ }
+      if (file !== ":memory:") try { chmodSync(file, 0o600); } catch { /* best effort */ }
       this.db = db;
       this.available = true;
     } catch { this.available = false; }

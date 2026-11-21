@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { MemoryStore } from "../src/memory/store.ts";
+import { migrate } from "../src/memory/migrate.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { appendMetrics } from "../src/memory/metrics.ts";
 import { withBriefSnapshot, RecapSourceChangedError } from "../src/memory/doctor.ts";
@@ -24,6 +25,7 @@ test("isolated recap capture and metrics probe", async () => {
   try {
     const store = new MemoryStore({ memoryDir: base, deferPromotions: true });
     try { for (let i = 0; i < noteCount; i++) store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "fixture", source: "person", text: `격리된 진단 메모 ${i} with bounded synthetic content`, about: [] }); } finally { store.close(); }
+    if (process.env.RECAP_PROBE_GENERATION === "1") await migrate({ memoryDir: base, generation: "e".repeat(32), mode: "apply", authorizedPerson: true, tty: true });
     const capture = new CaptureStore({ memoryDir: base, project, cwd: root });
     try { capture.append({ project, agent: "fixture", event: "Stop", excerpt: "격리된 테스트" }); } finally { capture.close(); }
     appendMetrics(base, [{ at: new Date().toISOString(), kind: "hook", wallMs: 1 }]);
@@ -33,15 +35,22 @@ test("isolated recap capture and metrics probe", async () => {
       const size = fs.statSync(from).size, started = performance.now();
       try { return stableCopy(from, to, flags); } finally { stableCopyMs += performance.now() - started; stableCopyBytes += size; }
     }) as typeof fs.copyFileSync);
-    opens = spyOn(curatedModule, "openCuratedForRead").mockImplementation(((...args: Parameters<typeof stableOpen>) => {
-      const started = performance.now(); try { return stableOpen(...args); } finally { stableOpenMs += performance.now() - started; }
-    }) as typeof stableOpen);
+    let baselineOpen = 0;
+    opens = spyOn(curatedModule, "openCuratedForRead").mockImplementation(((...args: Parameters<typeof stableOpen>) => { const t = performance.now(); try { return stableOpen(args[0], args[1]); } finally { baselineOpen += performance.now() - t; } }) as typeof stableOpen);
+    const baselineStart = performance.now();
+    const baseline = await withBriefSnapshot(base, project, async measureOnly => sessionStartBrief({ cwd: root, base, project, repository: false, measureOnly }));
+    const baselineTotal = performance.now() - baselineStart;
+    opens.mockRestore(); opens = undefined;
+    stableCopyMs = 0; stableCopyBytes = 0;
+    opens = spyOn(curatedModule, "openCuratedForRead").mockImplementation(((...args: Parameters<typeof stableOpen>) => { const t = performance.now(); try { return stableOpen(...args); } finally { stableOpenMs += performance.now() - t; } }) as typeof stableOpen);
     const stableBegin = performance.now();
-    await withBriefSnapshot(base, project, async measureOnly => {
+    const current = await withBriefSnapshot(base, project, async measureOnly => {
       const started = performance.now(); try { return await sessionStartBrief({ cwd: root, base, project, repository: false, measureOnly }); }
       finally { stableReadMs += performance.now() - started; }
     }, validate => { const started = performance.now(); validate(); stableVerifyMs += performance.now() - started; });
     const stableTotalMs = performance.now() - stableBegin;
+    expect(current).toEqual(baseline);
+    console.log(JSON.stringify({ fixture: "synthetic", layout: process.env.RECAP_PROBE_GENERATION === "1" ? "generation" : "shared-v1", case: "paired-open", notes: noteCount, baselineOpenMs: baselineOpen, baselineTotalMs: baselineTotal, scratchOpenMs: stableOpenMs, scratchTotalMs: stableTotalMs, outputsEqual: true }));
     copies.mockRestore(); copies = undefined; opens.mockRestore(); opens = undefined;
     console.log(JSON.stringify({ fixture: "synthetic", case: "uncached-stable-projection", notes: noteCount, copyBytes: stableCopyBytes, copyMs: stableCopyMs,
       openMs: stableOpenMs, readMs: stableReadMs, extraValidationMs: stableVerifyMs, totalMs: stableTotalMs,

@@ -7,6 +7,7 @@ import { basename, join } from "node:path";
 import { Database } from "bun:sqlite";
 import { sessionStartBrief, type BriefOptions } from "../session-brief.ts";
 import { openCuratedForRead } from "./curated-read.ts";
+import { RECAP_SCRATCH } from "./recap-scratch.ts";
 import { pendingSummary } from "./candidate-pending.ts";
 import { inspectNativeRoot, nativeRoots, type NativeRootKind } from "./native-roots.ts";
 import { readCaptureDrops } from "./metrics.ts";
@@ -220,7 +221,7 @@ export async function withBriefSnapshot<T>(home: string, project: string, read: 
             copyWork(options, workBase, budget);
             if (curatedPresent(home, project, layout)) {
               const copy = join(scratch, "home"); copyCurated(options, layout, copy, budget, true);
-              curated = openCuratedForRead(copy, project);
+              curated = openCuratedForRead(copy, project, RECAP_SCRATCH);
               if (!curated) throw Error("recap curated snapshot unavailable");
             }
             check(budget);
