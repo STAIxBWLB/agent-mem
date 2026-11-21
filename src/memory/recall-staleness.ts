@@ -12,9 +12,13 @@ export interface RecallStalenessOptions {
   maxProbes?: number;
   probe?: (path: string) => Pick<Stats, "isSymbolicLink" | "isDirectory" | "mtimeMs">;
 }
-type PathState = { state: "present"; mtime: number } | { state: "missing" | "unknown" };
+type PathState = { state: "present"; mtime: number } | { state: "missing" } | { state: "unknown" };
+export type RecallStalenessReason = "missing_in_checkout" | "mtime_newer_than_note";
+export type RecallStalenessProbe = ((view: Pick<View, "about" | "at">) => boolean | undefined) & {
+  reason(view: Pick<View, "about" | "at">): RecallStalenessReason | undefined;
+};
 /** Call-scoped metadata hint only. Unknown/denied paths never become a marker or a filesystem query. */
-export function createRecallStalenessProbe(options: RecallStalenessOptions): (view: Pick<View, "about" | "at">) => boolean | undefined {
+export function createRecallStalenessProbe(options: RecallStalenessOptions): RecallStalenessProbe {
   const root = resolve(options.cwd), cache = new Map<string, PathState>(), requested = options.maxProbes ?? 32;
   let remaining = Number.isSafeInteger(requested) && requested >= 0 ? Math.min(requested, 32) : 0;
   const allowed = (path: string): boolean => {
@@ -42,18 +46,25 @@ export function createRecallStalenessProbe(options: RecallStalenessOptions): (vi
   };
   // ponytail: same-user ancestor swaps are outside the current metadata-only fence. Descriptor-relative traversal
   // is required before treating concurrent hostile filesystem mutation as supported. No source/symbol index is stored.
-  return view => {
+  const observe = (view: Pick<View, "about" | "at">): { stale: boolean; reason?: RecallStalenessReason } | undefined => {
     const at = Date.parse(view.at); if (!Number.isFinite(at)) return undefined;
     // #423: `stale` means a referenced path is gone (under a confirmed root), or every referenced path that still exists
     // changed after the note. One edited file among several a note names no longer marks it: in an active repository
     // that marked most hits and stopped separating notes worth re-checking from current ones.
-    let present = 0, changed = 0;
+    let present = 0, changed = 0, missing = false, unknown = false;
     for (const node of view.about) {
       const path = nodePath(node); if (path === undefined) continue;
       const state = inspect(path);
-      if (state.state === "missing" && options.rootConfirmed === true) return true;
-      if (state.state === "present") { present++; if (state.mtime > at) changed++; }
+      if (state.state === "missing") { if (options.rootConfirmed === true) missing = true; else unknown = true; }
+      else if (state.state === "unknown") unknown = true;
+      else { present++; if (state.mtime > at) changed++; }
     }
-    return present ? changed === present : undefined;
+    if (unknown) return undefined;
+    if (missing) return { stale: true, reason: "missing_in_checkout" };
+    if (!present) return undefined;
+    return changed === present ? { stale: true, reason: "mtime_newer_than_note" } : { stale: false };
   };
+  return Object.assign((view: Pick<View, "about" | "at">) => observe(view)?.stale, {
+    reason: (view: Pick<View, "about" | "at">) => observe(view)?.reason,
+  });
 }

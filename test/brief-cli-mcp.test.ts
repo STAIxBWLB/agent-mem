@@ -44,7 +44,7 @@ for (const mode of ["legacy", "generation", "shards"] as const) {
   test(`${mode}: CLI/MCP intent brief has identical public fail-first one-hop output and UTF8 accounting`, async () => {
     const f = await briefFixture(mode), before = f.bytes(), cli = JSON.parse(await f.cli(["brief", "--for", "repair boundary", "--paths", "public.ts", "--bytes", "1100", "--json"])), session = f.mcp(), mcp = await session.tools.amem_brief({ intent: "repair boundary", paths: ["public.ts"], maxBytes: 1100 });
     expect(mcp).toEqual(cli); expect(cli.bytes).toBe(Buffer.byteLength(cli.brief)); expect(cli.bytes).toBeLessThanOrEqual(1100);
-    const rows = briefRows(cli.brief); expect(rows.map(row => row.id)).toEqual([f.direct, f.decision, f.neighbour].map(id => `mem:${id}`)); expect(rows.map(row => row.kind)).toEqual(["fail", "decision", "contract"]); expect(rows[0]!.text).toContain("(stale?)");
+    const rows = briefRows(cli.brief); expect(rows.map(row => row.id)).toEqual([f.direct, f.decision, f.neighbour].map(id => `mem:${id}`)); expect(rows.map(row => row.kind)).toEqual(["fail", "decision", "contract"]); expect(rows[0]!.text).toContain("(stale? mtime)");
     for (const id of [f.far, f.finding, f.hidden, f.foreign]) expect(cli.brief).not.toContain(id); expect(f.bytes()).toEqual(before); expect(f.counters()).toEqual([]);
   });
   test(`${mode}: default CLI/MCP recall hides superseded/expired, person history keeps retained chain and current forget revives source`, async () => {
@@ -139,13 +139,13 @@ test("CLI human and MCP show from a real Git subdirectory use root-relative path
     expect(memoryProjectKey(f.root)).toBe(f.project); expect(memoryProjectKey(subdir)).toBe(f.project);
     const id = f.note("root relative path evidence", { about: ["path:src/file.ts"] }), at = Date.parse(f.use(store => store.get(id, f.project)!.at)); utimesSync(file, new Date(at - 1000), new Date(at - 1000));
     const session = createMemoryMcp({ cwd: subdir, base: f.base }); cleanup.push(() => session.close());
-    const human = await f.cli(["show", id], { cwd: subdir }); expect(human).toContain("root relative path evidence"); expect(human).not.toContain("(stale?)");
+    const human = await f.cli(["show", id], { cwd: subdir }); expect(human).toContain("root relative path evidence"); expect(human).not.toContain("(stale?");
     expect(await session.tools.amem_show({ id })).toMatchObject({ id }); expect(await session.tools.amem_show({ id })).not.toHaveProperty("stale");
     writeFileSync(file, "changed source"); utimesSync(file, new Date(at + 1000), new Date(at + 1000));
-    expect(await f.cli(["show", id], { cwd: subdir })).toContain("(stale?)"); expect(await session.tools.amem_show({ id })).toMatchObject({ id, stale: true });
+    expect(await f.cli(["show", id], { cwd: subdir })).toContain("(stale? mtime)"); expect(await session.tools.amem_show({ id })).toMatchObject({ id, stale: true });
   });
 });
 test("missing paths at an unconfirmed non-repository root remain unknown in CLI and MCP", async () => {
   const f = await fixture(), id = f.note("unconfirmed missing path evidence", { about: ["path:missing-root/file.ts"] }), session = f.mcp();
-  expect(existsSync(join(f.root, ".git"))).toBe(false); expect(await f.cli(["show", id])).not.toContain("(stale?)"); expect(await session.tools.amem_show({ id })).not.toHaveProperty("stale");
+  expect(existsSync(join(f.root, ".git"))).toBe(false); expect(await f.cli(["show", id])).not.toContain("(stale?"); expect(await session.tools.amem_show({ id })).not.toHaveProperty("stale");
 });

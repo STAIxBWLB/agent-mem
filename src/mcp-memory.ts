@@ -111,7 +111,10 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     };
     const staleRoot = repoRoot ?? cwd, rootConfirmed = repoRoot !== undefined || project.startsWith("local:") && resolveAlias(base, memoryProjectKey(cwd)) === project;
     const stale = () => { policyRevisionForCall(); return createRecallStalenessProbe({ cwd: staleRoot, rootConfirmed, policy: currentPolicy }); };
-    const decorate = (view: View, probe: ReturnType<typeof stale>) => ({ ...view, ...(probe(view) === true ? { stale: true } : {}) });
+    const decorate = (view: View, probe: ReturnType<typeof stale>) => {
+      const reason = probe.reason(view);
+      return { ...view, ...(reason ? { stale: true, staleReason: reason } : {}) };
+    };
     const screen = async <T>(rows: T[]): Promise<T[]> => {
       if (rows.length > MCP_SCAN_LIMIT) unavailable();
       const publicRows: T[] = []; for (const row of rows) { guard(); if (await currentPolicy().screen(row)) publicRows.push(row); guard(); } return publicRows;
