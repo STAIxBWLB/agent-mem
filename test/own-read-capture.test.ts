@@ -68,3 +68,20 @@ test("the own-read skip runs no native input accessor before the existing policy
   expect(await stageHookCapture("PreToolUse", input, f.options)).toBeUndefined();
   expect(reads).toBe(0);
 });
+
+test("Jcode's deferred generic mcp call to an amem read tool is skipped; other servers, write tools and other actions are kept", async () => {
+  const { jcodeHookCapture } = await import("../src/hook-jcode.ts");
+  const f = fixture();
+  const post = (input: Record<string, unknown>, status = "ok") => jcodeHookCapture({ JCODE_HOOK_EVENT: "post_tool", JCODE_HOOK_CWD: f.cwd, JCODE_HOOK_STATUS: status,
+    JCODE_HOOK_TOOL_NAME: "mcp", JCODE_HOOK_TOOL_INPUT: JSON.stringify(input) })!;
+  for (const tool of AMEM_READ_TOOL_NAMES) for (const status of ["ok", "error"]) {
+    const mapped = post({ action: "call", server: "amem", tool, arguments: { query: "jcodeownneedle" } }, status);
+    expect(await stageHookCapture(mapped.event, mapped.input, f.options)).toBeUndefined();
+  }
+  const kept = [{ action: "call", server: "other", tool: "amem_search" }, { action: "call", server: "amem", tool: "amem_remember" },
+    { action: "call", server: "amem", tool: "amem_search_x" }, { action: "search", server: "amem", tool: "amem_search" }, { action: "call", server: "amem-x", tool: "amem_search" }];
+  for (const input of kept) { const mapped = post({ ...input, arguments: { query: "jcodekeptneedle" } }); expect(await stageHookCapture(mapped.event, mapped.input, f.options)).toBeDefined(); }
+  const rows = await drain(f);
+  expect(rows.some(row => row.excerpt.includes("jcodeownneedle"))).toBe(false);
+  expect(rows.length).toBe(kept.length);
+});
