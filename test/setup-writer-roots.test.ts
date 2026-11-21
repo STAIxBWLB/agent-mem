@@ -3,8 +3,11 @@ import * as fs from "node:fs";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, rmdirSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { readSetupWriterRoots, SetupWriterRootsError, type SetupTarget } from "../src/setup.ts";
+import { readSetupWriterRoots, runSetup, SetupWriterRootsError, type SetupContext, type SetupTarget } from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
+import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
+import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
+import { hookFixture } from "./fakes/hooks-fixture.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -149,3 +152,63 @@ test("a same-stamp newly registered receipt cannot be omitted from completeness"
   finally { write.mockRestore(); metadata.mockRestore(); }
   expect(changed).toBe(true); expect(readFileSync(join(f.dir,"qwen.json"),"utf8")).toContain("qwen");
 });
+
+/**
+ * #551 AC2: setup names a root the active placement inventory provably does not hold, with the renewal step to run first,
+ * while a state it cannot prove is reported as unverified rather than as a missing entry. Setup still writes only on
+ * `--apply`, writes no inventory entry, renews nothing and never refuses on this alone.
+ */
+test("#551 AC2: setup warns when the root it would register is outside the placement writer inventory", async () => {
+  const f = await placementActivationFixture(); cleanup.push(f.close);
+  expect((await activateSyncPlacement(f.options("apply"))).active).toBe(true);
+  const outside = join(f.root, "outside install");
+  for (const part of [outside, join(outside, "bin"), join(outside, "src")]) mkdirSync(part, { mode: 0o755 });
+  writeFileSync(join(outside, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.21.0" }), { mode: 0o600 });
+  writeFileSync(join(outside, "bin", "amem.js"), "// fixture only\n", { mode: 0o600 }); writeFileSync(join(outside, "src", "cli.ts"), "// fixture only\n", { mode: 0o600 });
+  // kimi registers through its own configuration file, so the seam below is never invoked: the fixture entry only lifts the
+  // temporary-package refusal that a fixture install root would otherwise hit.
+  const seam: NonNullable<SetupContext["native"]> = () => { throw Error("no native client runs for this target"); };
+  const options = (root: string): SetupContext & { json: true } => ({ env: f.env, root, native: seam, stdinTTY: false, cwd: f.cwd, json: true });
+  const inventory = readFileSync(join(f.base, "sync-placement-writer-roots.json")), formats = readFileSync(join(f.base, "formats.json"));
+  const epochs = () => readdirSync(join(f.base, "sync-placement", "epochs"), { recursive: true }).map(String).sort();
+  const before = epochs(); expect(before.some(name => name.split("/").pop()!.startsWith("writer-"))).toBe(false);
+  // The running install's own root is the inventory's only entry, so it draws no warning.
+  expect(JSON.parse(await runSetup("kimi", "preview", options(activationOwnRoot))).placementWriter).toBeUndefined();
+  const plan = JSON.parse(await runSetup("kimi", "preview", options(outside))) as { placementWriter?: string; notes: string[] };
+  const warning = plan.placementWriter!;
+  expect(warning).toContain("outside the active placement writer inventory");
+  expect(warning).toContain(`amem migrate --sync-placement --dry-run --writer-root ${outside}`);
+  expect(warning).toContain("never refuses on this alone");
+  expect(plan.notes).toContain(warning);
+  const preview = await runSetup("kimi", "preview", { ...options(outside), json: false } as SetupContext);
+  expect(preview).toContain("Warnings:"); expect(preview).toContain(`--writer-root ${outside}`);
+  // A preview writes nothing at all.
+  expect(readFileSync(join(f.base, "sync-placement-writer-roots.json"))).toEqual(inventory); expect(epochs()).toEqual(before);
+  const applied = JSON.parse(await runSetup("kimi", "apply", options(outside))) as { applied: string[]; unchanged: string[]; warnings?: string[] };
+  expect(applied.warnings).toEqual([warning]);
+  expect([...applied.applied, ...applied.unchanged]).toEqual(["kimi"]);
+  expect(await runSetup("kimi", "apply", { ...options(outside), json: false } as SetupContext)).toContain("outside the active placement writer inventory");
+  // Applying registered the client and still wrote no inventory entry, no floor and no writer revision.
+  expect(readFileSync(join(f.base, "sync-placement-writer-roots.json"))).toEqual(inventory);
+  expect(readFileSync(join(f.base, "formats.json"))).toEqual(formats); expect(epochs()).toEqual(before);
+  // Setup's own receipt now names the new root while the placement inventory still does not, which is exactly the
+  // refusal the warning predicted: renew the inventory first, then register a receipt at the new root.
+  expect(readSetupWriterRoots(f.base)).toEqual([outside]);
+  // An inventory that cannot be read far enough is unverified, not a root declared unregistered.
+  const epoch = join(f.base, "sync-placement", "epochs", readdirSync(join(f.base, "sync-placement", "epochs"))[0]!);
+  writeFileSync(join(epoch, "writer-revision-00001.json"), "not a writer revision\n", { mode: 0o600 });
+  const unproven = JSON.parse(await runSetup("kimi", "preview", options(outside))) as { placementWriter?: string };
+  expect(unproven.placementWriter).toContain("could not be verified here");
+  expect(unproven.placementWriter).toContain("neither confirmed nor refused");
+  expect(unproven.placementWriter).not.toContain("outside the active placement writer inventory");
+}, 120_000);
+
+test("#551 AC2: a home that never activated placement sync tells setup nothing about writers", async () => {
+  const f = hookFixture(); cleanup.push(f.close);
+  const outside = join(f.root, "outside install");
+  for (const part of [outside, join(outside, "bin"), join(outside, "src")]) mkdirSync(part, { mode: 0o755 });
+  writeFileSync(join(outside, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.21.0" }), { mode: 0o600 });
+  writeFileSync(join(outside, "bin", "amem.js"), "// fixture only\n", { mode: 0o600 }); writeFileSync(join(outside, "src", "cli.ts"), "// fixture only\n", { mode: 0o600 });
+  const plan = JSON.parse(await runSetup("kimi", "preview", { env: f.env, root: outside, native: () => { throw Error("no native client runs for this target"); }, stdinTTY: false, cwd: f.cwd, json: true })) as { placementWriter?: string };
+  expect(plan.placementWriter).toBeUndefined();
+}, 60_000);

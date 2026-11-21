@@ -16,6 +16,8 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, types } from "node:util";
 import { HOOK_EVENTS } from "./hook-contract.ts";
+import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
+import { readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
 import { memoryHome } from "./memory/home.ts";
 import { label, PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
@@ -52,6 +54,8 @@ export interface SetupPlan {
   targets: SetupTarget[]; mode: "preview" | "apply" | "undo"; root?: InstallRoot;
   actions: { target: SetupTarget; version?: ClientVersion; files: string[]; receipt: string; cwd?: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; removes?: { file: string; event: string; command: string }[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
   notes: string[];
+  /** #551, additive: the placement-inventory warning, repeated on the apply receipt so `--apply` shows it too. */
+  placementWriter?: string;
 }
 const MAX = SETUP_CONFIG_BYTES, JOURNAL_MAX = 12 * MAX;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -261,6 +265,24 @@ function strayCaptures(target: SetupTarget, image: Image, current: string): { ev
   } catch { return []; }
 }
 const lifecycle = (target: SetupTarget) => target === "opencode" || target === "gemini" || target === "agy" ? "MCP only; native capture unavailable" : target === "jcode" ? "post_tool and turn_end capture hooks" : target === "claude" ? "seven bounded native hooks" : target === "pi" ? "session_shutdown incremental ingest" : "SessionEnd incremental ingest";
+/**
+ * #551 AC2: the placement writer inventory this home's sync will verify. A root the inventory provably does not hold is named
+ * as such with the renewal step to take first; an inventory that cannot be read is reported as unverified, never as a missing
+ * entry. It writes nothing, refuses nothing and returns undefined on a home that is not activated for placement sync.
+ */
+function placementWriterInventoryNote(root: string, home: string): string | undefined {
+  let placement: boolean | undefined;
+  try { placement = (readPlacementRuntimeMarkers(home).profile as { publicationFormat?: unknown } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1"; }
+  catch { placement = undefined; }
+  if (placement !== true) return undefined;
+  let roots: readonly string[] | undefined;
+  try { roots = readEffectiveSyncPlacementWriters(home).roots; } catch { roots = undefined; }
+  if (roots === undefined) return "WARNING: the active placement writer inventory could not be verified here, so this root is neither confirmed nor refused. Setup registers it exactly as previewed and changes no inventory entry; check the inventory with the person before relying on placement sync.";
+  let canonical: string;
+  try { canonical = realPath(root); } catch { return undefined; }
+  if (roots.includes(canonical)) return undefined;
+  return `WARNING: this install root is outside the active placement writer inventory, so amem sync stops in writer verification once setup registers it. Renew the inventory first with the person - amem migrate --sync-placement --dry-run --writer-root ${canonical}, then --apply - and rerun setup after that. Setup writes no inventory entry and never refuses on this alone.`;
+}
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
   const targets: SetupTarget[] = target === "all" ? [...SETUP_ALL_TARGETS] : [target as SetupTarget];
@@ -292,9 +314,12 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
     if (!c.workspace.ignored) pluginNotes.push("WARNING: .agents/mcp_config.json is not Git-ignored; it contains absolute local paths. Setup will refuse it if it becomes tracked.");
   }
   if (c.root) pluginNotes.push(`Registers the install root ${c.root.path} (amem ${c.root.version}) for hooks and MCP; current registrations change only on --apply.`);
+  // #551: the root this plan registers may not be in the home's active placement inventory, which stops sync in writer verification.
+  const placementWriter = placementWriterInventoryNote(c.root?.path ?? fileURLToPath(new URL("..", import.meta.url)), dirname(c.state));
+  if (placementWriter) pluginNotes.push(placementWriter);
   if (target === "all") pluginNotes.push("Antigravity is repository-scoped and excluded from all; run amem setup agy explicitly inside its repository.");
   if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
-  return { targets, mode, ...(c.root ? { root: c.root } : {}), actions: targets.map(target => {
+  return { targets, mode, ...(c.root ? { root: c.root } : {}), ...(placementWriter ? { placementWriter } : {}), actions: targets.map(target => {
     const receipted = receipt(c, target, false), files = mode === "undo" && receipted ? receipted.changes.map(change => change.path) : c.paths[target];
     for (const file of files) read(file);
     const stale = mode !== "undo" && !!receipted && staleReceipt(target, receipted);
@@ -603,7 +628,7 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
 }
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
 function available(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): boolean { return target === "agy" || !!options.native || Bun.which(target, { PATH: c.env.PATH ?? process.env.PATH }) !== null; }
-export interface SetupApplyResult { applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[] }
+export interface SetupApplyResult { applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[]; warnings?: string[] }
 /** Claim only a directory this invocation actually created, never one merely absent at preview. */
 function prepareCreatedDirectory(c: ReturnType<typeof context>, value: Receipt): void {
   if (value.target !== "agy") return;
@@ -686,7 +711,9 @@ function withSetupLock<T>(options: SetupContext, run: () => T): T {
 export function applySetup(plan: SetupPlan, options: SetupContext = {}): SetupApplyResult {
   if (plan.targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   if (plan.targets.includes("agy")) contextForPlan(plan, options);
-  return withSetupLock(options, () => applyUnlocked(plan, options));
+  const result = withSetupLock(options, () => applyUnlocked(plan, options));
+  // #551 AC2: `--apply` prints only this result, so the plan's placement warning is repeated on the receipt.
+  return plan.placementWriter ? { ...result, warnings: [plan.placementWriter] } : result;
 }
 export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
   if (plan.targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
@@ -730,7 +757,8 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
 function setupResultText(result: SetupApplyResult | { restored: SetupTarget[] }, s: Style): string {
   if ("restored" in result) return `${label(s, "ok")} restored: ${result.restored.join(", ") || "none"}`;
   return [`${label(s, "ok")} applied: ${result.applied.join(", ") || "none"}`, `${label(s, "ok")} unchanged: ${result.unchanged.join(", ") || "none"}`,
-    ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`)].join("\n");
+    ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`),
+    ...(result.warnings ?? []).map(warning => `${label(s, "attention")} ${warning}`)].join("\n");
 }
 
 /** Compatibility formatter for confirmation-style callers: the raw plan under `--json`, the readable plan otherwise. */

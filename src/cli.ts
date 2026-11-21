@@ -377,10 +377,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // #288 step 3: checkpoint refusals are fixed cause-and-next-step strings with numbers only (no path, row or project).
     if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
-    // #520: a placement refusal caused by an applied setup receipt for a removed install keeps its target and remedy as
-    // fixed data; every other placement and sync failure keeps the generic masked refusal below.
+    // #520/#551: a placement refusal keeps its fixed data - the receipt case its target and remedy, every other case its
+    // category, cause class and remedy - so a marked session prints that instead of the masked line. Every other placement
+    // and sync failure keeps the generic masked refusal below.
     if (marked) {
-      const refusal = (await import("./sync-placement-writer-context.ts")).markedSetupReceiptRefusal(error);
+      const refusal = (await import("./sync-placement-writer-context.ts")).placementWriterRefusalText(error);
       if (refusal) throw new Error(refusal);
     }
     if (marked) {
@@ -1427,7 +1428,15 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (sub === "sync" && (readPlacementRuntimeMarkers(syncHome).profile as { publicationFormat?:string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
       const { activePlacementWriterContext } = await import("./sync-placement-writer-context.ts");
       progress = await placementProgress(syncHome, typeof options["--progress"] === "string" ? options["--progress"] as string : "auto", context);
-      placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));
+      try { placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url))); }
+      catch (error) {
+        // #551 AC1: a writer-context refusal is this run's own failed result, so --json reports it instead of printing one
+        // masked line; a human run keeps the refusal's fixed text and exit 1, and every other refusal keeps its own path.
+        const refusal = (await import("./sync-placement-writer-context.ts")).placementWriterRefusalText(error);
+        if (refusal === undefined || !options["--json"]) throw error;
+        stampSync(refusal, stop?.cause());
+        return JSON.stringify({ ok: false, pushed: false, entries: 0, failure: { cause: "refusal" }, error: refusal }, null, 2);
+      }
       const markers = readPlacementRuntimeMarkers(syncHome);
       if (!readActivePlacementBinding(syncHome, markers.profile, markers.shards)) throw Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
     }

@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as setup from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
-import { initialPlacementWriterContext, markedSetupReceiptRefusal, placementSyncFailure, PlacementWriterContextError, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
+import { initialPlacementWriterContext, markedSetupReceiptRefusal, placementSyncFailure, placementWriterRefusal, placementWriterRefusalText, PlacementWriterContextError, PLACEMENT_WRITER_UNVERIFIED_TEXT, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
+import { SharedWriterRevisionError } from "../src/memory/sync-placement-writer-revision-format.ts";
 
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const close of cleanup.splice(0).reverse())close();});
@@ -93,4 +94,81 @@ test("active diagnostics keep restore-or-renew and locator recovery never invent
   }
   const locator=new PlacementWriterContextError("active locator","unavailable");
   expect(locator.message).toContain("inspect sync-placement-writer-roots.json");expect(locator.message).toContain("compatible recovery release");expect(locator.message).not.toContain("backup");
+});
+
+const CATEGORIES=["running CLI","host package","setup receipt","declared writer","active locator","home floor","writer renewal"] as const;
+// #551 AC1: every writer-context category names its fixed category, its cause class and a remedy in the same sentence, so a
+// marked and an unmarked surface print one sentence instead of the masked line - and no root, row or caught text rides along.
+for(const category of CATEGORIES)for(const causeClass of ["missing","changed","unavailable"] as const)
+test(`#551 AC1: the ${category}/${causeClass} text states its category, cause class and remedy`,()=>{
+  const error=new PlacementWriterContextError(category,causeClass),message=error.message;
+  expect(message.startsWith("Sync placement ")).toBe(true);
+  // The category phrase closes its own parenthetical, or continues it with a measurement detail after a semicolon.
+  expect(message).toContain(`(${category} category`);
+  expect(message).toContain(`is ${causeClass}`);
+  expect(message).toContain("amem migrate --sync-placement");
+  expect(message).not.toContain("/");
+  expect(message).not.toContain("Memory operation unavailable or refused");
+  // The text a person-facing surface prints is that same sentence, rebuilt rather than echoed.
+  expect(placementWriterRefusalText(error)).toBe(message);
+});
+
+test("#551 AC1: a measurement detail stays inside the same parenthetical as the category",()=>{
+  const message=new PlacementWriterContextError("declared writer","changed","active","changed").message;
+  expect(message).toContain("(declared writer category; install changed during measurement)");
+  expect(message).toContain("is changed");
+});
+
+test("#551 AC1: an initial-phase refusal names its phase and keeps the initial-install remedy",()=>{
+  for(const category of ["running CLI","host package","setup receipt","declared writer"] as const){
+    const initial=new PlacementWriterContextError(category,"missing","initial");
+    expect(initial.message).toContain(`(${category} category)`);expect(initial.message).toContain("Sync placement initial ");
+    expect(initial.message).toContain("Declare the complete writer roots");
+  }
+});
+
+test("#551 AC1: the renewal branch states the category and cause class and reproduces the shared remedy verbatim",()=>{
+  for(const state of ["pending","staging","checkpoint-pending"] as const){
+    const message=new PlacementWriterContextError("writer renewal","unavailable","active",undefined,state).message;
+    expect(message).toContain("(writer renewal category)");
+    expect(message).toContain("writer proof is unavailable");
+    expect(message).toContain(`; ${new SharedWriterRevisionError(state).message}`);   // the checkpoint and renewal remedies are never replaced
+    expect(message).not.toContain("/");
+  }
+});
+
+test("#551 AC1: the text is rebuilt from fixed own data, so a tampered message or a forged field is never printed",()=>{
+  const genuine=new PlacementWriterContextError("declared writer","changed","active","changed");
+  expect(placementWriterRefusal(genuine)).not.toBe(genuine);   // a fresh error, never the caught object
+  expect(placementWriterRefusal(genuine)!.message).toBe(genuine.message);
+  Object.defineProperty(genuine,"message",{value:"caught message naming /private/home and row text"});
+  expect(placementWriterRefusalText(genuine)).toBe(new PlacementWriterContextError("declared writer","changed","active","changed").message);
+  expect(placementWriterRefusalText(genuine)).not.toContain("/private/home");
+  // A forged category or cause class is out of the closed set, so no text is produced from it.
+  for(const [field,value] of [["category","forged category"],["causeClass","gone"]] as const){
+    const forged=new PlacementWriterContextError("declared writer","changed");Object.defineProperty(forged,field,{value});
+    expect(placementWriterRefusal(forged)).toBeUndefined();expect(placementWriterRefusalText(forged)).toBeUndefined();
+  }
+  // A wrapper's carried refusal is used; its own transport message never is.
+  const carried=placementSyncFailure(new PlacementWriterContextError("setup receipt","missing"),Error("transport refused at /private/home"));
+  expect(placementWriterRefusalText(carried)).toContain("(setup receipt category)");expect(placementWriterRefusalText(carried)).not.toContain("/private/home");
+  // An object that merely resembles a refusal is not one, and a proxy is never read.
+  expect(placementWriterRefusalText(Object.assign(Error("looks like a refusal"),{category:"running CLI",causeClass:"missing",phase:"active"}))).toBeUndefined();
+  expect(placementWriterRefusalText(new Proxy(new PlacementWriterContextError("running CLI","missing"),{}))).toBeUndefined();
+});
+
+test("#551 AC1: every other exception keeps the masked refusal, and #520's receipt text is unchanged",()=>{
+  for(const value of [Error("Memory operation unavailable or refused; no partial result is shown."),new Error("transport refused at /private/home"),undefined,null,"refusal",42,{}])
+    expect(placementWriterRefusalText(value)).toBeUndefined();
+  const receipt=new PlacementWriterContextError("setup receipt","unavailable","active",undefined,undefined,"qwen");
+  expect(placementWriterRefusalText(receipt)).toBe(markedSetupReceiptRefusal(receipt)!);   // the existing #520 text wins for this case
+  expect(placementWriterRefusalText(receipt)).toContain("[cause: setup_receipt_missing_install]");
+  expect(placementWriterRefusalText(new PlacementWriterContextError("setup receipt","missing","active",undefined,undefined,"qwen"))).toContain("(setup receipt category)");
+});
+
+test("#551: the unproven-inventory text claims no category and still names the next step",()=>{
+  expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).toContain("could not establish a category");
+  expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).toContain("amem migrate --sync-placement --dry-run");
+  expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).not.toContain("missing");
+  for(const category of CATEGORIES)expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).not.toContain(`(${category} category)`);
 });

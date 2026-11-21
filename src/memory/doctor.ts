@@ -1,8 +1,9 @@
-import { placementRuntimeRefusal, withDoctorPlacementScratch } from "./sync-placement-guard.ts";
+import { placementRuntimeRefusal, readPlacementRuntimeMarkers, withDoctorPlacementScratch } from "./sync-placement-guard.ts";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { indexFileName } from "./index-file.ts";
 import { assertFormatFloor } from "./formats.ts";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { basename, join } from "node:path";
 import { Database } from "bun:sqlite";
 import { sessionStartBrief, type BriefOptions } from "../session-brief.ts";
@@ -74,6 +75,8 @@ export interface DoctorReport {
     masked?: Section;
     /** #202, additive: applied native setup registrations checked against the shared path resolver. */
     setup?: Section;
+    /** #551, additive: present on a placement home only - the writer verification the next sync performs. */
+    writers?: Section;
   };
 }
 
@@ -437,6 +440,23 @@ function readersSection(options: DoctorOptions): Section {
   return { status: stale || unreadable ? "attention" : "ok", live, stale, unreadable, ...(stale || unreadable ? { hint: "a reader lease of a process that is gone is cleared by the next reader; an unreadable one needs a look" } : {}) };
 }
 
+/**
+ * #551: what the next `amem sync` on this home would verify, reported as fixed data. Only a placement home gets the section,
+ * so every other report (and its golden snapshot) is unchanged. A refusal names its category, cause class and remedy; a state
+ * that could not be proven is `unavailable` with no category claimed, never a root reported as missing.
+ */
+async function writersSection(options: DoctorOptions): Promise<Section | undefined> {
+  let placement: boolean | undefined;
+  try { placement = (readPlacementRuntimeMarkers(options.home).profile as { publicationFormat?: unknown } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1"; }
+  catch { placement = undefined; }
+  if (placement !== true) return undefined;
+  const { placementWriterVerification } = await import("../sync-placement-writer-context.ts");
+  const result = placementWriterVerification(options.home, fileURLToPath(new URL("../../", import.meta.url)));
+  if (result.refusal) return { status: "attention", category: result.refusal.category, cause: result.refusal.causeClass, phase: result.refusal.phase, reason: result.refusal.message };
+  if (result.unverified) return { status: "unavailable", reason: result.unverified };
+  return { status: "ok", writers: result.writers };
+}
+
 function policySection(options: DoctorOptions): Section {
   try {
     const { config, source } = loadAmemConfig(options.home, repoConfigRoot(options.cwd));
@@ -607,7 +627,8 @@ async function runDoctor(options: DoctorOptions, scratch: string): Promise<Docto
   let sections: DoctorReport["sections"];
   try {
     await tick();
-    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), spool: spoolSection(options), setup, ...maskedSection(curated) };
+    const writers = await writersSection(options);
+    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), spool: spoolSection(options), setup, ...(writers ? { writers } : {}), ...maskedSection(curated) };
     await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
   } finally { curated?.close(); }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };
@@ -617,6 +638,7 @@ async function runDoctor(options: DoctorOptions, scratch: string): Promise<Docto
 const SECTION_TITLE: Record<keyof DoctorReport["sections"], string> = {
   duplicates: "duplicate notes", stale: "stale path references", candidates: "review candidates", capture: "capture per CLI", brief: "session brief",
   index: "index equals rebuild", readers: "reader leases", policy: "policy in effect", cadence: "ingest and sync cadence", drops: "recent capture drops",
+  writers: "placement writers",
   spool: "pending hook spool",
   setup: "native setup registrations",
   masked: "forgotten or pruned entries (informational)",
@@ -653,6 +675,9 @@ function sectionDetail(name: string, detail: Record<string, unknown>, s: Style):
     return (detail.entries as { target?: unknown; file?: unknown; entry?: unknown; reason?: unknown; expectedFile?: unknown; phase?: unknown }[]).map(item =>
       singleLine(`${item.target}${item.phase ? ` (${item.phase})` : ""} ${item.file}${item.expectedFile ? ` -> ${item.expectedFile}` : ""} ${item.entry}: ${item.reason}`));
   }
+  if (name === "writers") return typeof detail.writers === "number"
+    ? [`${detail.writers} writers measured against the active inventory`]
+    : detail.reason ? [singleLine(String(detail.reason))] : [];
   if (name === "brief" && typeof detail.tokens === "number") return [`${detail.tokens} of ${detail.budget} tokens${detail.coverage ? `, coverage ${facts(detail.coverage as Record<string, unknown>) || "complete"}` : ""}`];
   const { examples, ...rest } = detail;
   const line = facts(rest);
