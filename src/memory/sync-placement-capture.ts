@@ -86,7 +86,7 @@ function ownedDirectory(dir: string): BigIntStats {
  * directory (its project.json reads included, an activated realm's second read too) or the user realm forms
  * another. An optional file that is absent opens nothing and counts nothing. */
 export const PLACEMENT_METADATA_OBJECTS_PER_SCOPE = 16;
-/** Whole-home safety cap on metadata objects; the 8 MiB metadata-bytes cap below stays the memory ceiling. */
+/** Whole-home safety cap on metadata objects; the 8 MiB metadata-bytes cap below bounds the metadata file bytes read. */
 export const PLACEMENT_METADATA_OBJECTS_TOTAL = 4096;
 /** ponytail: capture holds the whole home in memory, capped at 16 metadata objects per scope, 4096 and 8 MiB of
  * metadata across the home, 256 entries per listed directory (so at most 256 project shards and 256 selected
