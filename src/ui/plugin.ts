@@ -282,7 +282,7 @@ export const plugin = {
           if (!q) return { q: "", hits: [] };
           return { q, ...(await read(project, "amem_search", { ...args, query: q }) as Args) };
         }
-        case "timeline": return { entries: await read(project, "amem_timeline", args) };
+        case "timeline": return { entries: await read(project, "amem_timeline", { ...args, expand: true }) }; // #544: the panel lists raw rows; capture-run summaries are for MCP and agent reads.
         case "work": return { lists: await read(project, "amem_work_state_read", args) };
         case "goals": {
           const store = openCuratedForRead(base, project), p = policy();

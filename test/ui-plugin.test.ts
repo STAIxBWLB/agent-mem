@@ -997,3 +997,30 @@ test("acon refuses a changed module hash until setup refreshes the manifest", ()
   consoleSetup("apply", env, module);
   expect(scanPlugins(family).entries[0]?.status).toBe("verified");
 });
+
+test("#544: the console timeline requests raw rows, so a capture-run never reaches panel rendering", async () => {
+  const f = fixture(), capture = new CaptureStore({ memoryDir: f.base, project: f.project });
+  const t0 = Date.now() - 60_000;
+  for (let i = 0; i < 4; i++) capture.append({ project: f.project, at: new Date(t0 + i * 1000).toISOString(), agent: "claude", event: i % 2 ? "PostToolUse" : "PreToolUse",
+    tool: "Bash", excerpt: `raw tool row ${i}`, paths: [], session: "c".repeat(16) });
+  capture.close();
+  const provider = await open(f.family), snap = await provider.snapshot({ after: 0, panel: "timeline", project: f.project });
+  expect(snap.error).toBeUndefined();
+  const entries = snap.entries as { source?: string; capture?: { excerpt: string } }[];
+  expect(entries.some(entry => entry.source === "capture-run")).toBe(false);
+  expect(entries.filter(entry => entry.source === "capture")).toHaveLength(4);
+  type Node = { tag: string; props: Record<string, unknown>; kids: Node[]; append(...k: Node[]): void; replaceChildren(...k: Node[]): void; querySelectorAll(): unknown[]; contains(): boolean };
+  const node = (tag: string, props: Record<string, unknown> = {}, ...kids: Node[]): Node => ({ tag, props, kids,
+    append(...k) { this.kids.push(...k); }, replaceChildren(...k) { this.kids = [...k]; }, querySelectorAll() { return []; }, contains() { return false; } });
+  const rows: Record<string, unknown>[] = []; let emit: ((s: Record<string, unknown>) => void) | undefined;
+  const host = { tool: "amem", mount: node("mount"), navigate() {}, action() {}, onSnapshot(cb: typeof emit) { emit = cb; }, ui: { h: node, button: (text: string) => node("button", { text }),
+    rows: (items: unknown[], render: (item: never) => Node) => items.length ? node("rows", {}, ...items.map(item => render(item as never))) : null,
+    notice: (text: string) => node("notice", { text }), row: (props: Record<string, unknown>) => { rows.push(props); return node("row", props); },
+    empty: (text: string) => node("empty", { text }), detail: (props: Record<string, unknown>) => node("detail", props) } };
+  const { runInNewContext } = await import("node:vm");
+  const render = runInNewContext(readFileSync(join(import.meta.dir, "../src/ui/panel.js"), "utf8").replace("export default", ""), { document: { activeElement: null } }) as (host: unknown) => { show(id: string): void };
+  render(host).show("timeline"); emit!({ ...snap, project: f.project, projects: [f.project] });
+  expect(rows.filter(row => String(row.sub).startsWith("capture · "))).toHaveLength(4);
+  const text = JSON.stringify(rows);
+  expect(text).not.toContain("undefined"); expect(text).toContain("raw tool row 3");
+});
