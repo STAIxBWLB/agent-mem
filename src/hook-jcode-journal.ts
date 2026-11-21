@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { assertFormatFloor } from "./memory/formats.ts";
-import { appendMetrics } from "./memory/metrics.ts";
+import { appendMetrics, type JcodeJournalTiming } from "./memory/metrics.ts";
 import { configuredPolicyOptions, recordsEnabled } from "./memory/config.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
@@ -21,7 +21,7 @@ const object = (value: unknown): Record<string, unknown> | undefined => value !=
 const timestamp = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : undefined;
 interface Cursor { offset: number; dev: string; ino: string; size: number; title: string; at: string; readStart: number; readAt: string; skipping: number }
 /** `clock` is a test seam (default `performance.now`): the deadline and the work budget are both read from it. */
-export interface JcodeJournalOptions { base: string; deadline: number; workBudgetMs?: number; policy?: StandalonePolicyOptions; clock?: () => number }
+export interface JcodeJournalOptions { base: string; deadline: number; workBudgetMs?: number; policy?: StandalonePolicyOptions; clock?: () => number; timing?: JcodeJournalTiming }
 
 /** The meta object of one journal line, parsed without touching the message bodies. */
 export function journalMeta(line: string): Record<string, unknown> | undefined {
@@ -71,6 +71,7 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     const after = fstatSync(fd), live = lstatSync(target.journal);
     if (length !== bytes.length || after.size < stat.size || live.dev !== stat.dev || live.ino !== stat.ino || realPath(target.journal) !== journal) return;
     const workStart = clock();
+    if (options.timing) options.timing.workStartMs = performance.now();
     const due = () => clock() >= options.deadline || options.workBudgetMs !== undefined && clock() - workStart >= options.workBudgetMs;
     let unpublished = false, start = 0, skipping = partial, stopReason: HookTranscriptProgress["stopReason"], newestLine: string | undefined;
     const recordLines: { end: number; counts: RecordIntakeCounts }[] = [];
@@ -143,7 +144,10 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     const stage = async (event: "Title" | "Compact", text: string, at: string | undefined, subagent: boolean, identity: string) => {
       const publish = () => stageTranscriptCapture({ agent: "jcode", event, excerpt: text, at: at ?? cursor.readAt, session, ...(subagent ? { subagent: true } : {}) },
         { cwd, base, policy: options.policy, deferAtCapacity: true }, identity);
+      const started = options.timing ? performance.now() : undefined;
+      if (options.timing && started !== undefined) { options.timing.publishStartMs ??= started; delete options.timing.publishEndMs; }
       await publish();
+      if (options.timing && started !== undefined) { const ended = performance.now(); options.timing.publishEndMs = ended; options.timing.publishTotalMs = (options.timing.publishTotalMs ?? 0) + ended - started; }
     };
     try {
       for (const compaction of compactions) {
@@ -189,7 +193,9 @@ export async function scanJcodeJournal(target: { cwd: string; session: string; j
     return { offset, ...(stopReason ? { stopReason } : {}), ...(intake ? { records: intake } : {}) };
   } finally {
     if (db) try { db.run("ROLLBACK"); } catch { /* committed */ }
+    if (db && options.timing) options.timing.cursorCloseStartMs = performance.now();
     db?.close();
+    if (db && options.timing) options.timing.cursorCloseEndMs = performance.now();
     closeSync(fd);
   }
 }
