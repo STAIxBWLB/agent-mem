@@ -15,6 +15,7 @@ import { looksSecret } from "./memory/screen.ts";
 import { appendMetrics, type CaptureDropReason } from "./memory/metrics.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
+import { isOwnAmemReadCall } from "./amem-read-tools.ts";
 
 // #199: v1 records (closed key set, no format field) are read, never written. Every 0.14-0.17 decoder deletes a record it cannot verify,
 // so a record that adds a field publishes under a name the v1 pattern does not match (`hook-v2-`); old versions then ignore it
@@ -702,6 +703,10 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   if (!await policy.screen(input)) return undefined;
   const value = structuredClone(input) as {[key: string]: unknown};
   if (!value || typeof value !== "object" || Array.isArray(value) || Buffer.byteLength(JSON.stringify(value)) > HOOK_INPUT_BYTES || !await policy.screen(value)) return undefined;
+  // #540: amem's own read calls are recall, not work; their rows would echo the running query back to it and flood timeline.
+  // Read from the screened plain clone, never the native input (no accessor runs before the policy screen). Exact amem-owned
+  // names only; the hook outcome is unchanged. Rows captured before this stay until retention ages them out.
+  if ((event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure") && isOwnAmemReadCall(options.agent, value.tool_name, value.tool_input)) return undefined;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   if (value.hook_event_name !== undefined && value.hook_event_name !== event) return undefined;
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return undefined;

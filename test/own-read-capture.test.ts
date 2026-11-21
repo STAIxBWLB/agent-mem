@@ -1,0 +1,94 @@
+import { afterEach, expect, test } from "bun:test";
+import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
+import { AMEM_READ_TOOL_NAMES, isOwnAmemReadTool } from "../src/amem-read-tools.ts";
+import { MCP_TOOLS } from "../src/mcp.ts";
+import { createMemoryMcp } from "../src/mcp-memory.ts";
+import { CaptureStore } from "../src/memory/capture.ts";
+import { hookFixture } from "./fakes/hooks-fixture.ts";
+
+const clean: (() => void)[] = [];
+const oldHome = process.env.HOME;
+afterEach(() => { process.env.HOME = oldHome; for (const close of clean.splice(0)) close(); });
+function fixture() {
+  const f = hookFixture(); clean.push(f.close); process.env.HOME = f.env.HOME;
+  return { ...f, options: { cwd: f.cwd, base: f.base } };
+}
+async function drain(f: ReturnType<typeof fixture>) {
+  const store = new CaptureStore({ memoryDir: f.base, project: f.project });
+  try { await drainHookCaptures({ ...f.options, project: f.project }, (input, receipt) => store.append(input, { receipt })); return store.rows({ project: f.project }); }
+  finally { store.close(); }
+}
+const QUALIFIED = ["mcp__amem__", "mcp__plugin_agent-mem_agent-mem__"];
+const CONTROLS = ["mcp__other__amem_search", "mcp__amem_x__amem_search", "mcp__plugin_x_agent-mem__amem_search", "mcp__amem__amem_search_x", "amem_search",
+  "mcp__amem__amem_remember", "mcp__amem__amem_work_state_write", "mcp__amem__amem_correct", "Bash"];
+
+test("the skip table equals the readOnlyHint tools in mcp.ts", () => {
+  expect([...AMEM_READ_TOOL_NAMES].sort()).toEqual(MCP_TOOLS.filter(tool => tool.annotations.readOnlyHint).map(tool => tool.name).sort());
+});
+
+test("only exact amem-owned read tool names classify; foreign servers, lookalikes, bare names and write tools do not", () => {
+  for (const prefix of QUALIFIED) for (const name of AMEM_READ_TOOL_NAMES) expect(isOwnAmemReadTool(prefix + name)).toBe(true);
+  for (const name of CONTROLS) expect(isOwnAmemReadTool(name)).toBe(false);
+  expect(isOwnAmemReadTool(undefined)).toBe(false); expect(isOwnAmemReadTool(1)).toBe(false);
+});
+
+test("an amem read tool's own Pre/PostToolUse rows are not captured; every control still is", async () => {
+  const f = fixture();
+  for (const prefix of QUALIFIED) for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) for (const agent of ["claude", "jcode"] as const) {
+    const staged = await stageHookCapture(event, { tool_name: `${prefix}amem_search`, tool_input: { query: "ownechoneedle" }, tool_response: "x", error: "x" }, { ...f.options, agent });
+    expect(staged).toBeUndefined();
+  }
+  for (const name of CONTROLS) expect(await stageHookCapture("PreToolUse", { tool_name: name, tool_input: { query: `controlneedle ${name}` } }, f.options)).toBeDefined();
+  const rows = await drain(f);
+  expect(rows.some(row => row.excerpt.includes("ownechoneedle"))).toBe(false);
+  expect(rows.map(row => row.tool).sort()).toEqual([...CONTROLS].sort());
+});
+
+test("search and timeline through MCP never return the running read call's own capture row", async () => {
+  const f = fixture(), query = "typescriptversion regenerate signatures";
+  await stageHookCapture("PostToolUse", { tool_name: "Bash", tool_input: { command: `echo ${query}` }, tool_response: "other session work" }, f.options);
+  for (const tool of ["amem_search", "amem_timeline", "amem_show", "amem_brief"])
+    await stageHookCapture("PreToolUse", { tool_name: `mcp__amem__${tool}`, tool_input: { query } }, f.options);
+  await drain(f);
+  const mcp = createMemoryMcp({ cwd: f.cwd, base: f.base, project: f.project });
+  try {
+    const search = await mcp.tools.amem_search({ query, includeCapture: true, limit: 20 }) as { hits: { capture?: { tool?: string } }[] };
+    const captured = search.hits.flatMap(hit => hit.capture ? [hit.capture.tool] : []);
+    expect(captured).toEqual(["Bash"]);
+    const timeline = JSON.stringify(await mcp.tools.amem_timeline({ since: "2000-01-01T00:00:00.000Z", limit: 50 }));
+    expect(timeline).toContain("Bash"); expect(timeline).not.toContain("mcp__amem__");
+  } finally { mcp.close(); }
+});
+
+test("the own-read skip runs no native input accessor before the existing policy screen", async () => {
+  const f = fixture(); let reads = 0;
+  const input = { tool_input: { query: "accessor-order" } } as Record<string, unknown>;
+  Object.defineProperty(input, "tool_name", { enumerable: true, get: () => { reads++; return "mcp__amem__amem_search"; } });
+  // The existing screen refuses an accessor envelope without invoking it; the classifier only reads the screened plain clone.
+  expect(await stageHookCapture("PreToolUse", input, f.options)).toBeUndefined();
+  expect(reads).toBe(0);
+});
+
+test("Jcode's deferred generic mcp call to an amem read tool is skipped; other servers, write tools and other actions are kept", async () => {
+  const { jcodeHookCapture } = await import("../src/hook-jcode.ts");
+  const f = fixture();
+  const post = (input: Record<string, unknown>, status = "ok") => jcodeHookCapture({ JCODE_HOOK_EVENT: "post_tool", JCODE_HOOK_CWD: f.cwd, JCODE_HOOK_STATUS: status,
+    JCODE_HOOK_TOOL_NAME: "mcp", JCODE_HOOK_TOOL_INPUT: JSON.stringify(input) })!;
+  for (const tool of AMEM_READ_TOOL_NAMES) for (const status of ["ok", "error"]) {
+    const mapped = post({ action: "call", server: "amem", tool, arguments: { query: "jcodeownneedle" } }, status);
+    expect(await stageHookCapture(mapped.event, mapped.input, { ...f.options, agent: "jcode" })).toBeUndefined();
+  }
+  const kept = [{ action: "call", server: "other", tool: "amem_search" }, { action: "call", server: "amem", tool: "amem_remember" },
+    { action: "call", server: "amem", tool: "amem_search_x" }, { action: "search", server: "amem", tool: "amem_search" }, { action: "call", server: "amem-x", tool: "amem_search" }];
+  for (const input of kept) { const mapped = post({ ...input, arguments: { query: "jcodekeptneedle" } }); expect(await stageHookCapture(mapped.event, mapped.input, { ...f.options, agent: "jcode" })).toBeDefined(); }
+  const rows = await drain(f);
+  expect(rows.some(row => row.excerpt.includes("jcodeownneedle"))).toBe(false);
+  expect(rows.length).toBe(kept.length);
+});
+
+test("a non-Jcode tool with the same generic shape stays captured", async () => {
+  const f = fixture();
+  const input = { tool_name: "mcp", tool_input: { action: "call", server: "amem", tool: "amem_search", arguments: { query: "other tool" } } };
+  expect(await stageHookCapture("PostToolUse", input, { ...f.options, agent: "claude" })).toBeDefined();
+  expect((await drain(f)).map(row => row.tool)).toEqual(["mcp"]);
+});
