@@ -1,3 +1,4 @@
+import { RECAP_SCRATCH } from "./recap-scratch.ts";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore, machineId, openShardStore } from "./store.ts";
@@ -8,15 +9,16 @@ import { aliasedKeys, readShardedSelection, resolveAlias, shardDir, shardKeyHash
  * an unsplit home has one shared store (the project filter selects), a split home has one shard per project. A split home's
  * capture-only shard (no `generation.json` yet) has no curated store, and the answer is `undefined`, never an empty one made on the spot.
  */
-export function openCuratedForRead(base: string, key: string): MemoryStore | undefined {
+export function openCuratedForRead(base: string, key: string, scratch?: typeof RECAP_SCRATCH): MemoryStore | undefined {
+  const internal = scratch === RECAP_SCRATCH ? { [RECAP_SCRATCH]: true as const } : {};
   const aliases = aliasedKeys(base, key), reconcile = aliases.length ? { canonical: key, aliases } : undefined;
   if (existsSync(join(base, "shards.json"))) {
     readShardedSelection(base);
     if (!existsSync(join(shardDir(base, key), "generation.json"))) return undefined;
-    return openShardStore({ memoryDir: base, project: key, deferPromotions: true, lifecycle: "ignore", ...(reconcile ? { reconcile } : {}) });
+    return openShardStore({ ...internal, memoryDir: base, project: key, deferPromotions: true, lifecycle: "ignore", ...(reconcile ? { reconcile } : {}) });
   }
   if (!existsSync(join(base, "log")) && !existsSync(join(base, "local")) && !existsSync(join(base, "generations"))) return undefined;
-  return new MemoryStore({ memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
+  return new MemoryStore({ ...internal, memoryDir: base, deferPromotions: true, ...(reconcile ? { reconcile } : {}) });
 }
 
 /** The canonical key of `key`, refused unless a shard of it exists. */
