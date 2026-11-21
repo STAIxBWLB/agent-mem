@@ -1,3 +1,4 @@
+export { HOST_API_VERSION, HOST_API_MIN } from "./memory/platform.ts";
 export * from "./memory/store.ts";
 // #431 / agent-hub#1522: hosts that run amem on an agent's behalf attribute its writes to that agent.
 export { withCliAttribution, cliAttribution, noteDisplayActor, type CliAttribution } from "./memory/cli-attribution.ts";

@@ -1,3 +1,6 @@
+/** Current host-library API and the oldest host API this implementation supports. */
+export const HOST_API_VERSION = 1 as const;
+export const HOST_API_MIN = 1 as const;
 // Single-source platform helpers. Hub, local and Pi modules re-export these functions unchanged.
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
