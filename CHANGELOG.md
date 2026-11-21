@@ -2,11 +2,18 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.33.0
 
 ### Added
 
 - Library hosts can negotiate the versioned host API via `HOST_API_VERSION` and `HOST_API_MIN` from the package root or platform entry point. Hosts built against the previous release retain their existing exact pins and do not gain a load-time check until updated. Format floors and placement writer attestation are unchanged. Refs #538.
+
+### Compatibility with N-1 (0.32.1)
+
+- Library: additive only. `HOST_API_VERSION` and `HOST_API_MIN` (both `1`) are new exports from the package root and `@staix/agent-mem/platform`; no existing export, signature or result shape changes. A host on 0.32.1 keeps its exact pin and behaves as before; a host may switch to a bounded range only after it checks the host API at load (`docs/contracts.md` §Versioned host library API). Refs #538.
+- CLI, MCP and console: unchanged.
+- Storage and sync: curated logs, entry ids, capture schema, index version, transport row bytes, remote refs and format floors are unchanged; no `formats.json` floor is raised, and placement writer attestation still requires a measured installed instance.
+- Hooks and setup: unchanged.
 
 ## 0.32.1
 
