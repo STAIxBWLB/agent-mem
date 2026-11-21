@@ -218,6 +218,17 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   expect(shell.exitCode).toBe(0);
   expect(shell.stdout.toString().split("\n").filter(Boolean)).toEqual(["migrate", "--sync-placement", "--dry-run", "--writer-root", hostile]);
   expect(fs.existsSync(join(f.root, "pwned"))).toBe(false);
+  // AC2: a marker that does not parse proves neither state, so setup reports it as unverified instead of treating the home
+  // as one that never activated placement sync, and it still never claims this root is missing from an inventory.
+  const profile = readFileSync(join(f.base, "profile.json"));
+  writeFileSync(join(f.base, "profile.json"), "not a profile\n", { mode: 0o600 });
+  const malformed = JSON.parse(await runSetup("kimi", "preview", options(outside))) as { placementWriter?: string };
+  const malformedWarning = malformed.placementWriter!;
+  expect(malformedWarning).toContain("could not be verified here"); expect(malformedWarning).toContain("neither confirmed nor refused");
+  expect(malformedWarning).not.toContain("outside the active placement writer inventory"); expect(malformedWarning).not.toContain(outside);
+  const malformedApplied = JSON.parse(await runSetup("kimi", "apply", options(outside))) as { warnings?: string[] };
+  expect(malformedApplied.warnings).toEqual([malformedWarning]);
+  writeFileSync(join(f.base, "profile.json"), profile, { mode: 0o600 });
   // An inventory that cannot be read far enough is unverified, not a root declared unregistered.
   const epoch = join(f.base, "sync-placement", "epochs", readdirSync(join(f.base, "sync-placement", "epochs"))[0]!);
   writeFileSync(join(epoch, "writer-revision-00001.json"), "not a writer revision\n", { mode: 0o600 });

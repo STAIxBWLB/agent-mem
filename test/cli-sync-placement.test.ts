@@ -361,12 +361,25 @@ test("#551 AC1: a running-CLI refusal reaches both surfaces, and any other failu
 test("#551: an unprovable writer inventory is unverified in sync and doctor, never a missing root", async () => {
   const f=await placementActivationFixture(); cleanup.push(f.close);
   expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  const unverified="Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
+  // The whole fixed sentence, so a later edit to it is visible here: no category claim, one next step, no bare "missing".
+  // #551 AC2: a marker that does not parse proves neither state, so doctor reports the state as unverified instead of
+  // treating the home as one that never activated placement sync - and the same home verifies clean once it parses again,
+  // so the row is the marker's and the inventory is never claimed missing.
+  const profile=readFileSync(join(f.base,"profile.json"));
+  const clean=JSON.parse(run(f,["doctor","--json"]).stdout.toString()) as {sections:{writers?:{status:string;writers?:number}}};
+  expect(clean.sections.writers).toMatchObject({status:"ok",writers:1});
+  writeFileSync(join(f.base,"profile.json"),"not a profile\n",{mode:0o600});
+  const malformedRun=run(f,["doctor","--json"]); expect(malformedRun.exitCode).toBe(0);
+  const malformed=JSON.parse(malformedRun.stdout.toString()) as {sections:{writers?:{status:string;category?:string;cause?:string;reason?:string}}};
+  expect(malformed.sections.writers).toMatchObject({status:"unavailable"});
+  expect(malformed.sections.writers!.reason).toBe(unverified);
+  expect(malformed.sections.writers!.category).toBeUndefined(); expect(malformed.sections.writers!.cause).toBeUndefined();
+  writeFileSync(join(f.base,"profile.json"),profile,{mode:0o600});
   const epochs=join(f.base,"sync-placement","epochs"), epoch=join(epochs,readdirSync(epochs)[0]!);
   writeFileSync(join(epoch,"writer-revision-00001.json"),"not a writer revision\n",{mode:0o600});   // a real log read failure, not a hand-built error
   const marked=success(run(f,["sync","--json"],true)) as {ok:boolean;failure:{cause:string};error:string};
   expect(marked).toMatchObject({ok:false,failure:{cause:"refusal"}});
-  // The whole fixed sentence, so a later edit to it is visible here: no category claim, one next step, no bare "missing".
-  const unverified="Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
   expect(marked.error).toBe(unverified); expect(marked.error).not.toContain("missing");
   const person=run(f,["sync","--json"]); expect(person.exitCode).toBe(0); expect(JSON.parse(person.stdout.toString()).error).toBe(unverified);
   const doctor=run(f,["doctor","--json"],true), report=JSON.parse(doctor.stdout.toString()) as {sections:{writers?:{status:string;category?:string;cause?:string;reason?:string}}};
