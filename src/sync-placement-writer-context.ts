@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { canonicalJSON } from "./memory/generation.ts";
 import { readSetupWriterRoots, SETUP_TARGETS, setupReceiptRemedy, SetupWriterRootsError, type SetupTarget } from "./setup.ts";
+import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { measureSyncPlacementWriters, extractSyncPlacementWriterFailure, type SyncPlacementWriterFailureDetail, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 import { PlacementHomeFloorError, requirePlacementHomeFloor } from "./memory/sync-placement-prerequisites.ts";
@@ -121,6 +122,8 @@ export function placementWriterVerification(home: string, ownRoot: string):
   { writers: number; refusal?: undefined; unverified?: undefined }
   | { writers?: undefined; refusal: PlacementWriterContextError; unverified?: undefined }
   | { writers?: undefined; refusal?: undefined; unverified: string } {
+  // #551: a marker this home cannot prove proves no category either, so it is unverified before any measurement is attempted.
+  if (placementMarkerState(home) === "unverified") return { unverified: PLACEMENT_WRITER_UNVERIFIED_TEXT };
   try { return { writers: activePlacementWriterContext(home, ownRoot).measurement.writers.length }; }
   catch (error) {
     if (!types.isProxy(error) && error instanceof UnprovenWriterInventory) return { unverified: PLACEMENT_WRITER_UNVERIFIED_TEXT };

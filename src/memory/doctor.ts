@@ -1,4 +1,4 @@
-import { placementRuntimeRefusal, readPlacementRuntimeMarkers, withDoctorPlacementScratch } from "./sync-placement-guard.ts";
+import { placementMarkerState, placementRuntimeRefusal, withDoctorPlacementScratch } from "./sync-placement-guard.ts";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { indexFileName } from "./index-file.ts";
 import { assertFormatFloor } from "./formats.ts";
@@ -446,10 +446,9 @@ function readersSection(options: DoctorOptions): Section {
  * that could not be proven is `unavailable` with no category claimed, never a root reported as missing.
  */
 async function writersSection(options: DoctorOptions): Promise<Section | undefined> {
-  let placement: boolean | undefined;
-  try { placement = (readPlacementRuntimeMarkers(options.home).profile as { publicationFormat?: unknown } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1"; }
-  catch { placement = undefined; }
-  if (placement !== true) return undefined;
+  // #551: only a proven non-placement home omits the section. Markers that cannot be read or parsed prove nothing either
+  // way, so they are reported as unverified rather than as a home that never activated placement sync.
+  if (placementMarkerState(options.home) === "not placement") return undefined;
   const { placementWriterVerification } = await import("../sync-placement-writer-context.ts");
   const result = placementWriterVerification(options.home, fileURLToPath(new URL("../../", import.meta.url)));
   if (result.refusal) return { status: "attention", category: result.refusal.category, cause: result.refusal.causeClass, phase: result.refusal.phase, reason: result.refusal.message };

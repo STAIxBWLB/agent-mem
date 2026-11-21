@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, types } from "node:util";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
-import { readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
+import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { memoryHome } from "./memory/home.ts";
 import { label, PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
@@ -271,10 +271,9 @@ const lifecycle = (target: SetupTarget) => target === "opencode" || target === "
  * entry. It writes nothing, refuses nothing and returns undefined on a home that is not activated for placement sync.
  */
 function placementWriterInventoryNote(root: string, home: string): string | undefined {
-  let placement: boolean | undefined;
-  try { placement = (readPlacementRuntimeMarkers(home).profile as { publicationFormat?: unknown } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1"; }
-  catch { placement = undefined; }
-  if (placement !== true) return undefined;
+  // #551 AC2: only a proven non-placement home stays silent. Markers that cannot be read or parsed prove nothing either way,
+  // so they fall through to the inventory read below, which reports the state as unverified instead of as a missing root.
+  if (placementMarkerState(home) === "not placement") return undefined;
   let roots: readonly string[] | undefined;
   try { roots = readEffectiveSyncPlacementWriters(home).roots; } catch { roots = undefined; }
   if (roots === undefined) return "WARNING: the active placement writer inventory could not be verified here, so this root is neither confirmed nor refused. Setup registers it exactly as previewed and changes no inventory entry; check the inventory with the person before relying on placement sync.";
