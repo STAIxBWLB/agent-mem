@@ -134,18 +134,28 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         if (!fenceSupported) { compareBinding(); return; }
         const known = fence?.paths ?? fencePaths;
         if (!full && fence !== undefined && sameHomeBinding(snapshotHomeBinding(known), fence)) return;
-        // Adoption stamps the second hash itself, so no byte is trusted that the comparison did not bracket, and a path
-        // the reader reports for the first time has not been through that pair yet: a grown set waits one guard.
-        const before = snapshotHomeBinding(known);
-        const { paths: reported } = collectBindingReads(compareBinding);
-        const after = snapshotHomeBinding(known);
-        const next = homeBindingPaths(fenceHome!, fenceSelector, reported);
-        const sameSet = next.length === known.length && next.every((path, index) => path === known[index]);
-        // A set this fence cannot describe gives up for the rest of the brief; a moved or grown one is retried on the
-        // next guard, which runs the pair over the whole `next`.
-        fenceSupported = fenceIsComplete(after) && next.length <= FENCE_MAX_PATHS;
-        fence = fenceSupported && sameSet && sameHomeBinding(before, after) ? after : undefined;
-        fencePaths = next;
+        // Adopt only over a set that did not move while it was compared, and never leave this guard on an unproven
+        // state: a moved or newly reported set is re-read here, and two rounds that still disagree refuse. The caller's
+        // bound is read on the reported list before the expanded set is ever hashed.
+        let paths = known, adopted: HomeBindingSnapshot | undefined;
+        for (let attempt = 0; attempt < 2 && adopted === undefined; attempt++) {
+          const before = snapshotHomeBinding(paths);
+          const { paths: reported } = collectBindingReads(compareBinding);
+          const after = snapshotHomeBinding(paths);
+          const next = homeBindingPaths(fenceHome!, fenceSelector, reported);
+          // A set this fence cannot describe keeps today's cost: the comparison inside this bracket is the proof today's
+          // guard offers too, and every later guard reads the binding itself.
+          if (next.length > FENCE_MAX_PATHS || !fenceIsComplete(before) || !fenceIsComplete(after)) {
+            fence = undefined; fencePaths = next; fenceSupported = false; return;
+          }
+          const sameSet = next.length === paths.length && next.every((path, index) => path === paths[index]);
+          // Only a set that did not move while it was compared, and whose two hashes agree, is stamped. Anything else is
+          // re-read here, and a second round that still disagrees throws instead of handing this caller's screen a state
+          // no comparison covered.
+          if (sameSet && sameHomeBinding(before, after)) adopted = after; else paths = next;
+        }
+        if (adopted === undefined) throw new BindingChanged();
+        fence = adopted; fencePaths = [...adopted.paths];
       } catch { drifted = true; throw new BindingChanged(); }
     };
     // Fixed native screening has no host callback to observe intermediate rows. Buffer
