@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as setup from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
-import { initialPlacementWriterContext, markedSetupReceiptRefusal, placementSyncFailure, placementWriterRefusal, placementWriterRefusalText, PlacementWriterContextError, PLACEMENT_WRITER_UNVERIFIED_TEXT, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
+import { initialPlacementWriterContext, markedSetupReceiptRefusal, placementSyncFailure, placementWriterRefusalText, PlacementWriterContextError, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
 import { SharedWriterRevisionError } from "../src/memory/sync-placement-writer-revision-format.ts";
 
 const cleanup:(()=>void)[]=[];
@@ -138,16 +138,16 @@ test("#551 AC1: the renewal branch states the category and cause class and repro
 });
 
 test("#551 AC1: the text is rebuilt from fixed own data, so a tampered message or a forged field is never printed",()=>{
-  const genuine=new PlacementWriterContextError("declared writer","changed","active","changed");
-  expect(placementWriterRefusal(genuine)).not.toBe(genuine);   // a fresh error, never the caught object
-  expect(placementWriterRefusal(genuine)!.message).toBe(genuine.message);
+  const genuine=new PlacementWriterContextError("declared writer","changed","active","changed"),canonical=genuine.message;
+  expect(placementWriterRefusalText(genuine)).toBe(canonical);
+  // The sentence is reconstructed from the validated fields, so a replaced message never becomes the text.
   Object.defineProperty(genuine,"message",{value:"caught message naming /private/home and row text"});
-  expect(placementWriterRefusalText(genuine)).toBe(new PlacementWriterContextError("declared writer","changed","active","changed").message);
+  expect(placementWriterRefusalText(genuine)).toBe(canonical);
   expect(placementWriterRefusalText(genuine)).not.toContain("/private/home");
   // A forged category or cause class is out of the closed set, so no text is produced from it.
   for(const [field,value] of [["category","forged category"],["causeClass","gone"]] as const){
     const forged=new PlacementWriterContextError("declared writer","changed");Object.defineProperty(forged,field,{value});
-    expect(placementWriterRefusal(forged)).toBeUndefined();expect(placementWriterRefusalText(forged)).toBeUndefined();
+    expect(placementWriterRefusalText(forged)).toBeUndefined();
   }
   // A wrapper's carried refusal is used; its own transport message never is.
   const carried=placementSyncFailure(new PlacementWriterContextError("setup receipt","missing"),Error("transport refused at /private/home"));
@@ -164,11 +164,4 @@ test("#551 AC1: every other exception keeps the masked refusal, and #520's recei
   expect(placementWriterRefusalText(receipt)).toBe(markedSetupReceiptRefusal(receipt)!);   // the existing #520 text wins for this case
   expect(placementWriterRefusalText(receipt)).toContain("[cause: setup_receipt_missing_install]");
   expect(placementWriterRefusalText(new PlacementWriterContextError("setup receipt","missing","active",undefined,undefined,"qwen"))).toContain("(setup receipt category)");
-});
-
-test("#551: the unproven-inventory text claims no category and still names the next step",()=>{
-  expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).toContain("could not establish a category");
-  expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).toContain("amem migrate --sync-placement --dry-run");
-  expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).not.toContain("missing");
-  for(const category of CATEGORIES)expect(PLACEMENT_WRITER_UNVERIFIED_TEXT).not.toContain(`(${category} category)`);
 });

@@ -69,8 +69,9 @@ const WRITER_CAUSE_CLASSES=["missing","changed","unavailable"] as const;
  * #551 AC1: the refusal as fixed own data for a person-facing surface. A real PlacementWriterContextError - or the one a
  * later sync failure carries as `placementRefusal` - is rebuilt from its own validated fields, so a tampered message, a
  * forged category or a recorded path never reaches the text; anything else returns undefined and keeps its own handling.
+ * Module-internal: the two surfaces reach it through `placementWriterRefusalText` and `placementWriterVerification` only.
  */
-export function placementWriterRefusal(error: unknown): PlacementWriterContextError | undefined {
+function placementWriterRefusal(error: unknown): PlacementWriterContextError | undefined {
   if (!error || typeof error !== "object" || types.isProxy(error)) return undefined;
   const carried: unknown = Object.getOwnPropertyDescriptor(error, "placementRefusal")?.value;
   const candidate: unknown = carried instanceof PlacementWriterContextError && !types.isProxy(carried) ? carried : error;
@@ -86,7 +87,7 @@ export function placementWriterRefusal(error: unknown): PlacementWriterContextEr
     typeof target === "string" && (SETUP_TARGETS as readonly string[]).includes(target) ? target as SetupTarget : undefined);
 }
 /** #551: no category is claimed here, because the state could not be read far enough to name one. */
-export const PLACEMENT_WRITER_UNVERIFIED_TEXT = "Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
+const PLACEMENT_WRITER_UNVERIFIED_TEXT = "Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
 /** An inventory state that could not be proven: never reported as a missing root, and never given an invented category. */
 class UnprovenWriterInventory extends Error { constructor(){ super(PLACEMENT_WRITER_UNVERIFIED_TEXT); this.name="UnprovenWriterInventory"; } }
 /** A shared writer-history code outside the three renewal states: `safeRefusal` would otherwise assert the locator category for it. */

@@ -352,12 +352,13 @@ test("#551: an unprovable writer inventory is unverified in sync and doctor, nev
   writeFileSync(join(epoch,"writer-revision-00001.json"),"not a writer revision\n",{mode:0o600});   // a real log read failure, not a hand-built error
   const marked=success(run(f,["sync","--json"],true)) as {ok:boolean;failure:{cause:string};error:string};
   expect(marked).toMatchObject({ok:false,failure:{cause:"refusal"}});
-  expect(marked.error).toContain("could not establish a category"); expect(marked.error).toContain("amem migrate --sync-placement --dry-run");
-  expect(marked.error).not.toContain("missing"); expect(marked.error).not.toContain("category)");
-  const person=run(f,["sync","--json"]); expect(person.exitCode).toBe(0); expect(JSON.parse(person.stdout.toString()).error).toBe(marked.error);
+  // The whole fixed sentence, so a later edit to it is visible here: no category claim, one next step, no bare "missing".
+  const unverified="Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
+  expect(marked.error).toBe(unverified); expect(marked.error).not.toContain("missing");
+  const person=run(f,["sync","--json"]); expect(person.exitCode).toBe(0); expect(JSON.parse(person.stdout.toString()).error).toBe(unverified);
   const doctor=run(f,["doctor","--json"],true), report=JSON.parse(doctor.stdout.toString()) as {sections:{writers?:{status:string;category?:string;cause?:string;reason?:string}}};
   expect(doctor.exitCode).toBe(0); expect(report.sections.writers).toMatchObject({status:"unavailable"});
-  expect(report.sections.writers!.reason).toContain("could not establish a category");
+  expect(report.sections.writers!.reason).toBe(unverified);
   expect(report.sections.writers!.category).toBeUndefined(); expect(report.sections.writers!.cause).toBeUndefined();
-  expect(report.sections.writers!.reason).not.toContain("missing"); expect(doctor.stdout.toString()).not.toContain("writer-revision-00001.json");
+  expect(doctor.stdout.toString()).not.toContain("writer-revision-00001.json");
 },180_000);
