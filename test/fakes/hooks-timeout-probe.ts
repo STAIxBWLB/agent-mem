@@ -9,6 +9,7 @@ import { hookBin, hookFixture } from "./hooks-fixture.ts";
 import type { HookProcessEvidence, HookLifecycleReceipt, HookWorkerProcess } from "./hooks-process-observer.ts";
 import { hookProcessObserver } from "./hooks-process-observer.ts";
 import { hookProcessDiagnostic } from "../../scripts/hook-process-diagnostic.ts";
+import { timeoutReceiptEvidence } from "./hooks-timeout-evidence.ts";
 
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; }
@@ -65,7 +66,8 @@ export function timeoutDescendantPrerequisite(input: { control: boolean; receipt
 }
 /** #362: the bounded numeric record logged before an `invalid owned descendant receipt` refusal. */
 export function timeoutDescendantRefusal(input: { event: string; predicate: string; branch: TimeoutBranch; control: boolean; expected: number; workers: number;
-  receipt: ReturnType<typeof timeoutDescendantReceipt>; metric: DescendantMetric; advisoryEligible: boolean }) {
+  receipt: ReturnType<typeof timeoutDescendantReceipt>; metric: DescendantMetric; advisoryEligible: boolean;
+  evidence?: ReturnType<typeof timeoutReceiptEvidence> }) {
   const sources = input.metric.rssSources && typeof input.metric.rssSources === "object" ? input.metric.rssSources as Record<string, unknown> : {};
   const numeric = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
   return { diagnostic: "timeout-descendant-refusal/v1", event: input.event, predicate: input.predicate, branch: input.branch, control: input.control,
@@ -73,7 +75,8 @@ export function timeoutDescendantRefusal(input: { event: string; predicate: stri
     receipt: { pids: Math.min(input.receipt.pids.length, 64), valid: input.receipt.valid, incomplete: input.receipt.incomplete, complete: input.receipt.complete },
     metricWallMs: numeric(input.metric.wallMs), rssScope: input.metric.rssScope === "owned-images" ? "owned-images" : input.metric.rssScope === undefined ? null : "other",
     rssSources: Object.fromEntries(["vmhwm", "vmpeakBound", "platformRusage", "rawFallback", "unavailable"].map(key => [key, numeric(sources[key])])),
-    abandonedChildren: numeric(input.metric.abandonedChildren), advisoryEligible: input.advisoryEligible };
+    abandonedChildren: numeric(input.metric.abandonedChildren), advisoryEligible: input.advisoryEligible,
+    ...(input.evidence ? { childEvidence: input.evidence } : {}) };
 }
 /** #362 (task 237): the timeout wall stall carries the measured handler wall when a metric row exists. Without one it stays
  * absent, so the group helper keeps its fail-closed `wall-max-miss`. Outer time is never substituted for handler time. */
@@ -218,7 +221,8 @@ Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filte
     if (!receipt.complete && branch === "admitted-blocked" && workers.length === expected) {
       const refusal = (predicate: string) => {
         // #362: bounded numeric fields only; the refusal itself is unchanged.
-        console.log(JSON.stringify(timeoutDescendantRefusal({ event, predicate, branch, control: functional, expected, workers: workers.length, receipt, metric, advisoryEligible: predicate === "advisory-refused" })));
+        const evidence = timeoutReceiptEvidence({ workers, receiptPids: receipt.pids, lifecycle: observer.lifecycle(result.pid), fixture: observer.fixtureChildren() });
+        console.log(JSON.stringify(timeoutDescendantRefusal({ event, predicate, branch, control: functional, expected, workers: workers.length, receipt, metric, advisoryEligible: predicate === "advisory-refused", evidence })));
         return "invalid owned descendant receipt";
       };
       const predicate = timeoutDescendantPrerequisite({ control: functional, receipt, metric });

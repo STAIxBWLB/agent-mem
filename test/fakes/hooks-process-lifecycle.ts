@@ -1,5 +1,5 @@
 /** Nonshipping source observation only. This never edits a target file or changes its branch/timer expressions. */
-export function instrumentHookLifecycle(preload:string,receipt:string):string {
+export function instrumentHookLifecycle(preload:string,receipt:string,fixtureOwner = false):string {
   const worker=[
     ["if (parsed.rssTelemetryValid !== true) tracker!.invalidate();", "if (parsed.rssTelemetryValid !== true) { globalThis.__hookRssWireValid=false;tracker!.invalidate(); }"],
     ["exit = child.exited.then(code => { exited = true; return code; });","exit = child.exited.then(code => { exited = true;globalThis.__hookChildLife('exit',child.pid,'worker',{code}); return code; });"],
@@ -15,9 +15,11 @@ export function instrumentHookLifecycle(preload:string,receipt:string):string {
     ["    await rssReceipt;","    await rssReceipt;globalThis.__hookChildLife('reap-end',child.pid,'native',{reaped:Number(exited),telemetryValid:Number(receiptValid)});"],
     ["    if (observationFailed) usage.rssSources.unavailable++;","    if (observationFailed) usage.rssSources.unavailable++;globalThis.__hookChildLife('rss-finish',child.pid,'native',{source:selected.source,known:Number(selected.known),kb:selected.kb,rawKB:selected.rawKB,observationFailed:Number(observationFailed),telemetryValid:Number(receiptValid)});"],
   ];
+  // Only the synthetic timeout command needs its detached supervisor's identity; production source is unchanged.
+  if (fixtureOwner) native.push(["'marker=$1; seconds=$2; shift 2; leader=$$'", "'marker=$1; seconds=$2; shift 2; leader=$$; export leader'"]);
   const replace=(anchor:string,value:string)=>{
     if(preload.split(anchor).length!==2)throw Error("Lifecycle preload anchor changed; update the exact test observer and rerun its controls");
-    preload=preload.replace(anchor,value);
+    preload=preload.replace(anchor, () => value);
   };
   // ponytail:512 metadata receipts per CLI, with explicit truncation; larger invocations need a reviewed streaming observer.
   replace("note('preload');",`const receipts=[];let truncated=false;
@@ -31,7 +33,7 @@ Bun.plugin({name:'observe-rss-wire-validity',setup(builder){builder.onLoad({filt
  return {loader:'ts',contents:source.slice(0,start)+frame.replaceAll('this.invalid = true;','{this.invalid = true;globalThis.__hookRssWireValid=false;}')+source.slice(end)};
 });}});
 process.once('exit',()=>{if(truncated)receipts.push({phase:'truncated',parentPid:process.pid,childPid:0,kind:'worker',atMs:performance.timeOrigin+performance.now()});if(receipts.length)appendFileSync(${JSON.stringify(receipt)},receipts.map(row=>JSON.stringify(row)+'\\n').join(''),{mode:0o600});});
-const transformLifecycle=(source,anchors)=>{for(const [anchor,replacement]of anchors){if(source.split(anchor).length!==2)throw Error('Child lifecycle observation anchor changed; update the exact test preload and rerun observer controls');source=source.replace(anchor,replacement);}return source;};
+const transformLifecycle=(source,anchors)=>{for(const [anchor,replacement]of anchors){if(source.split(anchor).length!==2)throw Error('Child lifecycle observation anchor changed; update the exact test preload and rerun observer controls');source=source.replace(anchor,()=>replacement);}return source;};
 const workerLifecycle=source=>transformLifecycle(source,${JSON.stringify(worker)});
 note('preload');`);
   const lines=preload.split("\n").filter(line=>line.startsWith(" return {loader:'ts',contents:source.replace(late,lateObserved)"));
