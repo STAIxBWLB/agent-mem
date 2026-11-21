@@ -8,6 +8,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - Hooks no longer capture amem's own read tool calls (`amem_search`, `amem_show`, `amem_timeline`, `amem_brief` and the other read-only MCP tools, under the `mcp__amem__` and Claude plugin `mcp__plugin_agent-mem_agent-mem__` names, and Jcode's generic `mcp` call to server `amem`), so a search no longer returns its own query as a capture hit and timeline is not flooded by recall calls. Write tools, other servers' tools and every other tool are captured as before. Rows captured before this release stay until capture retention ages them out. Refs #540.
 
+- A brief ranks rows by the number of requested paths or symbols each matches, capped at three, so fails that only co-reference a shared path no longer outrank a decision matching more of the work. Fails lead among equal match counts and direct rows precede one-hop neighbours. The row-local score never aggregates withheld rows; a withheld row can still consume one of the 96 screens and leave a later row unscreened. The byte, 5000-row scan, 64-item, screen and preference limits remain unchanged. Refs #542.
+
 ### Changed
 
 - Stale recall hints identify whether a path is missing in this checkout or all present paths have newer mtimes; either can result from branch or checkout activity rather than invalid memory. Existing consumers retain the boolean and may ignore the new reason; current CLI JSON parity remains unchanged. Refs #541.

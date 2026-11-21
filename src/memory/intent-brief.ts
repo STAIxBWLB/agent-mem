@@ -1,5 +1,6 @@
 import type { RecallStalenessReason } from "./recall-staleness.ts";
-import { planGuardNodes, planNodesIntersect } from "./plan-guard.ts";
+import { planGuardNodes } from "./plan-guard.ts";
+import { requestedNodeMatcher } from "./intent-node-matcher.ts";
 import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
 import { INTENT_PREFERENCE_SHARE, PREFERENCE_SLOT, preferenceLine } from "./preference-brief.ts";
 import type { View } from "./store.ts";
@@ -98,14 +99,22 @@ export async function buildIntentBrief(source: IntentBriefSource, options: Inten
       if (!view || !live(view, context.project, current()) || seen.has(view.id)) continue;
       seen.add(view.id); scanned.push(view);
     }
-    const matches = (view: View) => nodes.length ? view.about.some(about => nodes.some(node => planNodesIntersect(node, about))) : words.some(word => `${view.title ?? ""}\n${view.text}`.toLowerCase().includes(word));
-    const directIds = new Set(scanned.filter(matches).map(view => view.id));
-    const byRank = (a: View, b: View) => weight(a) - weight(b) || Number(directIds.has(b.id)) - Number(directIds.has(a.id)) || b.at.localeCompare(a.at) || a.id.localeCompare(b.id);
+    // #542: the request-only index counts at most three matched nodes in one row-local pass. No unscreened row
+    // contributes to another row's score, and no matcher work is repeated by the sort comparator.
+    const countRequested = requestedNodeMatcher(nodes), counts = new Map<string, number>(), directIds = new Set<string>();
+    for (const view of scanned) {
+      const count = nodes.length ? countRequested(view.about) : 0;
+      if (count || !nodes.length && words.some(word => `${view.title ?? ""}\n${view.text}`.toLowerCase().includes(word))) {
+        directIds.add(view.id); counts.set(view.id, count);
+      }
+    }
+    const byRank = (a: View, b: View) => (counts.get(b.id) ?? 0) - (counts.get(a.id) ?? 0)
+      || Number(directIds.has(b.id)) - Number(directIds.has(a.id)) || weight(a) - weight(b)
+      || b.at.localeCompare(a.at) || a.id.localeCompare(b.id);
     const admitted = new Set<string>(), bridges = new Set<string>();
     let asked = 0, capped = false;
-    // Direct rows first, in rank order: only a row that passed the screen may contribute the co-reference nodes that make its
-    // neighbours candidates, exactly as before, so a private row still bridges nothing.
-    for (const view of scanned.filter(view => directIds.has(view.id)).sort((a, b) => weight(a) - weight(b) || b.at.localeCompare(a.at) || a.id.localeCompare(b.id))) {
+    // Direct rows first, in rank order; only screened rows contribute bridge nodes.
+    for (const view of scanned.filter(view => directIds.has(view.id)).sort(byRank)) {
       if (asked === INTENT_BRIEF_SCREEN_LIMIT) { capped = true; break; }
       asked++; check();
       if (!await policy.screen(view)) { check(); continue; } check();
