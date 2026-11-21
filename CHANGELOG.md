@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.34.0
 
 ### Fixed
 
@@ -12,10 +12,27 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - A placement writer-context refusal reaches the person instead of one masked line: `amem sync` prints its fixed category, cause class and remedy (and `--json` returns it as a failed result instead of the generic refusal), `amem doctor` adds a `writers` section to a placement home, and `amem setup` warns when the root it would register is outside the active writer inventory while still writing nothing and refusing nothing on that warning. An inventory or history that cannot be read far enough to name a category is reported as unverified, never as a root the inventory does not hold. The documented order for moving an install root is in `docs/cli.md`. Refs #551.
 
+- Recap and other SessionStart briefs avoid repeatedly deriving an unchanged home binding for every screened value. They compare bounded input hashes and fall back to the full binding check when inputs cannot be safely described. The live Recap target remains to be re-measured after release. Refs #359 (PR #557).
+
+- Placement source capture counts metadata objects per home, user or project scope instead of applying one 256-object ceiling across the home. Homes past that former limit can sync while each scope and the retained directory, byte and whole-home bounds still fail closed. Refs #550 (PR #552).
+
 ### Changed
 
 - `amem_timeline` keeps curated notes in the window ahead of capture and summarizes a session's consecutive tool calls as one `capture-run` entry (agent, session, span, counts, top tools; no excerpt), so tool calls no longer crowd out decisions and conversation. Collapsing never reads more rows, so a timeline can return fewer than `limit` entries. `expand: true` returns the previous raw output. The agent-marked CLI `list` gets the new default; the console Timeline panel requests `expand: true` and keeps its raw rows. Refs #544.
 - Stale recall hints identify whether a path is missing in this checkout or all present paths have newer mtimes; either can result from branch or checkout activity rather than invalid memory. Existing consumers retain the boolean and may ignore the new reason; current CLI JSON parity remains unchanged. Refs #541.
+
+### Diagnostics
+
+- Transcript budget receipts include correlated worker kill, bounded-reap and metric-sample intervals. The remaining sample-to-parent-return value is an upper bound, not an exact exit or metric-write duration. Refs #367 (PR #553).
+- Jcode journal budget-attempt receipts include nested scan, publication, worker spawn and cursor-close timing, plus existing progress fields. Cursor close can include a WAL checkpoint; it is not a separate checkpoint measurement. Refs #348 (PR #556).
+
+### Compatibility with N-1 (0.33.0)
+
+- Library: existing root and platform host API exports remain compatible. Hook metrics may carry optional `transcriptTiming` or `jcodeJournalTiming` fields; older metric readers can ignore them. No host pin is raised automatically.
+- CLI and MCP: `amem_timeline` and agent-marked `amem list` reserve curated entries and may return a `capture-run` summary; MCP callers can request `expand: true` for the earlier raw ordering and shapes. Curated recall may add `staleReason`. A placement writer refusal under `amem sync --json` now returns an `ok: false` result with exit 0 instead of an early exception; human runs retain exit 1. Refs #544, #541, #551.
+- Console: Timeline requests expanded raw entries. Doctor adds an optional placement `writers` section, and setup previews and apply receipts may add a writer-inventory warning. Refs #544, #551.
+- Storage and sync: curated entry IDs, append-only logs, index version, transport rows and format floors are unchanged. Placement source capture now has per-scope and whole-home metadata bounds; no `formats.json` floor is raised. Refs #550.
+- Hooks and setup: own amem read-only tool calls no longer produce capture rows; previously captured rows remain subject to retention. Existing setup receipts retain their restore behavior. Refs #540.
 
 ## 0.33.0
 
