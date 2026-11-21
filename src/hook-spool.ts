@@ -15,6 +15,7 @@ import { looksSecret } from "./memory/screen.ts";
 import { appendMetrics, type CaptureDropReason } from "./memory/metrics.ts";
 import { projectState } from "./memory/lifecycle.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES } from "./hook-contract.ts";
+import { isOwnAmemReadTool } from "./amem-read-tools.ts";
 
 // #199: v1 records (closed key set, no format field) are read, never written. Every 0.14-0.17 decoder deletes a record it cannot verify,
 // so a record that adds a field publishes under a name the v1 pattern does not match (`hook-v2-`); old versions then ignore it
@@ -698,6 +699,10 @@ export function quarantineHookScope(options: { cwd: string; base: string; scope:
 /** Only screened normalized capture fields are retained, never the native input envelope. */
 export async function stageHookCapture(event: string, input: unknown, options: Options): Promise<PendingHookCapture | undefined> {
   if (!(HOOK_EVENTS as readonly string[]).includes(event) || options.policy?.host || belowFloor(options.base)) return undefined;
+  // #540: amem's own read calls are recall, not work; their rows would echo the running query back to it and flood timeline.
+  // Exact amem-owned names only; the hook outcome is unchanged. Rows captured before this stay until retention ages them out.
+  if ((event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure") && input && typeof input === "object"
+    && isOwnAmemReadTool((input as { tool_name?: unknown }).tool_name)) return undefined;
   const policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
   if (!await policy.screen(input)) return undefined;
   const value = structuredClone(input) as {[key: string]: unknown};

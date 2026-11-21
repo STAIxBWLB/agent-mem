@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Hooks no longer capture amem's own read tool calls (`amem_search`, `amem_show`, `amem_timeline`, `amem_brief` and the other read-only MCP tools, under the `mcp__amem__` and Claude plugin `mcp__plugin_agent-mem_agent-mem__` names), so a search no longer returns its own query as a capture hit and timeline is not flooded by recall calls. Write tools, other servers' tools and every other tool are captured as before. Rows captured before this release stay until capture retention ages them out. Refs #540.
+
 ## 0.33.0
 
 ### Added
