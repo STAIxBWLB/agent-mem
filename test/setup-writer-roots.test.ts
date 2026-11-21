@@ -228,7 +228,14 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   expect(malformedWarning).not.toContain("outside the active placement writer inventory"); expect(malformedWarning).not.toContain(outside);
   const malformedApplied = JSON.parse(await runSetup("kimi", "apply", options(outside))) as { warnings?: string[] };
   expect(malformedApplied.warnings).toEqual([malformedWarning]);
-  writeFileSync(join(f.base, "profile.json"), profile, { mode: 0o600 });
+  // AC2: a marker the reader will not open - here a symlink it refuses to follow - is unverified for the same reason, so a
+  // home whose state cannot be read is never reported as one that never activated placement sync.
+  const copy = join(f.root, "profile-copy.json"); writeFileSync(copy, profile, { mode: 0o600 });
+  rmSync(join(f.base, "profile.json")); symlinkSync(copy, join(f.base, "profile.json"));
+  const unreadable = JSON.parse(await runSetup("kimi", "preview", options(outside))) as { placementWriter?: string };
+  expect(unreadable.placementWriter).toContain("could not be verified here");
+  expect(unreadable.placementWriter).not.toContain("outside the active placement writer inventory");
+  rmSync(join(f.base, "profile.json")); writeFileSync(join(f.base, "profile.json"), profile, { mode: 0o600 });
   // An inventory that cannot be read far enough is unverified, not a root declared unregistered.
   const epoch = join(f.base, "sync-placement", "epochs", readdirSync(join(f.base, "sync-placement", "epochs"))[0]!);
   writeFileSync(join(epoch, "writer-revision-00001.json"), "not a writer revision\n", { mode: 0o600 });
