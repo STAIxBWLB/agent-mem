@@ -124,7 +124,8 @@ for (const target of ["claude", "pi", "qwen"] as const) test(`marked ${target} a
 function setupFault(f: ReturnType<typeof fixture>, marked: boolean, partial: boolean): string {
   const preload = join(f.root, "setup-fault.ts"), setup = fileURLToPath(new URL("../src/setup.ts", import.meta.url)), cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const config = join(f.home, ".claude.json"), privateMessage = `private-setup-error-canary ${config}`;
-  const anchor = partial ? "names(file); renameSync(temporary, file);" : "  return withSetupLock(options, () => applyUnlocked(plan, options));";
+  // #551 added the apply receipt's `warnings` echo, so the locked apply is no longer the returned expression itself.
+  const anchor = partial ? "names(file); renameSync(temporary, file);" : "  const result = withSetupLock(options, () => applyUnlocked(plan, options));";
   const replacement = partial ? `${anchor} if(file===${JSON.stringify(config)})throw Object.assign(new Error(${JSON.stringify(privateMessage)}),{code:'EIO'});`
     : `throw new Error(${JSON.stringify(privateMessage)});`;
   put(preload, `import{readFileSync}from'node:fs';Bun.plugin({name:'setup-fault',setup(b){b.onLoad({filter:/[/]setup[.]ts$/},({path})=>{if(path!==${JSON.stringify(setup)})return;const source=readFileSync(path,'utf8'),anchor=${JSON.stringify(anchor)};if(source.split(anchor).length!==2)throw Error('setup fault anchor changed');return{loader:'ts',contents:source.replace(anchor,${JSON.stringify(replacement)})};});}});`);
