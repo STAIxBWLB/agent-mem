@@ -6,6 +6,7 @@ import { facts, label, PLAIN, type Style } from "./style.ts";
 import { memoryProjectKey, projectChain } from "./project.ts";
 import { recallForViews, recallGraph, recallRows, recallShow } from "./recall.ts";
 import type { GoalPromotionReport } from "./goal-promotion.ts";
+import type { RecallStalenessReason } from "./recall-staleness.ts";
 
 /**
  * What the commands call themselves in their own messages. The default is amem's own surface; a host that exposes the same commands under its own
@@ -126,9 +127,20 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   for (const crossing of ["--all-projects", "--include-archived"]) if (rest.includes(crossing)) fail(`${crossing} crosses projects: run amem search --all-projects; ${names.memory} reads this project only`);
   // #15 T4: repo scope is the person's `amem promote --to repo`, which screens, previews the committed line and checks the repository's visibility. Here the flag would otherwise be ignored and the note promoted privately.
   for (const repoOnly of ["--to", "--confirm", "--confirm-public"]) if (rest.includes(repoOnly)) fail(`${repoOnly} belongs to the person's amem promote <id> --to repo; ${names.memory} never writes a repository file`);
-  const stale = (view: View) => { try { return opts.stale?.(view) === true; } catch { return false; } };
+  const staleInfo = (view: View): { stale: boolean; reason?: RecallStalenessReason } => {
+    try {
+      const probe = opts.stale as (typeof opts.stale & { reason?: (view: View) => RecallStalenessReason | undefined });
+      if (probe?.reason) { const reason = probe.reason(view); return reason ? { stale: true, reason } : { stale: false }; }
+      return { stale: probe?.(view) === true };
+    } catch { return { stale: false }; }
+  };
+  const staleMarker = (view: View): string => {
+    const info = staleInfo(view);
+    return !info.stale ? "" : info.reason === "missing_in_checkout" ? "(stale? missing) " : info.reason === "mtime_newer_than_note" ? "(stale? mtime) " : "(stale?) ";
+  };
+  const staleDetail = (view: View): string[] => { const marker = staleMarker(view).trimEnd(); return marker ? [marker] : []; };
   const ready = (rows: readonly View[]) => { try { opts.outputReady?.(rows); } catch { /* optional output metadata cannot fail recall */ } };
-  const decorated = (view: View) => ({ ...view, ...(stale(view) ? { stale: true } : {}) });
+  const decorated = (view: View) => { const info = staleInfo(view); return { ...view, ...(info.stale ? { stale: true, ...(info.reason ? { staleReason: info.reason } : {}) } : {}) }; };
   if (!["list", "search", "show", "graph"].includes(sub) && (rest.includes("--history") || rest.includes("--as-of"))) fail("history/as-of apply only to memory reads");
   try {
     switch (sub) {
@@ -163,14 +175,14 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           const emitted = recallForViews(state, rows), publicIds = new Set(rows.map(view => view.id)), allForgotten = q?.trim() ? [] : state.forgotten;
           const forgotten = allForgotten.slice(0, Math.max(0, (limit ? Math.floor(Number(limit)) : 50) - rows.length));
           const result = { at: state.at, entries: rows.map(decorated), forgotten, relations: state.relations.filter(edge => publicIds.has(edge.from) && publicIds.has(edge.to)), incomplete: emitted.incomplete || readable.length > rows.length || forgotten.length < allForgotten.length, notices: emitted.notices };
-          return json ? JSON.stringify(result, null, 2) : [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+          return json ? JSON.stringify(result, null, 2) : [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${staleMarker(view)}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
         }
         if (json) return JSON.stringify(rows.map(view => ({ ...view, ...(folded.has(view.id) ? { folded: folded.get(view.id) } : {}), ...(opts.explainSearch && scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })), null, 2);
         const counted = opts.readable(store.withDeferredPromotions(() => store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
         const withheld = all.length - readable.length;
         return [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? opts.explainSearch
-          ? rows.flatMap(view => [`${stale(view) ? "(stale?) " : ""}${one(view)}${foldNote(view)}`, ...(scoreDetails?.has(view.id) ? [`score: ${JSON.stringify(scoreDetails.get(view.id))}`] : [])])
-          : rows.map(view => `${stale(view) ? "(stale?) " : ""}${one(view)}${foldNote(view)}`) : ["(nothing)"]),
+          ? rows.flatMap(view => [`${staleMarker(view)}${one(view)}${foldNote(view)}`, ...(scoreDetails?.has(view.id) ? [`score: ${JSON.stringify(scoreDetails.get(view.id))}`] : [])])
+          : rows.map(view => `${staleMarker(view)}${one(view)}${foldNote(view)}`) : ["(nothing)"]),
           ...(withheld ? [`(${withheld} withheld: they match a PII pattern; the dashboard shows them)`] : [])].join("\n");
       }
       case "show": {
@@ -181,10 +193,10 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         if (shown.state) {
           const rows = opts.readable(shown.state.views), ids = new Set(rows.map(view => view.id)); ready(rows);
           const state = { ...recallForViews(shown.state, rows), views: rows.map(decorated), relations: shown.state.relations.filter(edge => ids.has(edge.from) && ids.has(edge.to)) };
-          return json ? JSON.stringify(state, null, 2) : [`retained memory as of ${state.at}`, ...state.notices, ...rows.flatMap(view => [...(stale(view) ? ["(stale?)"] : []), ...detail(view)]), ...state.forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(state.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+          return json ? JSON.stringify(state, null, 2) : [`retained memory as of ${state.at}`, ...state.notices, ...rows.flatMap(view => [...staleDetail(view), ...detail(view)]), ...state.forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(state.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
         }
         const view = need(shown.entry, id); if (!opts.readable([view]).length) fail(`${view.id.slice(0, 8)} is withheld: it matches a PII pattern (the dashboard shows it)`);
-        ready([view]); return json ? JSON.stringify(view, null, 2) : [...(stale(view) ? ["(stale?)"] : []), ...detail(view)].join("\n");
+        ready([view]); return json ? JSON.stringify(view, null, 2) : [...staleDetail(view), ...detail(view)].join("\n");
       }
       case "graph": {
         const hops = Number(flag("--hops") ?? 1);

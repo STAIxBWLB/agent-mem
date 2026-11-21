@@ -1,3 +1,4 @@
+import type { RecallStalenessReason } from "./recall-staleness.ts";
 import { planGuardNodes, planNodesIntersect } from "./plan-guard.ts";
 import { memoryPolicySnapshot, type StandalonePolicy } from "./policy.ts";
 import { INTENT_PREFERENCE_SHARE, PREFERENCE_SLOT, preferenceLine } from "./preference-brief.ts";
@@ -41,12 +42,17 @@ function preferenceLive(view: View, project: string, now: number): boolean {
     && (view.project === project || view.scope === "shared") && !view.supersededBy
     && (view.expiresAt === null || Number.isFinite(Date.parse(view.expiresAt)) && Date.parse(view.expiresAt) > now);
 }
-function staleMarker(options: IntentBriefOptions, view: View): boolean {
-  try { return options.stale?.(structuredClone(view)) === true; } catch { return false; }
+function staleMarker(options: IntentBriefOptions, view: View): RecallStalenessReason | "unknown" | undefined {
+  try {
+    const probe = options.stale as (typeof options.stale & { reason?: (view: View) => RecallStalenessReason | undefined });
+    const copy = structuredClone(view);
+    if (probe?.reason) return probe.reason(copy);
+    return probe?.(copy) === true ? "unknown" : undefined;
+  } catch { return undefined; }
 }
 /** Keep the complete JSON line valid, including multi-byte text and the visible fetch marker. */
-function lineOf(view: View, stale: boolean, cap: number): { line: string; clipped: boolean } | undefined {
-  const id = `mem:${view.id}`, prefix = stale ? "(stale?) " : "", body = `${view.title ? view.title + ": " : ""}${view.text}`;
+function lineOf(view: View, stale: RecallStalenessReason | "unknown" | undefined, cap: number): { line: string; clipped: boolean } | undefined {
+  const id = `mem:${view.id}`, prefix = stale === "missing_in_checkout" ? "(stale? missing) " : stale === "mtime_newer_than_note" ? "(stale? mtime) " : stale ? "(stale?) " : "", body = `${view.title ? view.title + ": " : ""}${view.text}`;
   const encode = (text: string) => JSON.stringify({ id, kind: view.kind, tier: view.tier, text: prefix + text });
   const full = encode(body); if (Buffer.byteLength(full) <= cap) return { line: full, clipped: false };
   const marker = ` [truncated; fetch ${id}]`, points = Array.from(body);
