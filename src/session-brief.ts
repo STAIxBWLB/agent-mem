@@ -9,6 +9,8 @@ import { curatedProfileBinding } from "./memory/curated-cache-state.ts";
 import { captureDisplay, displayText, recordDisplay, validCachedCapture } from "./brief-capture.ts";
 import { readWorkBrief, workLogSegments, workPolicyRevision } from "./brief-work.ts";
 import { assertFormatFloor, FormatFloorError } from "./memory/formats.ts";
+import { collectBindingReads } from "./memory/binding-read-set.ts";
+import { FENCE_MAX_PATHS, fenceIsComplete, homeBindingPaths, sameHomeBinding, snapshotHomeBinding, type HomeBindingSnapshot } from "./memory/home-binding-fence.ts";
 import { readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
@@ -105,19 +107,57 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     const effectivePolicy = configuredPolicyOptions(base, options.repository === false ? undefined : cwd, options.policy);
     const policy = createStandalonePolicy(effectivePolicy), release = options.measureOnly ? Object.assign(() => {}, { verify: () => {} }) : registerReaderLease(base, options.nativeSession ? { signature: options.nativeSession.signature, busyTimeoutMs: 0 } : undefined);
     closers.push(release);
-    const selection = readSelector(base).revision;
+    const initial = readSelector(base), selection = initial.revision;
     const sharded = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
     const shardSelection = sharded ? JSON.stringify(readShardedSelection(base)) : undefined;
     const aliases = aliasedKeys(base, project), reconcile = aliases.length ? { canonical: project, aliases } : undefined;
+    // #396: every value the guard compares is derived from the binding's own bytes, so the per-value fence pays for a
+    // full read of those bytes twice per screened row. This fence answers the same question by hashing them instead,
+    // and hands the call back to the full comparison whenever an input moved, could not be read safely, or the reader
+    // reported more paths than the caller bounds. `fenceSupported` latches off, so a home this fence cannot describe
+    // keeps exactly today's cost.
+    const fenceHome = (() => { try { return realPath(base); } catch { return undefined; } })();
+    const fenceSelector = initial.selector as { pruneInputSetHash?: string; placementHead?: string } | undefined;
+    let fenceSupported = fenceHome !== undefined, fence: HomeBindingSnapshot | undefined;
+    let fencePaths = homeBindingPaths(fenceHome ?? base, fenceSelector);
     let drifted = false;
-    const guard = () => {
+    const compareBinding = () => {
+      if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")
+        || readSelector(base).revision !== selection || projectState(base, project) !== "active") throw new BindingChanged();
+      const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
+      if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) throw new BindingChanged();
+    };
+    const guard = (full = false) => {
       try {
         if (drifted) throw new BindingChanged();
         release.verify();
-        if (resolveAlias(base, requested) !== project || aliasedKeys(base, project).join("\n") !== aliases.join("\n")
-          || readSelector(base).revision !== selection || projectState(base, project) !== "active") throw new BindingChanged();
-        const split = !!lstatSync(join(base, "shards.json"), { throwIfNoEntry: false });
-        if (split !== sharded || split && JSON.stringify(readShardedSelection(base)) !== shardSelection) throw new BindingChanged();
+        if (!fenceSupported) { compareBinding(); return; }
+        const known = fence?.paths ?? fencePaths;
+        if (!full && fence !== undefined && sameHomeBinding(snapshotHomeBinding(known), fence)) return;
+        // Adopt only over a set that did not move while it was compared, and never leave this guard on an unproven
+        // state: a moved or newly reported set is re-read here, and two rounds that still disagree refuse. The caller's
+        // bound is read on the reported list before the expanded set is ever hashed.
+        let paths = known, adopted: HomeBindingSnapshot | undefined;
+        for (let attempt = 0; attempt < 2 && adopted === undefined; attempt++) {
+          const before = snapshotHomeBinding(paths);
+          const { paths: reported } = collectBindingReads(compareBinding);
+          const after = snapshotHomeBinding(paths);
+          const next = homeBindingPaths(fenceHome!, fenceSelector, reported);
+          // A set this fence cannot describe keeps today's cost: the comparison inside this bracket is the proof today's
+          // guard offers too, and every later guard reads the binding itself.
+          // The comparison above ran before the unsafe or over-limit observation, so it does not cover this instant: latch
+          // off, then compare once more before this caller proceeds. A throw lands in the catch below and refuses.
+          if (next.length > FENCE_MAX_PATHS || !fenceIsComplete(before) || !fenceIsComplete(after)) {
+            fence = undefined; fencePaths = next; fenceSupported = false; compareBinding(); return;
+          }
+          const sameSet = next.length === paths.length && next.every((path, index) => path === paths[index]);
+          // Only a set that did not move while it was compared, and whose two hashes agree, is stamped. Anything else is
+          // re-read here, and a second round that still disagrees throws instead of handing this caller's screen a state
+          // no comparison covered.
+          if (sameSet && sameHomeBinding(before, after)) adopted = after; else paths = next;
+        }
+        if (adopted === undefined) throw new BindingChanged();
+        fence = adopted; fencePaths = [...adopted.paths];
       } catch { drifted = true; throw new BindingChanged(); }
     };
     // Fixed native screening has no host callback to observe intermediate rows. Buffer
@@ -412,7 +452,7 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
           emitReserved(); coverage.capture = "partial";
         }
       }
-      guard();
+      guard(true);
       let context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
       while (Buffer.byteLength(context) > maximum && lines.length) {
         const repoIndex = lines.findLastIndex(line => line.startsWith('{"section":"repo",'));

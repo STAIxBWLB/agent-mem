@@ -1,6 +1,7 @@
 /** Root selector commitment only; this module never writes or activates a profile. */
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
 import { join } from "node:path";
+import { reportBindingRead } from "./binding-read-set.ts";
 import { canonicalJSON, hashJSON, PROFILE_LOCK_TIMEOUT_MS } from "./generation.ts";
 import { realPath } from "./platform.ts";
 
@@ -104,7 +105,7 @@ export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number
 }
 /** Any unresolved intent blocks reads. Never remove it, including malformed bytes. */
 export function assertNoPublicPruneIntent(home: string, absoluteDeadline?: number): void {
-  protectedCall(() => { waitForPublicPruneWriter(home, absoluteDeadline); guard(!gone(lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false }))); });
+  protectedCall(() => { reportBindingRead(join(home, PUBLIC_PRUNE_INTENT)); waitForPublicPruneWriter(home, absoluteDeadline); guard(!gone(lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false }))); });
 }
 function privateStat(stat: Stats, directory = false): void {
   guard(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile() && stat.nlink === 1));
@@ -117,10 +118,14 @@ function same(left: Stats, right: Stats): boolean {
 export function readPublicPruneViewForActivation(home: string, hash: string, generation: string): PublicPruneViewV1 {
   return protectedCall(() => {
     guard(hex(hash, 64) && hex(generation, 32));
+    reportBindingRead(home);
     const original = lstatSync(home); privateStat(original, true);
     const root = realPath(home), rootStat = lstatSync(root); privateStat(rootStat, true); guard(rootStat.dev === original.dev && rootStat.ino === original.ino);
+    reportBindingRead(root);
     const directory = join(root, "public-prune-input-sets"), dirStat = lstatSync(directory); privateStat(dirStat, true);
+    reportBindingRead(directory);
     const file = join(directory, `${hash}.json`), before = lstatSync(file); privateStat(before); guard(before.size > 0 && before.size <= MAX_BYTES);
+    reportBindingRead(file);
     const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const opened = fstatSync(fd); privateStat(opened); guard(same(before, opened));
