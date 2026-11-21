@@ -12,6 +12,8 @@ import { hookFixture } from "./fakes/hooks-fixture.ts";
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const image = (text: string) => ({ mode: 0o600, bytes: Buffer.from(text).toString("base64") });
+/** #551 AC2: the shell quoting setup uses for a suggested argument, restated here so a rendering change is visible. */
+const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 function fixture() {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-setup-writer-roots-"))); chmodSync(root, 0o700); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const home = join(root, "memory"), dir = join(home, "setup"); mkdirSync(home, { mode: 0o700 }); mkdirSync(dir, { mode: 0o700 });
@@ -177,11 +179,13 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   const plan = JSON.parse(await runSetup("kimi", "preview", options(outside))) as { placementWriter?: string; notes: string[] };
   const warning = plan.placementWriter!;
   expect(warning).toContain("outside the active placement writer inventory");
-  expect(warning).toContain(`amem migrate --sync-placement --dry-run --writer-root ${outside}`);
+  // AC2: the suggested argument is shell-quoted, so the space in this root never splits it into two arguments.
+  expect(warning).toContain(`amem migrate --sync-placement --dry-run --writer-root ${quote(outside)}`);
+  expect(warning).not.toContain(`--writer-root ${outside}`);
   expect(warning).toContain("never refuses on this alone");
   expect(plan.notes).toContain(warning);
   const preview = await runSetup("kimi", "preview", { ...options(outside), json: false } as SetupContext);
-  expect(preview).toContain("Warnings:"); expect(preview).toContain(`--writer-root ${outside}`);
+  expect(preview).toContain("Warnings:"); expect(preview).toContain(`--writer-root ${quote(outside)}`);
   // A preview writes nothing at all.
   expect(readFileSync(join(f.base, "sync-placement-writer-roots.json"))).toEqual(inventory); expect(epochs()).toEqual(before);
   const applied = JSON.parse(await runSetup("kimi", "apply", options(outside))) as { applied: string[]; unchanged: string[]; warnings?: string[] };
@@ -194,6 +198,26 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   // Setup's own receipt now names the new root while the placement inventory still does not, which is exactly the
   // refusal the warning predicted: renew the inventory first, then register a receipt at the new root.
   expect(readSetupWriterRoots(f.base)).toEqual([outside]);
+  // AC2: a root carrying a space, a quote and shell metacharacters is quoted in preview, human output and the apply
+  // receipt alike, so a person who pastes the suggested command passes one argument and runs no expansion.
+  const hostile = join(f.root, `it's $(touch pwned) & "quoted" install`);
+  for (const part of [hostile, join(hostile, "bin"), join(hostile, "src")]) mkdirSync(part, { mode: 0o755 });
+  writeFileSync(join(hostile, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.21.0" }), { mode: 0o600 });
+  writeFileSync(join(hostile, "bin", "amem.js"), "// fixture only\n", { mode: 0o600 }); writeFileSync(join(hostile, "src", "cli.ts"), "// fixture only\n", { mode: 0o600 });
+  const hostilePlan = JSON.parse(await runSetup("kimi", "preview", options(hostile))) as { placementWriter?: string };
+  const hostileWarning = hostilePlan.placementWriter!;
+  expect(hostileWarning).toContain(`--writer-root ${quote(hostile)}`); expect(hostileWarning).not.toContain(`--writer-root ${hostile}`);
+  expect(await runSetup("kimi", "preview", { ...options(hostile), json: false } as SetupContext)).toContain(`--writer-root ${quote(hostile)}`);
+  const hostileApplied = JSON.parse(await runSetup("kimi", "apply", options(hostile))) as { warnings?: string[] };
+  expect(hostileApplied.warnings).toEqual([hostileWarning]);
+  // A real shell reads the rendered command back: one argv entry, the exact root, and no `$(...)` side effect.
+  const stub = join(f.root, "shell-proof-bin"); mkdirSync(stub, { mode: 0o700 });
+  writeFileSync(join(stub, "amem"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n", { mode: 0o700 });
+  const command = /amem migrate --sync-placement --dry-run --writer-root .*?(?=, then --apply)/.exec(hostileWarning)![0];
+  const shell = Bun.spawnSync(["bash", "-c", command], { cwd: f.root, env: { ...f.env, PATH: `${stub}:${f.env.PATH}` } });
+  expect(shell.exitCode).toBe(0);
+  expect(shell.stdout.toString().split("\n").filter(Boolean)).toEqual(["migrate", "--sync-placement", "--dry-run", "--writer-root", hostile]);
+  expect(fs.existsSync(join(f.root, "pwned"))).toBe(false);
   // An inventory that cannot be read far enough is unverified, not a root declared unregistered.
   const epoch = join(f.base, "sync-placement", "epochs", readdirSync(join(f.base, "sync-placement", "epochs"))[0]!);
   writeFileSync(join(epoch, "writer-revision-00001.json"), "not a writer revision\n", { mode: 0o600 });
