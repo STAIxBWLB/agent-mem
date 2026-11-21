@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PUBLIC_PRUNE_INTENT, waitForPublicPruneWriter } from "../src/memory/public-prune-view.ts";
+import { PUBLIC_PRUNE_INTENT, assertNoPublicPruneIntent, waitForPublicPruneWriter } from "../src/memory/public-prune-view.ts";
 import { writeProfileJSON } from "../src/memory/generation.ts";
 import { realPath } from "../src/memory/platform.ts";
 
@@ -78,4 +78,103 @@ test("a disappearance never renews the original deadline", () => {
   try { expect(() => waitForPublicPruneWriter(h.dir, 1030)).toThrow("public prune view unavailable"); }
   finally { spy.mockRestore(); date.mockRestore(); sleep.mockRestore(); }
   expect(slept).toBe(30); expect(clock).toBe(1030);
+});
+
+// #302: the same release race seen by a path lstat instead of an fstat. A path lstat that resolves an inode whose last
+// link the writer already removed reports nlink 0, not ENOENT. Every site below must read that as the same disappearance.
+/** Answer the `nth` lstat of `target` with `dying` (that inode's own stat) carrying `overrides`, after `release` runs. */
+function zeroLinkAt(target: string, nth: number, dying: fs.Stats, release: () => void, overrides: Partial<fs.Stats> = { nlink: 0 }) {
+  const original = fs.lstatSync as unknown as (...args: unknown[]) => fs.Stats | undefined;
+  let seen = 0, fired = false;
+  const spy = spyOn(fs, "lstatSync").mockImplementation(((...args: unknown[]) => {
+    if (args[0] !== target || ++seen !== nth) return original(...args);
+    fired = true; release();
+    return Object.assign(Object.create(Object.getPrototypeOf(dying)), dying, overrides) as fs.Stats;
+  }) as unknown as typeof fs.lstatSync);
+  return { restore: () => spy.mockRestore(), fired: () => fired };
+}
+/** Every sleep advances a virtual clock, so the reader's repeats are counted instead of waited out. */
+function virtualClock() {
+  let now = 0;
+  const date = spyOn(Date, "now").mockImplementation(() => now), sleep = spyOn(Bun, "sleepSync").mockImplementation(ms => { now += Number(ms); });
+  return { slept: () => now, restore: () => { date.mockRestore(); sleep.mockRestore(); } };
+}
+const release = (h: { intent: string; lock: string }) => () => { fs.unlinkSync(h.intent); fs.unlinkSync(h.lock); };
+// The entry check reads the lock only when the intent is absent, so with a published intent the lock's lstats are the
+// loop's own (1st) and small(lockFile)'s before-stat (2nd); the intent's are the entry check (1st), the loop's (2nd)
+// and small(intentFile)'s before-stat (3rd).
+
+test("a zero-link intent lstat in the wait loop is a disappearance, so the reader returns instead of re-reading a dead path", () => {
+  const h = home(), dying = fs.lstatSync(h.intent);
+  const hook = zeroLinkAt(h.intent, 2, dying, release(h)), clock = virtualClock();
+  try { expect(() => waitForPublicPruneWriter(h.dir)).not.toThrow(); } finally { hook.restore(); clock.restore(); }
+  expect(hook.fired()).toBe(true);
+  expect(clock.slept()).toBe(0); // gone, exactly like ENOENT: no bounded step re-reads the dead path first
+});
+
+test("a zero-link lock lstat in the wait loop is a disappearance, not a lock that changes its shape", () => {
+  const h = home(), dying = fs.lstatSync(h.lock);
+  const hook = zeroLinkAt(h.lock, 1, dying, release(h)), clock = virtualClock();
+  try { expect(() => waitForPublicPruneWriter(h.dir)).not.toThrow(); } finally { hook.restore(); clock.restore(); }
+  expect(hook.fired()).toBe(true);
+  expect(clock.slept()).toBe(5); // the intent the entry resolved is re-read once and found gone; no refusal
+});
+
+test("a zero-link before-stat of the owned lock record is a disappearance, not a damaged lock", () => {
+  const h = home(), dying = fs.lstatSync(h.lock);
+  const hook = zeroLinkAt(h.lock, 2, dying, release(h)), clock = virtualClock();
+  try { expect(() => waitForPublicPruneWriter(h.dir)).not.toThrow(); } finally { hook.restore(); clock.restore(); }
+  expect(hook.fired()).toBe(true);
+  expect(clock.slept()).toBe(5);
+});
+
+test("a zero-link before-stat of the intent is a disappearance, not a damaged intent", () => {
+  const h = home(), dying = fs.lstatSync(h.intent);
+  const hook = zeroLinkAt(h.intent, 3, dying, release(h)), clock = virtualClock();
+  try { expect(() => waitForPublicPruneWriter(h.dir)).not.toThrow(); } finally { hook.restore(); clock.restore(); }
+  expect(hook.fired()).toBe(true);
+  expect(clock.slept()).toBe(5);
+});
+
+test("a zero-link final intent lstat in assertNoPublicPruneIntent is a disappearance, not an unresolved intent", () => {
+  const h = home(), dying = fs.lstatSync(h.intent);
+  release(h)(); // the writer already finished, so the wait returns at its entry check
+  const hook = zeroLinkAt(h.intent, 2, dying, () => {}); // 1st intent lstat is that entry check, 2nd the assertion's own
+  try { expect(() => assertNoPublicPruneIntent(h.dir)).not.toThrow(); } finally { hook.restore(); }
+  expect(hook.fired()).toBe(true);
+});
+
+test("the zero-link rule covers a dying inode only: a second link, a foreign owner, a symlink or a live intent still refuses", () => {
+  const refuses = (label: string, run: () => void) => expect(run, label).toThrow("public prune view unavailable");
+  { // a second link on the lock: not the create-once phase, which needs a complete owned lock and a two-link intent
+    const h = home();
+    refuses("lock second link", () => { const hook = zeroLinkAt(h.lock, 1, fs.lstatSync(h.lock), () => {}, { nlink: 2 }); try { waitForPublicPruneWriter(h.dir, Date.now() + 50); } finally { hook.restore(); } });
+  }
+  { // a two-link intent with no owned writer lock is outside the create-once phase too
+    const h = home(); fs.unlinkSync(h.lock);
+    refuses("intent second link", () => { const hook = zeroLinkAt(h.intent, 2, fs.lstatSync(h.intent), () => {}, { nlink: 2 }); try { waitForPublicPruneWriter(h.dir, Date.now() + 50); } finally { hook.restore(); } });
+  }
+  { // the same inode, but not ours
+    const h = home(), dying = fs.lstatSync(h.lock);
+    refuses("foreign owner", () => { const hook = zeroLinkAt(h.lock, 1, dying, () => {}, { uid: dying.uid + 1000 }); try { waitForPublicPruneWriter(h.dir, Date.now() + 50); } finally { hook.restore(); } });
+  }
+  { // a symlink is never a disappearance
+    const h = home(); fs.renameSync(h.lock, h.lock + ".target"); fs.symlinkSync(h.lock + ".target", h.lock);
+    refuses("symlink", () => waitForPublicPruneWriter(h.dir, Date.now() + 50));
+  }
+  { // small(lockFile)'s before-stat: the new ENOENT must not swallow any other count
+    const h = home();
+    refuses("before-stat second link", () => { const hook = zeroLinkAt(h.lock, 2, fs.lstatSync(h.lock), () => {}, { nlink: 2 }); try { waitForPublicPruneWriter(h.dir, Date.now() + 50); } finally { hook.restore(); } });
+  }
+  { // an intent published after the wait returned still blocks the read: the rule is about the inode, not the path name
+    const h = home(); release(h)();
+    const original = fs.lstatSync as unknown as (...args: unknown[]) => fs.Stats | undefined;
+    let seen = 0, published = 0;
+    const spy = spyOn(fs, "lstatSync").mockImplementation(((...args: unknown[]) => {
+      if (args[0] === h.intent && ++seen === 2) { published = seen; writeProfileJSON(h.intent, { schema: "agent-mem.public-prune-advance/v1", home: h.dir, generation: GENERATION }); }
+      return original(...args);
+    }) as unknown as typeof fs.lstatSync);
+    refuses("live intent", () => { try { assertNoPublicPruneIntent(h.dir); } finally { spy.mockRestore(); } });
+    expect(published).toBe(2); // the wait's entry check was 1st, the assertion's own lstat was 2nd
+  }
 });

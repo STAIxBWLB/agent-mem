@@ -14,6 +14,10 @@ export interface PublicPruneViewV1 {
 const unavailable = (): never => { throw new Error("public prune view unavailable"); };
 function guard(ok: unknown): asserts ok { if (!ok) unavailable(); }
 function protectedCall<T>(work: () => T): T { try { return work(); } catch { return unavailable(); } }
+/** #225/#302: a stat of an inode whose last link is already gone reports nlink 0, not ENOENT. On a path that is the
+ * same normal disappearance as an absent one: treat the path as gone and keep waiting or re-read. Any other count,
+ * owner or mode still refuses, and a zero-link profile.json still ends as unavailable. */
+const gone = (stat: Stats | undefined): Stats | undefined => (stat && stat.nlink === 0 ? undefined : stat);
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 const hex = (value: unknown, size: number): value is string => typeof value === "string" && value.length === size && /^[a-f0-9]+$/.test(value);
@@ -52,9 +56,10 @@ export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number
     // #225: a cooperating writer that finishes unlinks its intent, then its lock. If that lands between this reader's
     // open and fstat, the fd's link count is 0. Only that is the normal disappearance (ENOENT): bytes read through the fd
     // are discarded and the bounded loop re-resolves the path from scratch. Any other link count still refuses.
+    // #302: the same count seen by a path lstat here is `gone`, which yields the same ENOENT-or-absent behavior.
     const unlinked = (stat: Stats): void => { if (stat.nlink === 0) throw Object.assign(new Error("publication unlinked while open"), { code: "ENOENT" }); };
     const small = (file: string, limit: number): Record<string, unknown> => {
-      const before = lstatSync(file); privateStat(before); guard(before.size > 0 && before.size <= limit);
+      const before = lstatSync(file); unlinked(before); privateStat(before); guard(before.size > 0 && before.size <= limit);
       const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
         const opened = fstatSync(fd); unlinked(opened); privateStat(opened); guard(opened.size > 0 && opened.size <= limit);
@@ -70,7 +75,7 @@ export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number
     if (profile.schema !== "agent-mem.profile/v2") return; // v1 admission/intent behavior is unchanged.
     for (;;) {
       try {
-        const intent = lstatSync(intentFile, { throwIfNoEntry: false }), lock = lstatSync(lockFile, { throwIfNoEntry: false });
+        const intent = gone(lstatSync(intentFile, { throwIfNoEntry: false })), lock = gone(lstatSync(lockFile, { throwIfNoEntry: false }));
         if (!intent && !lock) return;
         if (lock) {
           privateStat(lock);
@@ -99,7 +104,7 @@ export function waitForPublicPruneWriter(home: string, absoluteDeadline?: number
 }
 /** Any unresolved intent blocks reads. Never remove it, including malformed bytes. */
 export function assertNoPublicPruneIntent(home: string, absoluteDeadline?: number): void {
-  protectedCall(() => { waitForPublicPruneWriter(home, absoluteDeadline); guard(!lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false })); });
+  protectedCall(() => { waitForPublicPruneWriter(home, absoluteDeadline); guard(!gone(lstatSync(join(home, PUBLIC_PRUNE_INTENT), { throwIfNoEntry: false }))); });
 }
 function privateStat(stat: Stats, directory = false): void {
   guard(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile() && stat.nlink === 1));
