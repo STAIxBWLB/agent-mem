@@ -88,18 +88,29 @@ test("search applies since and screens private and foreign matches before the pu
   expect([recentNote, recentCapture]).toContain(searchRefs(first)[0]!);
 });
 
+// #544: these cases check read-window reach, not the default curated reservation, so they read raw rows.
 test("latest and since timelines select public rows without refusing a large corpus", async () => {
-  const latest = await mcp.tools.amem_timeline({ limit: 2 }) as TimelineRow[];
+  const latest = await mcp.tools.amem_timeline({ limit: 2, expand: true }) as TimelineRow[];
   expect(latest.map(ref)).toEqual([recentCapture, recentNote]);
-  const since = await mcp.tools.amem_timeline({ since: at(-2 * 3600_000), limit: 100 }) as TimelineRow[];
+  const since = await mcp.tools.amem_timeline({ since: at(-2 * 3600_000), limit: 100, expand: true }) as TimelineRow[];
   expect(since.map(ref)).toEqual([recentCapture, recentNote]);
 });
 
 test("timeline anchors reach old curated and capture rows outside the latest candidate window", async () => {
-  const curated = await mcp.tools.amem_timeline({ id: oldNote, limit: 2 }) as TimelineRow[];
+  const curated = await mcp.tools.amem_timeline({ id: oldNote, limit: 2, expand: true }) as TimelineRow[];
   expect(curated.map(ref)).toEqual([oldNote, oldCapture]);
-  const capture = await mcp.tools.amem_timeline({ id: oldCapture, limit: 2 }) as TimelineRow[];
+  const capture = await mcp.tools.amem_timeline({ id: oldCapture, limit: 2, expand: true }) as TimelineRow[];
   expect(capture.map(ref)).toEqual([oldCapture, oldNote]);
+});
+
+test("#544: the default timeline reserves curated rows ahead of capture in a large corpus", async () => {
+  const latest = await mcp.tools.amem_timeline({ limit: 2 }) as TimelineRow[];
+  // Raw selection puts the newer capture row first; the default keeps every curated row the read returns ahead of capture.
+  expect(latest.map(ref)[0]).not.toBe(recentCapture);
+  expect(latest.map(ref)).toContain(recentNote);
+  expect(latest.every(row => !("capture" in row))).toBe(true);
+  const raw = await mcp.tools.amem_timeline({ limit: 2, expand: true }) as TimelineRow[];
+  expect(raw.map(ref)).toContain(recentCapture);
 });
 
 test("FTS-disabled substring search remains available above both tier ceilings", async () => {
