@@ -34,8 +34,8 @@ test("only exact amem-owned read tool names classify; foreign servers, lookalike
 
 test("an amem read tool's own Pre/PostToolUse rows are not captured; every control still is", async () => {
   const f = fixture();
-  for (const prefix of QUALIFIED) for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
-    const staged = await stageHookCapture(event, { tool_name: `${prefix}amem_search`, tool_input: { query: "ownechoneedle" }, tool_response: "x", error: "x" }, f.options);
+  for (const prefix of QUALIFIED) for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) for (const agent of ["claude", "jcode"] as const) {
+    const staged = await stageHookCapture(event, { tool_name: `${prefix}amem_search`, tool_input: { query: "ownechoneedle" }, tool_response: "x", error: "x" }, { ...f.options, agent });
     expect(staged).toBeUndefined();
   }
   for (const name of CONTROLS) expect(await stageHookCapture("PreToolUse", { tool_name: name, tool_input: { query: `controlneedle ${name}` } }, f.options)).toBeDefined();
@@ -76,12 +76,19 @@ test("Jcode's deferred generic mcp call to an amem read tool is skipped; other s
     JCODE_HOOK_TOOL_NAME: "mcp", JCODE_HOOK_TOOL_INPUT: JSON.stringify(input) })!;
   for (const tool of AMEM_READ_TOOL_NAMES) for (const status of ["ok", "error"]) {
     const mapped = post({ action: "call", server: "amem", tool, arguments: { query: "jcodeownneedle" } }, status);
-    expect(await stageHookCapture(mapped.event, mapped.input, f.options)).toBeUndefined();
+    expect(await stageHookCapture(mapped.event, mapped.input, { ...f.options, agent: "jcode" })).toBeUndefined();
   }
   const kept = [{ action: "call", server: "other", tool: "amem_search" }, { action: "call", server: "amem", tool: "amem_remember" },
     { action: "call", server: "amem", tool: "amem_search_x" }, { action: "search", server: "amem", tool: "amem_search" }, { action: "call", server: "amem-x", tool: "amem_search" }];
-  for (const input of kept) { const mapped = post({ ...input, arguments: { query: "jcodekeptneedle" } }); expect(await stageHookCapture(mapped.event, mapped.input, f.options)).toBeDefined(); }
+  for (const input of kept) { const mapped = post({ ...input, arguments: { query: "jcodekeptneedle" } }); expect(await stageHookCapture(mapped.event, mapped.input, { ...f.options, agent: "jcode" })).toBeDefined(); }
   const rows = await drain(f);
   expect(rows.some(row => row.excerpt.includes("jcodeownneedle"))).toBe(false);
   expect(rows.length).toBe(kept.length);
+});
+
+test("a non-Jcode tool with the same generic shape stays captured", async () => {
+  const f = fixture();
+  const input = { tool_name: "mcp", tool_input: { action: "call", server: "amem", tool: "amem_search", arguments: { query: "other tool" } } };
+  expect(await stageHookCapture("PostToolUse", input, { ...f.options, agent: "claude" })).toBeDefined();
+  expect((await drain(f)).map(row => row.tool)).toEqual(["mcp"]);
 });

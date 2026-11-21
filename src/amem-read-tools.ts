@@ -12,9 +12,9 @@ export function isOwnAmemReadTool(toolName: unknown): boolean {
 }
 /** Jcode also reaches deferred MCP servers through its generic `mcp` tool: `{ action: "call", server, tool }`. `amem setup jcode`
  * writes server key `amem`; only that exact server and an exact read tool name count. Callers pass the screened plain clone. */
-export function isOwnAmemReadCall(toolName: unknown, toolInput: unknown): boolean {
+export function isOwnAmemReadCall(agent: unknown, toolName: unknown, toolInput: unknown): boolean {
   if (isOwnAmemReadTool(toolName)) return true;
-  if (toolName !== "mcp" || !toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) return false;
+  if (agent !== "jcode" || toolName !== "mcp" || !toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) return false;
   const call = toolInput as { action?: unknown; server?: unknown; tool?: unknown };
   return call.action === "call" && call.server === "amem" && typeof call.tool === "string" && AMEM_READ_TOOL_NAMES.has(call.tool);
 }

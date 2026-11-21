@@ -706,7 +706,7 @@ export async function stageHookCapture(event: string, input: unknown, options: O
   // #540: amem's own read calls are recall, not work; their rows would echo the running query back to it and flood timeline.
   // Read from the screened plain clone, never the native input (no accessor runs before the policy screen). Exact amem-owned
   // names only; the hook outcome is unchanged. Rows captured before this stay until retention ages them out.
-  if ((event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure") && isOwnAmemReadCall(value.tool_name, value.tool_input)) return undefined;
+  if ((event === "PreToolUse" || event === "PostToolUse" || event === "PostToolUseFailure") && isOwnAmemReadCall(options.agent, value.tool_name, value.tool_input)) return undefined;
   const cwd = realPath(options.cwd), base = canonicalPath(options.base);
   if (value.hook_event_name !== undefined && value.hook_event_name !== event) return undefined;
   if (value.cwd !== undefined && (typeof value.cwd !== "string" || realPath(value.cwd) !== cwd)) return undefined;
