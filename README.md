@@ -56,7 +56,7 @@ Run `amem --help` or `amem <command> --help` for every option.
 | `amem_evidence` | yes | Return a bounded bundle of cited, live curated entries for a question. |
 | `amem_show` | yes | Show a screened memory entry in this project by its exact id or unique prefix. |
 | `amem_timeline` | yes | Read screened memory near an entry or time in this project. |
-| `amem_brief` | yes | Read an intent/path-scoped brief of live public memory: fails first, then decisions/contracts and one-hop neighbours. |
+| `amem_brief` | yes | Read an intent/path-scoped brief of live public memory, ranked by requested-node matches up to three; fails lead among equal matches, followed by one-hop neighbours. |
 | `amem_graph` | yes | Read the screened curated-memory neighbourhood. |
 | `amem_work_state_read` | yes | Read project work lists; closed lists/items can be included explicitly. |
 | `amem_work_state_write` | no | Append scalar project work-list fields; null clears, task selects an item, list status done closes. |
