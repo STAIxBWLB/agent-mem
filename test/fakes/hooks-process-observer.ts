@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { realPath } from "../../src/memory/platform.ts";
 import { instrumentHookLifecycle, instrumentSessionNativeDeadline } from "./hooks-process-lifecycle.ts";
@@ -14,6 +14,8 @@ export interface HookLifecycleReceipt {
 
 export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "session-native-deadline-skip" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
 export interface HookWorkerProcess { pid: number; detached: boolean; argv: string[]; kind: "worker" | "native" }
+export interface FixtureChildEvidence { pid: number; ownerPid: number; beforeMs: number; afterMs?: number }
+export const MAX_FIXTURE_CHILD_EVIDENCE = 512;
 /** Normal mode only observes. The timeout fixture can preload an owned native sleeper without a production port. */
 export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false, sessionDeadlineEnabled = false) {
   const preload = join(root, "observe-hook-worker.ts"), receipt = join(root, "hook-worker-processes.jsonl"), evidence = join(root, "hook-process-evidence.jsonl");
@@ -42,7 +44,7 @@ Bun.spawn=(command,options)=>{
  const native=Array.isArray(command)&&command[0]==='/bin/sh'&&command[3]==='amem-hook-native';
  const candidate=Array.isArray(command)&&typeof command[2]==='string'&&command[2].endsWith('/session-brief-worker.ts');
  if(candidate||native)note('attempt',{exact:Number(matched||native),native:Number(native)});
- const sleeper='sleep 30 & child=$!; printf \"%s\\n\" \"$child\" >> \"$1\"; printf entered > \"$2\"; wait';
+ const sleeper='sleep 30 & child=$!; printf \"%s\" \"$leader\" > \"$1.$child.before\"; printf \"%s\\n\" \"$child\" >> \"$1\"; : > \"$1.$child.after\"; printf entered > \"$2\"; wait';
  const argv=matched&&stallWorker?[command[0],'--smol','--preload',preload,...command.slice(2)]:native&&stallWorker?[...command.slice(0,6),'/bin/sh','-c',sleeper,'fixture',${JSON.stringify(nativePidFile)},${JSON.stringify(entered)}]:command;
  const child=original(argv,options);
  if(candidate||native)note('returned',{exact:Number(matched||native),native:Number(native),childPid:child.pid});
@@ -53,15 +55,40 @@ Bun.spawn=(command,options)=>{
 };
 if(stallWorker&&process.argv[1]===worker){
  const sleeper=Bun.spawn(['/bin/sleep','30'],{stdin:'ignore',stdout:'ignore',stderr:'ignore'});
+ writeFileSync(${JSON.stringify(nativePidFile)}+'.'+sleeper.pid+'.before',String(process.pid),{mode:0o600});
  writeFileSync(${JSON.stringify(nativePidFile)},String(sleeper.pid)+'\\n',{mode:0o600});
+ writeFileSync(${JSON.stringify(nativePidFile)}+'.'+sleeper.pid+'.after','',{mode:0o600});
  writeFileSync(${JSON.stringify(entered)},'entered',{mode:0o600});
  await sleeper.exited;
 }
 `;
-  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle);
+  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle,stallWorker);
   if(sessionDeadlineEnabled)rendered=instrumentSessionNativeDeadline(rendered);
   writeFileSync(preload,rendered,{mode:0o600});
   return { preload, worker, nativePidFile, entered,
+    fixtureChildren(): { rows: FixtureChildEvidence[]; truncated: boolean; invalid: boolean } {
+      const prefix = "owned-native.pid.", files = readdirSync(root).filter(name => name.startsWith(prefix)).sort();
+      const truncated = files.length > MAX_FIXTURE_CHILD_EVIDENCE * 2;
+      const rows: FixtureChildEvidence[] = []; let invalid = false;
+      for (const name of files.slice(0, MAX_FIXTURE_CHILD_EVIDENCE * 2)) {
+        const match = /^owned-native[.]pid[.]([1-9][0-9]*)[.]before$/.exec(name);
+        if (!match) {
+          const afterMatch = /^owned-native[.]pid[.]([1-9][0-9]*)[.]after$/.exec(name);
+          if (!afterMatch || !files.includes(`${prefix}${afterMatch[1]}.before`)) invalid = true;
+          continue;
+        }
+        try {
+          const pid = Number(match[1]), file = join(root, name), stat = lstatSync(file, { bigint: true });
+          if (stat.size > 32n) { invalid = true; continue; }
+          const ownerText = readFileSync(file, "utf8"), ownerPid = Number(ownerText);
+          if (!stat.isFile() || stat.isSymbolicLink() || !/^[1-9][0-9]*$/.test(ownerText) || !Number.isSafeInteger(pid) || !Number.isSafeInteger(ownerPid)) { invalid = true; continue; }
+          const after = join(root, `${prefix}${pid}.after`), end = lstatSync(after, { bigint: true, throwIfNoEntry: false });
+          if (end && (!end.isFile() || end.isSymbolicLink())) { invalid = true; continue; }
+          rows.push({ pid, ownerPid, beforeMs: Number(stat.mtimeNs) / 1_000_000, ...(end ? { afterMs: Number(end.mtimeNs) / 1_000_000 } : {}) });
+        } catch { invalid = true; }
+      }
+      return { rows, truncated, invalid };
+    },
     /** Observation only, never signalling authority. A missing exit flush is explicit missing evidence. */
     lifecycle(parentPid?:number): HookLifecycleReceipt[] {
       if(!existsSync(lifecycle))return[];

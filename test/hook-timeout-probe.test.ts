@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
 import { hookTimeoutProbe } from "./fakes/hooks-timeout-probe.ts";
 
@@ -54,3 +55,27 @@ test("controlled PreToolUse timeout proves spawned-not-entered after admission",
     expect(result.rssMB).toBeGreaterThan(0);
   } finally { f.close(); }
 }, 10000);
+
+test("incomplete native receipt emits PID and timing evidence through the budget probe", async () => {
+  const f = hookFixture(), run = f.run, output: string[] = [], originalLog = console.log;
+  f.run = (name, payload, extra = {}) => {
+    const result = run(name, payload, extra), receipt = join(f.root, "owned-native.pid");
+    const pids = readFileSync(receipt, "utf8").trim().split("\n");
+    expect(pids).toHaveLength(2);
+    // Model the incomplete shared receipt after the fixture wrote its independent child markers.
+    writeFileSync(receipt, pids[0]! + "\n");
+    return result;
+  };
+  console.log = (...values: unknown[]) => { output.push(values.map(String).join(" ")); };
+  try {
+    const outcome = await hookTimeoutProbe(f, "PreToolUse", false, { run: 1, logicalRun: 1 }, 2000).then(value => JSON.stringify(value), error => String(error));
+    expect(outcome, output.join("\n")).toContain("invalid owned descendant receipt");
+    const record = output.map(line => { try { return JSON.parse(line); } catch { return null; } })
+      .find(row => row?.diagnostic === "timeout-descendant-refusal/v1");
+    expect(record?.branch).toBe("admitted-blocked"); expect(record?.receipt.pids).toBe(1);
+    expect(record?.childEvidence.missingPids).toHaveLength(1);
+    expect(record?.childEvidence.owners).toHaveLength(2);
+    expect(record?.childEvidence.children).toHaveLength(2);
+    expect(record?.childEvidence.truncated).toBe(false);
+  } finally { console.log = originalLog; f.close(); }
+}, 15000);
