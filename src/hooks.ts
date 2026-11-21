@@ -10,7 +10,7 @@ import { hookProcessSignature, type HookNativeUsage } from "./hook-native.ts";
 import { resolveAlias } from "./memory/aliases.ts";
 import { combineRssSources, countedRssSources, emptyRssSources, hookRssReading, rssSource, type HookRssSources } from "./hook-resources.ts";
 import { HookWorkerRss } from "./hook-rss-wire.ts";
-import { appendMetrics, briefObservation, captureDropSummary, type BriefObservation, type RecordVariantMetric } from "./memory/metrics.ts";
+import { appendMetrics, briefObservation, captureDropSummary, type BriefObservation, type RecordVariantMetric, type JcodeJournalTiming } from "./memory/metrics.ts";
 import { stageHookCapture, drainHookCaptures, hookCaptureScope, quarantineHookScope, HookSpoolFull, type HookAgent, type PendingHookCapture } from "./hook-spool.ts";
 import { jcodeHookCapture, jcodeJournalTarget } from "./hook-jcode.ts";
 import { memoryHome } from "./memory/home.ts";
@@ -174,6 +174,7 @@ let drainSkipped = 0;
 let lastDrain: { startMs: number; drained: number } | undefined;
 /** Hook start on the performance clock, set by the entry points, so a worker can report times relative to it. */
 let hookStartedAt = performance.now();
+let activeJcodeTiming: JcodeJournalTiming | undefined;
 let transcriptKillAtMs: number | undefined, transcriptReapAtMs: number | undefined;
 const monotonicMs = () => performance.now();
 
@@ -192,8 +193,10 @@ async function hookWorker(options: HookOptions, base: string, deadline: number, 
   const result = { context: unavailable, rssKB: 0, rawRssKB: 0, captured: false, valid: false, rssSources: emptyRssSources(), transcript: undefined as HookTranscriptProgress | undefined };
   const drainProgress: { startMs?: number; drained?: number } = {};
   const spawn = () => {
+    if (activeJcodeTiming) activeJcodeTiming.workerSpawnStartMs = performance.now();
     const child = Bun.spawn([process.execPath, "--smol", fileURLToPath(new URL("./session-brief-worker.ts", import.meta.url))],
       { cwd: options.cwd, env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", AMEM_HOME: base }, detached: true, stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    if (activeJcodeTiming) activeJcodeTiming.workerSpawnEndMs = performance.now();
     owned = child;
     exit = child.exited.then(code => { exited = true; return code; });
     tracker = new HookWorkerRss(child.pid);
@@ -429,6 +432,7 @@ export async function hookMain(args: readonly string[], startedAt = performance.
   const deadlineMs = handlerMs(host);
   hookStartedAt = startedAt;
   transcriptKillAtMs = undefined; transcriptReapAtMs = undefined;
+  activeJcodeTiming = args[0] === "jcode" && process.env.JCODE_HOOK_EVENT === "turn_end" ? {} : undefined;
   let cleanup: (() => Promise<void>) | undefined;
   let childRssKB = 0, childRawRssKB = 0, dropped = false;
   let childSources = emptyRssSources();
@@ -445,8 +449,10 @@ export async function hookMain(args: readonly string[], startedAt = performance.
       // Bounded (256 KiB, 40 ms work, never past the handler deadline) and fail open: a fault here never drops ordinary capture.
       const target = jcodeJournalTarget(process.env, homedir());
       if (target) try {
+        if (activeJcodeTiming) activeJcodeTiming.scanStartMs = performance.now();
         const { scanJcodeJournal } = await import("./hook-jcode-journal.ts");
-        transcriptProgress = await scanJcodeJournal(target, { base: canonicalPath(memoryHome()), workBudgetMs: 40, deadline: startedAt + deadlineMs - 50 }) ?? transcriptProgress;
+        transcriptProgress = await scanJcodeJournal(target, { base: canonicalPath(memoryHome()), workBudgetMs: 40, deadline: startedAt + deadlineMs - 50, timing: activeJcodeTiming }) ?? transcriptProgress;
+        if (activeJcodeTiming) activeJcodeTiming.scanEndMs = performance.now();
       } catch { transcriptProgress = { stopReason: "unavailable" }; }
       if (!jcode) return "";
       const result = await captureAndWork(jcode.event, jcode.input, { cwd: jcode.cwd, agent: "jcode" }, canonicalPath(memoryHome()), startedAt + deadlineMs - 3);
@@ -488,8 +494,9 @@ export async function hookMain(args: readonly string[], startedAt = performance.
     try { appendRecordVariant(canonicalPath(memoryHome()), args[0] ?? "", { at: new Date().toISOString(), kind: "hook", ...recordMetric, ...emittedCost }); } catch { /* Observations never change tool outcomes. */ }
     try {
       const self = hookRssReading();
+      if (activeJcodeTiming) activeJcodeTiming.metricSampleAtMs = performance.now();
       const transcriptTiming = (args[0] === "Stop" || args[0] === "SessionEnd") ? { metricSampleAtMs: monotonicMs(), ...(transcriptKillAtMs === undefined ? {} : { killAtMs: transcriptKillAtMs }), ...(transcriptReapAtMs === undefined ? {} : { reapAtMs: transcriptReapAtMs }) } : undefined;
-      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", ...(transcriptTiming ? { transcriptTiming } : {}), ...(brief ? { brief } : {}), wallMs: performance.now() - startedAt, recordInstructionBytes: emittedCost.recordInstructionBytes, recordInstructionEstimatedTokens: emittedCost.recordInstructionEstimatedTokens,
+      appendMetrics(canonicalPath(memoryHome()), [{ at: new Date().toISOString(), kind: "hook", ...(activeJcodeTiming ? { jcodeJournalTiming: activeJcodeTiming } : {}), ...(transcriptTiming ? { transcriptTiming } : {}), ...(brief ? { brief } : {}), wallMs: performance.now() - startedAt, recordInstructionBytes: emittedCost.recordInstructionBytes, recordInstructionEstimatedTokens: emittedCost.recordInstructionEstimatedTokens,
         rssMB: (self.kb + childRssKB) / 1024, rssSources: combineRssSources(rssSource(self), countedRssSources(childRssKB, childSources)), rssScope: "owned-images", rawRssMB: (process.resourceUsage().maxRSS + childRawRssKB) / 1024,
         ...(transcriptProgress ? { transcriptOffset: transcriptProgress.offset, transcriptStopReason: transcriptProgress.stopReason } : {}), ...(abandonedChildren ? { abandonedChildren } : {}), ...(drainSkipped ? { drainSkipped } : {}), ...(lastDrain ? { drainStartMs: lastDrain.startMs, drained: lastDrain.drained } : {}), ...(dropped ? { captureDrops: 1, captureDropReason: "spool_full" as const } : {}) }]);
     } catch { /* Invalid input and unavailable homes still fail open. */ }

@@ -34,6 +34,20 @@ function rig() {
 }
 const summaryRows = (rows: { event: string }[]) => rows.map(r => r.event).sort();
 
+test("journal phase marks are emitted only for turn_end and use one process clock", () => {
+  const r = rig();
+  writeFileSync(r.journal, r.line({ title: "timed title" }));
+  expect(r.turn().exitCode).toBe(0);
+  const timing = readMetrics(r.f.base).filter(row => row.wallMs !== undefined).at(-1)?.jcodeJournalTiming;
+  expect(timing?.scanStartMs).toBeGreaterThanOrEqual(0);
+  expect(timing?.scanEndMs).toBeGreaterThanOrEqual(timing!.scanStartMs!);
+  expect(timing?.publishEndMs).toBeGreaterThanOrEqual(timing!.publishStartMs!);
+  expect(timing?.cursorCloseEndMs).toBeGreaterThanOrEqual(timing!.cursorCloseStartMs!);
+  expect(timing?.metricSampleAtMs).toBeGreaterThanOrEqual(timing!.scanEndMs!);
+  expect(r.turn({ JCODE_HOOK_EVENT: "post_tool" }).exitCode).toBe(0);
+  expect(readMetrics(r.f.base).filter(row => row.wallMs !== undefined).at(-1)?.jcodeJournalTiming).toBeUndefined();
+});
+
 test("target: derived from the session id and JCODE_HOME, with no directory scan; hostile ids are refused", () => {
   const r = rig();
   expect(jcodeJournalTarget(r.env() as never, r.f.root)?.journal).toBe(r.journal);

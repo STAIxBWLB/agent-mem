@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { buildCaptureBriefCache } from "../src/brief-capture.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { readMetrics } from "../src/memory/capacity.ts";
+import { jcodeJournalSampleFields } from "./jcode-journal-timing.ts";
 import { hookBin, hookFixture, workMarker } from "../test/fakes/hooks-fixture.ts";
 import { REPO_SCHEMA, repoEntryId } from "../src/memory/repo-scope.ts";
 import { hookProcessObserver } from "../test/fakes/hooks-process-observer.ts";
@@ -31,6 +32,9 @@ interface Sample extends ReturnType<typeof measuredBudgetHookRss> {
   timingOnlyStall348?: boolean;
   /** The handler's own wall from its metric row: the 300 ms maximum is judged on this (#228 ruling option 3). */
   metricWallMs: number;
+  jcodeJournalTiming?: import("../src/memory/metrics.ts").JcodeJournalTiming;
+  drainStartMs?: number; drained?: number; transcriptOffset?: number; transcriptStopReason?: import("../src/hook-contract.ts").HookTranscriptStopReason;
+  metricSampleToParentReturnUpperBoundMs?: number | null;
   countedRetirements: number;
   retirementReceipts: { at: string; captureDrops: number; captureDropReason: "scope_capacity" }[];
 }
@@ -204,7 +208,7 @@ function invoke(event: "PostToolUse" | "SessionStart", group: keyof typeof defer
     if (!expectRepoSection && /repo=/.test(context)) throw new Error("SessionStart without a repo log reported a repo section");
   }
   // Production metrics sum each counted exec-image peak; Linux CLI wait4 remains a raw diagnostic.
-  return { wallMs, timingOnlyStall348, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts };
+  return { wallMs, timingOnlyStall348, metricWallMs: metric.wallMs!, ...rss, countedRetirements: retired, retirementReceipts, ...jcodeJournalSampleFields(group, metric, wallMs) };
 }
 async function samples(name: string, count: number, run: () => Sample): Promise<Sample[]> {
   const rows: Sample[] = [];
