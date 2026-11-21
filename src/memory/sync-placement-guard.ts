@@ -11,7 +11,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Bi
 import { join } from "node:path";
 import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape, type BoundProfile } from "./generation.ts";
 import { legacyShardMarkerShape } from "./shard.ts";
-import { PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
+import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 import { PLACEMENT_ACTIVATION_INTENT } from "./sync-placement-activation-path.ts";
 import { profileLockRefusal, rememberProfileLockError } from "./profile-lock-diagnostic.ts";
 
@@ -89,6 +89,21 @@ function readMarker(file: string): unknown | undefined {
 }
 export function readPlacementRuntimeMarkers(home: string): { profile: unknown | undefined; shards: unknown | undefined } {
   return { profile: readMarker(join(home, "profile.json")), shards: readMarker(join(home, "shards.json")) };
+}
+/** #551 AC2: whether a home is provably a placement home, provably not one, or unprovable from its own markers. */
+export type PlacementMarkerState = "placement" | "unverified" | "not placement";
+/**
+ * #551 AC2: a caller that decides whether placement writer verification applies reads this instead of parsing the markers
+ * itself. A marker that cannot be read, is unsafe or does not parse proves neither state, so it is `unverified` - never a
+ * home reported as one that never activated placement sync, and never a root reported as missing.
+ */
+export function placementMarkerState(home: string): PlacementMarkerState {
+  let markers: { profile: unknown | undefined; shards: unknown | undefined };
+  try { markers = readPlacementRuntimeMarkers(home); } catch { return "unverified"; }
+  if (schema(markers.profile) === PLACEMENT_PROFILE_SCHEMA || schema(markers.shards) === PLACEMENT_SHARDS_SCHEMA)
+    return (markers.profile as { publicationFormat?: unknown } | undefined)?.publicationFormat === PLACEMENT_FORMAT ? "placement" : "unverified";
+  // A missing marker or a recognizable legacy one is a home that never activated placement sync; any other shape is malformed.
+  return legacyProfileMarkerShape(markers.profile) && legacyShardMarkerShape(markers.shards) ? "not placement" : "unverified";
 }
 function schema(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;

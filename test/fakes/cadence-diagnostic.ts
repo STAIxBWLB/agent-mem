@@ -24,9 +24,10 @@ Bun.plugin({name:"cadence-test-observation",setup(build){
  });
  build.onLoad({filter:/[/]cli[.]ts$/},({path})=>{
   let source=cadenceReadSource(path,"utf8");
-  const anchor='      placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)));';
+  // The statement, not its indentation or surrounding block: #551 wrapped it in a refusal handler and still has to be timed.
+  const anchor='placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url)))';
   if(source.split(anchor).length!==2)throw Error("cadence diagnostic writer anchor changed; update test/fakes/cadence-diagnostic.ts against cli.ts before probing");
-  source=source.replace(anchor,'      globalThis.__cadenceProbe.mark("writer-context-start");'+anchor+'globalThis.__cadenceProbe.mark("writer-context-end");');
+  source=source.replace(anchor,'globalThis.__cadenceProbe.mark("writer-context-start");'+anchor+';globalThis.__cadenceProbe.mark("writer-context-end")');
   return{contents:source,loader:"ts"};
  });
 }});

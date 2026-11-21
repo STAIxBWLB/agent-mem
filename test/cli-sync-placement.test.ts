@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync, rmSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { placementActivationFixture, activationOwnRoot } from "./fakes/sync-placement-activation.ts";
@@ -70,6 +70,23 @@ const {runCli}=await import(${JSON.stringify(cli)});
 try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}`;
   return Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
 }
+/**
+ * #551: a `running CLI`/`missing` refusal needs an executing install the inventory does not hold, which activation itself
+ * refuses to build; and the masked arm needs a failure that is not a writer refusal at all. Both substitute only this
+ * adapter's entry point in the child, so every other production read, refusal and text stays the one under test. The
+ * original is bound before the mock is registered, because `mock.module` rewrites the namespace in place and a body that
+ * read `context.activePlacementWriterContext` afterwards would call itself.
+ */
+function runWriterContext(f:ReturnType<typeof hookFixture>,args:string[],agent:boolean,body:string){
+  const env={...f.env};delete env.CLAUDECODE;if(agent)env.AGENTHUB_PEER_ID="codex";
+  const context=fileURLToPath(new URL("../src/sync-placement-writer-context.ts",import.meta.url));
+  const source=`const {mock}=await import("bun:test");
+const context=await import(${JSON.stringify(context)}),real=context.activePlacementWriterContext;
+mock.module(${JSON.stringify(context)},()=>({...context,activePlacementWriterContext:${body}}));
+const {runCli}=await import(${JSON.stringify(cli)});
+try{const out=await runCli(${JSON.stringify(args)},{cwd:${JSON.stringify(f.cwd)},env:process.env});if(out)console.log(out);}catch(error){console.error(error.message);process.exitCode=1;}`;
+  return Bun.spawnSync([process.execPath,"-e",source],{cwd:f.cwd,env,stdout:"pipe",stderr:"pipe",timeout:60_000});
+}
 
 test("shared parser/help/completions expose only migrate writer roots and forward-only activation",()=>{
   expect(parseCommand(["migrate","--sync-placement","--dry-run","--writer-root","/fixture/root"]).options["--sync-placement"]).toBe(true);
@@ -124,11 +141,17 @@ test("person activation supports plain and cadence sync with an unreceipted writ
   const cadence=success(run(f,["sync","--if-due","--force","--json"],false,CADENCE_E2E_DEADLINE_MS));expect(cadence.ok).toBe(true);expect(cadence.skipped).toBeUndefined();
   const epoch=JSON.parse(readFileSync(join(f.base,"profile.json"),"utf8")).placementHead;
   writeFileSync(join(extra,"src","index.ts"),"// changed unregistered writer\n",{mode:0o644});
-  const blocked=run(f,["sync","--json"]);expect(blocked.exitCode).not.toBe(0);expect(blocked.stderr.toString()).toContain("amem migrate --sync-placement --dry-run");
+  // #551: the drift is a writer-context refusal, so --json returns the failed result and its fixed category, cause class and
+  // remedy instead of one masked line; the attempt is still stamped and backs off.
+  const blocked=run(f,["sync","--json"]);const refusal=JSON.parse(blocked.stdout.toString()) as {ok:boolean;failure:{cause:string};error:string};
+  expect(blocked.exitCode).toBe(0);expect(refusal).toMatchObject({ok:false,failure:{cause:"refusal"}});
+  expect(refusal.error).toContain("(declared writer category;");expect(refusal.error).toContain("amem migrate --sync-placement --dry-run");
+  expect(blocked.stderr.toString()).not.toContain("Memory operation unavailable or refused");
+  expect(refusal.error).not.toContain(extra);
   const failed=readSyncState(f.base);expect(failed.failures).toBe(1);
   expect(nextSyncAt(failed)!-Date.parse(failed.lastAttemptAt!)).toBe(SYNC_BACKOFF_BASE_MS);
   const deferred=success(run(f,["sync","--if-due","--json"]));expect(deferred).toMatchObject({skipped:"not due",failures:1});expect(readSyncState(f.base)).toEqual(failed);
-  const forced=run(f,["sync","--if-due","--force","--json"]);expect(forced.exitCode).not.toBe(0);
+  const forced=run(f,["sync","--if-due","--force","--json"]);expect(JSON.parse(forced.stdout.toString())).toMatchObject({ok:false,failure:{cause:"refusal"}});
   const repeated=readSyncState(f.base);expect(repeated.failures).toBe(2);expect(nextSyncAt(repeated)!-Date.parse(repeated.lastAttemptAt!)).toBe(2*SYNC_BACKOFF_BASE_MS);
   const drift=success(run(f,["migrate","--sync-placement","--dry-run","--json"]));expect(drift.active).toBe(true);expect((drift.writers as {matches:boolean}).matches).toBe(false);
   const preserved=inspectionFilesystemSnapshot(f.base),renew=run(f,["migrate","--sync-placement","--apply","--json"]);
@@ -201,17 +224,27 @@ test("#520: a marked session names the setup target whose recorded install is go
   expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
   const install=unregisteredWriter(f); setupReceipt(f,"qwen",join(install,"bin","amem.js"));
   rmSync(install,{recursive:true});
-  const marked=run(f,["sync","--json"],true), text=marked.stderr.toString();
-  expect(marked.exitCode).not.toBe(0);
+  // #551: an early writer-context refusal is the run's own failed result, the same shape a later attestation refusal takes,
+  // so `--json` reports it in the body instead of exiting 1 with the text on stderr.
+  const marked=run(f,["sync","--json"],true), receipt=JSON.parse(marked.stdout.toString()) as {ok:boolean;failure:{cause:string};error:string}, text=receipt.error;
+  expect(marked.exitCode).toBe(0); expect(receipt).toMatchObject({ok:false,failure:{cause:"refusal"}});
+  // #551 AC1: the fixed category and cause class ride in front of #520's own marker and remedy, in the one text both surfaces print.
+  expect(text).toContain("(setup receipt category; runtime files are unreadable or missing)");
+  expect(text).toContain("proof is unavailable");
   expect(text).toContain("[cause: setup_receipt_missing_install]");
   expect(text).toContain("the qwen setup receipt names an amem install that no longer exists");
   expect(text).toContain("amem setup qwen --apply"); expect(text).toContain("amem setup qwen --undo"); expect(text).toContain("then rerun the sync");
   expect(text).not.toContain(install); expect(text).not.toContain(f.base);
+  expect(marked.stderr.toString()).not.toContain("Memory operation unavailable or refused");
   // Fail-closed: the refusal is recorded as the run's failure, and a person is still refused by the same receipt.
   expect(readSyncState(f.base).failures).toBe(1);
-  const person=run(f,["sync","--json"]);
-  expect(person.exitCode).not.toBe(0); expect(person.stderr.toString()).toContain("setup receipt"); expect(person.stderr.toString()).not.toContain(install);
+  const person=run(f,["sync","--json"]), forPerson=JSON.parse(person.stdout.toString()) as {ok:boolean;error:string};
+  expect(person.exitCode).toBe(0); expect(forPerson.ok).toBe(false); expect(forPerson.error).toContain("setup receipt"); expect(forPerson.error).not.toContain(install);
   expect(readSyncState(f.base).failures).toBe(2);
+  // A readable run still refuses with exit 1 and the same fixed text.
+  const human=run(f,["sync"],true); expect(human.exitCode).not.toBe(0);
+  expect(human.stderr.toString()).toContain("[cause: setup_receipt_missing_install]"); expect(human.stderr.toString()).not.toContain(install);
+  expect(readSyncState(f.base).failures).toBe(3);
   const doctor=run(f,["doctor","--json"],true), report=JSON.parse(doctor.stdout.toString()) as {sections:{setup:{status:string;entries:{target?:string;phase?:string;entry?:string;reason?:string}[]}}};
   expect(doctor.exitCode).toBe(0); expect(report.sections.setup.status).toBe("attention");
   const row=report.sections.setup.entries.find(entry=>entry.entry==="amem install")!;
@@ -260,3 +293,98 @@ test("#449/#450: an unlisted cwd selects no realm; placement sync covers the act
   expect(existsSync(join(shardDir(f.base,project),"generation.json"))).toBe(false);
   const listed=success(run(f,["sync","--json"])); expect(listed.ok).toBe(true);
 },120_000);
+
+// #551 AC1: a writer-context refusal is the run's own failed result with its fixed category, cause class and remedy, on all
+// four surfaces - marked and unmarked sync as JSON and as text, and doctor. A receipt naming an existing install the
+// activated inventory does not hold produces the `setup receipt`/`missing` arm through production code.
+test("#551 AC1: sync and doctor report the setup-receipt writer refusal as fixed data on both sides", async () => {
+  const f=await placementActivationFixture(); cleanup.push(f.close);
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  const install=unregisteredWriter(f); setupReceipt(f,"qwen",join(install,"bin","amem.js"));
+  expect(existsSync(install)).toBe(true);   // the install is present, so this is a missing inventory entry, not a removed root
+  const shared=(text:string)=>{expect(text).toContain("(setup receipt category)");expect(text).toContain("proof is missing");expect(text).toContain("amem migrate --sync-placement --dry-run");
+    expect(text).not.toContain(install);expect(text).not.toContain(f.base);expect(text).not.toContain("Memory operation unavailable or refused");};
+  const marked=success(run(f,["sync","--json"],true)) as {ok:boolean;pushed:boolean;entries:number;failure:{cause:string};error:string};
+  expect(marked).toMatchObject({ok:false,pushed:false,entries:0,failure:{cause:"refusal"}}); shared(marked.error);
+  expect(readSyncState(f.base).failures).toBe(1);
+  const person=success(run(f,["sync","--json"])) as {ok:boolean;failure:{cause:string};error:string};
+  expect(person).toMatchObject({ok:false,failure:{cause:"refusal"}}); expect(person.error).toBe(marked.error); shared(person.error);
+  expect(readSyncState(f.base).failures).toBe(2);
+  // Human runs keep the refusal's own text and exit 1, marked and unmarked alike.
+  for(const agent of [true,false]){
+    const human=run(f,["sync"],agent); expect(human.exitCode).not.toBe(0); expect(human.stdout.toString()).toBe("");
+    shared(human.stderr.toString()); expect(human.stderr.toString()).toContain("Sync placement writer proof is missing");
+  }
+  const doctor=run(f,["doctor","--json"],true), report=JSON.parse(doctor.stdout.toString()) as {sections:{writers?:{status:string;category?:string;cause?:string;phase?:string;reason?:string;writers?:number}}};
+  expect(doctor.exitCode).toBe(0); expect(report.sections.writers).toMatchObject({status:"attention",category:"setup receipt",cause:"missing",phase:"active"});
+  shared(report.sections.writers!.reason!);
+  // With the receipt gone the same home verifies clean: the section is `ok` and counts the inventory, not a refusal.
+  unlinkSync(join(f.base,"setup","qwen.json"));
+  const clean=JSON.parse(run(f,["doctor","--json"],true).stdout.toString()) as {sections:{writers?:{status:string;writers?:number;reason?:string}}};
+  expect(clean.sections.writers).toMatchObject({status:"ok",writers:1}); expect(clean.sections.writers!.reason).toBeUndefined();
+},180_000);
+
+// #551 AC1: the `running CLI` arm - the install running the command is not in the inventory - plus the masked arm, where a
+// failure that is not a writer refusal keeps the generic masked line on the same code path.
+test("#551 AC1: a running-CLI refusal reaches both surfaces, and any other failure stays masked", async () => {
+  const f=await placementActivationFixture(); cleanup.push(f.close);
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  const other=unregisteredWriter(f), own=`(home)=>real(home,${JSON.stringify(other)})`;
+  const marked=success(runWriterContext(f,["sync","--json"],true,own)) as {ok:boolean;failure:{cause:string};error:string};
+  expect(marked).toMatchObject({ok:false,failure:{cause:"refusal"}});
+  expect(marked.error).toContain("(running CLI category)"); expect(marked.error).toContain("proof is missing");
+  expect(marked.error).toContain("amem migrate --sync-placement --dry-run");
+  expect(marked.error).not.toContain(other); expect(marked.error).not.toContain(f.base);
+  const person=runWriterContext(f,["sync","--json"],false,own);
+  expect(person.exitCode).toBe(0); expect(JSON.parse(person.stdout.toString()).error).toBe(marked.error);
+  const human=runWriterContext(f,["sync"],true,own);
+  expect(human.exitCode).not.toBe(0); expect(human.stderr.toString()).toContain("(running CLI category)"); expect(human.stderr.toString()).not.toContain(other);
+  // A different failure on the same path is not a writer refusal: marked output is the masked line, with no path or message.
+  const masked=runWriterContext(f,["sync","--json"],true,`()=>{throw new Error("transport refused at ${join(f.base,"private")}")}`);
+  expect(masked.exitCode).not.toBe(0);
+  expect(masked.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
+  expect(masked.stderr.toString()).not.toContain(f.base); expect(masked.stdout.toString()).toBe("");
+  // #551 AC1: the same masking holds for a refusal carried as `placementRefusal` behind a throwing proxy - the run ends in
+  // the anonymous line with no trap text, no category and no target. This arm pins that outcome; the adapter's own order is
+  // pinned by the unit test, because a trap that fires there is still masked by this catch and would show the same line.
+  const trap=`{getPrototypeOf(){throw new Error("proxy trap")},getOwnPropertyDescriptor(){throw new Error("proxy trap")},get(){throw new Error("proxy trap")},has(){throw new Error("proxy trap")}}`;
+  const hostile=`()=>{const carrier=new Error("carrier");Object.defineProperty(carrier,"placementRefusal",{value:new Proxy(new context.PlacementWriterContextError("setup receipt","unavailable","active",undefined,undefined,"qwen"),${trap})});throw carrier}`;
+  const trapped=runWriterContext(f,["sync","--json"],true,hostile);
+  expect(trapped.exitCode).not.toBe(0); expect(trapped.stdout.toString()).toBe("");
+  expect(trapped.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
+  expect(trapped.stderr.toString()).not.toContain("proxy trap");
+  expect(trapped.stderr.toString()).not.toContain("setup receipt"); expect(trapped.stderr.toString()).not.toContain("qwen");
+},180_000);
+
+// #551: an inventory that cannot be read far enough proves no category, so it is reported as unverified - never as a root
+// reported missing, and never with an invented category.
+test("#551: an unprovable writer inventory is unverified in sync and doctor, never a missing root", async () => {
+  const f=await placementActivationFixture(); cleanup.push(f.close);
+  expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
+  const unverified="Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
+  // The whole fixed sentence, so a later edit to it is visible here: no category claim, one next step, no bare "missing".
+  // #551 AC2: a marker that does not parse proves neither state, so doctor reports the state as unverified instead of
+  // treating the home as one that never activated placement sync - and the same home verifies clean once it parses again,
+  // so the row is the marker's and the inventory is never claimed missing.
+  const profile=readFileSync(join(f.base,"profile.json"));
+  const clean=JSON.parse(run(f,["doctor","--json"]).stdout.toString()) as {sections:{writers?:{status:string;writers?:number}}};
+  expect(clean.sections.writers).toMatchObject({status:"ok",writers:1});
+  writeFileSync(join(f.base,"profile.json"),"not a profile\n",{mode:0o600});
+  const malformedRun=run(f,["doctor","--json"]); expect(malformedRun.exitCode).toBe(0);
+  const malformed=JSON.parse(malformedRun.stdout.toString()) as {sections:{writers?:{status:string;category?:string;cause?:string;reason?:string}}};
+  expect(malformed.sections.writers).toMatchObject({status:"unavailable"});
+  expect(malformed.sections.writers!.reason).toBe(unverified);
+  expect(malformed.sections.writers!.category).toBeUndefined(); expect(malformed.sections.writers!.cause).toBeUndefined();
+  writeFileSync(join(f.base,"profile.json"),profile,{mode:0o600});
+  const epochs=join(f.base,"sync-placement","epochs"), epoch=join(epochs,readdirSync(epochs)[0]!);
+  writeFileSync(join(epoch,"writer-revision-00001.json"),"not a writer revision\n",{mode:0o600});   // a real log read failure, not a hand-built error
+  const marked=success(run(f,["sync","--json"],true)) as {ok:boolean;failure:{cause:string};error:string};
+  expect(marked).toMatchObject({ok:false,failure:{cause:"refusal"}});
+  expect(marked.error).toBe(unverified); expect(marked.error).not.toContain("missing");
+  const person=run(f,["sync","--json"]); expect(person.exitCode).toBe(0); expect(JSON.parse(person.stdout.toString()).error).toBe(unverified);
+  const doctor=run(f,["doctor","--json"],true), report=JSON.parse(doctor.stdout.toString()) as {sections:{writers?:{status:string;category?:string;cause?:string;reason?:string}}};
+  expect(doctor.exitCode).toBe(0); expect(report.sections.writers).toMatchObject({status:"unavailable"});
+  expect(report.sections.writers!.reason).toBe(unverified);
+  expect(report.sections.writers!.category).toBeUndefined(); expect(report.sections.writers!.cause).toBeUndefined();
+  expect(doctor.stdout.toString()).not.toContain("writer-revision-00001.json");
+},180_000);
