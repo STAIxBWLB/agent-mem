@@ -43,6 +43,8 @@ From a checkout, install development dependencies with `bun install` and run `bu
 | Sync and migration | `amem sync`, `amem migrate`, `amem prune`, `amem formats raise` | [docs/sync.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/sync.md), [docs/curated-shard-migration.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/curated-shard-migration.md) |
 | Console | `amem setup console`, plugin for <!-- facts:console-pin -->`@staix/agent-console` 0.1.3<!-- /facts:console-pin --> | [docs/cli.md](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md#console-acon) |
 
+Bundled amem skills are previewed and installed alongside supported client setup. For other hosts, use `amem skills export <dir>`; see [setup](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/setup.md) and [CLI](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/cli.md).
+
 Run `amem --help` or `amem <command> --help` for every option.
 
 ## MCP tools

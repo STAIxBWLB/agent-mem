@@ -256,3 +256,7 @@ Before recording vault links, every host sharing the memory home must run a P2 v
 General memory candidates are separate from curated evidence. `amem review accept <id> --kind memory --policy-free` is available through the CLI with actor and peer derived from the session; it rechecks the current standalone privacy policy before appending the accepted note. Machine capacity reports numeric aggregate use across shards, as R7 requires; it does not return foreign project names or text.
 
 `bun scripts/measure-mcp-budget.ts` exercises an actual stdio session with 5,001 curated notes, 5,001 capture rows and 10,001 work-list operations reduced into 100 items. It checks the R3 idle RSS limit of 100 MB, peak RSS limit of 200 MB across searches, latest/anchored timelines and work-list reads, and child reaping after EOF. CI runs the harness on macOS and Linux. All harness data is synthetic; live P6 measurements remain separate.
+
+## Bundled skills
+
+`amem skills export <dir> [--json]` exports self-contained skills to a directory without foreign entries. Each skill includes the shared adapter and an ownership marker. The command preserves foreign or modified skills and reports each action; it exits 1 if an action is refused, foreign or modified and no skill was installed or replaced. Setup previews and installs skills for Claude, Codex, Kimi and Qwen; see [setup](setup.md).

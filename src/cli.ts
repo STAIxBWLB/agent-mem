@@ -24,7 +24,7 @@ import { vaultCandidates, vaultCandidatesText, vaultCandidatesAllText } from "./
 import type { IngestKind, IngestReceipt } from "./ingest.ts";
 import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureSessionKey } from "./memory/capture-input.ts";
 import { originLine, originRecheck } from "./memory/candidate-origin.ts";
@@ -76,6 +76,7 @@ export interface CliOutputReceipt { project: string; ids: readonly string[]; ren
 export interface CliContext {
   /** Prepared output metadata only. Invoke rendered only after the output writer succeeds. */
   onOutputReady?: (receipt: CliOutputReceipt) => void;
+  onExitCode?: (code: number) => void;
   cwd?: string; env?: Readonly<Record<string, string | undefined>>; stdinTTY?: boolean;
   /** Narrow seam for deterministic fixtures standing in for `gh` (#15 T4): the CLI always uses the native remote visibility check. */
   visibility?: (url: string) => Promise<Visibility>;
@@ -492,6 +493,15 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     }
   } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined||options["--checkpoint"]!==undefined||options["--plan"]!==undefined)) {
     throw new AgentUsageError("--writer-root, --abandon, --admit, --list-remote, --from-remote, --checkpoint and --plan apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
+  }
+  if (parsed.path[0] === "skills" && parsed.path[1] === "export") {
+    if (parsed.positionals.length !== 1) throw new Error("usage: amem skills export <dir> [--json]");
+    const { exportSkills } = await import("./skills-install.ts");
+    const destination = parsed.positionals[0]!;
+    const report = exportSkills(destination.trim() ? resolve(context.cwd ?? process.cwd(), destination) : destination);
+    if (report.actions.some(a => ["refused", "foreign", "modified"].includes(a.change)) && !report.actions.some(a => a.change === "install" || a.change === "replace")) context.onExitCode?.(1);
+    if (options["--json"] === true) return JSON.stringify(report, null, 2);
+    return [`amem skills export: ${report.root}`, "NAME                 CHANGE     PATH / REASON", ...report.actions.map(a => `${a.name.padEnd(20)} ${a.change.padEnd(10)} ${a.path}${a.reason ? ` / ${a.reason}` : ""}`)].join("\n");
   }
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
@@ -1542,7 +1552,7 @@ export async function writeCliOutput(text: string, output: Writable = process.st
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   let personStop: string | undefined;
   try {
-    const receipts: CliOutputReceipt[] = [], output = await runCli(argv, { onOutputReady: receipt => receipts.push(receipt), onPersonStop: name => { personStop ??= name; } });
+    const receipts: CliOutputReceipt[] = [], output = await runCli(argv, { onOutputReady: receipt => receipts.push(receipt), onPersonStop: name => { personStop ??= name; }, onExitCode: code => { process.exitCode = code; } });
     if (output) { await writeCliOutput(output + "\n"); for (const receipt of receipts) { try { receipt.rendered(); } catch { /* telemetry stays optional */ } } }
   } catch (error) {
     let prefix = "";

@@ -264,7 +264,7 @@ test("setup preview inventories every target without commands, files or confirma
 });
 test("all-target apply stages native commands, records private receipts and is byte/mode-idempotent", () => {
   const f = fixture(), rules = seedOtherFiles(f), rulesBefore = rules.map(image), plan = f.plan("all", "apply");
-  expect(applySetup(plan, f.options)).toEqual({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
+  expect(applySetup(plan, f.options)).toMatchObject({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
   expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen", "gemini"]);
   for (const call of f.calls) { expect(call.argv.slice(-5)).toEqual(call.argv[0] === "qwen" || call.argv[0] === "gemini" ? [f.bun, "--", "--smol", f.entry, "mcp"] : ["--", f.bun, "--smol", f.entry, "mcp"]); expect(existsSync(call.cwd)).toBe(false); expect(call.env.CODEX_HOME).toBe(join(call.cwd, ".codex")); expect(call.env.KIMI_CODE_HOME).toBe(join(call.cwd, ".kimi-code")); expect(call.env.PI_CODING_AGENT_DIR).toBe(join(call.cwd, ".pi", "agent")); }
   for (const target of SETUP_ALL_TARGETS) {
@@ -281,7 +281,7 @@ test("all-target apply stages native commands, records private receipts and is b
   expect(text(f.file("pi", 1))).toContain("session_shutdown"); expect(text(f.file("pi", 1))).toContain(f.entry);
   expect(rules.map(image)).toEqual(rulesBefore);
   const beforeSecond = snapshot(f.home), calls = f.calls.length;
-  expect(applySetup(f.plan("all", "apply"), f.options)).toEqual({ applied: [], unchanged: [...SETUP_ALL_TARGETS] }); expect(f.calls).toHaveLength(calls); expect(snapshot(f.home)).toEqual(beforeSecond);
+  expect(applySetup(f.plan("all", "apply"), f.options)).toMatchObject({ applied: [], unchanged: [...SETUP_ALL_TARGETS] }); expect(f.calls).toHaveLength(calls); expect(snapshot(f.home)).toEqual(beforeSecond);
 });
 test.each(["codex", "kimi", "qwen"] as const)("legacy %s capture receipt upgrades to JSON output and remains undoable", target => {
   const f = fixture(); seedOtherFiles(f);
@@ -318,7 +318,7 @@ test.each(["codex", "kimi", "qwen"] as const)("legacy %s capture receipt upgrade
 test("undo restores original bytes, modes and missing files without touching unrelated rules", () => {
   const f = fixture(), rules = seedOtherFiles(f), plan = f.plan("all", "apply"), files = plan.actions.flatMap(action => action.files), originals = files.map(image), rulesBefore = rules.map(image);
   expect(originals.some(value => value.bytes === null)).toBe(true); applySetup(plan, f.options); const calls = f.calls.length;
-  expect(undoSetup(f.plan("all", "undo"), f.options)).toEqual({ restored: [...SETUP_ALL_TARGETS] }); expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(calls);
+  expect(undoSetup(f.plan("all", "undo"), f.options)).toMatchObject({ restored: [...SETUP_ALL_TARGETS] }); expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(calls);
   for (const target of SETUP_ALL_TARGETS) expect(existsSync(f.receiptFile(target))).toBe(false);
 });
 test("existing amem registration is removed before add while other MCP entries survive", () => {
@@ -335,11 +335,11 @@ test("existing amem registration is removed before add while other MCP entries s
 test("runSetup explicit apply and undo need no TTY and never invoke legacy confirmation callbacks", async () => {
   const f = fixture(); seedOtherFiles(f); const before = snapshot(f.home); let confirmations = 0;
   const legacyContext = { ...f.options, stdinTTY: false, confirm: async () => { confirmations++; throw Error("legacy confirmation callback must not run"); } };
-  expect(JSON.parse(await runSetup("all", "apply", { ...legacyContext, json: true }))).toEqual({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
+  expect(JSON.parse(await runSetup("all", "apply", { ...legacyContext, json: true }))).toMatchObject({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });
   expect(f.calls.map(call => call.argv[0])).toEqual(["claude", "codex", "pi", "qwen", "gemini"]);
-  expect(JSON.parse(await runSetup("all", "undo", { ...legacyContext, json: true }))).toEqual({ restored: [...SETUP_ALL_TARGETS] });
+  expect(JSON.parse(await runSetup("all", "undo", { ...legacyContext, json: true }))).toMatchObject({ restored: [...SETUP_ALL_TARGETS] });
   expect(confirmations).toBe(0); expect(existsSync(f.receiptFile("claude"))).toBe(false);
-  expect(snapshot(f.home).filter(row => row.name !== "memory" && row.name !== "memory/setup")).toEqual(before);
+  expect(snapshot(f.home).filter(row => row.name !== "memory" && row.name !== "memory/setup" && ![".claude/skills", ".codex/skills", ".kimi-code/skills", ".qwen/skills"].includes(row.name))).toEqual(before);
 });
 test("edits to the owned MCP entry refuse apply and undo without overwriting any target", () => {
   const f = fixture(); seedOtherFiles(f); applySetup(f.plan("all", "apply"), f.options);
@@ -373,7 +373,7 @@ test("a prepared receipt with mixed before/after images resumes without native c
   const f = fixture(); seedOtherFiles(f); const plan = f.plan("claude", "apply"), originals = plan.actions[0]!.files.map(image); applySetup(plan, f.options);
   const receipt = f.receipt("claude"), after = receipt.changes.map(change => change.after), calls = f.calls.length;
   receipt.phase = "prepared"; restore(receipt.changes[0]!.path, receipt.changes[0]!.before); put(plan.actions[0]!.receipt, JSON.stringify(receipt));
-  expect(applySetup(f.plan("claude", "apply"), f.options)).toEqual({ applied: ["claude"], unchanged: [] }); expect(f.calls).toHaveLength(calls); expect(plan.actions[0]!.files.map(image)).toEqual(after); expect(f.receipt("claude").phase).toBe("applied");
+  expect(applySetup(f.plan("claude", "apply"), f.options)).toMatchObject({ applied: ["claude"], unchanged: [] }); expect(f.calls).toHaveLength(calls); expect(plan.actions[0]!.files.map(image)).toEqual(after); expect(f.receipt("claude").phase).toBe("applied");
   undoSetup(f.plan("claude", "undo"), f.options); expect(plan.actions[0]!.files.map(image)).toEqual(originals);
 });
 test("a later target preparation failure publishes no earlier prepared config", () => {
@@ -433,7 +433,7 @@ test("runtime relocation updates managed entries and still restores original byt
   expect(applySetup(planSetup("all", "apply", moved), moved).applied).toEqual([...SETUP_ALL_TARGETS]);
   expect(f.calls.length).toBeGreaterThan(calls); const updatedCalls = f.calls.length;
   for (const target of SETUP_ALL_TARGETS) expect(mcp(f.file(target), target).amem).toMatchObject(target === "opencode" ? { command: [moved.bun, "--smol", moved.entry, "mcp"] } : { command: moved.bun, args: ["--smol", moved.entry, "mcp"] });
-  expect(undoSetup(planSetup("all", "undo", moved), moved)).toEqual({ restored: [...SETUP_ALL_TARGETS] });
+  expect(undoSetup(planSetup("all", "undo", moved), moved)).toMatchObject({ restored: [...SETUP_ALL_TARGETS] });
   expect(files.map(image)).toEqual(originals); expect(rules.map(image)).toEqual(rulesBefore); expect(f.calls).toHaveLength(updatedCalls);
 });
 
@@ -945,4 +945,24 @@ test("invalid JCODE_HOME does not block other selected setup targets", () => {
     undoSetup(planSetup("claude", "undo", options), options);
     expect(existsSync(plan.actions[0]!.files[0]!)).toBe(false);
   }
+});
+
+test("skill refusal does not block setup and undo without receipts preserves foreign skills", () => {
+  const f = fixture(), shared = join(f.home, "shared-skills"); mkdirSync(shared);
+  mkdirSync(join(f.home, ".qwen"), { recursive: true }); symlinkSync(shared, join(f.home, ".qwen", "skills"));
+  const result = applySetup(f.plan("qwen", "apply"), f.options);
+  expect(result.applied).toEqual(["qwen"]);
+  expect(result.skills?.[0]?.report?.actions.every(a => a.change === "refused")).toBe(true);
+  expect(existsSync(f.file("qwen"))).toBe(true);
+  const codex = join(f.home, ".codex", "skills");
+  const { installSkills, SKILL_NAMES } = require("../src/skills-install.ts") as typeof import("../src/skills-install.ts");
+  expect(installSkills(codex, "apply").actions.every(a => a.change === "install")).toBe(true);
+  put(join(codex, SKILL_NAMES[0], "SKILL.md"), "modified");
+  const undoPlan = f.plan("all", "undo"); expect(undoPlan.skills).toBeUndefined();
+  const undone = undoSetup(undoPlan, f.options);
+  const rows = undone.skills?.find(row => row.target === "codex")?.report?.actions;
+  expect(rows?.[0]?.change).toBe("modified"); expect(rows?.[0]?.reason).toContain("setup codex --undo");
+  expect(rows?.slice(1).every(a => a.change === "remove")).toBe(true);
+  expect(text(join(codex, SKILL_NAMES[0], "SKILL.md"))).toBe("modified");
+  expect(lstatSync(join(f.home, ".qwen", "skills")).isSymbolicLink()).toBe(true);
 });

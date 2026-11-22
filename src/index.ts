@@ -92,3 +92,5 @@ export type { PlacementWriterRootCategory, PlacementWriterContextPhase } from ".
 export { captureSessionKey } from "./memory/capture-input.ts";
 export { readRecordInstruction, RECORD_INSTRUCTION_FILE } from "./memory/record-instruction.ts";
 export { groupByTask, taskGroupKey } from "./memory/task-group.ts";
+
+export { SKILL_NAMES, installSkills, exportSkills, skillRoot, type SkillAction, type SkillInstallReport } from "./skills-install.ts";

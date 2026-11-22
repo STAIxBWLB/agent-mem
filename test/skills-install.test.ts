@@ -134,3 +134,27 @@ describe("skill installer", () => {
     for (const target of ["pi", "jcode", "opencode", "gemini", "agy"] as const) expect(skillRoot(target, env, base)).toBeUndefined();
   });
 });
+
+test("CLI exports skills and reports exit status for an untouched foreign destination", async () => {
+  const { base } = fixture();
+  const { runCli } = await import("../src/cli.ts");
+  const out = join(base, "export");
+  const report = JSON.parse(await runCli(["skills", "export", out, "--json"], { cwd: base }));
+  expect(report.actions.every((row: { change: string }) => row.change === "install")).toBe(true);
+  writeFileSync(join(out, "foreign"), "x"); let code = 0;
+  const refused = JSON.parse(await runCli(["skills", "export", out, "--json"], { cwd: base, onExitCode: n => { code = n; } }));
+  expect(code).toBe(1); expect(refused.actions.every((row: { change: string }) => row.change === "refused")).toBe(true);
+});
+
+test("export appears in manifest and completion and its refusal exits nonzero", async () => {
+  const { base } = fixture();
+  const { runCli } = await import("../src/cli.ts");
+  expect(JSON.parse(await runCli(["manifest", "--json"])).commands).toContain("skills");
+  expect(await runCli(["--help"])).toContain("skills");
+  for (const shell of ["zsh", "bash", "fish"]) expect(await runCli(["completion", shell])).toContain("export");
+  const root = join(base, "foreign"); mkdirSync(root); writeFileSync(join(root, "user-file"), "kept");
+  const cli = join(import.meta.dir, "../bin/amem.js");
+  const result = spawnSync(process.execPath, [cli, "skills", "export", root, "--json"], { env: { ...process.env, HOME: base, AMEM_HOME: join(base, "memory"), AGENTHUB_PEER_ID: "fixture" }, encoding: "utf8" });
+  expect(result.status).toBe(1); expect(JSON.parse(result.stdout).actions[0].change).toBe("refused");
+  expect(readFileSync(join(root, "user-file"), "utf8")).toBe("kept");
+});
