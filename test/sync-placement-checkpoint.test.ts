@@ -25,6 +25,7 @@ import { abandonPlacementCheckpoint, applyPlacementCheckpoint, planPlacementChec
 import { validateCheckpointIntent, checkpointWriterGenesis } from "../src/memory/sync-placement-checkpoint-format.ts";
 import { WRITER_COMMIT_LOG, createWriterCommit, createWriterRevision, validateWriterRevision, writerRevisionFile } from "../src/memory/sync-placement-writer-revision-format.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
+import type { PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
 import { formatVersionBelow } from "../src/memory/formats.ts";
 import { createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
 import { SyncPlacementJournalError } from "../src/memory/sync-placement-journal-format.ts";
@@ -254,6 +255,8 @@ test("v2 decision references survive a checkpoint archive", async () => {
   }
   const f = await fixture();
   writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "home", minReader: "0.36.0", since: "2026-11-22" }]) + "\n", { mode: 0o600 });
+  // This synthetic fixture tests unchanged decision reuse; avoid seeding a policy hold that changes after its first publication.
+  writeFileSync(join(f.base, "amem.config.json"), "{}\n", { mode: 0o600 });
   for (let i = 0; i < 400; i++) f.note(`v2 stable decision fixture ${i}`);
   await f.sync();
   const first = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))));
@@ -282,9 +285,17 @@ test("v2 decision references survive a checkpoint archive", async () => {
   } finally { store.close(); }
   await f.sync();
   const current = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))));
+  const rows = (publications: typeof first) => publications.flatMap(row => row.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]));
+  const priorRows = new Map(rows(first).map(row => [canonicalJSON(row.key), row])), nextRows = rows(current);
+  const fieldChanges = { added: 0, sourcePlacement: 0, eligible: 0, hold: 0, reason: 0, dependencies: 0 };
+  for (const row of nextRows) {
+    const prior = priorRows.get(canonicalJSON(row.key)); if (!prior) { fieldChanges.added++; continue; }
+    for (const field of ["sourcePlacement", "eligible", "hold", "reason", "dependencies"] as const) if (canonicalJSON(prior[field]) !== canonicalJSON(row[field])) fieldChanges[field]++;
+  }
+  expect(fieldChanges).toEqual({ added: 1, sourcePlacement: 0, eligible: 0, hold: 0, reason: 0, dependencies: 0 });
   expect(current.some(row => row.bundle.root.chunks.some(chunk => chunk.ownerAttemptHash)), JSON.stringify({
     first: first.map(row => ({ targets: row.bundle.root.targets.map(target => target.realm), sequence: row.bundle.root.journal.sequence, decisions: row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => [chunk.bucket, chunk.hash]) })),
-    current: current.map(row => ({ targets: row.bundle.root.targets.map(target => target.realm), sequence: row.bundle.root.journal.sequence, decisions: row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => [chunk.bucket, chunk.hash]) }))
+    current: current.map(row => ({ targets: row.bundle.root.targets.map(target => target.realm), sequence: row.bundle.root.journal.sequence, decisions: row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => [chunk.bucket, chunk.hash]) })), fieldChanges
   })).toBe(true);
   expect(() => f.checkpoint(phase => { if (phase === "staged-fsync") throw Error("v2 checkpoint staging interrupted"); })).toThrow();
   expect(f.withMutation(opts => abandonPlacementCheckpoint(f.base, f.epochHash, opts)).removed).toBeGreaterThan(0);
@@ -304,3 +315,12 @@ test("v2 decision references survive a checkpoint archive", async () => {
   releasePlacementStorageCaches();
   expect(() => readPlacementPublicationMetadata(f.base, f.epochHash, io => io.archivedPublications())).toThrow();
 }, 240_000);
+
+test("a recorded policy hold changes the next decision without a checkpoint", async () => {
+  const f = await fixture(); await f.sync();
+  const read = () => readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))).sort((a, b) => a.bundle.root.journal.sequence - b.bundle.root.journal.sequence));
+  const before = read().at(-1)!, previous = before.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]).find(row => row.hold);
+  expect(previous).toBeDefined(); f.note("independent synthetic insertion"); await f.sync();
+  const after = read().at(-1)!, next = after.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]).find(row => canonicalJSON(row.key) === canonicalJSON(previous!.key));
+  expect(next).toMatchObject({ hold: false, reason: "journal-hold" });
+}, 120_000);
