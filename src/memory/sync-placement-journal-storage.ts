@@ -11,8 +11,8 @@ import { validatePlacementProfile, validatePlacementShards } from "./sync-placem
 import { PLACEMENT_ACTIVE_FENCE_SCHEMA, PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES,
   SyncPlacementJournalError, createPlacementRecord, placementEpochHash, validatePlacementActiveFence, validatePlacementEpoch, validatePlacementEvent, validatePlacementRecord,
   type PlacementActiveFence, type PlacementEpoch, type PlacementEvent, type PlacementRecord, type SyncPlacementJournalErrorCode } from "./sync-placement-journal-format.ts";
-import { validatePlacementPublicationRoot, validatePlacementPublicationBundle, validatePlacementPublicationFact, publicationFileNames,
-  PLACEMENT_PUBLICATION_RECORD_MAX_BYTES, type PlacementPublicationRoot, type PlacementPublicationBundle, type PlacementPublicationFact } from "./sync-placement-publication-plan.ts";
+import { validatePlacementPublicationRoot, validatePlacementPublicationBundle, validatePlacementPublicationFact, decodePlacementPublicationChunk, publicationFileNames, placementDecisionReuseEnabled, PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA,
+  PLACEMENT_PUBLICATION_RECORD_MAX_BYTES, type PlacementPublicationRoot, type PlacementPublicationChunkDescriptor, type PlacementDecisionOwner, type PlacementPublicationBundle, type PlacementPublicationFact } from "./sync-placement-publication-plan.ts";
 import { PlacementProjection } from "./sync-placement-projection.ts";
 import { WRITER_RENEWAL_INTENT_FILE, WRITER_RENEWAL_INTENT_MAX_BYTES, WRITER_COMMIT_LOG, writerHistoryFileLimit, writerRevisionFile } from "./sync-placement-writer-revision-format.ts";
 import { isWriterRenewalIntentTempName } from "./sync-placement-writer-history.ts";
@@ -523,6 +523,45 @@ export interface PlacementPublicationStored {
 }
 /** Validated plan bundle keyed by the stat stamps of epoch.json, the root and every plan chunk (#420); same ceiling as journalPrefix. */
 let publicationBundle: { key: string; bundle: PlacementPublicationBundle } | undefined;
+function publicationFacts(dir: string, stem: string, root: PlacementPublicationRoot, archived?: readonly CheckpointMember[]): Pick<PlacementPublicationStored, "phase" | "facts" | "pending" | "pendingPhase"> {
+  const facts: PlacementPublicationFact[] = []; let phase: PlacementPublicationStored["phase"] = "prepared", pending = false, absent = false; let pendingPhase: PlacementPublicationFact["phase"] | undefined;
+  for (const [index, suffix] of ["artifact", "intent", "receipt"].entries()) {
+    const bytes = readOwned(join(dir, stem + suffix + ".json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
+    if (bytes === undefined) fail("corrupt");
+    if (archived) { const member = archived.find(value => value.name === stem + suffix + ".json"); if (!member || member.size !== bytes.length || member.sha256 !== digest(bytes)) fail("corrupt"); }
+    if (!bytes.length) { absent = true; continue; }
+    if (absent && (suffix !== "receipt" || pendingPhase)) fail("corrupt");
+    if (bytes.at(-1) !== 10) { pending = true; pendingPhase = (["artifact-built", "publication-intent", "completed"] as const)[index]; absent = true; continue; }
+    const fact = decode(bytes, validatePlacementPublicationFact), previous = facts.at(-1)?.seal ?? root.seal;
+    if (fact.attemptHash !== root.seal || fact.previousHash !== previous || fact.phase !== (["artifact-built", "publication-intent", "completed"] as const)[index]) fail("corrupt");
+    const intentFact = facts.find(fact => fact.phase === "publication-intent");
+    if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== root.policyHash || fact.policyCheckUnixMs !== root.policySnapshotUnixMs)
+      || fact.phase === "completed" && (fact.intentFactHash !== (intentFact?.seal ?? null) || fact.journal.sequence < root.journal.sequence || fact.journal.sequence > root.journal.sequence + root.reservedRecords
+        || fact.outcome === "committed" && (!intentFact || fact.journal.sequence !== root.journal.sequence + root.reservedRecords))) fail("corrupt");
+    facts.push(fact); phase = fact.phase;
+  }
+  return { phase, facts, pending, ...(pendingPhase ? { pendingPhase } : {}) };
+}
+function referencedDecision(p: Paths, root: PlacementPublicationRoot, descriptor: PlacementPublicationChunkDescriptor) {
+  const attempt = descriptor.ownerAttemptHash!;
+  const archived = p.window.catalog.get(attempt), dir = archived?.dir ?? p.dir, stem = `publication-${attempt}-`;
+  const rootBytes = readOwned(join(dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
+  if (archived) { const member = archived.members.find(value => value.name === stem + "root.json"); if (!member || !rootBytes || member.size !== rootBytes.length || member.sha256 !== digest(rootBytes)) fail("corrupt"); }
+  const owner = decode(rootBytes, validatePlacementPublicationRoot);
+  if (owner.seal !== attempt || owner.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA || owner.epochHash !== root.epochHash || owner.generation !== root.generation || owner.homeHash !== root.homeHash || owner.journal.sequence >= root.journal.sequence) fail("corrupt");
+  const allowed = new Set(publicationFileNames(owner));
+  if (archived && [...allowed].some(name => !archived.members.some(member => member.name === name))) fail("corrupt");
+  const facts = publicationFacts(dir, stem, owner, archived?.members), completed = facts.facts.find(fact => fact.phase === "completed");
+  if (facts.phase !== "completed" || facts.pending || !completed || completed.outcome !== "committed" || completed.journal.sequence > root.journal.sequence) fail("corrupt");
+  const matches = owner.chunks.filter(c => c.kind === "decisions" && !c.ownerAttemptHash && c.bucket === descriptor.bucket && c.hash === descriptor.hash && c.count === descriptor.count && c.bytes === descriptor.bytes);
+  if (matches.length !== 1) fail("corrupt");
+  const match = matches[0]!, name = `${stem}chunk-${String(match.index).padStart(5, "0")}.json`;
+  if (archived && !archived.members.some(member => member.name === name && member.sha256 === match.hash && member.size === match.bytes)) fail("corrupt");
+  const bytes = readOwned(join(dir, name), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES);
+  if (!bytes || bytes.length !== match.bytes || digest(bytes) !== match.hash) fail("corrupt");
+  const chunk = decodePlacementPublicationChunk(owner, match, decode(bytes, value => value));
+  return { ...chunk, index: descriptor.index };
+}
 function publicationRead(p: Paths, attemptHash: string): PlacementPublicationStored {
   // #288: a completed publication frozen by a checkpoint resolves through the sealed catalog, never the live window.
   // Its members were content-verified by the resolver, so their sealed hashes stand in for the live stat stamps.
@@ -532,35 +571,24 @@ function publicationRead(p: Paths, attemptHash: string): PlacementPublicationSto
     : new Map([...inventory(p).files].map(([name, stat]) => [name, stamp(stat)]));
   const keyOf = (found: Map<string, string>) => canonicalJSON([dir, attemptHash, epochMetadataStamp(p), [...found].filter(([name]) => name === stem + "root.json" || name.startsWith(stem + "chunk-"))]);
   const key = keyOf(files);
-  let bundle = publicationBundle?.key === key ? publicationBundle.bundle : undefined;
+  let bundle = publicationBundle?.key === key && publicationBundle.bundle.root.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA ? publicationBundle.bundle : undefined;
   if (!bundle) {
     const root = decode(readOwned(join(dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementPublicationRoot);
+    if (root.schema === PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA && !placementDecisionReuseEnabled(p.home)) fail("corrupt");
     const epoch = decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);
     if (root.seal !== attemptHash || root.epochHash !== p.hash || root.generation !== epoch.generation || root.homeHash !== epoch.homeHash) fail("corrupt");
-    const chunks = root.chunks.map(c => decode(readOwned(join(dir, `${stem}chunk-${String(c.index).padStart(5, "0")}.json`), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES), value => value));
+    const chunks = root.chunks.map(c => {
+      if (!c.ownerAttemptHash) return decodePlacementPublicationChunk(root, c, decode(readOwned(join(dir, `${stem}chunk-${String(c.index).padStart(5, "0")}.json`), PLACEMENT_JOURNAL_CHUNK_MAX_BYTES), value => value));
+      return referencedDecision(p, root, c);
+    });
     bundle = freeze(validatePlacementPublicationBundle({ root, chunks }));
     const after = archived ? files : new Map([...inventory(p).files].map(([name, stat]) => [name, stamp(stat)]));
-    if (keyOf(after) === key) publicationBundle = { key, bundle }; // Never cache bytes read across a concurrent change.
+    if (root.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA && keyOf(after) === key) publicationBundle = { key, bundle }; // Never cache bytes read across a concurrent change.
   }
   const root = bundle.root, allowed = new Set(publicationFileNames(root));
   for (const name of files.keys()) if (name.startsWith(stem) && !allowed.has(name)) fail("corrupt");
   if (archived && [...allowed].some(name => !files.has(name))) fail("corrupt");
-  const facts: PlacementPublicationFact[] = []; let phase: PlacementPublicationStored["phase"] = "prepared", pending = false, absent = false; let pendingPhase: PlacementPublicationFact["phase"] | undefined;
-  for (const [index, suffix] of ["artifact", "intent", "receipt"].entries()) {
-    const bytes = readOwned(join(dir, stem + suffix + ".json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
-    if (bytes === undefined) fail("corrupt"); // Every future phase slot was reserved before root acknowledgement.
-    if (!bytes.length) { absent = true; continue; }
-    if (absent && (suffix !== "receipt" || pendingPhase)) fail("corrupt");
-    if (bytes.at(-1) !== 10) { pending = true; pendingPhase = (["artifact-built", "publication-intent", "completed"] as const)[index]; absent = true; continue; }
-    const fact = decode(bytes, validatePlacementPublicationFact), previous = facts.at(-1)?.seal ?? root.seal;
-    if (fact.attemptHash !== attemptHash || fact.previousHash !== previous || fact.phase !== (["artifact-built", "publication-intent", "completed"] as const)[index]) fail("corrupt");
-    const intentFact = facts.find(fact => fact.phase === "publication-intent");
-    if (fact.phase === "publication-intent" && (fact.artifactFactHash !== previous || fact.policyHash !== root.policyHash || fact.policyCheckUnixMs !== root.policySnapshotUnixMs)
-      || fact.phase === "completed" && (fact.intentFactHash !== (intentFact?.seal ?? null) || fact.journal.sequence < root.journal.sequence || fact.journal.sequence > root.journal.sequence + root.reservedRecords
-        || fact.outcome === "committed" && (!intentFact || fact.journal.sequence !== root.journal.sequence + root.reservedRecords))) fail("corrupt");
-    facts.push(fact); phase = fact.phase;
-  }
-  return { bundle, phase, facts, pending, ...(pendingPhase ? { pendingPhase } : {}) };
+  return { bundle, ...publicationFacts(dir, stem, root, archived?.members) };
 }
 function publicationRoots(p: Paths): string[] {
   const names = [...inventory(p).files.keys()].filter(publicationName), roots = names.filter(n => n.endsWith("-root.json"));
@@ -710,6 +738,20 @@ export function capturePlacementPublicationMetadata<T>(home: string, epochHash: 
 }
 export function readPlacementPublicationMetadata<T>(home: string, epochHash: string, work: (io: PlacementPublicationMetadataIO) => T): T {
   return capturePlacementPublicationMetadata(home, epochHash, work).value;
+}
+/** Find reusable physical leaves; always validate their complete owning publication first. */
+export function placementDecisionOwners(home: string, epochHash: string, beforeSequence: number): PlacementDecisionOwner[] {
+  return readPlacementPublicationMetadata(home, epochHash, io => {
+    const all = new Set([...io.archivedPublications(), ...io.names().flatMap(name => /^publication-([a-f0-9]{64})-root\.json$/.exec(name)?.[1] ?? [])]);
+    // ponytail: inspect at most 256 deterministically chosen attempts; upgrade to a sealed bounded hash index if reuse misses become material.
+    const attempts = [...all].sort().slice(-256), result: PlacementDecisionOwner[] = [];
+    for (const attempt of attempts) {
+      const stored = io.publication(attempt), root = stored.bundle.root, completed = stored.facts.find(fact => fact.phase === "completed");
+      if (stored.phase !== "completed" || stored.pending || !completed || completed.outcome !== "committed" || completed.journal.sequence > beforeSequence || root.journal.sequence >= beforeSequence || root.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA) continue;
+      for (const chunk of root.chunks) if (chunk.kind === "decisions" && typeof chunk.bucket === "string") result.push({ bucket: chunk.bucket, hash: chunk.hash, count: chunk.count, bytes: chunk.bytes, ownerAttemptHash: chunk.ownerAttemptHash ?? root.seal });
+    }
+    return result;
+  });
 }
 function assertPublicationActive(p: Paths): void {
   const epoch = decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);

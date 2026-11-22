@@ -12,7 +12,8 @@ import { captureInspectionJournal, inspectRetainedPublicationHistories, Placemen
 import { ShardHistoryError } from "./shard-sync-history.ts";
 import { createPlacementRecord, SyncPlacementJournalError, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
-import { planPlacementPublicationAsync, publicationBytes, publicationFileNames } from "./sync-placement-publication-plan.ts";
+import { planPlacementPublicationAsync, planPlacementPublicationV2Async, placementDecisionReuseEnabled, publicationBytes, publicationFileNames } from "./sync-placement-publication-plan.ts";
+import { placementDecisionOwners } from "./sync-placement-journal-storage.ts";
 import { placementPublicationEventSteps } from "./sync-placement-publication-events.ts";
 import { drainSteps } from "./sync-placement-yield.ts";
 import { outboundPolicyEvaluator } from "./sync-screen.ts";
@@ -128,11 +129,13 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
       policyHash: source.base.policyHash, remoteHash: objects.remoteHash, journal: { sequence: journal.journal.sequence, headHash: journal.journal.headHash },
       createdUnixSeconds: Math.floor(now / 1000), policySnapshotUnixMs: now, targets: materialized.plannedTargets, reservedRecords: 0, reservedRecordBytes: [] as number[] };
     const items = { sources: source.prefixes, decisions: materialized.decisions, objects: materialized.objects };
-    let bundle = await planPlacementPublicationAsync(body, items);
+    const v2 = placementDecisionReuseEnabled(home);
+    const owners = v2 ? placementDecisionOwners(home, body.epochHash, body.journal.sequence) : [];
+    let bundle = v2 ? await planPlacementPublicationV2Async(body, items, owners) : await planPlacementPublicationAsync(body, items);
     const scheduled = drainSteps(placementPublicationEventSteps(bundle, journal.projection, old));
     let head = body.journal.headHash;
     const lengths = scheduled.events.map((event, index) => { const record = createPlacementRecord(body.epochHash, body.journal.sequence + index + 1, head, event); head = record.seal; return publicationBytes(record).length; });
-    bundle = await planPlacementPublicationAsync({ ...body, reservedRecords: lengths.length, reservedRecordBytes: lengths }, items);
+    bundle = v2 ? await planPlacementPublicationV2Async({ ...body, reservedRecords: lengths.length, reservedRecordBytes: lengths }, items, owners) : await planPlacementPublicationAsync({ ...body, reservedRecords: lengths.length, reservedRecordBytes: lengths }, items);
     const changed = bundle.root.targets.some((target, index) => target.publish && target.commit !== heads[index]);
     if (scheduled.events.length || changed) {
       const candidate = { slots: publicationFileNames(bundle.root).length, reservedJournalChunks: reserve(lengths) };

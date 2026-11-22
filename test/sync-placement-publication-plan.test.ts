@@ -1,14 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
+import { formatVersionBelow } from "../src/memory/formats.ts";
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { PLACEMENT_FORMAT, validatePlacementProfile } from "../src/memory/sync-placement-format.ts";
 import { planSyncPlacementActivation, type SyncPlacementActivationContext } from "../src/memory/sync-placement-plan.ts";
-import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, createPlacementRecord, SyncPlacementJournalError, type PlacementEpoch, type PlacementEvent } from "../src/memory/sync-placement-journal-format.ts";
+import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, placementKeyId, createPlacementRecord, SyncPlacementJournalError, type PlacementEpoch, type PlacementEvent } from "../src/memory/sync-placement-journal-format.ts";
 import { preparePlacementEpoch, ensurePlacementFence, ensurePlacementPublicationDurability, readPlacementJournal, appendPlacementEvent, type PlacementStorageOptions, type PlacementStoragePhase } from "../src/memory/sync-placement-journal-storage.ts";
-import { validatePlacementPublicationChunk, PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, validatePlacementPublicationBundle, publicationBytes, publicationFileNames, type PlacementPublicationSource, type PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
+import { validatePlacementPublicationChunk, PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, planPlacementPublicationV2, planPlacementPublicationV2Async, partitionPlacementDecisions, validatePlacementPublicationBundle, publicationBytes, publicationFileNames, type PlacementPublicationSource, type PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationFactInput } from "../src/memory/sync-placement-publication-storage.ts";
 
 const h = (x: string) => hashJSON(x), key = { realm: { scope: "user" as const }, id: "d".repeat(32), rowHash: h("row") };
@@ -75,6 +76,104 @@ test("chunking supports more than snapshot's 4096 nodes without increasing 64KiB
   expect(bundle.chunks.every(c => publicationBytes(c).length <= 65536)).toBe(true);
   expect(validatePlacementPublicationBundle(bundle)).toEqual(bundle);
   expect(() => planPlacementPublication(f.input, { ...f.items, decisions: [...decisions, decisions[0]!] })).toThrow();
+});
+
+test("a middle insertion changes only its stable decision leaf", () => {
+  const rows: PlacementPublicationDecision[] = Array.from({ length: 500 }, (_, n) => ({ key: { ...key, id: n.toString(16).padStart(32, "0") }, sourcePlacement: "synced", eligible: true, hold: false, reason: null, dependencies: [] }));
+  const sorted = rows.map(row => placementKeyId(row.key)).sort();
+  const extra = Array.from({ length: 1000 }, (_, n) => ({ ...rows[0]!, key: { ...key, id: (n + 500).toString(16).padStart(32, "0") } }))
+    .find(row => { const id = placementKeyId(row.key); return id > sorted[200]! && id < sorted[300]!; })!;
+  expect(extra).toBeDefined();
+  const before = new Map(partitionPlacementDecisions(rows, 5).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
+  const after = new Map(partitionPlacementDecisions([...rows, extra], 5).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
+  expect([...after].filter(([bucket, hash]) => before.get(bucket) !== hash)).toHaveLength(1);
+  expect([...before.keys()].every(bucket => after.has(bucket))).toBe(true);
+});
+
+test("a decision state flip changes only its stable leaf", () => {
+  const rows: PlacementPublicationDecision[] = Array.from({ length: 500 }, (_, n) => ({ key: { ...key, id: n.toString(16).padStart(32, "0") }, sourcePlacement: "synced", eligible: true, hold: false, reason: null, dependencies: [] }));
+  const changed = rows.map((row, n) => n === 250 ? { ...row, eligible: false, hold: true, reason: "secret" as const } : row);
+  const before = new Map(partitionPlacementDecisions(rows, 5).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
+  const after = partitionPlacementDecisions(changed, 5);
+  expect(after.filter(leaf => before.get(leaf.bucket) !== hashJSON(leaf.items))).toHaveLength(1);
+});
+
+test("v2 refers to byte-identical decision leaves without reserving their file names", () => {
+  const f = fixture(0), decisions: PlacementPublicationDecision[] = Array.from({ length: 500 }, (_, n) => ({ ...f.items.decisions[0]!, key: { ...key, id: n.toString(16).padStart(32, "0") } }));
+  const first = planPlacementPublicationV2(f.input, { ...f.items, decisions }, []);
+  const owners = first.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => ({ bucket: chunk.bucket!, hash: chunk.hash, count: chunk.count, bytes: chunk.bytes, ownerAttemptHash: first.root.seal }));
+  const extra = { ...decisions[0]!, key: { ...key, id: (500).toString(16).padStart(32, "0") } };
+  const second = planPlacementPublicationV2({ ...f.input, createdUnixSeconds: f.input.createdUnixSeconds + 1 }, { ...f.items, decisions: [...decisions, extra] }, owners);
+  expect(second.root.chunks.filter(chunk => chunk.ownerAttemptHash)).toHaveLength(owners.length - 1);
+  expect(publicationFileNames(second.root).length).toBe(second.root.chunks.length + 4 - (owners.length - 1));
+  expect(validatePlacementPublicationBundle(second)).toEqual(second);
+});
+
+test("v2 bounds new files for six insertions into a large unchanged decision set", () => {
+  const f = fixture(0), decisions: PlacementPublicationDecision[] = Array.from({ length: 5600 }, (_, n) => ({ ...f.items.decisions[0]!, key: { ...key, id: n.toString(16).padStart(32, "0") } }));
+  const first = planPlacementPublicationV2(f.input, { ...f.items, decisions }, []);
+  const owners = first.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => ({ bucket: chunk.bucket!, hash: chunk.hash, count: chunk.count, bytes: chunk.bytes, ownerAttemptHash: first.root.seal }));
+  const extra = Array.from({ length: 6 }, (_, n) => ({ ...decisions[0]!, key: { ...key, id: (5600 + n).toString(16).padStart(32, "0") } }));
+  const second = planPlacementPublicationV2({ ...f.input, createdUnixSeconds: f.input.createdUnixSeconds + 1 }, { ...f.items, decisions: [...decisions, ...extra] }, owners);
+  expect(publicationFileNames(second.root).length).toBeLessThanOrEqual(12);
+  expect(second.root.chunks.filter(chunk => chunk.ownerAttemptHash).length).toBeGreaterThanOrEqual(26);
+});
+
+test("cooperative v2 planning yields and produces the synchronous plan", async () => {
+  const f = fixture(0), decisions: PlacementPublicationDecision[] = Array.from({ length: 500 }, (_, n) => ({ ...f.items.decisions[0]!, key: { ...key, id: n.toString(16).padStart(32, "0") } }));
+  const items = { ...f.items, decisions }; let yields = 0;
+  expect(await planPlacementPublicationV2Async(f.input, items, [], async () => { yields++; })).toEqual(planPlacementPublicationV2(f.input, items, []));
+  expect(yields).toBeGreaterThan(1);
+});
+
+test("v2 persists and reads a completed owner's decision leaf and refuses changed owner bytes", () => {
+  const version = JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")).version as string;
+  if (formatVersionBelow(version, "0.36.0")) {
+    const isolated = mkdtempSync(join(tmpdir(), "amem-v2-reader-")); cleanup.push(() => rmSync(isolated, { recursive: true, force: true }));
+    cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
+    mkdirSync(join(isolated, "test")); mkdirSync(join(isolated, "home")); copyFileSync(import.meta.path, join(isolated, "test/publication.test.ts"));
+    writeFileSync(join(isolated, "package.json"), json({ name: "amem-v2-test", version: "0.36.0", type: "module" }));
+    const child = Bun.spawnSync([process.execPath, "test", "test/publication.test.ts", "--test-name-pattern", "v2 persists"], { cwd: isolated, env: { ...process.env, HOME: join(isolated, "home"), AGENTHUB_HOME: join(isolated, "home/agenthub"), XDG_CONFIG_HOME: join(isolated, "home/config") }, stdout: "pipe", stderr: "pipe", timeout: 30000 });
+    expect(child.stderr.toString()).toContain("1 pass"); expect(child.exitCode).toBe(0); return;
+  }
+  for (const crash of ["publication-slot-written", "publication-slot-fsync", "publication-chunk-written", "publication-chunk-fsync", "publication-root-written", "publication-root-fsync"] as const) {
+  const f = fixture();
+  writeFileSync(join(f.home, "formats.json"), json([{ surface: "home", minReader: "0.36.0", since: "2026-11-22" }]), { mode: 0o600 });
+  const first = planPlacementPublicationV2(f.input, f.items, []), firstHash = first.root.seal;
+  preparePlacementPublication(f.home, first, f.opts);
+  recordPlacementPublicationPhase(f.home, f.epochHash, firstHash, "artifact-built", { exportHash: h("artifact") }, f.opts);
+  const built = readPlacementPublication(f.home, f.epochHash, firstHash).facts[0]!;
+  recordPlacementPublicationPhase(f.home, f.epochHash, firstHash, "publication-intent", { artifactFactHash: built.seal, policyHash: f.input.policyHash, policyCheckUnixMs: f.input.policySnapshotUnixMs }, f.opts);
+  const sent = readPlacementPublication(f.home, f.epochHash, firstHash).facts[1]!;
+  const record = appendPlacementEvent(f.home, f.epochHash, event(1), f.epochHash, { ...f.opts, publicationAttemptHash: firstHash }).record;
+  recordPlacementPublicationPhase(f.home, f.epochHash, firstHash, "completed", { intentFactHash: sent.seal, journal: { sequence: 1, headHash: record.seal }, outcomeHash: h("done"), outcome: "committed" }, f.opts);
+  const owner = first.root.chunks.find(chunk => chunk.kind === "decisions")!;
+  const next = { ...f.input, journal: { sequence: 1, headHash: record.seal }, reservedRecords: 0, reservedRecordBytes: [], createdUnixSeconds: 123457 };
+  const foreign = planPlacementPublicationV2(next, f.items, [{ bucket: owner.bucket!, hash: owner.hash, count: owner.count, bytes: owner.bytes, ownerAttemptHash: h("missing owner") }]);
+  const before = state(f.dir); expect(() => preparePlacementPublication(f.home, foreign, f.opts)).toThrow(); expect(state(f.dir)).toEqual(before);
+  const second = planPlacementPublicationV2(next, f.items,
+    [{ bucket: owner.bucket!, hash: owner.hash, count: owner.count, bytes: owner.bytes, ownerAttemptHash: firstHash }]);
+  let interrupted = false;
+  expect(() => preparePlacementPublication(f.home, second, { ...f.opts, phase: phase => { if (!interrupted && phase === crash) { interrupted = true; throw Error("interrupted staging"); } } })).toThrow();
+  expect(interrupted).toBe(true);
+  preparePlacementPublication(f.home, second, f.opts);
+  expect(readPlacementPublication(f.home, f.epochHash, second.root.seal).bundle).toEqual(second);
+  expect(second.root.chunks.some(chunk => chunk.ownerAttemptHash === firstHash)).toBe(true);
+  const file = join(f.dir, `publication-${firstHash}-chunk-${String(owner.index).padStart(5, "0")}.json`);
+  writeFileSync(file, "corrupt\n", { mode: 0o600 });
+  expect(() => readPlacementPublication(f.home, f.epochHash, second.root.seal)).toThrow();
+  }
+});
+
+test("the 0.35.0 reader refuses a home opted into the v2 floor before reading it", () => {
+  const home = mkdtempSync(join(tmpdir(), "amem-v2-old-home-")); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  const old = join(home, "old"); mkdirSync(join(old, "src/memory"), { recursive: true });
+  copyFileSync(join(import.meta.dir, "../src/memory/formats.ts"), join(old, "src/memory/formats.ts"));
+  writeFileSync(join(old, "package.json"), json({ name: "amem-old-reader", version: "0.35.0", type: "module" }));
+  writeFileSync(join(home, "formats.json"), json([{ surface: "home", minReader: "0.36.0", since: "2026-11-22" }]), { mode: 0o600 });
+  const code = `import { assertFormatFloor } from "./src/memory/formats.ts"; try { assertFormatFloor(process.argv[1], "sync"); process.exit(1); } catch (e) { if (e.code !== "format_floor" || e.floor.reader !== "0.35.0") process.exit(2); }`;
+  const child = Bun.spawnSync([process.execPath, "-e", code, home], { cwd: old, env: { ...process.env, HOME: home, AGENTHUB_HOME: join(home, "agenthub"), XDG_CONFIG_HOME: join(home, "config") }, stdout: "pipe", stderr: "pipe" });
+  expect(child.exitCode).toBe(0);
 });
 
 test("hostile getters/proxies are refused without invocation or payload disclosure", () => {

@@ -2,7 +2,7 @@
 import { canonicalJSON } from "./generation.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { withPlacementPublicationMetadata, readPlacementPublicationMetadata, type PlacementStorageOptions, type PlacementPublicationStored } from "./sync-placement-journal-storage.ts";
-import { validatePlacementPublicationBundle, createPlacementPublicationFact, publicationFileNames, publicationBytes,
+import { validatePlacementPublicationBundle, createPlacementPublicationFact, publicationFileNames, publicationBytes, placementPublicationChunkBytes, placementDecisionReuseEnabled, PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA,
   type PlacementPublicationBundle, type PlacementPublicationPhase, type PlacementPublicationFact } from "./sync-placement-publication-plan.ts";
 
 function fail(code: "invalid" | "pending" | "conflict" | "changed" = "invalid"): never { throw new SyncPlacementJournalError(code); }
@@ -11,6 +11,7 @@ const validHash = (value: string) => typeof value === "string" && value.length =
 /** No timestamp expiry or eviction: retained plans remain charged to the epoch's shared 256-object inventory. */
 export function preparePlacementPublication(home: string, input: PlacementPublicationBundle, opts: PlacementStorageOptions): { attemptHash: string } {
   const bundle = validatePlacementPublicationBundle(input), root = bundle.root, names = publicationFileNames(root);
+  if (root.schema === PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA && !placementDecisionReuseEnabled(home)) throw new Error("Decision chunk reuse requires a home format floor of 0.36.0; upgrade all writers, preview amem formats raise home 0.36.0, then confirm the approved command.");
   const required = readPlacementPublicationMetadata(home, root.epochHash, io => [...names, ...io.reservedJournalNames(root)]);
   return withPlacementPublicationMetadata(home, root.epochHash, opts, required, io => {
     const journal = io.journal();
@@ -22,12 +23,22 @@ export function preparePlacementPublication(home: string, input: PlacementPublic
       const other = io.publication(match[1]!); if (other.phase !== "completed" || other.pending) fail("pending");
     }
     for (const name of io.names()) if (name.startsWith(own) && !names.includes(name)) fail("conflict");
+    const verifyReferences = () => {
+      for (const descriptor of root.chunks) if (descriptor.ownerAttemptHash) {
+        const owner = io.publication(descriptor.ownerAttemptHash), completed = owner.facts.find(fact => fact.phase === "completed");
+        if (owner.phase !== "completed" || owner.pending || !completed || completed.outcome !== "committed" || completed.journal.sequence > root.journal.sequence || owner.bundle.root.journal.sequence >= root.journal.sequence) fail("changed");
+        const found = owner.bundle.root.chunks.filter(c => c.kind === "decisions" && !c.ownerAttemptHash && c.bucket === descriptor.bucket && c.hash === descriptor.hash && c.count === descriptor.count && c.bytes === descriptor.bytes);
+        if (found.length !== 1 || !placementPublicationChunkBytes(owner.bundle.root, owner.bundle.chunks[found[0]!.index]!).equals(placementPublicationChunkBytes(root, bundle.chunks[descriptor.index]!))) fail("changed");
+      }
+    };
+    verifyReferences();
     // Reserve every future phase file physically. A later journal append cannot consume these object slots.
     for (const suffix of ["artifact", "intent", "receipt"]) {
       const name = `${own}${suffix}.json`;
       if (io.read(name) === undefined) io.complete(name, Buffer.alloc(0), "publication-slot-written", "publication-slot-fsync");
     }
-    for (const chunk of bundle.chunks) io.complete(`${own}chunk-${String(chunk.index).padStart(5, "0")}.json`, publicationBytes(chunk), "publication-chunk-written", "publication-chunk-fsync");
+    for (const chunk of bundle.chunks) if (!root.chunks[chunk.index]!.ownerAttemptHash) io.complete(`${own}chunk-${String(chunk.index).padStart(5, "0")}.json`, placementPublicationChunkBytes(root, chunk), "publication-chunk-written", "publication-chunk-fsync");
+    verifyReferences();
     // The root is the final durability acknowledgement: all chunks and all reserved slots precede its fsync.
     io.complete(`${own}root.json`, publicationBytes(root), "publication-root-written", "publication-root-fsync");
     io.check(); const done = io.publication(root.seal);
