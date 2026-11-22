@@ -58,7 +58,7 @@ const cases=[
   {family:"renewal",phase:"intent-started",label:"writer-inventory renewal",command:"amem migrate --sync-placement --abandon",staging:true},
 ] as const;
 
-for(const scenario of cases)test(`native killed ${scenario.label} (${scenario.phase}) gives the same person recovery diagnostic to marked and unmarked reads`,async()=>{
+for(const scenario of cases)test(`native killed ${scenario.label} (${scenario.phase}) gives the same recovery diagnostic to marked and unmarked reads`,async()=>{
   const {f,roots}=await prepare(scenario.family);
   const child=Bun.spawnSync([process.execPath,join(import.meta.dir,"fakes/profile-migration-crash.ts"),f.base,activationOwnRoot,scenario.family,scenario.phase,...(roots?[JSON.stringify(roots)]:[])],
     {cwd:f.cwd,env:f.env,stdout:"pipe",stderr:"pipe",timeout:40_000});
@@ -70,7 +70,7 @@ for(const scenario of cases)test(`native killed ${scenario.label} (${scenario.ph
   for(const marked of [false,true]){
     const result=cli(f,marked);expect(result.exitCode).not.toBe(0);expect(result.stdout.length).toBe(0);
     const message=result.stderr.toString().trim();messages.push(message);
-    expect(message).toContain("profile.lock");expect(message).toContain("person");expect(message).toContain(scenario.label);expect(message).toContain(scenario.command);
+    expect(message).toContain("profile.lock");expect(message).not.toContain("person");expect(message).toContain(scenario.label);expect(message).toContain(scenario.command);
     if("abandon"in scenario)expect(message).toContain("--abandon");
     if("staging"in scenario){expect(message).toContain("amem migrate --sync-placement --dry-run");expect(message).not.toContain("--resume");}
     expect(message).not.toContain("PRIVATE_STALE_LOCK_SOURCE");expect(lock(f.base)).toEqual(held);expect(authoritative(f.base)).toEqual(preserved);
