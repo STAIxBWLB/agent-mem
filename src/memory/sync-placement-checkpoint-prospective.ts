@@ -8,7 +8,8 @@ import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { previewSelectedSyncPlacementSources } from "./sync-placement-capture.ts";
 import { placementInventory, placementInventoryBatches, type InventoryRealm } from "./sync-placement-inventory.ts";
-import { captureInspectionJournal, inspectRetainedPublicationHistories, PlacementInspectionObjects } from "./sync-placement-inspection-evidence.ts";
+import { captureInspectionJournal, inspectRetainedPublicationHistories, PlacementHistoryBoundError, PlacementInspectionObjects } from "./sync-placement-inspection-evidence.ts";
+import { ShardHistoryError } from "./shard-sync-history.ts";
 import { createPlacementRecord, SyncPlacementJournalError, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import { materializePlacementRows, verifiedPlacementPrunes } from "./sync-placement-materialize.ts";
 import { planPlacementPublicationAsync, publicationBytes, publicationFileNames } from "./sync-placement-publication-plan.ts";
@@ -83,6 +84,9 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
     let histories: Awaited<ReturnType<typeof inspectRetainedPublicationHistories>>;
     try { histories = await inspectRetainedPublicationHistories(journal, targets.map(target => ({ realm: target.realm, generation: active.profile.generation })), objects); }
     catch (error) {
+      // #567: a retained-history bound reached directly (tree, retained object, row count) is a named refusal with its
+      // counts, never the cache-unavailable fallback that would hide it behind a smaller-looking plan.
+      if (error instanceof PlacementHistoryBoundError) throw new ShardHistoryError("bound", { kind: error.kind, limit: error.limit, observed: error.observed });
       if (error instanceof SyncPlacementJournalError && (error.code === "corrupt" || error.code === "bound"))
         return { value: { state: "unavailable", reason: "cache-or-remote-evidence-unavailable" },
         assertCurrent: () => { checkInventory(); source.assertSourcesUnchanged(); journal.assertCurrent(); } };
