@@ -253,7 +253,7 @@ test("v2 decision references survive a checkpoint archive", async () => {
   }
   const f = await fixture();
   writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "home", minReader: "0.36.0", since: "2026-11-22" }]) + "\n", { mode: 0o600 });
-  for (let i = 0; i < 220; i++) f.note(`v2 stable decision fixture ${i}`);
+  for (let i = 0; i < 300; i++) f.note(`v2 stable decision fixture ${i}`);
   await f.sync();
   const first = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))));
   expect(first.some(row => row.bundle.root.schema.endsWith("/v2"))).toBe(true);

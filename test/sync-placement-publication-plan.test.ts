@@ -84,8 +84,8 @@ test("a middle insertion changes only its stable decision leaf", () => {
   const extra = Array.from({ length: 1000 }, (_, n) => ({ ...rows[0]!, key: { ...key, id: (n + 500).toString(16).padStart(32, "0") } }))
     .find(row => { const id = placementKeyId(row.key); return id > sorted[200]! && id < sorted[300]!; })!;
   expect(extra).toBeDefined();
-  const before = new Map(partitionPlacementDecisions(rows, 5).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
-  const after = new Map(partitionPlacementDecisions([...rows, extra], 5).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
+  const before = new Map(partitionPlacementDecisions(rows).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
+  const after = new Map(partitionPlacementDecisions([...rows, extra]).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
   expect([...after].filter(([bucket, hash]) => before.get(bucket) !== hash)).toHaveLength(1);
   expect([...before.keys()].every(bucket => after.has(bucket))).toBe(true);
 });
@@ -93,9 +93,41 @@ test("a middle insertion changes only its stable decision leaf", () => {
 test("a decision state flip changes only its stable leaf", () => {
   const rows: PlacementPublicationDecision[] = Array.from({ length: 500 }, (_, n) => ({ key: { ...key, id: n.toString(16).padStart(32, "0") }, sourcePlacement: "synced", eligible: true, hold: false, reason: null, dependencies: [] }));
   const changed = rows.map((row, n) => n === 250 ? { ...row, eligible: false, hold: true, reason: "secret" as const } : row);
-  const before = new Map(partitionPlacementDecisions(rows, 5).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
-  const after = partitionPlacementDecisions(changed, 5);
+  const before = new Map(partitionPlacementDecisions(rows).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
+  const after = partitionPlacementDecisions(changed);
   expect(after.filter(leaf => before.get(leaf.bucket) !== hashJSON(leaf.items))).toHaveLength(1);
+});
+
+test("decision partitions ignore insertion order and do not repartition at 200 rows", () => {
+  const rows: PlacementPublicationDecision[] = Array.from({ length: 201 }, (_, n) => ({ key: { ...key, id: n.toString(16).padStart(32, "0") }, sourcePlacement: "synced", eligible: true, hold: false, reason: null, dependencies: [] }));
+  const hashes = (values: PlacementPublicationDecision[]) => partitionPlacementDecisions(values).map(leaf => [leaf.bucket, hashJSON(leaf.items)]);
+  expect(hashes(rows)).toEqual(hashes([...rows].reverse()));
+  const before = hashes(rows.slice(0, 200)), after = hashes(rows);
+  expect(before).toHaveLength(1); expect(after).toHaveLength(1); expect(before[0]![0]).toBe(after[0]![0]);
+});
+
+test("a decision leaf splits only when its exact encoded bytes exceed 64 KiB", () => {
+  const f = fixture(0), rows: PlacementPublicationDecision[] = Array.from({ length: 273 }, (_, n) => ({ key: { ...key, id: n.toString(16).padStart(32, "0") }, sourcePlacement: "synced", eligible: true, hold: false, reason: null, dependencies: [] }));
+  const before = planPlacementPublicationV2(f.input, { ...f.items, decisions: rows.slice(0, 272) }, []);
+  const leaf = before.root.chunks.find(chunk => chunk.kind === "decisions")!;
+  expect(leaf.bucket).toBe(""); expect(leaf.bytes).toBeGreaterThan(65536 - 256); expect(leaf.bytes).toBeLessThanOrEqual(65536);
+  expect(partitionPlacementDecisions(rows).length).toBeGreaterThan(1);
+});
+
+test("a decision state shrink merges only its affected subtree", () => {
+  const groups: PlacementPublicationDecision[][] = [[], []];
+  for (let n = 0; groups[0]!.length < 26 || groups[1]!.length < 70; n++) {
+    const rowKey = { ...key, id: n.toString(16).padStart(32, "0") }, side = parseInt(placementKeyId(rowKey)[0]!, 16) < 8 ? 0 : 1;
+    if (groups[side]!.length >= (side ? 70 : 26)) continue;
+    groups[side]!.push({ key: rowKey, sourcePlacement: "synced", eligible: true, hold: false, reason: null,
+      dependencies: Array.from({ length: 5 }, (_, i) => ({ ...key, id: (100000 + i).toString(16).padStart(32, "0") })) });
+  }
+  groups[0]![0] = { ...groups[0]![0]!, dependencies: Array.from({ length: 300 }, (_, i) => ({ ...key, id: (200000 + i).toString(16).padStart(32, "0") })) };
+  const rows = [...groups[0]!, ...groups[1]!], before = partitionPlacementDecisions(rows);
+  const after = partitionPlacementDecisions(rows.map(row => row === groups[0]![0] ? { ...row, dependencies: [] } : row));
+  expect(before.filter(leaf => leaf.bucket.startsWith("0")).length).toBeGreaterThan(1);
+  expect(after.filter(leaf => leaf.bucket.startsWith("0")).map(leaf => leaf.bucket)).toEqual(["0"]);
+  expect(after.filter(leaf => leaf.bucket.startsWith("1")).map(leaf => [leaf.bucket, hashJSON(leaf.items)])).toEqual(before.filter(leaf => leaf.bucket.startsWith("1")).map(leaf => [leaf.bucket, hashJSON(leaf.items)]));
 });
 
 test("v2 refers to byte-identical decision leaves without reserving their file names", () => {

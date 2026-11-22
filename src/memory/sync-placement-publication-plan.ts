@@ -51,10 +51,10 @@ export const publicationBytes = (value: unknown): Buffer => Buffer.from(canonica
 export const publicationHash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 export interface PlacementDecisionLeaf { bucket: string; items: PlacementPublicationDecision[] }
 /** Stable hash-prefix leaves for v2 decisions; insertion only affects its leaf unless it must split. */
-export function partitionPlacementDecisions(decisions: readonly PlacementPublicationDecision[], initialBits: 0 | 5): PlacementDecisionLeaf[] {
-  return drainSteps(partitionPlacementDecisionSteps(decisions, initialBits));
+export function partitionPlacementDecisions(decisions: readonly PlacementPublicationDecision[]): PlacementDecisionLeaf[] {
+  return drainSteps(partitionPlacementDecisionSteps(decisions));
 }
-function* partitionPlacementDecisionSteps(decisions: readonly PlacementPublicationDecision[], initialBits: 0 | 5): Generator<void, PlacementDecisionLeaf[], void> {
+function* partitionPlacementDecisionSteps(decisions: readonly PlacementPublicationDecision[]): Generator<void, PlacementDecisionLeaf[], void> {
   const entries: { id: string; bits: string; decision: PlacementPublicationDecision }[] = [];
   for (const [index, value] of array(decisions, PLACEMENT_JOURNAL_MAX_RECORDS).entries()) {
     if (index && index % 64 === 0) yield;
@@ -71,7 +71,7 @@ function* partitionPlacementDecisionSteps(decisions: readonly PlacementPublicati
     yield;
     const items = values.map(value => value.decision);
     const bytes = publicationBytes({ schema: PLACEMENT_DECISION_CHUNK_V2_SCHEMA, bucket: prefix, items });
-    if (prefix.length >= initialBits && bytes.length <= PLACEMENT_JOURNAL_CHUNK_MAX_BYTES - 256) {
+    if (bytes.length <= PLACEMENT_JOURNAL_CHUNK_MAX_BYTES) {
       leaves.push({ bucket: prefix, items }); return;
     }
     if (prefix.length >= 256) return fail("bound");
@@ -133,10 +133,13 @@ function item(kind: PlacementPublicationChunkKind, input: unknown): PlacementPub
   return { targetIndex: v.targetIndex, type: v.type as PlacementPublicationObject["type"], path: v.path as string | null, oid: v.oid, sha256: v.sha256, size: v.size };
 }
 export function validatePlacementPublicationChunk(input: unknown): PlacementPublicationChunk {
+  return validatePublicationChunk(input, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES);
+}
+function validatePublicationChunk(input: unknown, maximum: number): PlacementPublicationChunk {
   const v = object(input, ["schema", "kind", "index", "items"]);
   if (v.schema !== PLACEMENT_PUBLICATION_CHUNK_SCHEMA || !kinds.includes(v.kind as PlacementPublicationChunkKind) || !number(v.index, PLACEMENT_JOURNAL_MAX_OBJECTS - 1)) return fail();
   const items = array(v.items, PLACEMENT_JOURNAL_MAX_RECORDS).map(x => item(v.kind as PlacementPublicationChunkKind, x)); if (!items.length) return fail();
-  return bounded({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind: v.kind as PlacementPublicationChunkKind, index: v.index, items }, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES);
+  return bounded({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind: v.kind as PlacementPublicationChunkKind, index: v.index, items }, maximum);
 }
 /** V2 decision content is independent of its position in a publication. */
 export function placementPublicationChunkBytes(root: PlacementPublicationRoot, chunk: PlacementPublicationChunk): Buffer {
@@ -150,7 +153,7 @@ export function decodePlacementPublicationChunk(root: PlacementPublicationRoot, 
   if (root.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA || descriptor.kind !== "decisions") return validatePlacementPublicationChunk(value);
   const v = object(value, ["schema", "bucket", "items"]);
   if (v.schema !== PLACEMENT_DECISION_CHUNK_V2_SCHEMA || v.bucket !== descriptor.bucket) return fail("corrupt");
-  return validatePlacementPublicationChunk({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind: "decisions", index: descriptor.index, items: v.items });
+  return validatePublicationChunk({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind: "decisions", index: descriptor.index, items: v.items }, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES + 256);
 }
 function normalizedRoot(input: unknown, checkSeal = true): PlacementPublicationRoot {
   const keys = ["schema", "epochHash", "generation", "homeHash", "contextHash", "markerHash", "sourceHash", "aliasesHash", "policyHash", "remoteHash", "journal", "reservedRecords", "reservedRecordBytes", "createdUnixSeconds", "policySnapshotUnixMs", "targets", "chunks", "seal"];
@@ -191,7 +194,8 @@ function normalizedRoot(input: unknown, checkSeal = true): PlacementPublicationR
 }
 export function validatePlacementPublicationRoot(input: unknown): PlacementPublicationRoot { return normalizedRoot(input); }
 export function validatePlacementPublicationBundle(input: unknown): PlacementPublicationBundle {
-  const v = object(input, ["root", "chunks"]), root = validatePlacementPublicationRoot(v.root), chunks = array(v.chunks, PLACEMENT_JOURNAL_MAX_OBJECTS - 1).map(validatePlacementPublicationChunk);
+  const v = object(input, ["root", "chunks"]), root = validatePlacementPublicationRoot(v.root), chunks = array(v.chunks, PLACEMENT_JOURNAL_MAX_OBJECTS - 1).map((chunk, index) =>
+    root.schema === PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA && root.chunks[index]?.kind === "decisions" ? validatePublicationChunk(chunk, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES + 256) : validatePlacementPublicationChunk(chunk));
   if (chunks.length !== root.chunks.length) return fail("corrupt");
   let sourceBytes = 0; const totals = { sources: 0, decisions: 0, objects: 0 }, seen = new Set<string>();
   for (const [index, chunk] of chunks.entries()) {
@@ -238,7 +242,7 @@ export async function planPlacementPublicationV2Async(input: Omit<PlacementPubli
 }, owners: readonly PlacementDecisionOwner[], yieldPoint?: CooperativeYield): Promise<PlacementPublicationBundle> {
   const original = await planPlacementPublicationAsync(input, items, yieldPoint);
   const decisions = array(object(items, kinds).decisions, PLACEMENT_JOURNAL_MAX_RECORDS) as PlacementPublicationDecision[];
-  const leaves = await drainStepsAsync(partitionPlacementDecisionSteps(decisions, decisions.length <= 200 ? 0 : 5), yieldPoint);
+  const leaves = await drainStepsAsync(partitionPlacementDecisionSteps(decisions), yieldPoint);
   return buildPlacementPublicationV2(original, items, owners, leaves);
 }
 function buildPlacementPublicationV2(original: PlacementPublicationBundle, items: {
@@ -246,7 +250,7 @@ function buildPlacementPublicationV2(original: PlacementPublicationBundle, items
 }, owners: readonly PlacementDecisionOwner[], partition?: PlacementDecisionLeaf[]): PlacementPublicationBundle {
   const sources = original.chunks.filter(chunk => chunk.kind === "sources"), objects = original.chunks.filter(chunk => chunk.kind === "objects");
   const decisions = array(object(items, kinds).decisions, PLACEMENT_JOURNAL_MAX_RECORDS) as PlacementPublicationDecision[];
-  const leaves = partition ?? partitionPlacementDecisions(decisions, decisions.length <= 200 ? 0 : 5);
+  const leaves = partition ?? partitionPlacementDecisions(decisions);
   const chunks: PlacementPublicationChunk[] = [...sources, ...leaves.map(leaf => ({ schema: PLACEMENT_PUBLICATION_CHUNK_SCHEMA as typeof PLACEMENT_PUBLICATION_CHUNK_SCHEMA, kind: "decisions" as const, index: 0, items: leaf.items })), ...objects]
     .map((chunk, index) => ({ ...chunk, index }));
   const descriptors: PlacementPublicationChunkDescriptor[] = chunks.map((chunk, index) => {
