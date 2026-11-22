@@ -322,7 +322,7 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   if (placementWriter) pluginNotes.push(placementWriter);
   if (target === "all") pluginNotes.push("Antigravity is repository-scoped and excluded from all; run amem setup agy explicitly inside its repository.");
   if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
-  const skills = skillResults(c, targets.filter(target => mode === "undo" || available(c, target, options)), "preview", mode);
+  const skills = mode === "undo" ? [] : skillResults(c, targets.filter(target => available(c, target, options)), "preview", mode);
   return { targets, mode, ...(skills.length ? { skills } : {}), ...(c.root ? { root: c.root } : {}), ...(placementWriter ? { placementWriter } : {}), actions: targets.map(target => {
     const receipted = receipt(c, target, false), files = mode === "undo" && receipted ? receipted.changes.map(change => change.path) : c.paths[target];
     for (const file of files) read(file);

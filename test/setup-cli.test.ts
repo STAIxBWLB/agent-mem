@@ -59,6 +59,7 @@ for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"
     expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], context))).toMatchObject({ restored: ["claude"] });
   }
   expect(f.calls()).toHaveLength(2); expect(f.calls().every(call => call.argv[0] === "claude")).toBe(true);
+  expect(readdirSync(join(f.home, ".claude", "skills"))).toEqual([]);
   expect(snapshot(f.root).filter(row => !["home/memory", "home/memory/setup", "native-calls", "home/.claude/skills"].includes(row.file))).toEqual(before);
 });
 test("setup apply and undo flags need no stdin TTY or confirmation callback", async () => {

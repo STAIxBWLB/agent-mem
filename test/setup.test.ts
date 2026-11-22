@@ -958,7 +958,8 @@ test("skill refusal does not block setup and undo without receipts preserves for
   const { installSkills, SKILL_NAMES } = require("../src/skills-install.ts") as typeof import("../src/skills-install.ts");
   expect(installSkills(codex, "apply").actions.every(a => a.change === "install")).toBe(true);
   put(join(codex, SKILL_NAMES[0], "SKILL.md"), "modified");
-  const undone = undoSetup(f.plan("all", "undo"), f.options);
+  const undoPlan = f.plan("all", "undo"); expect(undoPlan.skills).toBeUndefined();
+  const undone = undoSetup(undoPlan, f.options);
   const rows = undone.skills?.find(row => row.target === "codex")?.report?.actions;
   expect(rows?.[0]?.change).toBe("modified"); expect(rows?.[0]?.reason).toContain("setup codex --undo");
   expect(rows?.slice(1).every(a => a.change === "remove")).toBe(true);

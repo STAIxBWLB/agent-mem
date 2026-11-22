@@ -165,4 +165,4 @@ The default invocation reads at most 4 MiB and attempts 32 sources; trusted libr
 
 ## Bundled skills
 
-`amem setup claude|codex|kimi|qwen` previews bundled skills alongside MCP and hooks. `--apply` installs or updates unmodified amem-owned skills, and `--undo` removes unmodified amem-owned skills even when there is no setup receipt. Foreign and locally modified skills are preserved and reported. A skill refusal does not block MCP or hook setup. For other hosts use `amem skills export <dir>`.
+`amem setup claude|codex|kimi|qwen` previews bundled skills alongside MCP and hooks. `--apply` installs or updates unmodified amem-owned skills, and `--undo` removes unmodified amem-owned skills even when there is no setup receipt. Foreign and locally modified skills are preserved and reported. Undo leaves the skills root directory in place, even when it becomes empty. A skill refusal does not block MCP or hook setup. For other hosts use `amem skills export <dir>`.
