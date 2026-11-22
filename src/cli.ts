@@ -613,15 +613,26 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (options["--checkpoint"] === true) {
         const person = await import("./memory/sync-placement-checkpoint-person.ts");
         const writerRoots = repeated(argv, "--writer-root"), ownRoot = fileURLToPath(new URL("..", import.meta.url));
+        // #567: a retained-history refusal names its cause class (and, for bound, its counts) in --json as a failed result
+        // with exit 1. Human output keeps the thrown fixed message, which already carries the cause and next step.
+        const historyJson = (error: unknown): string => {
+          if (options["--json"] === true && error instanceof person.PlacementCheckpointError && error.causeClass === "history" && error.history) {
+            context.onExitCode?.(1);
+            return JSON.stringify({ ok: false, refusal: error.history, message: error.message, nextStep: error.history.cause === "bound" ? "retain the history; a window this large needs the multi-plan checkpoint work (#288)" : person.CHECKPOINT_PREVIEW }, null, 2);
+          }
+          throw error;
+        };
         if (options["--resume"] === true) { const r = await person.resumePlacementCheckpointPerson(memoryHome()); return options["--json"] === true ? JSON.stringify(r, null, 2) : `sync placement checkpoint: ${r.resumed ? "resumed" : "nothing pending"}; window ${r.window}\nnext: ${r.nextStep}\n`; }
         if (options["--abandon"] === true) { const r = await person.abandonPlacementCheckpointPerson(memoryHome()); return options["--json"] === true ? JSON.stringify(r, null, 2) : `sync placement checkpoint: ${r.abandoned ? `abandoned (${r.removed} staged files removed)` : "nothing pending"}\nnext: ${r.nextStep}\n`; }
         if (options["--confirm"] === true) {
           let saved: unknown;
           try { saved = JSON.parse(readPrunePlanFile(String(options["--plan"]), undefined, 4 * 1024 * 1024)); } catch { throw new Error("The checkpoint --plan file is unreadable or not the saved preview JSON; rerun amem migrate --sync-placement --checkpoint --json with the writer roots and save its output."); }
-          const r = await person.confirmPlacementCheckpoint(memoryHome(), saved, { writerRoots, ownRoot });
+          const r = await person.confirmPlacementCheckpoint(memoryHome(), saved, { writerRoots, ownRoot }).catch(historyJson);
+          if (typeof r === "string") return r;
           return options["--json"] === true ? JSON.stringify(r, null, 2) : `sync placement checkpoint: committed window ${r.window} with one writer renewal (plan ${r.planHash})\nnext: ${r.nextStep}\n`;
         }
-        const preview = await person.previewPlacementCheckpoint(memoryHome(), { writerRoots, ownRoot });
+        const preview = await person.previewPlacementCheckpoint(memoryHome(), { writerRoots, ownRoot }).catch(historyJson);
+        if (typeof preview === "string") return preview;
         if (options["--json"] === true) return JSON.stringify(preview, null, 2);
         const { placementJournalObjectCompositionText } = await import("./memory/sync-placement-journal-storage.ts"), h = preview.headroom;
         // Counts and hashes only; the sealed plan itself is in --json for the confirm step.

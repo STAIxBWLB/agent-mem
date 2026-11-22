@@ -26,13 +26,14 @@ import { assertPlacementActivationOwner } from "./sync-placement-activation-proo
 import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
 import { initialPlacementWriterContext } from "../sync-placement-writer-context.ts";
 import { checkpointProspective, type CheckpointProspective } from "./sync-placement-checkpoint-prospective.ts";
+import { ShardHistoryError, type ShardHistoryCause } from "./shard-sync-history.ts";
 
 export const CHECKPOINT_PREVIEW = PLACEMENT_CHECKPOINT_COMMAND;
 const RESUME = `${CHECKPOINT_PREVIEW} --resume`, ABANDON = `${CHECKPOINT_PREVIEW} --abandon`;
 const homeFloorAtLeast = (home: string, minimum: string): boolean =>
   (readFormatFloors(home) ?? []).some(floor => floor.surface === "home" && !formatVersionBelow(floor.minReader, minimum));
 
-export type PlacementCheckpointCause = "pending" | "commit-started" | "floor" | "writer-below-floor" | "headroom" | "obligation" | "changed" | "inactive" | "candidate";
+export type PlacementCheckpointCause = "pending" | "commit-started" | "floor" | "writer-below-floor" | "headroom" | "obligation" | "changed" | "inactive" | "candidate" | "history";
 const MESSAGES: Record<PlacementCheckpointCause, string> = {
   pending: PLACEMENT_CHECKPOINT_PENDING_MESSAGE,
   "commit-started": `The placement checkpoint's commit line has started, so it can no longer be abandoned; run ${RESUME} to complete it.`,
@@ -43,13 +44,34 @@ const MESSAGES: Record<PlacementCheckpointCause, string> = {
   changed: `The placement state changed since the checkpoint plan was sealed; preview a fresh plan with ${CHECKPOINT_PREVIEW} and confirm that one.`,
   inactive: "This home has no active sync placement; activate it with amem migrate --sync-placement --dry-run first.",
   candidate: `A checkpoint carries one writer renewal: pass the complete inventory as repeatable --writer-root <install root> (every amem install sharing this home), then preview again with ${CHECKPOINT_PREVIEW}.`,
+  history: "",
 };
+/** #567: the retained-history cause class and, for `bound`, which bound with its counts. Never a path, row or object id. */
+export interface PlacementCheckpointHistoryRefusal { category: "shard history"; cause: ShardHistoryCause; kind?: string; limit?: number; observed?: number }
+function historyMessage(refusal: PlacementCheckpointHistoryRefusal): string {
+  const exceeded = refusal.cause === "bound" && refusal.kind !== undefined ? ` (${refusal.kind}: ${refusal.observed} over the limit of ${refusal.limit})` : "";
+  const next = refusal.cause === "bound"
+    ? "Retain the history and do not abandon or edit it; a window this large needs the multi-plan checkpoint work in #288. Nothing was written."
+    : `Retain the selected history and inspect it with a compatible runtime, then preview again with ${CHECKPOINT_PREVIEW}. Nothing was written.`;
+  return `The checkpoint could not inspect retained shard history: shard history ${refusal.cause}${exceeded}. ${next}`;
+}
 /** A person-facing checkpoint refusal with one cause class and its next step; never a path, row or project name. */
 export class PlacementCheckpointError extends Error {
-  constructor(readonly causeClass: PlacementCheckpointCause, detail = "") {
-    super(causeClass === "headroom" ? `The checkpoint would not leave room for the next sync: ${detail} A single checkpoint cannot unblock this plan; the deferred multi-plan split in #288 design item 5 is the open path. Nothing was written.` : MESSAGES[causeClass] + (detail ? ` ${detail}` : ""));
+  readonly history?: PlacementCheckpointHistoryRefusal;
+  constructor(readonly causeClass: PlacementCheckpointCause, detail = "", history?: PlacementCheckpointHistoryRefusal) {
+    super(causeClass === "headroom" ? `The checkpoint would not leave room for the next sync: ${detail} A single checkpoint cannot unblock this plan; the deferred multi-plan split in #288 design item 5 is the open path. Nothing was written.`
+      : causeClass === "history" && history ? historyMessage(history) : MESSAGES[causeClass] + (detail ? ` ${detail}` : ""));
     this.name = "PlacementCheckpointError";
+    if (causeClass === "history" && history) this.history = history;
   }
+}
+/** Maps only this module's closed ShardHistoryError data to the checkpoint's history cause; anything else is rethrown. */
+function historyRefusal(error: unknown): never {
+  if (error instanceof ShardHistoryError) {
+    const code = Object.getOwnPropertyDescriptor(error, "code")?.value as ShardHistoryCause, bound = code === "bound" ? error.bound : undefined;
+    throw new PlacementCheckpointError("history", "", { category: "shard history", cause: code, ...(bound ? { kind: bound.kind, limit: bound.limit, observed: bound.observed } : {}) });
+  }
+  throw error;
 }
 
 function active(home: string): ActivePlacementBinding {
@@ -105,7 +127,7 @@ export async function previewPlacementCheckpoint(homeInput: string, opts: { writ
     nextStep: `${CHECKPOINT_PREVIEW} --confirm --plan <saved preview JSON> --writer-root <install root> (repeat for every install)` };
 }
 async function checkpointHeadroom(home: string, intent: CheckpointIntent): Promise<{ headroom: PlacementCheckpointHeadroom; journalObjects: PlacementJournalObjectComposition; assertCurrent(): void }> {
-  const epochHash = intent.epochHash, prospective = await checkpointProspective(home);
+  const epochHash = intent.epochHash, prospective = await checkpointProspective(home).catch(historyRefusal);
   let completed = { slots: 0, reservedJournalChunks: 0 }, journalObjects!: PlacementJournalObjectComposition;
   readPlacementPublicationMetadata(home, epochHash, io => {
     journalObjects = placementJournalObjectComposition({ names: io.names() });

@@ -123,6 +123,12 @@ export async function inspectRetainedPublicationHistories(snapshot: InspectionJo
 
 function unavailable(): never { throw new SyncPlacementJournalError("corrupt"); }
 function bound(): never { throw new SyncPlacementJournalError("bound"); }
+export type PlacementHistoryBoundKind = "graph-bytes" | "graph-objects" | "object-bytes" | "history-rows";
+/** #567: still code `bound` for every existing catch; adds which retained-history bound was exceeded, as counts only. */
+export class PlacementHistoryBoundError extends SyncPlacementJournalError {
+  constructor(readonly kind: PlacementHistoryBoundKind, readonly limit: number, readonly observed: number) { super("bound"); }
+}
+function historyBound(kind: PlacementHistoryBoundKind, limit: number, observed: number): never { throw new PlacementHistoryBoundError(kind, limit, observed); }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const oid = (value: string) => /^[a-f0-9]{40}$/.test(value);
 const forbidden = ["commondir", "shallow", "info/grafts", "objects/info/alternates", "objects/info/http-alternates", "config.worktree"];
@@ -171,7 +177,6 @@ export class PlacementInspectionObjects {
   private readonly check: () => void;
   private bytes = 0;
   private sourceRows = 0;
-  private sourceBytes = 0;
   private readonly sourcePacks = new Set<string>();
   private readonly objects = new Map<string, { type: string; bytes: Buffer }>();
   constructor(home: string, check: () => void) {
@@ -220,16 +225,22 @@ export class PlacementInspectionObjects {
     // Larger retained histories need a reviewed immutable digest inventory; physical row-pack limits stay separate.
     if (!oid(object)) unavailable();
     const prior = this.objects.get(object); if (prior) { if (prior.type !== type || prior.bytes.length > maximum) unavailable(); return Buffer.from(prior.bytes); }
-    if (this.objects.size >= SYNC_SCREEN_MAX_ROWS) bound();
+    if (this.objects.size >= SYNC_SCREEN_MAX_ROWS) historyBound("graph-objects", SYNC_SCREEN_MAX_ROWS, this.objects.size + 1);
     if (this.text(["cat-file", "-t", object]) !== type) unavailable();
     const size = Number(this.text(["cat-file", "-s", object]));
-    if (!Number.isSafeInteger(size) || size < 0 || size > maximum || this.bytes + size > PUBLIC_PRUNE_GRAPH_MAX_BYTES) bound();
+    if (!Number.isSafeInteger(size) || size < 0) bound();
+    if (size > maximum) historyBound("object-bytes", maximum, size);
+    if (this.bytes + size > PUBLIC_PRUNE_GRAPH_MAX_BYTES) historyBound("graph-bytes", PUBLIC_PRUNE_GRAPH_MAX_BYTES, this.bytes + size);
     const result = this.run(["cat-file", type, object], Math.max(1, maximum));
     if (result.code !== 0 || result.bytes.length !== size || createHash("sha1").update(`${type} ${size}\0`).update(result.bytes).digest("hex") !== object) unavailable();
     this.bytes += size; this.objects.set(object, { type, bytes: result.bytes }); return Buffer.from(result.bytes);
   }
   auditor(realm: ShardSyncRealm, generation: string): ShardHistoryAuditor {
     // The byte cache is shared and bounded. Do not retain a full decoded body map for every historical receipt.
+    // #567: retained-history inspection is bounded by object() (80 MiB graph bytes, 20000 objects) plus the cumulative
+    // row count below, never by the 8 MiB sync-screen byte envelope: that envelope bounds what sync publishes, and a
+    // full window's already-published packs routinely exceed it, which deadlocked the checkpoint meant to relieve it.
+    // ponytail: the 80 MiB graph bound is the ceiling; past it, a reviewed immutable digest inventory replaces the cache.
     return new ShardHistoryAuditor({ realm, generation, placement: true, publicPrune: true, git: async args => this.text(args),
         object: async (id, type) => this.object(id, type, type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES),
         blob: async (id, path) => {
@@ -237,8 +248,8 @@ export class PlacementInspectionObjects {
           const physical = canonicalJSON([realm, id]);
           if (path.startsWith("rows/") && !this.sourcePacks.has(physical)) {
             let lines = 0; for (const byte of bytes) if (byte === 10) lines++;
-            if (this.sourceRows + lines > SYNC_SCREEN_MAX_ROWS || this.sourceBytes + bytes.length > SYNC_SCREEN_MAX_BYTES) bound();
-            this.sourceRows += lines; this.sourceBytes += bytes.length; this.sourcePacks.add(physical);
+            if (this.sourceRows + lines > SYNC_SCREEN_MAX_ROWS) historyBound("history-rows", SYNC_SCREEN_MAX_ROWS, this.sourceRows + lines);
+            this.sourceRows += lines; this.sourcePacks.add(physical);
           }
           return bytes;
         } });

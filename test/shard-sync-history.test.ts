@@ -222,3 +222,17 @@ test("verified ancestry refuses the legacy trusted-Git abstraction without a str
   const f = fixture(); f.add(C(1), [], tree("v3", []));
   await expect(new ShardHistoryAuditor(f.options).verifiedAncestor(C(1), C(1))).rejects.toThrow(ShardHistoryError);
 });
+
+test("#567: a source bound keeps cause bound with its counts through history(); every other source failure stays blob", async () => {
+  const f = fixture(); f.add(C(1), [], tree("v3", [note("synthetic bound")]));
+  const failing = (thrown: unknown) => new ShardHistoryAuditor({ ...f.options, blob: async (_id, path) => { if (path !== "shard.json") throw thrown; return f.options.blob(_id, path); } })
+    .history(C(1)).then(() => undefined, error => error as ShardHistoryError);
+  const bounded = await failing(Object.assign(new Error("source bound"), { code: "bound", kind: "graph-bytes", limit: 83886080, observed: 83886081 }));
+  expect(bounded).toBeInstanceOf(ShardHistoryError);
+  expect(bounded!.code).toBe("bound");
+  expect(bounded!.bound).toEqual({ kind: "graph-bytes", limit: 83886080, observed: 83886081 });
+  expect(shardHistoryRefusal(bounded)).toContain("retained-history bound");
+  const plain = await failing(Object.assign(new Error("plain bound"), { code: "bound" }));
+  expect(plain!.code).toBe("bound"); expect(plain!.bound).toBeUndefined();
+  for (const other of [Object.assign(new Error("x"), { code: "corrupt" }), new Error("anything"), "not an error"]) expect((await failing(other))!.code).toBe("blob");
+});

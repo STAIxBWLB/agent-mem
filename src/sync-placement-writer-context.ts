@@ -262,6 +262,9 @@ export function previewActivePlacementWriters(home: string, ownRoot: string, req
   for (const row of measurement.writers) if (!expected.some(value=>value.writerId===row.writerId)) differences.push({writerId:row.writerId,state:"added"});
   const matches=missingCategories.length===0&&differences.every(row=>row.state==="unchanged");
   const changed=measurement.roots.find(row=>{const old=expected.find(value=>value.writerId===row.writerId);return !old||old.pin!==row.pin||old.version!==row.version;});
-  const refusalCategory:PlacementWriterRootCategory=missingCategories[0]??(changed?.root===needed.own?"running CLI":changed&&needed.receipt.includes(changed.root)?"setup receipt":"declared writer");
-  return {complete:true,matches,roots:measurement.roots,expected,missingCategories,differences,refusalCategory};
+  const changedCategory:PlacementWriterRootCategory|undefined=changed?(changed.root===needed.own?"running CLI":needed.receipt.includes(changed.root)?"setup receipt":"declared writer"):undefined;
+  // #567 AC4: a complete inventory with no missing category is not a refusal; the first changed root's category is
+  // informational `changedCategory`. `refusalCategory` keeps its meaning and appears only when a category is missing.
+  return {complete:true,matches,roots:measurement.roots,expected,missingCategories,differences,
+    ...(missingCategories[0]?{refusalCategory:missingCategories[0]}:{}),...(changedCategory?{changedCategory}:{})};
 }

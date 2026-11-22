@@ -25,19 +25,35 @@ export interface ShardHistoryAuditorOptions {
    * Body bytes, without the Git object header; the auditor verifies each requested identity itself. */
   object?(oid: string, type: "commit" | "tree"): Promise<Buffer>;
 }
-export type ShardHistoryCause = "unavailable" | "blob" | "forbidden-entry" | "public-prune-floor";
+export type ShardHistoryCause = "unavailable" | "blob" | "bound" | "forbidden-entry" | "public-prune-floor";
 const refusals: Record<ShardHistoryCause, string> = {
   unavailable: "Shard history is unavailable, inconsistent or unsupported; retain and inspect the complete selected history before continuing.",
   blob: "Shard history blob is unavailable or its identity, bound or complete newline is invalid; retain and inspect the selected history before continuing.",
+  bound: "Shard history inspection exceeded its retained-history bound; retain the history and do not abandon it: a later window needs the multi-plan checkpoint work (#288).",
   "forbidden-entry": "Shard history contains a forbidden historical tree entry; retain and inspect the selected history before continuing.",
   "public-prune-floor": "Shard history requires the v2 public prune floor; activate compatible public-prune support before continuing.",
 };
+export interface ShardHistoryBound { kind: string; limit: number; observed: number }
 export class ShardHistoryError extends Error {
   readonly code: ShardHistoryCause;
-  constructor(code: ShardHistoryCause = "unavailable") {
+  /** #567: only for code `bound`, copied as counts from the source's own data fields; never a path or object id. */
+  readonly bound?: ShardHistoryBound;
+  constructor(code: ShardHistoryCause = "unavailable", bound?: ShardHistoryBound) {
     const safe = typeof code === "string" && Object.hasOwn(refusals, code) ? code : "unavailable";
     super(refusals[safe]); this.code = safe; this.name = "ShardHistoryError";
+    if (safe === "bound" && bound) this.bound = bound;
   }
+}
+/** A source throw keeps `bound` only when its own data `code` says so; its kind/limit/observed survive only as finite counts. */
+function sourceBound(error: unknown): ShardHistoryBound | undefined | false {
+  try {
+    if (!error || typeof error !== "object" || types.isProxy(error)) return false;
+    const own = (key: string) => { const d = Object.getOwnPropertyDescriptor(error, key); return d && "value" in d ? d.value as unknown : undefined; };
+    if (own("code") !== "bound") return false;
+    const kind = own("kind"), limit = own("limit"), observed = own("observed");
+    return typeof kind === "string" && /^[a-z-]{1,32}$/.test(kind) && Number.isSafeInteger(limit) && Number.isSafeInteger(observed)
+      ? { kind, limit: limit as number, observed: observed as number } : undefined;
+  } catch { return false; }
 }
 function cause(error: unknown): ShardHistoryCause {
   try {
@@ -83,14 +99,16 @@ export class ShardHistoryAuditor {
       const maximum = path === "shard.json" || isShardManifestPath(path) ? 64 * 1024 : SHARD_PACK_MAX_BYTES;
       let bytes = this.#blobs.get(object);
       if (!bytes) {
-        const result = await this.#options.blob(object, path);
+        let result: Uint8Array;
+        try { result = await this.#options.blob(object, path); }
+        catch (error) { const bound = sourceBound(error); if (bound !== false) throw new ShardHistoryError("bound", bound); throw error; }
         if (!(result instanceof Uint8Array)) fail("blob"); bytes = Buffer.from(result);
         if (bytes.length < 1 || bytes.length > maximum || bytes.at(-1) !== 10
           || createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex") !== object) fail("blob");
         this.#blobs.set(object, bytes);
       }
       if (bytes.length > maximum) fail("blob"); return bytes;
-    } catch { return fail("blob"); }
+    } catch (error) { if (error instanceof ShardHistoryError && error.code === "bound") throw error; return fail("blob"); }
   }
   async #object(object: string, type: "commit" | "tree"): Promise<Buffer> {
     if (!this.#options.object || !oid(object)) return fail();
@@ -242,7 +260,7 @@ export class ShardHistoryAuditor {
       }
       if (!latest || lines.at(-1)?.split(" ")[0] !== tip) return fail();
       this.#histories.set(tip, latest); return detached(latest);
-    } catch (error) { return fail(cause(error)); }
+    } catch (error) { const code = cause(error); if (code === "bound" && error instanceof ShardHistoryError && error.bound) throw new ShardHistoryError("bound", { ...error.bound }); return fail(code); }
     finally { this.#running = false; }
   }
 }
