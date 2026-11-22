@@ -4,6 +4,7 @@
  * person-written floor record (`amem formats raise` is the one writer).
  */
 import { randomBytes } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { types } from "node:util";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { realPath } from "./platform.ts";
@@ -20,11 +21,12 @@ import { readPlacementJournal, readPlacementPublicationMetadata, placementJourna
 import { publicationFileNames } from "./sync-placement-publication-plan.ts";
 import { PLACEMENT_CHECKPOINT_COMMAND, PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending, resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { abandonPlacementCheckpoint, applyPlacementCheckpoint, planPlacementCheckpoint, resumePlacementCheckpoint, type PlacementCheckpointInput, type PlacementCheckpointPhase } from "./sync-placement-checkpoint.ts";
-import { PLACEMENT_CHECKPOINT_MIN_READER, validateCheckpointIntent, type CheckpointIntent } from "./sync-placement-checkpoint-format.ts";
+import { PLACEMENT_CHECKPOINT_LIMIT, PLACEMENT_CHECKPOINT_MIN_READER, validateCheckpointIntent, type CheckpointIntent } from "./sync-placement-checkpoint-format.ts";
 import { withPlacementCheckpointFences } from "./sync-placement-activation-locks.ts";
 import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
 import { initialPlacementWriterContext } from "../sync-placement-writer-context.ts";
+import { readSetupWriterRoots, SetupWriterRootsError } from "../setup.ts";
 import { checkpointProspective, type CheckpointProspective } from "./sync-placement-checkpoint-prospective.ts";
 import { ShardHistoryError, type ShardHistoryCause } from "./shard-sync-history.ts";
 
@@ -228,4 +230,39 @@ export async function abandonPlacementCheckpointPerson(homeInput: string): Promi
       throw error;
     } finally { releasePlacementStorageCaches(); }
   });
+}
+
+/** #578 Q2: the counts-only outcome of a sync-run checkpoint, or its refusal with a fixed cause and text. */
+export type CheckpointOnBoundResult = { ok: true; window: number; objectsBefore: number; objectsAfter: number }
+  | { ok: false; cause: PlacementCheckpointCause | "pins" | "cap" | "fence"; message: string };
+/**
+ * #578 Q2 (owner choice c): a sync-run checkpoint with an unchanged writer inventory, behind the home opt-in.
+ * The caller must already have released every placement lock its failed publication held (the transport's own finally),
+ * because the checkpoint fence takes the same mutation and sync locks again in this process.
+ * The root set is this package's own root (`import.meta.url`), every setup-receipt root and every effective root; it
+ * runs only when that set is exactly the effective inventory and the caller's attestation re-measures identical pins.
+ * Every other refusal comes from the person preview and confirm themselves (headroom, floors, obligations, history).
+ */
+export async function checkpointOnBound(homeInput: string, attest: () => unknown, ownRoot = fileURLToPath(new URL("../..", import.meta.url))): Promise<CheckpointOnBoundResult> {
+  const refuse = (cause: Extract<CheckpointOnBoundResult, { ok: false }>["cause"], message: string): CheckpointOnBoundResult => ({ ok: false, cause, message });
+  const pins = "Sync-run placement checkpoint refused: the writer inventory changed or is incomplete; a person renews it with amem migrate --sync-placement --dry-run, then --apply.";
+  try {
+    const home = realPath(homeInput), effective = readEffectiveSyncPlacementWriters(home), roots = effective.roots;
+    if (!roots) return refuse("pins", pins);
+    let own: string; try { own = realPath(ownRoot); } catch { return refuse("pins", pins); }
+    const wanted = new Set([...roots, ...readSetupWriterRoots(home), own]);
+    if (wanted.size !== roots.length || ![...wanted].every(root => roots.includes(root))) return refuse("pins", pins);
+    try { attest(); } catch { return refuse("pins", pins); }
+    const window = resolvePlacementWindow(home, effective.epochHash);
+    if (window.window + 1 >= PLACEMENT_CHECKPOINT_LIMIT - 1)
+      return refuse("cap", `Sync-run placement checkpoint refused: window ${window.window + 1} would reach the last checkpoints of this epoch; a person decides it with ${CHECKPOINT_PREVIEW}.`);
+    const preview = await previewPlacementCheckpoint(home, { writerRoots: roots, ownRoot: own });
+    const done = await confirmPlacementCheckpoint(home, preview, { writerRoots: roots, ownRoot: own });
+    return { ok: true, window: done.window, objectsBefore: preview.currentObjects, objectsAfter: readPlacementJournal(home, effective.epochHash).objects };
+  } catch (error) {
+    if (error instanceof PlacementCheckpointError) return refuse(error.causeClass, `Sync-run placement checkpoint refused: ${error.message}`);
+    if (error instanceof Error && error.name === "PlacementInventoryFenceError") return refuse("fence", error.message);
+    if (error instanceof SetupWriterRootsError) return refuse("pins", pins);
+    return refuse("changed", "Sync-run placement checkpoint refused: placement state changed or could not be read; run the checkpoint preview.");
+  } finally { releasePlacementStorageCaches(); }
 }

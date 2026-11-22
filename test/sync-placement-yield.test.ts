@@ -119,7 +119,7 @@ async function largeFixture(rows: number, syncFloor = true): Promise<PlacementIn
   }); homes.push(f); return f;
 }
 test("#462 AC2: a failed placement sync names a closed cause instead of leaving the host to parse text", async () => {
-  expect([...SYNC_FAILURE_CAUSES].sort()).toEqual(["bound", "checkpoint-pending", "refusal", "remote", "stopped", "unavailable", "unknown-outcome", "writer-renewal"]);
+  expect([...SYNC_FAILURE_CAUSES].sort()).toEqual(["bound", "checkpoint-pending", "checkpoint-refused", "refusal", "remote", "stopped", "unavailable", "unknown-outcome", "writer-renewal"]);
   const f = await largeFixture(3);
   const materialize = await import("../src/memory/sync-placement-materialize.ts");
   // #288 step 1: the clause the refusal throws must survive into the result a person reads, not only the receipt.

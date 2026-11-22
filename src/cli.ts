@@ -487,7 +487,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       throw new AgentUsageError("Remote realm listing uses only --sync-placement --list-remote and optional --json.");
     if (options["--from-remote"] === true && options["--admit"] === undefined)
       throw new AgentUsageError("--from-remote requires --sync-placement --admit <project>.");
-    if (options["--checkpoint"] === true) {
+    if (options["--checkpoint-on-bound"] !== undefined) {
+      if (modes.length || ["--checkpoint","--admit","--list-remote","--from-remote","--writer-root","--plan"].some(key=>options[key]!==undefined) || !["on","off"].includes(String(options["--checkpoint-on-bound"])))
+        throw new AgentUsageError("The sync-run checkpoint opt-in uses only --sync-placement --checkpoint-on-bound on|off, previewing by default and writing with --confirm.");
+    } else if (options["--checkpoint"] === true) {
       // #288 step 3: preview (default), --confirm --plan, --resume or --abandon; one mode at a time.
       const chosen = [options["--confirm"] === true, options["--resume"] === true, options["--abandon"] === true].filter(Boolean).length;
       if (options["--admit"] !== undefined || options["--list-remote"] === true || options["--from-remote"] === true || options["--apply"] === true || options["--dry-run"] === true || chosen > 1 || (options["--confirm"] === true) !== (options["--plan"] !== undefined)
@@ -619,6 +622,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const realms = await discoverRemotePlacementRealms(memoryHome(), { ...(context.visibility ? { visibility: context.visibility } : {}) });
         const nextStep = "amem migrate --sync-placement --admit <project> --from-remote --dry-run";
         return options["--json"] === true ? JSON.stringify({ realms, nextStep }, null, 2) : `${realms.map(realm => `scope=${realm.scope} keyHash=${realm.keyHash}; next ${nextStep}`).join("\n") || "no remote-only placement realms"}`;
+      }
+      if (options["--checkpoint-on-bound"] !== undefined) {
+        const { checkpointOnBoundOptInChange } = await import("./memory/sync-placement-opt-in.ts");
+        const r = checkpointOnBoundOptInChange(memoryHome(), options["--checkpoint-on-bound"] === "on", options["--confirm"] === true);
+        return options["--json"] === true ? JSON.stringify(r, null, 2) : r.text;
       }
       if (options["--checkpoint"] === true) {
         const person = await import("./memory/sync-placement-checkpoint-person.ts");
@@ -1472,7 +1480,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (!readActivePlacementBinding(syncHome, markers.profile, markers.shards)) throw Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
     }
     output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
-      sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
+      // #578 Q2: the CLI sync (also --if-due) is eligible; the home opt-in still decides whether a checkpoint can run.
+      sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest, placementCheckpoint: true } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },
       // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.
       forgetNearby: note => forgetNearby({ base: memoryHome(), project: note.project, text: note.text, title: note.title, screen: value => configured.screenStandalone(value) }) }));

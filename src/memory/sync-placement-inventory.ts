@@ -70,6 +70,8 @@ export interface PlacementInventoryPorts {
   close(store: MemoryStore): void;
   /** Runs one unchanged two-target placement publication over the given opened stores. */
   publish(primary: MemoryStore, targets: readonly MemoryStore[], opts: SyncOptions): Promise<SyncResult>;
+  /** #578 Q2: present only for an opted-in, eligible caller; runs one checkpoint after a journal-objects refusal. */
+  checkpointOnBound?(): Promise<import("./sync-placement-checkpoint-person.ts").CheckpointOnBoundResult>;
 }
 
 function sum(results: readonly SyncResult[]): Pick<SyncResult, "entries" | "pushed"> & { exported: number; withheld: number } {
@@ -131,19 +133,30 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
   progress?.deferFinish(true); report(0);
   let completed = 0;
   const results: SyncResult[] = [];
-  let stopped: SyncResult | undefined;
+  let stopped: SyncResult | undefined, checkpoint: SyncResult["checkpoint"], checkpointTried = false;
+  const attempt = async (batch: InventoryRealm[]): Promise<SyncResult> => {
+    const stores: MemoryStore[] = [];
+    try {
+      for (const realm of batch) stores.push(ports.open(realm));
+      return await ports.publish(stores[0]!, stores, opts);
+    } catch (error) {
+      return { ok: false, pushed: false, entries: 0, error: (error as Error).message, failure: { cause: "unavailable" } };
+    } finally { for (const store of stores.reverse()) try { ports.close(store); } catch { /* preserve the publication result */ } }
+  };
   for (const [index, batch] of batches.entries()) {
     if (!batch.length) continue;
     if (stopped) { for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
     if (opts.signal?.aborted) { stopped = { ok: false, pushed: false, entries: 0, error: "stopped", failure: { cause: "stopped" } }; for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
-    const stores: MemoryStore[] = [];
-    let result: SyncResult;
-    try {
-      for (const realm of batch) stores.push(ports.open(realm));
-      result = await ports.publish(stores[0]!, stores, opts);
-    } catch (error) {
-      result = { ok: false, pushed: false, entries: 0, error: (error as Error).message, failure: { cause: "unavailable" } };
-    } finally { for (const store of stores.reverse()) try { ports.close(store); } catch { /* preserve the publication result */ } }
+    let result = await attempt(batch);
+    // #578 Q2: by here the publication has returned, so its transport released every mutation and sync lock it took
+    // (sync-placement-transport.ts finally) and `attempt` closed the stores it opened. The checkpoint fence takes those
+    // same locks again in this process; running it any earlier would wait on our own locks until busy_timeout.
+    if (!result.ok && !checkpointTried && ports.checkpointOnBound && result.placementPublication?.bound?.kind === "journal-objects") {
+      checkpointTried = true;
+      const ran = await ports.checkpointOnBound();
+      if (ran.ok) { checkpoint = { window: ran.window, objectsBefore: ran.objectsBefore, objectsAfter: ran.objectsAfter }; result = await attempt(batch); }
+      else result = { ...result, error: [result.error, ran.message].filter(Boolean).join(" "), failure: { cause: "checkpoint-refused" } };
+    }
     results.push(result);
     const outcome: PlacementRealmOutcome = result.ok ? result.placementPublication?.outcome ?? "not-needed" : result.placementPublication?.outcome === "unknown" ? "unknown" : "failed";
     for (const realm of batch) realms.push({ realm: label(realm), outcome, publication: index + 1 });
@@ -157,7 +170,7 @@ export async function syncPlacementInventory(home: string, opts: SyncOptions, po
   else progress?.finish("succeeded");
   const totals = sum(results), last = stopped ?? results.at(-1);
   const base: SyncResult = last ? { ...last } : { ok: true, pushed: false, entries: 0 };
-  return { ...base, ok: !stopped, pushed: totals.pushed, entries: totals.entries,
+  return { ...base, ok: !stopped, pushed: totals.pushed, entries: totals.entries, ...(checkpoint ? { checkpoint } : {}),
     ...(base.placementPublication ? { placementPublication: { ...base.placementPublication, exported: totals.exported, withheld: totals.withheld } } : {}),
     ...(stopped?.error !== undefined ? { error: stopped.error } : {}), ...(held.length ? { warning: [base.warning, ...held.map(realm => localKeyOptInMessage(realm.key))].filter(Boolean).join(" ") } : {}), placementRealms: realms };
 }
