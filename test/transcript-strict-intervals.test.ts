@@ -13,8 +13,9 @@ test("old metric rows remain readable and the 0.29 reader accepts new timing", a
     appendMetrics(home, [old, { ...old, transcriptTiming: { metricSampleAtMs: 12, killAtMs: 10, reapAtMs: 11 } }]);
     const rows = readMetrics(home);
     expect(rows[0]).toEqual(old);
+    appendMetrics(home, [{ at: old.at, kind: "mcp-phase", tool: "startup", wallMs: 4, rssMB: 50, peakRaised: true }]);
     const oldReader = await import("../node_modules/@staix/agent-mem-v0290/src/memory/metrics.ts");
-    expect(oldReader.readMetrics(home)).toEqual(rows);
+    expect(oldReader.readMetrics(home)).toEqual(rows.map(row => ({ ...row, kind: "hook" as const })));
     expect(transcriptTiming(rows[0], undefined, 15)).toEqual({ paired: false, reason: "missing-or-outside-invocation" });
     expect(transcriptTiming(rows[1], rows[0], 15)).toEqual({ paired: true, killToReapMs: 1, reapToMetricSampleMs: 1,
       metricSampleToParentReturnUpperBoundMs: 3, missing: [] });

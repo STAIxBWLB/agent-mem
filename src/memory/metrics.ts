@@ -55,8 +55,10 @@ export interface RecordVariantMetric {
 /** All marks are process-local performance.now() milliseconds since the process time origin. */
 export interface JcodeJournalTiming { scanStartMs?: number; scanEndMs?: number; workStartMs?: number; publishStartMs?: number; publishEndMs?: number; publishTotalMs?: number; workerSpawnStartMs?: number; workerSpawnEndMs?: number; cursorCloseStartMs?: number; cursorCloseEndMs?: number; metricSampleAtMs?: number }
 export interface TranscriptTiming { killAtMs?: number; reapAtMs?: number; metricSampleAtMs: number }
-export interface MetricSample extends RecordVariantMetric { jcodeJournalTiming?: JcodeJournalTiming; transcriptTiming?: TranscriptTiming; at: string; kind: "hook" | "search"; /** #485: the read tool that completed, so a peak can be attributed; never its arguments or result. */ tool?: string; /** #485: the process peak after this call was higher than after any sample before it. */ peakRaised?: boolean; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
-const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200;
+export interface MetricSample extends RecordVariantMetric { jcodeJournalTiming?: JcodeJournalTiming; transcriptTiming?: TranscriptTiming; at: string; kind: "hook" | "search" | "mcp-phase"; /** #485: the read tool that completed, so a peak can be attributed; never its arguments or result. */ tool?: string; /** #485: the process peak after this call was higher than after any sample before it. */ peakRaised?: boolean; shared?: boolean; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+const METRICS_MAX_BYTES = 128 * 1024, METRICS_KEEP = 200, MCP_PHASE_KEEP = 32;
+// ponytail: reserve 17 KiB for future appends; upgrade to separate bounded files if these windows need larger guarantees.
+const HOOK_BYTES = 74 * 1024, SEARCH_BYTES = 30 * 1024, PHASE_BYTES = 6 * 1024, OTHER_BYTES = 1024;
 
 /**
  * #485: the newest `limit` samples of each kind. Hook samples share this file with the read-tool samples a long-lived
@@ -66,22 +68,22 @@ function newestPerKind<T>(items: readonly T[], limit: number, kindOf: (item: T) 
   const kept: T[] = [], seen = new Map<string, number>();
   for (let index = items.length - 1; index >= 0; index--) {
     const item = items[index]!, kind = kindOf(item), count = seen.get(kind) ?? 0;
-    if (count >= limit) continue;
+    if (count >= (kind === "mcp-phase" ? Math.min(limit, MCP_PHASE_KEEP) : limit)) continue;
     seen.set(kind, count + 1); kept.push(item);
   }
   return kept.reverse();
 }
 
 /**
- * #485: the process peak on the same basis as `scripts/budget-rss.ts` `peakRssKB` (VmHWM on Linux, rusage maxRSS
- * elsewhere). `undefined` when this host cannot answer, so a read that only wanted a telemetry sample still completes.
+ * Process lifetime peak on the same basis as `scripts/budget-rss.ts`: VmHWM on Linux, maxRSS elsewhere.
+ * `undefined` when unavailable; telemetry never makes a call fail.
  */
 export function processPeakRssKB(): number | undefined {
   try { return processImageRssKB("self") ?? process.resourceUsage().maxRSS; } catch { return undefined; }
 }
 
 /** #485: one read-tool call's window; `alone` goes false as soon as another read call shares any part of it. */
-export interface PeakWindow { alone: boolean }
+export interface PeakWindow { alone: boolean; startPeak?: number; parent?: PeakWindow; gapKB?: number; gapMs?: number }
 
 /** A host that cannot report its peak must not turn a read into a failure, so a throwing read is `undefined`. */
 const peekOnce = (read: () => number | undefined): number | undefined => { try { return read(); } catch { return undefined; } };
@@ -94,34 +96,60 @@ const peekOnce = (read: () => number | undefined): number | undefined => { try {
  */
 export function createPeakTracker(read: () => number | undefined = processPeakRssKB) {
   const windows = new Set<PeakWindow>();
-  let observed = peekOnce(read);
+  let observed = peekOnce(read), idleSince = performance.now();
   const peek = () => peekOnce(read);
   const advance = (peakKB: number) => { observed = observed === undefined ? peakKB : Math.max(observed, peakKB); };
   return {
-    begin(): PeakWindow {
-      const window: PeakWindow = { alone: windows.size === 0 };
-      for (const other of windows) other.alone = false;
+    begin(parent?: PeakWindow): PeakWindow {
+      let gapKB: number | undefined;
+      if (windows.size === 0) { const current = peek(); if (current !== undefined) { if (observed !== undefined && current > observed) gapKB = current; advance(current); } }
+      const startPeak = windows.size === 0 ? observed : peek();
+      const window: PeakWindow = { alone: parent ? parent.alone && windows.size === 1 && windows.has(parent) : windows.size === 0, ...(startPeak === undefined ? {} : { startPeak }), ...(parent ? { parent } : {}), ...(gapKB === undefined ? {} : { gapKB, gapMs: Math.max(0, performance.now() - idleSince) }) };
+      for (const other of windows) if (other !== parent) other.alone = false;
       windows.add(window);
       return window;
     },
     /** The call completed: report whether it may be credited with the peak, and the peak to record with its sample. */
-    end(window: PeakWindow): { peakKB?: number; raised: boolean } {
+    end(window: PeakWindow): { peakKB?: number; raised: boolean; shared?: true } {
       windows.delete(window);
+      if (windows.size === 0) idleSince = performance.now();
       const peakKB = peek();
       if (peakKB === undefined) return { raised: false };
-      const raised = window.alone && (observed === undefined || peakKB > observed);
+      const raised = window.alone && observed !== undefined && peakKB > observed;
+      const shared = !window.alone && window.startPeak !== undefined && peakKB > window.startPeak;
+      if (raised && window.parent) window.parent.alone = false;
       advance(peakKB);
-      return { peakKB, raised };
+      return { peakKB, raised, ...(shared ? { shared: true as const } : {}) };
     },
     /** The call refused or threw: it records nothing, but the peak still advances so a later call is not miscredited. */
     abort(window: PeakWindow): void {
       windows.delete(window);
+      if (windows.size === 0) idleSince = performance.now();
       const peakKB = peek();
       if (peakKB !== undefined) advance(peakKB);
     },
   };
 }
 
+export type McpPhaseName = "startup" | "idle-gap" | "preload" | "construct" | "on-emitted" | "recall-prepare" | "amem_work_state_read" | "amem_work_state_write" | "amem_remember" | "amem_correct" | "amem_capacity" | `failed:${"amem_search" | "amem_evidence" | "amem_show" | "amem_timeline" | "amem_graph" | "amem_brief" | "amem_vault_candidates"}`;
+export const MCP_PHASE_NAMES: readonly McpPhaseName[] = ["startup", "idle-gap", "preload", "construct", "on-emitted", "recall-prepare", "amem_work_state_read", "amem_work_state_write", "amem_remember", "amem_correct", "amem_capacity", "failed:amem_search", "failed:amem_evidence", "failed:amem_show", "failed:amem_timeline", "failed:amem_graph", "failed:amem_brief", "failed:amem_vault_candidates"];
+export type PeakTracker = ReturnType<typeof createPeakTracker>;
+/** A lifetime peak that rose between instrumented windows cannot be assigned to a tool. */
+export function recordMcpGap(base: string, peakKB: number, wallMs: number): void {
+  try { appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: "idle-gap", wallMs, rssMB: peakKB / 1024, peakRaised: false }]); } catch { /* observational only */ }
+}
+/** Fixed phase labels and asynchronous handoff only; never retain call input or result. */
+export function observeMcpPhase(base: string, peaks: PeakTracker, name: McpPhaseName, parent?: PeakWindow): () => void {
+  const started = performance.now(); let window: PeakWindow | undefined;
+  try { window = peaks.begin(parent); if (window.gapKB !== undefined) recordMcpGap(base, window.gapKB, window.gapMs ?? 0); } catch { /* observational only */ }
+  return () => {
+    try {
+      if (!window) return;
+      const ended = peaks.end(window); window = undefined;
+      if (ended.peakKB !== undefined && (ended.raised || ended.shared)) appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised, ...(ended.shared ? { shared: true } : {}) }]);
+    } catch { /* observational only */ }
+  };
+}
 export function metricsPath(base: string): string {
   return join(base, "metrics.jsonl");
 }
@@ -135,13 +163,22 @@ export function metricsPath(base: string): string {
 let trimGeneration = 0;
 /** The kept text of a trim: torn lines dropped, the newest METRICS_KEEP of each kind kept, oldest first. */
 function trimmedText(text: string): string {
-  const rows: { line: string; kind: string }[] = [];
+  const rows: { line: string; kind: string; index: number; bytes: number }[] = [];
   for (const line of text.split("\n")) {
     if (!line) continue;
-    // A line the read caught mid-append is dropped, never copied into the replacement.
-    try { const kind = (JSON.parse(line) as { kind?: unknown }).kind; rows.push({ line, kind: typeof kind === "string" ? kind : "other" }); } catch { /* torn tail */ }
+    try { const kind = (JSON.parse(line) as { kind?: unknown }).kind; rows.push({ line, kind: typeof kind === "string" ? kind : "other", index: rows.length, bytes: Buffer.byteLength(line) + 1 }); } catch { /* torn tail */ }
   }
-  return newestPerKind(rows, METRICS_KEEP, row => row.kind).map(row => row.line).join("\n") + "\n";
+  const selected = newestPerKind(rows, METRICS_KEEP, row => row.kind);
+  const bounded = (items: typeof rows, cap: number) => {
+    const kept: typeof rows = []; let bytes = 0;
+    for (let i = items.length - 1; i >= 0; i--) { const row = items[i]!; if (bytes + row.bytes <= cap) { kept.push(row); bytes += row.bytes; } }
+    return kept;
+  };
+  return [...bounded(selected.filter(row => row.kind === "hook"), HOOK_BYTES),
+    ...bounded(selected.filter(row => row.kind === "search"), SEARCH_BYTES),
+    ...bounded(selected.filter(row => row.kind === "mcp-phase"), PHASE_BYTES),
+    ...bounded(selected.filter(row => row.kind !== "hook" && row.kind !== "search" && row.kind !== "mcp-phase"), OTHER_BYTES)]
+    .sort((a, b) => a.index - b.index).map(row => row.line + "\n").join("");
 }
 
 function trimMetrics(file: string): void {
@@ -163,10 +200,14 @@ function trimMetrics(file: string): void {
  * is refused before a byte is written. One worker drains the hand-offs in call order, so the file keeps the order the
  * calls completed in; a sample still in flight when the process exits is simply lost.
  */
-const pending: { base: string; samples: MetricSample[] }[] = [];
-let draining = false;
+const pending: { base: string; samples: MetricSample[]; phase: boolean }[] = [];
+let draining = false, pendingPhases = 0;
 export function appendMetricsLater(base: string, samples: MetricSample[]): void {
-  pending.push({ base, samples });
+  const phase = samples.length > 0 && samples.every(sample => sample.kind === "mcp-phase");
+  // ponytail: at most 32 outstanding phase writes; a bounded worker queue with per-kind fairness is the upgrade.
+  if (phase && pendingPhases >= MCP_PHASE_KEEP) return;
+  if (phase) pendingPhases++;
+  pending.push({ base, samples, phase });
   if (draining) return;
   draining = true;
   setImmediate(() => { void drainPending(); });
@@ -176,6 +217,7 @@ async function drainPending(): Promise<void> {
   while (pending.length) {
     const next = pending.shift()!;
     try { await writeSamplesLater(next.base, next.samples); } catch { /* a lost sample is never a failed call */ }
+    finally { if (next.phase) pendingPhases--; }
   }
   draining = false;
 }
@@ -219,7 +261,7 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
     if (!line) continue;
     try {
       const s = JSON.parse(line) as MetricSample;
-      if ((s?.kind === "hook" || s?.kind === "search") && typeof s.at === "string") parsed.push(s);
+      if ((s?.kind === "hook" || s?.kind === "search" || s?.kind === "mcp-phase") && typeof s.at === "string") parsed.push(s);
     } catch { /* a malformed line is skipped */ }
   }
   return newestPerKind(parsed, limit, sample => sample.kind);
@@ -270,15 +312,17 @@ export function readCaptureDrops(base: string): { readable: true; counts: Partia
     const length = readSync(fd, bytes, 0, bytes.length, start);
     let text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
     if (start) text = text.slice(text.indexOf("\n") + 1);
-    const tail = text.split("\n").filter(line => line.trim() !== "").slice(-METRICS_KEEP);
+    const tail = text.split("\n").filter(line => line.trim() !== "");
     lines = tail.length;
+    const hooks: MetricSample[] = [];
     for (const line of tail) {
-      try {
-        const sample = JSON.parse(line) as MetricSample;
-        if (sample.kind !== "hook" || !DROP_REASONS.includes(sample.captureDropReason!) || !Number.isSafeInteger(sample.captureDrops) || sample.captureDrops! <= 0) continue;
-        const reason = sample.captureDropReason!;
-        counts[reason] = (counts[reason] ?? 0) + sample.captureDrops!;
-      } catch { malformedLines++; /* A malformed metric is never a notice; doctor reports how many were skipped. */ }
+      try { const sample = JSON.parse(line) as MetricSample; if (sample.kind === "hook") hooks.push(sample); }
+      catch { malformedLines++; /* A malformed metric is never a notice; doctor reports how many were skipped. */ }
+    }
+    for (const sample of hooks.slice(-METRICS_KEEP)) {
+      if (!DROP_REASONS.includes(sample.captureDropReason!) || !Number.isSafeInteger(sample.captureDrops) || sample.captureDrops! <= 0) continue;
+      const reason = sample.captureDropReason!;
+      counts[reason] = (counts[reason] ?? 0) + sample.captureDrops!;
     }
   } catch { return { readable: false, reason: "metrics.jsonl cannot be read or is not UTF-8" }; }
   finally { if (fd !== undefined) closeSync(fd); }

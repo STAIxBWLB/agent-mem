@@ -8,6 +8,7 @@ import { memoryProjectKey } from "../src/memory/project.ts";
 import { memoryGitEnv, memoryGitSync } from "../src/memory/platform.ts";
 import { ftsTerms } from "../src/memory/search-fts.ts";
 import { MemoryStore } from "../src/memory/store.ts";
+import { MCP_PHASE_NAMES, readMetrics } from "../src/memory/metrics.ts";
 import { MCP_VOLUME_EXCERPT_BYTES, MCP_VOLUME_ROWS, featureMasks, mcpVolumeRow } from "../test/fakes/mcp-volume-fixture.ts";
 import { BudgetStall } from "./budget-attempt.ts";
 
@@ -45,11 +46,13 @@ export interface McpVolumeReport {
   engine: "fts5"; first: number; hits: number;
   R1: { pass: boolean; eofExitCode: number; childReaped: boolean };
   R3: { pass: boolean; idleMeasured: false; peakRssMB: number; selfPeakKB: number; darwinWait4KB: number | null; peakKB: number; budgetPeakMB: 200 };
+  phasePeaks?: { phase: string; wallMs: number; rssMB: number; peakRaised: boolean; shared?: boolean }[];
   pass: boolean;
 }
 
 /** One attempt only: the caller owns the existing budgetGroup single-stall retry layer. */
-export async function measureMcpVolume(): Promise<McpVolumeReport> {
+export async function measureMcpVolume(diagnostic = false): Promise<McpVolumeReport> {
+  const watchdog = diagnostic ? 120_000 : WATCHDOG_MS;
   const home = mkdtempSync(join(tmpdir(), "amem-mcp-volume-")), cwd = join(home, "project"), base = join(home, "memory"), reportPath = join(home, "rss.json");
   let child: Bun.Subprocess<"pipe", "pipe", "pipe"> | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let cancelOutput: (() => Promise<void>) | undefined, cancelErrors: (() => Promise<void>) | undefined, stderr: Promise<string> | undefined;
@@ -106,7 +109,7 @@ process.once('exit',code=>{if(process.platform==='linux'&&!/VmHWM:\\s*(\\d+)\\s*
     const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }); let buffer = "", outputBytes = 0;
     let expire!: (error: BudgetStall) => void;
     const expired = new Promise<never>((_resolve, reject) => { expire = reject; });
-    timer = setTimeout(() => { timedOut = true; try { if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL"); } catch { /* The reap barrier below still owns cleanup. */ } expire(new BudgetStall("MCP volume session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: WATCHDOG_MS, pending })); }, Math.max(0, WATCHDOG_MS - (performance.now() - sessionStarted)));
+    timer = setTimeout(() => { timedOut = true; try { if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL"); } catch { /* The reap barrier below still owns cleanup. */ } expire(new BudgetStall("MCP volume session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: watchdog, pending })); }, Math.max(0, watchdog - (performance.now() - sessionStarted)));
     const next = async (id: number) => {
       for (;;) {
         const end = buffer.indexOf("\n");
@@ -137,6 +140,15 @@ process.once('exit',code=>{if(process.platform==='linux'&&!/VmHWM:\\s*(\\d+)\\s*
     const content = called.content?.find((item: any) => item.type === "text" && typeof item.text === "string");
     requireVolume(called.isError !== true && !!content, "search tool failed");
     const found = assertMcpVolumeSearch(JSON.parse(content.text), project);
+    if (diagnostic) {
+      const fail = await request("tools/call", { name: "amem_search", arguments: { query: " " } }, "failed search");
+      requireVolume(fail.isError === true, "diagnostic refusal missing");
+      for (const [name, args] of [["amem_remember", { text: "synthetic phase fixture", kind: "finding" }], ["amem_work_state_write", { list: "fixture", fields: { status: "active" } }], ["amem_correct", { id: "invalid", proposedText: "synthetic", reason: "synthetic" }]] as const) {
+        await request("tools/call", { name, arguments: args }, name);
+      }
+      // Observation handoffs are asynchronous and may be lost at EOF; this wait is outside the measured production call.
+      await Bun.sleep(250);
+    }
     pending = "EOF"; proc.stdin.end();
     const drained = (async () => {
       requireVolume(!buffer.trim(), "unexpected extra protocol frame");
@@ -151,7 +163,7 @@ process.once('exit',code=>{if(process.platform==='linux'&&!/VmHWM:\\s*(\\d+)\\s*
     clearTimeout(timer); timer = undefined;
     requireVolume(exitCode === 0, "MCP did not exit normally on EOF");
     const sessionMs = performance.now() - sessionStarted;
-    if (sessionMs >= WATCHDOG_MS) throw new BudgetStall("MCP volume session timed out", { elapsedMs: sessionMs, limitMs: WATCHDOG_MS, pending });
+    if (sessionMs >= watchdog) throw new BudgetStall("MCP volume session timed out", { elapsedMs: sessionMs, limitMs: watchdog, pending });
     let remains = true; try { process.kill(proc.pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") remains = false; else throw error; }
     requireVolume(!remains, "owned MCP child remains after EOF");
     const measured = JSON.parse(readFileSync(reportPath, "utf8"));
@@ -172,14 +184,15 @@ process.once('exit',code=>{if(process.platform==='linux'&&!/VmHWM:\\s*(\\d+)\\s*
       requireVolume(averageBytes === MCP_VOLUME_EXCERPT_BYTES && averageChars >= 1130 && averageChars <= 1140, "fixture character density drifted");
     } finally { metadata.close(); }
     const databaseBytes = databaseSize();
-    const report: McpVolumeReport = { platform: process.platform, bun: Bun.version, runtimeMode: "--smol", transport: "stdio", entry: "bin/amem.js", sessionMs: Math.round(sessionMs), queryMs: Math.round(queryMs), wallTimingPass: true,
+    const phasePeaks = diagnostic ? readMetrics(base).filter(s => (s.kind === "mcp-phase" || s.kind === "search") && typeof s.tool === "string" && ((MCP_PHASE_NAMES as readonly string[]).includes(s.tool) || s.kind === "search" && s.tool === "amem_search") && typeof s.wallMs === "number" && typeof s.rssMB === "number" && typeof s.peakRaised === "boolean").map(s => ({ phase: s.tool!, wallMs: s.wallMs!, rssMB: s.rssMB!, peakRaised: s.peakRaised!, ...(s.shared ? { shared: true } : {}) })) : undefined;
+    const report: McpVolumeReport = { ...(phasePeaks ? { phasePeaks } : {}), platform: process.platform, bun: Bun.version, runtimeMode: "--smol", transport: "stdio", entry: "bin/amem.js", sessionMs: Math.round(sessionMs), queryMs: Math.round(queryMs), wallTimingPass: true,
       corpus: { capture: MCP_VOLUME_ROWS, excerptBytes: MCP_VOLUME_EXCERPT_BYTES, matchingRows, logicalBytes, seedDatabaseBytes, databaseBytes, vocabulary, tokens, averageChars, averageBytes, ...(tempFreeBytes === undefined ? {} : { tempFreeBytes }) }, ...found,
       R1: { pass: !remains, eofExitCode: exitCode, childReaped: true },
       R3: { pass: peakKB < PEAK_KB, idleMeasured: false, peakRssMB: mib(peakKB), selfPeakKB: measured.selfPeakKB, darwinWait4KB, peakKB, budgetPeakMB: 200 }, pass: peakKB < PEAK_KB };
     if (!report.pass) { console.error(JSON.stringify({ diagnostic: "mcp-volume-budget-failure", ...report })); throw Error("MCP volume peak RSS budget failed"); }
     return report;
   } catch (error) {
-    if (timedOut) throw new BudgetStall("MCP volume session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: WATCHDOG_MS, pending });
+    if (timedOut) throw new BudgetStall("MCP volume session timed out", { elapsedMs: performance.now() - sessionStarted, limitMs: watchdog, pending });
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
@@ -197,4 +210,4 @@ process.once('exit',code=>{if(process.platform==='linux'&&!/VmHWM:\\s*(\\d+)\\s*
   }
 }
 
-if (import.meta.main) console.log(JSON.stringify(await measureMcpVolume(), null, 2));
+if (import.meta.main) console.log(JSON.stringify(await measureMcpVolume(process.env.AMEM_MCP_PHASE_DIAGNOSTIC === "1"), null, 2));

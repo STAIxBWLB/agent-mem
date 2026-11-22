@@ -160,3 +160,16 @@ test("measure-budget keeps synthetic samples out of the real memory home", async
   expect(source).toContain("appendMetrics(memoryBase(home), samples)");
   expect(source).not.toContain("appendMetrics(memoryBase(), samples)");
 });
+
+test("capacity reports only allowlisted MCP phase peak without changing search metrics", () => {
+  const dir = home(), at = iso(NOW);
+  const report = capacityReport({ home: dir, ...readings({ metrics: [
+    { at, kind: "search", tool: "amem_search", wallMs: 42, rssMB: 100 },
+    { at, kind: "mcp-phase", tool: "preload", wallMs: 12, rssMB: 250, peakRaised: true },
+    { at, kind: "mcp-phase", tool: "untrusted-text", wallMs: 9, rssMB: 500, peakRaised: true },
+  ] }) });
+  expect(report.metrics.searchP95Ms).toBe(42); expect(report.metrics.searchRssMB).toBe(100);
+  expect(report.metrics.mcpPhasePeak).toEqual({ phase: "preload", wallMs: 12, rssMB: 250, peakRaised: true });
+  const ambiguous = capacityReport({ home: dir, ...readings({ metrics: [{ at, kind: "mcp-phase", tool: "amem_remember", wallMs: 8, rssMB: 280, peakRaised: false, shared: true }] }) });
+  expect(ambiguous.metrics.mcpPhasePeak).toEqual({ phase: "amem_remember", wallMs: 8, rssMB: 280, peakRaised: false, shared: true });
+});
