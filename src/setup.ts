@@ -633,13 +633,16 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
 function available(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): boolean { return target === "agy" || !!options.native || Bun.which(target, { PATH: c.env.PATH ?? process.env.PATH }) !== null; }
 export interface SetupApplyResult { skills?: SetupSkillResult[]; applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[]; warnings?: string[] }
-function skillResults(c: ReturnType<typeof context>, targets: SetupTarget[], mode: "preview" | "apply" | "undo", requested: SetupPlan["mode"] = mode): SetupSkillResult[] {
+function skillResults(c: ReturnType<typeof context>, targets: SetupTarget[], mode: "preview" | "apply" | "undo", requested: SetupPlan["mode"] = mode, prior?: SetupSkillResult[]): SetupSkillResult[] {
   return targets.flatMap((target): SetupSkillResult[] => {
     const retry = `amem setup ${target} ${requested === "undo" ? "--undo" : "--apply"}${requested !== "undo" && c.root ? ` --root ${quote(c.root.path)}` : ""}`;
     try {
       const root = skillRoot(target, c.env, c.home);
       if (!root) return [];
-      return [{ target, report: installSkills(root, mode, c.root?.path, c.root?.version, retry) }];
+      const planned = prior?.find(row => row.target === target)?.report;
+      if (mode === "apply" && planned?.actions.every(action => action.change === "refused")) return [{ target, report: planned }];
+      const expected = mode === "apply" && planned ? { root: planned.root, ...(planned.linkedFrom ? { linkedFrom: planned.linkedFrom } : {}) } : undefined;
+      return [{ target, report: installSkills(root, mode, c.root?.path, c.root?.version, retry, c.env, expected) }];
     }
     catch (error) { return [{ target, refused: true, reason: `${error instanceof Error ? error.message : String(error)}; inspect and retry ${retry}` }]; }
   });
@@ -692,7 +695,7 @@ function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): SetupApplyR
     for (let i = 0; i < value.changes.length; i++) { const change = value.changes[i]!; if (!sameImage(item.expected[i]!, change.after)) write(change.path, change.after, item.expected[i]!, publishGuard(c, value.target, options)); }
     value.phase = "applied"; save(c, value); applied.push(value.target);
   }
-  const skills = skillResults(c, targets, "apply");
+  const skills = skillResults(c, targets, "apply", "apply", plan.skills);
   return { applied, unchanged, ...(skills.length ? { skills } : {}), ...(skipped.length ? { skipped } : {}) };
 }
 /** Byte-exact for untouched files, otherwise remove/restore only this installer's owned entries. */
@@ -763,7 +766,7 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
     if (action.available && !action.hooks.length && plan.mode !== "undo") lines.push(`            hook     ${s.dim("none")}`);
     lines.push(`            ${s.dim(action.lifecycle)}`);
   }
-  for (const row of plan.skills ?? []) for (const action of row.report?.actions ?? []) lines.push(`  skill ${row.target}: ${action.name} ${action.change} ${action.path}${action.reason ? `: ${action.reason}` : ""}`);
+  for (const row of plan.skills ?? []) for (const action of row.report?.actions ?? []) lines.push(`  skill ${row.target}: ${action.name} ${action.change} ${action.path}${row.report?.linkedFrom ? ` (linked from ${row.report.linkedFrom})` : ""}${action.reason ? `: ${action.reason}` : ""}`);
   for (const row of plan.skills ?? []) if (row.reason) lines.push(`  skill ${row.target}: ${row.reason}`);
   const warnings = plan.notes.filter(note => /^WARNING|detected|version-specific/.test(note)), notes = plan.notes.filter(note => !warnings.includes(note));
   if (skipped.length) lines.push("", `Skipped clients: ${skipped.map(action => action.target).join(", ")} (not installed)`);
@@ -774,7 +777,7 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
 }
 
 function setupResultText(result: SetupApplyResult | { restored: SetupTarget[]; skills?: SetupSkillResult[] }, s: Style): string {
-  const skills = (result.skills ?? []).flatMap(row => [...(row.reason ? [`skill ${row.target}: ${row.reason}`] : []), ...(row.report?.actions ?? []).map(a => `skill ${row.target}: ${a.name} ${a.change} ${a.path}${a.reason ? `: ${a.reason}` : ""}`)]);
+  const skills = (result.skills ?? []).flatMap(row => [...(row.reason ? [`skill ${row.target}: ${row.reason}`] : []), ...(row.report?.actions ?? []).map(a => `skill ${row.target}: ${a.name} ${a.change} ${a.path}${row.report?.linkedFrom ? ` (linked from ${row.report.linkedFrom})` : ""}${a.reason ? `: ${a.reason}` : ""}`)]);
   if ("restored" in result) return [`${label(s, "ok")} restored: ${result.restored.join(", ") || "none"}`, ...skills].join("\n");
   return [`${label(s, "ok")} applied: ${result.applied.join(", ") || "none"}`, `${label(s, "ok")} unchanged: ${result.unchanged.join(", ") || "none"}`,
     ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`),

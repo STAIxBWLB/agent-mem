@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { realPath } from "./memory/platform.ts";
+import { canonicalPath, realPath } from "./memory/platform.ts";
+import { memoryHome } from "./memory/home.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
 import type { SetupTarget } from "./setup.ts";
 
 export const SKILL_NAMES = ["amem-status", "amem-recall", "amem-remember", "amem-review", "amem-ops"] as const;
 export type SkillAction = { name: string; path: string; change: "install" | "replace" | "remove" | "unchanged" | "absent" | "modified" | "foreign" | "refused"; reason?: string };
-export type SkillInstallReport = { root: string; actions: SkillAction[] };
+export type SkillInstallReport = { root: string; linkedFrom?: string; actions: SkillAction[] };
+type RootBinding = { root: string; linkedFrom?: string };
 type Marker = { tool: "amem"; version: string; sha256: string };
 type Tree = Map<string, Buffer>;
 const markerName = ".amem-skill.json";
@@ -76,8 +78,8 @@ function matches(dir: string, expected: Marker): boolean {
   return !!current && current.sha256 === expected.sha256 && current.version === expected.version;
 }
 function packageTree(packageRoot: string, name: string): Tree {
-  safeRoot(join(packageRoot, "skills", name));
-  safeRoot(join(packageRoot, "skills", "_shared", "amem-adapter.md"));
+  safeInput(join(packageRoot, "skills", name));
+  safeInput(join(packageRoot, "skills", "_shared", "amem-adapter.md"));
   const files = tree(join(packageRoot, "skills", name));
   if (files.has(markerName) || files.has("references/amem-adapter.md")) throw new Error("reserved packaged file");
   const adapter = join(packageRoot, "skills", "_shared", "amem-adapter.md"), st = lstatSync(adapter);
@@ -90,27 +92,57 @@ function writeTree(dir: string, files: Tree, version: string): void {
   for (const [name, data] of files) { const path = join(dir, ...name.split("/")); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, data, { flag: "wx" }); }
   writeFileSync(join(dir, markerName), JSON.stringify({ tool: "amem", version, sha256: digest(files) }) + "\n", { flag: "wx" });
 }
-function safeRoot(root: string): string {
+function safeInput(path: string): void {
+  if (exists(path) && lstatSync(path).isSymbolicLink()) throw new Error(`Package input ${path} is a symlink`);
+}
+function within(child: string, parent: string): boolean {
+  const part = relative(parent, child);
+  return part === "" || (part !== ".." && !part.startsWith(`..${sep}`) && !isAbsolute(part));
+}
+function safeRoot(root: string, packageRoot: string, env: SetupEnvironment): RootBinding {
   const absolute = resolve(root);
-  if (exists(absolute) && lstatSync(absolute).isSymbolicLink()) throw new Error(`Skill root ${absolute} is a symlink; use amem skills export <dir> with a real directory`);
+  if (exists(absolute) && lstatSync(absolute).isSymbolicLink()) {
+    const target = resolve(dirname(absolute), readlinkSync(absolute));
+    let physical: string;
+    try { physical = realPath(absolute); }
+    catch { throw new Error(`Skill root link ${absolute} targets ${target}, which is unavailable; repair the link and retry`); }
+    if (!lstatSync(physical).isDirectory()) throw new Error(`Skill root link ${absolute} targets ${physical}, which is not a directory; choose a directory and retry`);
+    const home = canonicalPath(memoryHome(env)), source = canonicalPath(join(packageRoot, "skills"));
+    if (within(physical, home) || within(physical, source)) throw new Error(`Skill root link ${absolute} targets ${physical}, inside the memory home or package skills; choose another directory and retry`);
+    return { root: physical, linkedFrom: absolute };
+  }
   function parentPath(path: string): string {
     if (exists(path)) return realPath(path);
     const parent = dirname(path);
     if (parent === path) throw new Error(`Cannot resolve ${path}`);
     return join(parentPath(parent), basename(path));
   }
-  return join(parentPath(dirname(absolute)), basename(absolute));
+  return { root: join(parentPath(dirname(absolute)), basename(absolute)) };
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function leftovers(root: string, name: string): string[] {
   if (!exists(root)) return [];
   return readdirSync(root).filter(x => x.startsWith(`.amem-skill-${name}-`)).map(x => join(root, x));
 }
-export function installSkills(root: string, mode: "preview" | "apply" | "undo", packageRoot = defaultRoot, packageVersion?: string, retryCommand = "amem setup --apply"): SkillInstallReport {
+export function installSkills(root: string, mode: "preview" | "apply" | "undo", packageRoot = defaultRoot, packageVersion?: string, retryCommand = "amem setup --apply", env: SetupEnvironment = process.env, expectedBinding?: RootBinding): SkillInstallReport {
   root = resolve(root);
   const actions: SkillAction[] = [];
-  let rootError: string | undefined;
-  try { root = safeRoot(root); if (exists(root) && !lstatSync(root).isDirectory()) throw new Error(`${root} is not a directory; choose a directory`); } catch (e) { rootError = message(e); }
+  const requested = root;
+  let rootError: string | undefined, binding: RootBinding = { root };
+  let identity: { dev: number; ino: number } | undefined;
+  try {
+    binding = safeRoot(root, packageRoot, env); root = binding.root;
+    if (expectedBinding && (expectedBinding.root !== root || expectedBinding.linkedFrom !== binding.linkedFrom)) throw new Error(`Skill root ${requested} changed since preview (target ${root}); inspect it and rerun ${retryCommand}`);
+    if (exists(root)) { const st = lstatSync(root); if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`${root} is not a real directory; choose a directory`); identity = { dev: st.dev, ino: st.ino }; }
+  } catch (e) { rootError = message(e); }
+  const checkRoot = () => {
+    if (binding.linkedFrom) {
+      const current = safeRoot(binding.linkedFrom, packageRoot, env);
+      if (current.root !== root || current.linkedFrom !== binding.linkedFrom) throw new Error(`Skill root link ${binding.linkedFrom} changed from ${root}; inspect the link and rerun ${retryCommand}`);
+    }
+    const st = lstatSync(root);
+    if (!st.isDirectory() || st.isSymbolicLink() || identity && (st.dev !== identity.dev || st.ino !== identity.ino)) throw new Error(`Skill root ${root} changed; inspect it and rerun ${retryCommand}`);
+  };
   let version = packageVersion;
   if (mode !== "undo" && version === undefined) { try { version = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version; if (typeof version !== "string") throw new Error("invalid version"); } catch (e) { rootError = `${message(e)}; check the package and rerun ${retryCommand}`; } }
   for (const name of SKILL_NAMES) {
@@ -126,6 +158,7 @@ export function installSkills(root: string, mode: "preview" | "apply" | "undo", 
         const verified = pending.every(p => { try { return !!owned(p); } catch { return false; } });
         if (!verified || backups.length > 1 || stages.length > 1 || backups.length + stages.length !== pending.length) { action("refused", `Unverified or ambiguous interrupted swap: ${pending.join(", ")}; inspect and remove the leftovers if no longer needed, then rerun ${retryCommand}`); continue; }
         if (mode === "preview") { action("refused", `Interrupted swap requires recovery; run ${retryCommand}`); continue; }
+        checkRoot();
         if (!exists(path) && backups.length === 1) renameSync(backups[0]!, path);
         if (exists(path) && !owned(path)) { action("refused", `Interrupted swap destination ${path} is not verified; keep it, or move it aside and rerun ${retryCommand}`); continue; }
         for (const item of pending) if (exists(item)) { if (!owned(item)) throw new Error("Interrupted swap changed during recovery"); rmSync(item, { recursive: true }); }
@@ -142,17 +175,21 @@ export function installSkills(root: string, mode: "preview" | "apply" | "undo", 
         if (!old) { action("absent"); continue; }
         if (!matches(path, old)) { action("modified", "Skill changed before removal"); continue; }
         const backup = join(root, `.amem-skill-${name}-backup-${randomUUID()}`);
-        renameSync(path, backup);
+        checkRoot(); renameSync(path, backup);
         if (!matches(backup, old)) { renameSync(backup, path); action("modified", "Skill changed before removal"); continue; }
         rmSync(backup, { recursive: true }); action("remove"); continue;
       }
       const files = packageTree(packageRoot, name), expected = digest(files);
       if (old && old.sha256 === expected && old.version === version) { action("unchanged"); continue; }
       if (mode === "preview") { action(old ? "replace" : "install"); continue; }
+      if (exists(root)) checkRoot();
       mkdirSync(root, { recursive: true });
+      if (!identity) { const st = lstatSync(root); identity = { dev: st.dev, ino: st.ino }; }
+      checkRoot();
       const stage = join(root, `.amem-skill-${name}-stage-${randomUUID()}`), backup = join(root, `.amem-skill-${name}-backup-${randomUUID()}`);
       writeTree(stage, files, version!);
       if (!owned(stage)) throw new Error("staged verification failed");
+      checkRoot();
       if (old) {
         if (!matches(path, old)) { if (owned(stage)) rmSync(stage, { recursive: true }); action("modified", "Skill changed before swap"); continue; }
         renameSync(path, backup);
@@ -176,15 +213,16 @@ export function installSkills(root: string, mode: "preview" | "apply" | "undo", 
       action(old ? "replace" : "install");
     } catch (e) { action("refused", `${message(e)}; inspect the affected files and rerun ${retryCommand}`); }
   }
-  return { root, actions };
+  return { root, ...(binding.linkedFrom ? { linkedFrom: binding.linkedFrom } : {}), actions };
 }
-export function exportSkills(destination: string, options: { packageRoot?: string; packageVersion?: string } = {}): SkillInstallReport {
+export function exportSkills(destination: string, options: { packageRoot?: string; packageVersion?: string; env?: SetupEnvironment } = {}): SkillInstallReport {
   let root = resolve(destination || ".");
+  let binding: RootBinding = { root };
   const retry = `amem skills export '${destination.replace(/'/g, "'\\''")}'`;
-  const refuse = (reason: string): SkillInstallReport => ({ root, actions: SKILL_NAMES.map(name => ({ name, path: join(root, name), change: "refused", reason })) });
+  const refuse = (reason: string): SkillInstallReport => ({ root, ...(binding.linkedFrom ? { linkedFrom: binding.linkedFrom } : {}), actions: SKILL_NAMES.map(name => ({ name, path: join(root, name), change: "refused", reason })) });
   if (!destination.trim() || [...destination].some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return refuse("Destination is empty or contains control characters; choose a valid directory and rerun amem skills export <dir>");
   try {
-    root = safeRoot(root);
+    binding = safeRoot(root, options.packageRoot ?? defaultRoot, options.env ?? process.env); root = binding.root;
     if (exists(root)) {
       if (!lstatSync(root).isDirectory()) return refuse(`Destination ${root} is not a directory; choose a directory and rerun ${retry}`);
       for (const entry of readdirSync(root)) {
@@ -197,5 +235,5 @@ export function exportSkills(destination: string, options: { packageRoot?: strin
       }
     }
   } catch (e) { return refuse(`${message(e)}; inspect the destination and rerun ${retry}`); }
-  return installSkills(root, "apply", options.packageRoot, options.packageVersion, retry);
+  return installSkills(destination, "apply", options.packageRoot, options.packageVersion, retry, options.env, binding);
 }

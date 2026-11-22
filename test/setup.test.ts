@@ -947,12 +947,15 @@ test("invalid JCODE_HOME does not block other selected setup targets", () => {
   }
 });
 
-test("skill refusal does not block setup and undo without receipts preserves foreign skills", () => {
+test("linked qwen skills install alongside setup; undo without receipts preserves foreign skills", () => {
   const f = fixture(), shared = join(f.home, "shared-skills"); mkdirSync(shared);
   mkdirSync(join(f.home, ".qwen"), { recursive: true }); symlinkSync(shared, join(f.home, ".qwen", "skills"));
-  const result = applySetup(f.plan("qwen", "apply"), f.options);
+  const preview = f.plan("qwen", "apply");
+  expect(setupPlanText(preview)).toContain(`linked from ${join(f.home, ".qwen", "skills")}`);
+  const result = applySetup(preview, f.options);
   expect(result.applied).toEqual(["qwen"]);
-  expect(result.skills?.[0]?.report?.actions.every(a => a.change === "refused")).toBe(true);
+  expect(result.skills?.[0]?.report?.actions.every(a => a.change === "install")).toBe(true);
+  expect(result.skills?.[0]?.report?.linkedFrom).toBe(join(f.home, ".qwen", "skills"));
   expect(existsSync(f.file("qwen"))).toBe(true);
   const codex = join(f.home, ".codex", "skills");
   const { installSkills, SKILL_NAMES } = require("../src/skills-install.ts") as typeof import("../src/skills-install.ts");
@@ -964,5 +967,15 @@ test("skill refusal does not block setup and undo without receipts preserves for
   expect(rows?.[0]?.change).toBe("modified"); expect(rows?.[0]?.reason).toContain("setup codex --undo");
   expect(rows?.slice(1).every(a => a.change === "remove")).toBe(true);
   expect(text(join(codex, SKILL_NAMES[0], "SKILL.md"))).toBe("modified");
-  expect(lstatSync(join(f.home, ".qwen", "skills")).isSymbolicLink()).toBe(true);
+  expect(lstatSync(join(f.home, ".qwen", "skills")).isSymbolicLink()).toBe(true); expect(readdirSync(shared)).toEqual([]);
+});
+
+test("setup refuses retargeted skill root after preview but still configures qwen", () => {
+  const f = fixture(), first = join(f.home, "first"), second = join(f.home, "second"), link = join(f.home, ".qwen", "skills");
+  mkdirSync(first); mkdirSync(second); mkdirSync(dirname(link), { recursive: true }); symlinkSync(first, link);
+  const plan = f.plan("qwen", "apply"); rmSync(link); symlinkSync(second, link);
+  const result = applySetup(plan, f.options);
+  expect(result.applied).toEqual(["qwen"]); expect(existsSync(f.file("qwen"))).toBe(true);
+  expect(result.skills?.[0]?.report?.actions.every(a => a.change === "refused")).toBe(true);
+  expect(readdirSync(first)).toEqual([]); expect(readdirSync(second)).toEqual([]); expect(readlinkSync(link)).toBe(second);
 });
