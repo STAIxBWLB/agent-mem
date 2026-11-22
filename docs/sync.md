@@ -47,7 +47,7 @@ Available from 0.22.0. 0.21.0 contains the placement protocol but not this comma
 A person can activate per-row outbound placement on one whole memory home. It is forward-only, and never runs migrations, changes privacy policy or raises a reader floor automatically. Real-home activation still needs the person's separate authorization.
 
 1. Preview and complete the existing shard and public-prune migrations with `amem migrate --shards --dry-run` and `amem migrate --public-prune-view --dry-run` (then their separately reviewed `--apply` steps).
-2. On a 0.22 installation, have the person append the existing `home` floor at 0.22.0 in `formats.json`, preserving prior records, and close cooperating memory reader handles. This is recommended at activation and required before the first writer renewal, so old 0.21 readers refuse before opening a renewable home.
+2. On a 0.22 installation, preview `amem formats raise home 0.22.0`, then add `--confirm` after the exact command is approved. This appends the floor to `formats.json` while preserving prior records. Close cooperating memory reader handles. This is recommended at activation and required before the first writer renewal, so old 0.21 readers refuse before opening a renewable home.
 3. Declare every local amem installation that writes this home, including an agent-hub library installation even if setup has no receipt for it. The CLI and current setup-receipt roots are mandatory members.
 
 ```sh

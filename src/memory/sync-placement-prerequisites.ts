@@ -12,7 +12,7 @@ const preview = "amem migrate --sync-placement --dry-run";
 /** Typed only for safe adapter diagnostics; the floor predicate and remedy stay shared. */
 export class PlacementHomeFloorError extends Error {
   constructor(minReader: string) {
-    super(`Sync placement requires a person-authored home floor of ${minReader} or later in formats.json; have the person append that record, then rerun ${preview}.`);
+    super(`Sync placement requires a home floor of ${minReader} or later in formats.json; preview amem formats raise home ${minReader}, add --confirm after the exact command is approved, then rerun ${preview}.`);
     this.name = "PlacementHomeFloorError";
   }
 }

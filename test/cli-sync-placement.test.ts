@@ -361,7 +361,7 @@ test("#551 AC1: a running-CLI refusal reaches both surfaces, and any other failu
 test("#551: an unprovable writer inventory is unverified in sync and doctor, never a missing root", async () => {
   const f=await placementActivationFixture(); cleanup.push(f.close);
   expect(success(run(f,["migrate","--sync-placement","--apply","--writer-root",activationOwnRoot,"--json"])).active).toBe(true);
-  const unverified="Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
+  const unverified="Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
   // The whole fixed sentence, so a later edit to it is visible here: no category claim, one next step, no bare "missing".
   // #551 AC2: a marker that does not parse proves neither state, so doctor reports the state as unverified instead of
   // treating the home as one that never activated placement sync - and the same home verifies clean once it parses again,

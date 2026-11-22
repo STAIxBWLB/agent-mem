@@ -23,8 +23,8 @@ function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"m
   // #551 AC1: the shared revision text names neither this category nor its cause class, so both are printed here and the
   // shared text (which carries its own remedy) follows. The checkpoint message is still reproduced verbatim, never replaced.
   if(category==="writer renewal")return `Sync placement ${phase==="initial"?"initial ":""}writer proof is ${causeClass} (writer renewal category); ${new SharedWriterRevisionError(renewalState==="staging"?"staging":renewalState==="checkpoint-pending"?"checkpoint-pending":"pending").message}`;
-  if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); have the person inspect sync-placement-writer-roots.json and the matching activation metadata with a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
-  if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); have the person inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
+  if(category==="active locator") return `Sync placement initial root locator is ${causeClass} (active locator category); inspect sync-placement-writer-roots.json and the matching activation metadata with a compatible recovery release, then run amem migrate --sync-placement --dry-run.`;
+  if(category==="home floor") return `Sync placement reader-floor proof is ${causeClass} (home floor category); inspect formats.json and use a reader compatible with its recorded floor, then run amem migrate --sync-placement --dry-run.`;
   const cause=detail?`; ${failureDetails[detail]}`:"";
   // #520: a receipt whose recorded install root is gone names its target and remedy, never the recorded path. #551 keeps that
   // sentence - its cause marker, its remedy and its next step - behind the fixed category and cause class, so both surfaces
@@ -32,7 +32,7 @@ function writerContextMessage(category:PlacementWriterRootCategory,causeClass:"m
   const receipt=category==="setup receipt"&&setupTarget?setupReceiptRemedy(setupTarget):undefined;
   if(phase==="initial")return `Sync placement initial writer proof is ${causeClass} (${category} category${cause}); ${receipt??(category==="setup receipt"?"upgrade or repair the managed amem install and its host exact pin, then rerun amem setup <target> --apply":"upgrade or repair the amem install and its host exact pin")}. Declare the complete writer roots and rerun amem migrate --sync-placement --dry-run.`;
   if(receipt)return `Sync placement writer proof is ${causeClass} (${category} category${cause}); Placement sync refused [cause: setup_receipt_missing_install]: ${receipt}; then rerun the sync.`;
-  return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or have the person run amem migrate --sync-placement --dry-run and --apply with the complete --writer-root inventory after installing the required 0.22.0 home floor.`;
+  return `Sync placement writer proof is ${causeClass} (${category} category${cause}); restore the inventoried install, or renew it: if needed, preview amem formats raise home 0.22.0 and add --confirm after the exact command is approved; then run amem migrate --sync-placement --dry-run with the complete --writer-root inventory, and run --apply after the exact apply command is approved.`;
 }
 export class PlacementWriterContextError extends Error {
   constructor(readonly category: PlacementWriterRootCategory, readonly causeClass: "missing" | "changed" | "unavailable",readonly phase:PlacementWriterContextPhase="active",readonly detail?:SyncPlacementWriterFailureDetail,readonly renewalState?:"pending"|"staging"|"checkpoint-pending",readonly setupTarget?:SetupTarget) {
@@ -95,7 +95,7 @@ function placementWriterRefusal(error: unknown): PlacementWriterContextError | u
     typeof target === "string" && (SETUP_TARGETS as readonly string[]).includes(target) ? target as SetupTarget : undefined);
 }
 /** #551: no category is claimed here, because the state could not be read far enough to name one. */
-const PLACEMENT_WRITER_UNVERIFIED_TEXT = "Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; have the person inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
+const PLACEMENT_WRITER_UNVERIFIED_TEXT = "Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
 /** An inventory state that could not be proven: never reported as a missing root, and never given an invented category. */
 class UnprovenWriterInventory extends Error { constructor(){ super(PLACEMENT_WRITER_UNVERIFIED_TEXT); this.name="UnprovenWriterInventory"; } }
 /** A shared writer-history code outside the three renewal states: `safeRefusal` would otherwise assert the locator category for it. */

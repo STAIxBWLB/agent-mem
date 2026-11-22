@@ -110,3 +110,12 @@ test("a running release compares its own version even after its package.json is 
   expect(result.stderr.toString()).toBe("");
   expect(result.stdout.toString().trim()).toBe("format_floor 0.17.0");
 });
+
+
+test("placement home-floor refusal names preview, confirmation and approval without actor gating", async () => {
+  const { PlacementHomeFloorError } = await import("../src/memory/sync-placement-prerequisites.ts");
+  const text = new PlacementHomeFloorError("0.22.0").message;
+  expect(text).toContain("amem formats raise home 0.22.0"); expect(text).toContain("--confirm");
+  expect(text).toContain("exact command is approved"); expect(text).toContain("amem migrate --sync-placement --dry-run");
+  expect(text).not.toMatch(/have the person|person-authored/i);
+});

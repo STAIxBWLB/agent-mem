@@ -174,7 +174,7 @@ function realmGapRemedy(gap: PlacementRealmGap | undefined): string {
     case "capture-only": return `class=capture-only; it holds capture rows and no curated memory, so capture stays readable; ${admit} if you want curated memory for it`;
     case "no-memory": return `class=no-memory; it holds no captured rows and no curated notes yet; ${admit} if you want curated memory for it, or remove it with amem project archive <project>`;
     case "curated-unadmitted": return `class=curated-unadmitted; it holds curated notes that are not part of the activated inventory, and ${admit} opens them`;
-    case "unverified": return "class=unverified; neither its curated state nor the activated inventory could be verified safely; have the person inspect the home before changing anything";
+    case "unverified": return "class=unverified; neither its curated state nor the activated inventory could be verified safely; inspect the home before changing anything";
     default: return admit;
   }
 }

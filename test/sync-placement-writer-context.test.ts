@@ -203,3 +203,11 @@ test("#551 AC1: a proxy is refused before any prototype or property inspection, 
   const revocable=Proxy.revocable(refusal,{}); revocable.revoke();
   expect(placementWriterRefusalText(revocable.proxy)).toBeUndefined();
 });
+
+
+test("active writer remediation retains preview and approval without actor gating", () => {
+  const text = new PlacementWriterContextError("declared writer", "changed", "active").message;
+  expect(text).toContain("amem migrate --sync-placement --dry-run"); expect(text).toContain("--writer-root");
+  expect(text).toContain("amem formats raise home 0.22.0"); expect(text).toContain("--confirm");
+  expect(text).toContain("exact apply command is approved"); expect(text).not.toMatch(/have the person/i);
+});

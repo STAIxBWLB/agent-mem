@@ -32,7 +32,7 @@ export class WriterRenewalError extends Error{
         :causeClass==="capacity"
           ? `Writer renewal metadata capacity is exhausted ${details}; retain this epoch and request a separately reviewed archival/checkpoint protocol before another renewal.`
           :causeClass==="authorization"
-            ? "Writer renewal requires explicit person authorization of this exact inventory; have the person preview it with amem migrate --sync-placement --dry-run and then apply."
+            ? "Writer renewal requires approval of this exact inventory; preview it with amem migrate --sync-placement --dry-run, then apply after the exact command is approved."
             : "Writer renewal frozen inventory or binding changed; restore it and run amem migrate --sync-placement --resume, or use --abandon before commit append starts and review a new dry-run.");
     this.name="WriterRenewalError";
   }
