@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "b4e0bf8e6c63883a8e7937fb7a20adcdf81df115",
+      "verifiedAgainst": "0647f4eb2389d3600c965249a3ca74c500f8191d",
       "paths": [
         "package.json",
         "bin/",
@@ -142,7 +142,7 @@
       ]
     },
     "docs/sync.md": {
-      "verifiedAgainst": "b4e0bf8e6c63883a8e7937fb7a20adcdf81df115",
+      "verifiedAgainst": "0647f4eb2389d3600c965249a3ca74c500f8191d",
       "paths": [
         "package.json",
         ".bun-version",

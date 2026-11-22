@@ -74,6 +74,8 @@ test("a valid marker above policy string limits can resume the frozen precommit 
   writeFileSync(file," ".repeat(20_000)+readFileSync(file,"utf8"),{mode:0o600});
   const apply=f.options("apply");apply.checkpoint=stage=>{if(stage==="after-intent")throw Error("isolated crash after durable intent");};
   await expect(activateSyncPlacement(apply)).rejects.toThrow();
+  const blocked = await activateSyncPlacement(f.options("apply")).then(() => "", (error: Error) => error.message);
+  expect(blocked).toContain("or --abandon while both markers retain the original v2 bytes"); expect(blocked).not.toContain("person --abandon");
   const intent=JSON.parse(readFileSync(join(f.base,"sync-placement-activation.json"),"utf8"));expect(intent.previousShards.length).toBeGreaterThan(16*1024);
   const resumed=await activateSyncPlacement(f.options("resume"));expect(resumed.active).toBe(true);
   expect(existsSync(join(f.base,"sync-placement-activation.json"))).toBe(false);
@@ -133,7 +135,7 @@ for(const input of ["source","floor"] as const)test("pre-marker resume reports f
   if(input==="floor")writeFileSync(join(f.base,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.21.0",since:"2026-11-07"}]),{mode:0o600});
   else {const machine=join(f.base,"machine.json");writeFileSync(machine,readFileSync(machine,"utf8")+"\n",{mode:0o600});}
   let error:unknown;try{await activateSyncPlacement(f.options("resume"));}catch(caught){error=caught;}
-  expect(error).toBeInstanceOf(PlacementActivationInputError);expect((error as PlacementActivationInputError).inputClass).toBe(input);expect((error as Error).message).toContain("--abandon");
+  expect(error).toBeInstanceOf(PlacementActivationInputError);expect((error as PlacementActivationInputError).inputClass).toBe(input);expect((error as Error).message).toContain("run amem migrate --sync-placement --abandon");expect((error as Error).message).not.toContain("the person may run");
   expect(readFileSync(join(f.base,"sync-placement-activation.json"))).toEqual(intent);
   expect(await activateSyncPlacement(f.options("abandon"))).toMatchObject({abandoned:true});
 },60_000);
