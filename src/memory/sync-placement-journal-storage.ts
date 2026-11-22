@@ -10,7 +10,7 @@ import { validatePlacementPlan, type SyncPlacementActivationPlan } from "./sync-
 import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
 import { PLACEMENT_ACTIVE_FENCE_SCHEMA, PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_ROOT_MAX_BYTES,
   SyncPlacementJournalError, createPlacementRecord, placementEpochHash, validatePlacementActiveFence, validatePlacementEpoch, validatePlacementEvent, validatePlacementRecord,
-  type PlacementActiveFence, type PlacementEpoch, type PlacementEvent, type PlacementRecord, type SyncPlacementJournalErrorCode } from "./sync-placement-journal-format.ts";
+  type PlacementActiveFence, type PlacementEpoch, type PlacementEvent, type PlacementRealm, type PlacementRecord, type SyncPlacementJournalErrorCode } from "./sync-placement-journal-format.ts";
 import { validatePlacementPublicationRoot, validatePlacementPublicationBundle, validatePlacementPublicationFact, decodePlacementPublicationChunk, publicationFileNames, placementDecisionReuseEnabled, PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA,
   PLACEMENT_PUBLICATION_RECORD_MAX_BYTES, type PlacementPublicationRoot, type PlacementPublicationChunkDescriptor, type PlacementDecisionOwner, type PlacementPublicationBundle, type PlacementPublicationFact } from "./sync-placement-publication-plan.ts";
 import { PlacementProjection } from "./sync-placement-projection.ts";
@@ -20,6 +20,7 @@ import { PLACEMENT_BATCH_INTENT_MAX_BYTES, planPlacementBatchIntent, validatePla
 import { formatFloorAtLeast } from "./formats.ts";
 import { resolvePlacementWindow, placementWindowToken, releasePlacementCheckpointCaches, type ResolvedPlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { isCheckpointSealedName, PLACEMENT_CHECKPOINT_MANIFEST_MAX_BYTES, type CheckpointMember } from "./sync-placement-checkpoint-format.ts";
+import { cooperativeYield, type CooperativeYield } from "./sync-placement-yield.ts";
 
 export type PlacementStoragePhase = "epoch-written" | "epoch-fsync" | "activation-written" | "activation-fsync" | "fence-written" | "fence-fsync"
   | "intent-written" | "intent-fsync" | "chunk-written" | "chunk-fsync" | "intent-cleared"
@@ -739,19 +740,42 @@ export function capturePlacementPublicationMetadata<T>(home: string, epochHash: 
 export function readPlacementPublicationMetadata<T>(home: string, epochHash: string, work: (io: PlacementPublicationMetadataIO) => T): T {
   return capturePlacementPublicationMetadata(home, epochHash, work).value;
 }
-/** Find reusable physical leaves; always validate their complete owning publication first. */
-export function placementDecisionOwners(home: string, epochHash: string, beforeSequence: number): PlacementDecisionOwner[] {
-  return readPlacementPublicationMetadata(home, epochHash, io => {
-    const all = new Set([...io.archivedPublications(), ...io.names().flatMap(name => /^publication-([a-f0-9]{64})-root\.json$/.exec(name)?.[1] ?? [])]);
-    // ponytail: inspect at most 256 deterministically chosen attempts; upgrade to a sealed bounded hash index if reuse misses become material.
-    const attempts = [...all].sort().slice(-256), result: PlacementDecisionOwner[] = [];
+export interface PlacementDecisionCandidate { root: PlacementPublicationRoot; facts: readonly PlacementPublicationFact[]; phase: PlacementPublicationStored["phase"]; pending: boolean }
+/** Windows are newest first; the loader reads only roots and phase facts, never chunks. */
+export async function latestDecisionOwners(windows: readonly (readonly string[])[], beforeSequence: number, targets: readonly PlacementRealm[], load: (attempt: string) => PlacementDecisionCandidate, pause: CooperativeYield = cooperativeYield()): Promise<PlacementDecisionOwner[]> {
+  const targetKey = canonicalJSON(targets.map(realm => canonicalJSON(realm)).sort());
+  for (const attempts of windows) {
+    let latest: PlacementDecisionCandidate | undefined, sequence = -1, ambiguous = false;
     for (const attempt of attempts) {
-      const stored = io.publication(attempt), root = stored.bundle.root, completed = stored.facts.find(fact => fact.phase === "completed");
-      if (stored.phase !== "completed" || stored.pending || !completed || completed.outcome !== "committed" || completed.journal.sequence > beforeSequence || root.journal.sequence >= beforeSequence || root.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA) continue;
-      for (const chunk of root.chunks) if (chunk.kind === "decisions" && typeof chunk.bucket === "string") result.push({ bucket: chunk.bucket, hash: chunk.hash, count: chunk.count, bytes: chunk.bytes, ownerAttemptHash: chunk.ownerAttemptHash ?? root.seal });
+      await pause();
+      const candidate = load(attempt), root = candidate.root, completed = candidate.facts.find(fact => fact.phase === "completed");
+      if (candidate.phase !== "completed" || candidate.pending || !completed || completed.outcome !== "committed" || completed.journal.sequence > beforeSequence || root.journal.sequence >= beforeSequence || root.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA
+        || canonicalJSON(root.targets.map(target => canonicalJSON(target.realm)).sort()) !== targetKey) continue;
+      if (completed.journal.sequence > sequence) { latest = candidate; sequence = completed.journal.sequence; ambiguous = false; }
+      else if (completed.journal.sequence === sequence && latest?.root.seal !== root.seal) ambiguous = true;
     }
-    return result;
-  });
+    if (ambiguous) return [];
+    if (latest) return latest.root.chunks.flatMap(chunk => chunk.kind === "decisions" && typeof chunk.bucket === "string" ? [{ bucket: chunk.bucket, hash: chunk.hash, count: chunk.count, bytes: chunk.bytes, ownerAttemptHash: chunk.ownerAttemptHash ?? latest!.root.seal }] : []);
+  }
+  return [];
+}
+/** Candidate discovery validates root and receipt only; staging re-verifies each chosen physical chunk. */
+export async function placementDecisionOwners(home: string, epochHash: string, beforeSequence: number, targets: readonly PlacementRealm[]): Promise<PlacementDecisionOwner[]> {
+  const p = protectedIO(() => paths(home, epochHash)), before = protectedIO(() => inventory(p).token), pause = cooperativeYield();
+  const grouped = new Map<number, string[]>();
+  for (const [attempt, entry] of p.window.catalog) { await pause(); const group = grouped.get(entry.window) ?? []; group.push(attempt); grouped.set(entry.window, group); }
+  const live = protectedIO(() => [...inventory(p).files.keys()].flatMap(name => /^publication-([a-f0-9]{64})-root\.json$/.exec(name)?.[1] ?? []));
+  grouped.set(p.window.window, live);
+  const epoch = protectedIO(() => decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch));
+  const result = await latestDecisionOwners([...grouped].sort(([a], [b]) => b - a).map(([, attempts]) => attempts), beforeSequence, targets, attempt => protectedIO(() => {
+    const archived = p.window.catalog.get(attempt), dir = archived?.dir ?? p.dir, stem = `publication-${attempt}-`, bytes = readOwned(join(dir, stem + "root.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES);
+    if (archived) { const member = archived.members.find(value => value.name === stem + "root.json"); if (!member || !bytes || member.size !== bytes.length || member.sha256 !== digest(bytes)) fail("corrupt"); }
+    const root = decode(bytes, validatePlacementPublicationRoot);
+    if (root.seal !== attempt || root.epochHash !== epochHash || root.generation !== epoch.generation || root.homeHash !== epoch.homeHash) fail("corrupt");
+    return { root, ...publicationFacts(dir, stem, root, archived?.members) };
+  }), pause);
+  protectedIO(() => { if (inventory(p).token !== before) fail("changed"); });
+  return result;
 }
 function assertPublicationActive(p: Paths): void {
   const epoch = decode(readOwned(join(p.epochDir, "epoch.json"), PLACEMENT_JOURNAL_ROOT_MAX_BYTES), validatePlacementEpoch);

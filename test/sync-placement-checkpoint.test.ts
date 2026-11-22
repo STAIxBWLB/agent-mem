@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import { syncMemory } from "../src/memory/sync.ts";
 import { syncPlacementMemory } from "../src/memory/sync-placement-transport.ts";
 import { inspectSyncPlacement } from "../src/memory/sync-placement-inspection.ts";
 import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
-import { readPlacementJournal, readPlacementPublicationMetadata, releasePlacementStorageCaches } from "../src/memory/sync-placement-journal-storage.ts";
+import { readPlacementJournal, readPlacementPublicationMetadata, placementDecisionOwners, releasePlacementStorageCaches } from "../src/memory/sync-placement-journal-storage.ts";
 import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts";
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
@@ -253,11 +254,25 @@ test("v2 decision references survive a checkpoint archive", async () => {
   }
   const f = await fixture();
   writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "home", minReader: "0.36.0", since: "2026-11-22" }]) + "\n", { mode: 0o600 });
-  for (let i = 0; i < 300; i++) f.note(`v2 stable decision fixture ${i}`);
+  for (let i = 0; i < 400; i++) f.note(`v2 stable decision fixture ${i}`);
   await f.sync();
   const first = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))));
   expect(first.some(row => row.bundle.root.schema.endsWith("/v2"))).toBe(true);
-  f.checkpoint(); f.note("v2 post-checkpoint insertion");
+  expect(first.some(row => row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").length >= 2)).toBe(true);
+  f.checkpoint();
+  const journal = readPlacementJournal(f.base, f.epochHash), firstRoot = first.find(row => row.bundle.root.schema.endsWith("/v2"))!.bundle.root;
+  resolvePlacementWindow(f.base, f.epochHash); // Warm the existing archive verifier before counting candidate discovery reads.
+  let chunkReads = 0, rootReads = 0; const nativeOpen = fs.openSync;
+  const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+    if (String(file).includes("-chunk-")) chunkReads++;
+    if (String(file).includes("-root.json")) rootReads++;
+    return nativeOpen(file, flags, mode);
+  }) as typeof fs.openSync);
+  try {
+    const owners = await placementDecisionOwners(f.base, f.epochHash, journal.sequence, firstRoot.targets.map(target => target.realm));
+    expect(owners.length).toBeGreaterThan(0); expect(rootReads).toBeGreaterThan(0); expect(chunkReads).toBe(0);
+  } finally { spy.mockRestore(); }
+  f.note("v2 post-checkpoint insertion");
   const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true }); let interrupted = false;
   try {
     const result = await syncPlacementMemory(store, { remote: f.remote, visibility: async () => "private", placementAttestation: () => activePlacementWriterContext(f.base, activationOwnRoot).attest() }, at => {
@@ -267,7 +282,10 @@ test("v2 decision references survive a checkpoint archive", async () => {
   } finally { store.close(); }
   await f.sync();
   const current = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))));
-  expect(current.some(row => row.bundle.root.chunks.some(chunk => chunk.ownerAttemptHash))).toBe(true);
+  expect(current.some(row => row.bundle.root.chunks.some(chunk => chunk.ownerAttemptHash)), JSON.stringify({
+    first: first.map(row => ({ targets: row.bundle.root.targets.map(target => target.realm), sequence: row.bundle.root.journal.sequence, decisions: row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => [chunk.bucket, chunk.hash]) })),
+    current: current.map(row => ({ targets: row.bundle.root.targets.map(target => target.realm), sequence: row.bundle.root.journal.sequence, decisions: row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => [chunk.bucket, chunk.hash]) }))
+  })).toBe(true);
   expect(() => f.checkpoint(phase => { if (phase === "staged-fsync") throw Error("v2 checkpoint staging interrupted"); })).toThrow();
   expect(f.withMutation(opts => abandonPlacementCheckpoint(f.base, f.epochHash, opts)).removed).toBeGreaterThan(0);
   expect(() => f.checkpoint(phase => { if (phase === "commit-started") throw Error("v2 checkpoint commit interrupted"); })).toThrow();

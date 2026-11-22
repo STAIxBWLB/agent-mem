@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8,7 +9,7 @@ import { acquireMutation } from "../src/memory/mutation.ts";
 import { PLACEMENT_FORMAT, validatePlacementProfile } from "../src/memory/sync-placement-format.ts";
 import { planSyncPlacementActivation, type SyncPlacementActivationContext } from "../src/memory/sync-placement-plan.ts";
 import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, placementKeyId, createPlacementRecord, SyncPlacementJournalError, type PlacementEpoch, type PlacementEvent } from "../src/memory/sync-placement-journal-format.ts";
-import { preparePlacementEpoch, ensurePlacementFence, ensurePlacementPublicationDurability, readPlacementJournal, appendPlacementEvent, type PlacementStorageOptions, type PlacementStoragePhase } from "../src/memory/sync-placement-journal-storage.ts";
+import { preparePlacementEpoch, ensurePlacementFence, ensurePlacementPublicationDurability, readPlacementJournal, appendPlacementEvent, latestDecisionOwners, placementDecisionOwners, type PlacementDecisionCandidate, type PlacementStorageOptions, type PlacementStoragePhase } from "../src/memory/sync-placement-journal-storage.ts";
 import { validatePlacementPublicationChunk, PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, planPlacementPublicationV2, planPlacementPublicationV2Async, partitionPlacementDecisions, validatePlacementPublicationBundle, publicationBytes, publicationFileNames, type PlacementPublicationSource, type PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationFactInput } from "../src/memory/sync-placement-publication-storage.ts";
 
@@ -158,7 +159,31 @@ test("cooperative v2 planning yields and produces the synchronous plan", async (
   expect(yields).toBeGreaterThan(1);
 });
 
-test("v2 persists and reads a completed owner's decision leaf and refuses changed owner bytes", () => {
+test("owner discovery selects the latest matching publication across more than 256 archived attempts without chunk reads", async () => {
+  const f = fixture(0), plan = planPlacementPublicationV2(f.input, f.items, []), metadata = new Map<string, PlacementDecisionCandidate>();
+  const windows: string[][] = [[], []], accesses: string[] = [];
+  for (let n = 1; n <= 300; n++) {
+    const attempt = n === 300 ? "0".repeat(64) : h(`archived-attempt-${n}`);
+    const root = { ...plan.root, seal: attempt, journal: { ...plan.root.journal, sequence: n - 1 } };
+    const fact = { schema: "agent-mem.sync-placement-publication-fact/v1" as const, attemptHash: attempt, previousHash: h("intent"), seal: h(`receipt-${n}`), phase: "completed" as const, intentFactHash: h("intent"), journal: { sequence: n, headHash: h(`head-${n}`) }, outcomeHash: h("outcome"), outcome: "committed" as const };
+    metadata.set(attempt, { root, phase: "completed", pending: false, facts: [fact] }); windows[n > 150 ? 0 : 1]!.push(attempt);
+  }
+  const load = (attempt: string) => { accesses.push(`${attempt}-root`, `${attempt}-receipt`); return metadata.get(attempt)!; };
+  let yields = 0;
+  const owners = await latestDecisionOwners(windows, 301, [key.realm], load, async () => { yields++; });
+  expect(owners).toHaveLength(1); expect(owners[0]!.ownerAttemptHash).toBe("0".repeat(64));
+  const next = planPlacementPublicationV2({ ...f.input, journal: { sequence: 301, headHash: h("frontier") } }, f.items, owners);
+  expect(next.root.chunks.some(chunk => chunk.ownerAttemptHash === "0".repeat(64))).toBe(true);
+  expect(accesses).toHaveLength(300); expect(accesses.every(name => name.endsWith("-root") || name.endsWith("-receipt"))).toBe(true);
+  expect(yields).toBe(150);
+  const wrong = metadata.get("0".repeat(64))!, wrongId = h("wrong-realm");
+  metadata.set(wrongId, { ...wrong, root: { ...wrong.root, seal: wrongId, targets: [{ ...wrong.root.targets[0]!, realm: { scope: "project", keyHash: h("other") } }] } });
+  expect((await latestDecisionOwners([[wrongId, "0".repeat(64)]], 301, [key.realm], load))[0]!.ownerAttemptHash).toBe("0".repeat(64));
+  const tieId = h("same-sequence"); metadata.set(tieId, { ...wrong, root: { ...wrong.root, seal: tieId } });
+  expect(await latestDecisionOwners([[tieId, "0".repeat(64)]], 301, [key.realm], load)).toEqual([]);
+});
+
+test("v2 persists and reads a completed owner's decision leaf and refuses changed owner bytes", async () => {
   const version = JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")).version as string;
   if (formatVersionBelow(version, "0.36.0")) {
     const isolated = mkdtempSync(join(tmpdir(), "amem-v2-reader-")); cleanup.push(() => rmSync(isolated, { recursive: true, force: true }));
@@ -180,6 +205,16 @@ test("v2 persists and reads a completed owner's decision leaf and refuses change
   const record = appendPlacementEvent(f.home, f.epochHash, event(1), f.epochHash, { ...f.opts, publicationAttemptHash: firstHash }).record;
   recordPlacementPublicationPhase(f.home, f.epochHash, firstHash, "completed", { intentFactHash: sent.seal, journal: { sequence: 1, headHash: record.seal }, outcomeHash: h("done"), outcome: "committed" }, f.opts);
   const owner = first.root.chunks.find(chunk => chunk.kind === "decisions")!;
+  let chunkReads = 0, rootReads = 0; const nativeOpen = fs.openSync;
+  const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+    if (String(file).includes("-chunk-")) chunkReads++;
+    if (String(file).includes("-root.json")) rootReads++;
+    return nativeOpen(file, flags, mode);
+  }) as typeof fs.openSync);
+  try {
+    const discovered = await placementDecisionOwners(f.home, f.epochHash, 1, [key.realm]);
+    expect(discovered.map(value => value.ownerAttemptHash)).toEqual([firstHash]); expect(rootReads).toBeGreaterThan(0); expect(chunkReads).toBe(0);
+  } finally { spy.mockRestore(); }
   const next = { ...f.input, journal: { sequence: 1, headHash: record.seal }, reservedRecords: 0, reservedRecordBytes: [], createdUnixSeconds: 123457 };
   const foreign = planPlacementPublicationV2(next, f.items, [{ bucket: owner.bucket!, hash: owner.hash, count: owner.count, bytes: owner.bytes, ownerAttemptHash: h("missing owner") }]);
   const before = state(f.dir); expect(() => preparePlacementPublication(f.home, foreign, f.opts)).toThrow(); expect(state(f.dir)).toEqual(before);

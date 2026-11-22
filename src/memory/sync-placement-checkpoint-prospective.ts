@@ -130,7 +130,7 @@ export async function checkpointProspective(home: string): Promise<{ value: Chec
       createdUnixSeconds: Math.floor(now / 1000), policySnapshotUnixMs: now, targets: materialized.plannedTargets, reservedRecords: 0, reservedRecordBytes: [] as number[] };
     const items = { sources: source.prefixes, decisions: materialized.decisions, objects: materialized.objects };
     const v2 = placementDecisionReuseEnabled(home);
-    const owners = v2 ? placementDecisionOwners(home, body.epochHash, body.journal.sequence) : [];
+    const owners = v2 ? await placementDecisionOwners(home, body.epochHash, body.journal.sequence, body.targets.map(target => target.realm)) : [];
     let bundle = v2 ? await planPlacementPublicationV2Async(body, items, owners) : await planPlacementPublicationAsync(body, items);
     const scheduled = drainSteps(placementPublicationEventSteps(bundle, journal.projection, old));
     let head = body.journal.headHash;

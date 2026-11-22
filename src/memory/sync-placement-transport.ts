@@ -471,7 +471,7 @@ class PlacementTransport {
       journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??this.lastPolicyCheckUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
     const planPause=cooperativeYield();
     const v2 = frozen ? frozen.root.schema === PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA : placementDecisionReuseEnabled(this.home);
-    const owners = v2 ? frozen ? frozen.root.chunks.filter(c => c.kind === "decisions" && c.ownerAttemptHash && typeof c.bucket === "string").map(c => ({ bucket: c.bucket!, hash: c.hash, count: c.count, bytes: c.bytes, ownerAttemptHash: c.ownerAttemptHash! })) : placementDecisionOwners(this.home, this.epochHash, body.journal.sequence) : [];
+    const owners = v2 ? frozen ? frozen.root.chunks.filter(c => c.kind === "decisions" && c.ownerAttemptHash && typeof c.bucket === "string").map(c => ({ bucket: c.bucket!, hash: c.hash, count: c.count, bytes: c.bytes, ownerAttemptHash: c.ownerAttemptHash! })) : await placementDecisionOwners(this.home, this.epochHash, body.journal.sequence, body.targets.map(target => target.realm)) : [];
     const items = {sources:capture.prefixes,decisions,objects};
     let bundle=v2 ? await planPlacementPublicationV2Async(body,items,owners,planPause) : await planPlacementPublicationAsync(body,items,planPause);
     await yieldTurn(); // #462: planning is pure; each step gets its own turn
