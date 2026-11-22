@@ -43,6 +43,7 @@
     "bin/",
     ".claude-plugin/",
     "hooks/",
+    "skills/",
     "README.md",
     "LICENSE"
   ],
