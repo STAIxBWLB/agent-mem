@@ -378,6 +378,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (marked && error instanceof Error && error.message === AUDIT_SCORE_REFUSED) throw new Error(AUDIT_SCORE_REFUSED);
     // #288 step 3: checkpoint refusals are fixed cause-and-next-step strings with numbers only (no path, row or project).
     if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
+    // #578 Q3: a placement fence refusal is a fixed cause class and next step (no path, pid, row or project).
+    if (marked && error instanceof Error && error.name === "PlacementInventoryFenceError" && error instanceof (await import("./memory/sync-placement-activation-locks.ts")).PlacementInventoryFenceError) throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
     // #520/#551: a placement refusal keeps its fixed data - the receipt case its target and remedy, every other case its
     // category, cause class and remedy - so a marked session prints that instead of the masked line. Every other placement
