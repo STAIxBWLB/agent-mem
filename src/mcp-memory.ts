@@ -14,7 +14,7 @@ import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
 import { hashJSON, readSelector } from "./memory/generation.ts";
 import { memoryHome } from "./memory/home.ts";
-import { appendMetricsLater, createPeakTracker } from "./memory/metrics.ts";
+import { appendMetricsLater, createPeakTracker, observeMcpPhase, recordMcpGap, type PeakTracker } from "./memory/metrics.ts";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type StandalonePolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions } from "./memory/config.ts";
@@ -41,7 +41,7 @@ type SearchValue = { source: "curated"; evidence: true; view: View } | { source:
 export interface MemoryMcpOptions {
   /** #323: ids the host knows about the proposing session, read on each proposal; nothing is inferred when absent. */
   origin?: () => { session?: string; peer?: string; turn?: string } | undefined;
-  cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void }
+  cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void; peaks?: PeakTracker }
 export interface MemoryMcp { tools: McpHandlers; close(): void; onEmitted: NonNullable<McpOptions["onEmitted"]> }
 const unavailable = (): never => { throw new Error("memory operation unavailable"); };
 const bound = (args: Record<string, unknown>, keys: string[]) => { if (Object.keys(args).some(key => !keys.includes(key))) unavailable(); };
@@ -87,6 +87,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
   const permitted = () => { try { return options.allowed?.() !== false; } catch { return false; } };
   if (!permitted()) return unavailable();
   const cwd = realPath(options.cwd), base = canonicalPath(options.base ?? memoryHome());
+  const peaks = options.peaks ?? createPeakTracker();
   const requested = options.project ?? memoryProjectKey(cwd), project = resolveAlias(base, requested);
   // #15 T5: an archived or forgotten project has no MCP server: the person took it out of recall.
   if (projectState(base, project) !== "active") unavailable();
@@ -137,7 +138,9 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       if (!value || typeof value !== "object") return;
       const receipt = emitted.get(value); emitted.delete(value); if (!receipt?.ids.length) return;
       const { ids, deliveryId } = receipt;
-      for (const entryId of ids) recordMemoryUse(candidates, { project, entryId, deliveryId, session }, { rendered: 1 }, { allowed: permitted, assertCurrent: guard });
+      const finish = observeMcpPhase(base, peaks, "on-emitted");
+      try { for (const entryId of ids) recordMemoryUse(candidates, { project, entryId, deliveryId, session }, { rendered: 1 }, { allowed: permitted, assertCurrent: guard }); }
+      finally { finish(); }
     };
     const staleRoot = repoRoot ?? cwd, rootConfirmed = repoRoot !== undefined || project.startsWith("local:") && resolveAlias(base, memoryProjectKey(cwd)) === project;
     const stale = () => { policyRevisionForCall(); return createRecallStalenessProbe({ cwd: staleRoot, rootConfirmed, policy: currentPolicy }); };
@@ -392,13 +395,12 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const readTools = ["amem_search", "amem_evidence", "amem_show", "amem_timeline", "amem_graph", "amem_brief", "amem_vault_candidates"] as const;
     // #485: the process peak is monotonic, so a call can be credited with raising it only when no other read call was
     // in flight while it grew; the tracker owns that rule and the observed baseline.
-    const peaks = createPeakTracker();
     for (const name of readTools) exposed[name] = async args => {
       // #485: the sample measures the served span, so the clock and the peak window open at entry, before the guard, the
       // policy snapshot and `beginRecallRead()` - whose preparation (an index refresh, a prune) the caller waits for.
       const started = performance.now();
       let window: ReturnType<typeof peaks.begin> | undefined;
-      try { window = peaks.begin(); } catch { /* telemetry is an observation, never a precondition */ }
+      try { window = peaks.begin(); if (window.gapKB !== undefined) recordMcpGap(base, window.gapKB, window.gapMs ?? 0); } catch { /* telemetry is an observation, never a precondition */ }
       // One bounded sample per completed call: the tool name, the wall time and the process peak. Never the arguments,
       // the query text, an id or a result. It is handed off, not written: the response is queued first and the write is
       // asynchronous, so telemetry can neither fail, refuse, delay nor block a completed call on disk.
@@ -413,7 +415,9 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       try {
         fullGuard();
         const configured = policyOptions(), revision = policyKey(configured), snapshot = createStandalonePolicy(configured);
-        const sourceCurrent = store.beginRecallRead();
+        const finishPrepare = observeMcpPhase(base, peaks, "recall-prepare", window);
+        let sourceCurrent: () => void;
+        try { sourceCurrent = store.beginRecallRead(); } finally { finishPrepare(); }
         if (policyKey(policyOptions()) !== revision) return unavailable();
         const result = await calls.run({ policy: snapshot, revision, configured }, async () => {
           const value = await tools[name](args);
@@ -424,8 +428,11 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         recorded();
         return result;
       } catch (error) {
-        // A refused or failed call records nothing, but the peak it may have raised still advances the baseline.
-        try { if (window !== undefined) peaks.abort(window); } catch { /* nothing recorded, nothing to correct */ }
+        // A failed read remains separate from successful search samples and records no input or error text.
+        try {
+          const ended = window === undefined ? undefined : peaks.end(window); window = undefined;
+          if (ended?.peakKB !== undefined) appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: `failed:${name}`, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
+        } catch { /* observational only */ }
         throw error;
       }
     };
@@ -444,6 +451,13 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         return value;
       });
     };
+    for (const name of ["amem_work_state_read", "amem_work_state_write", "amem_remember", "amem_correct", "amem_capacity"] as const) {
+      const call = exposed[name];
+      exposed[name] = async args => {
+        const finish = observeMcpPhase(base, peaks, name);
+        try { return await call(args); } finally { finish(); }
+      };
+    }
     return { tools: exposed, close, onEmitted };
   } catch (error) { close(); throw error; }
 }

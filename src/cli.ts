@@ -1,3 +1,4 @@
+import { appendMetricsLater, createPeakTracker, observeMcpPhase, processPeakRssKB } from "./memory/metrics.ts";
 import { parseRecordLines } from "./hook-record.ts";
 import { assertFormatFloor } from "./memory/formats.ts";
 import { placementRuntimeRefusal, readPlacementRuntimeMarkers } from "./memory/sync-placement-guard.ts";
@@ -422,12 +423,19 @@ const preloadMcp = () => Promise.all([import("./memory/store.ts"), import("./mem
 async function runCliCommand(argv: readonly string[], context: CliContext): Promise<string> {
   if (argv[0] === "mcp" && !argv.includes("--help")) {
     parseCommand(argv);
-    await preloadMcp();
+    const env = context.env ?? process.env, base = memoryHome(env), peaks = createPeakTracker();
+    try {
+      const peak = processPeakRssKB();
+      if (peak !== undefined) appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: "startup", wallMs: performance.now(), rssMB: peak / 1024, peakRaised: true }]);
+    } catch { /* telemetry is optional */ }
+    const preloadDone = observeMcpPhase(base, peaks, "preload");
+    try { await preloadMcp(); } finally { preloadDone(); }
     // #323: a host that knows the proposing session passes it; the CLI keys it like capture does, so a candidate points at the same session rows.
-    const env = context.env ?? process.env;
     const originSession = captureSessionKey(env.AMEM_ORIGIN_SESSION), originPeer = env.AGENTHUB_PEER_ID?.trim() || undefined;
-    const memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base: memoryHome(env),
-      ...(originSession || originPeer ? { origin: () => ({ ...(originSession ? { session: originSession } : {}), ...(originPeer ? { peer: originPeer } : {}) }) } : {}) });
+    const constructDone = observeMcpPhase(base, peaks, "construct");
+    let memory: ReturnType<typeof createMemoryMcp>;
+    try { memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base, peaks,
+      ...(originSession || originPeer ? { origin: () => ({ ...(originSession ? { session: originSession } : {}), ...(originPeer ? { peer: originPeer } : {}) }) } : {}) }); } finally { constructDone(); }
     await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
     return "";
   }

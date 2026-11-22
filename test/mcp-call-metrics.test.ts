@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryMcp, type MemoryMcp } from "../src/mcp-memory.ts";
-import { appendMetrics, createPeakTracker, metricsPath, processPeakRssKB, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
+import { appendMetrics, createPeakTracker, metricsPath, processPeakRssKB, readCaptureDrops, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 
@@ -30,8 +30,8 @@ function session(f: ReturnType<typeof seeded>): MemoryMcp {
 const samples = (memory: string): MetricSample[] => readMetrics(memory);
 /** The read path hands its sample off, so a fixture waits for the write instead of reading the moment the call returns. */
 const settled = async (memory: string, count = 1): Promise<MetricSample[]> => {
-  for (let attempt = 0; attempt < 200; attempt++) { const rows = readMetrics(memory); if (rows.length >= count) return rows; await Bun.sleep(5); }
-  return readMetrics(memory);
+  for (let attempt = 0; attempt < 200; attempt++) { const rows = readMetrics(memory).filter(row => row.kind === "search"); if (rows.length >= count) return rows; await Bun.sleep(5); }
+  return readMetrics(memory).filter(row => row.kind === "search");
 };
 const markerFree = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
   const copy: NodeJS.ProcessEnv = { ...env };
@@ -54,7 +54,7 @@ test("#485 AC1: a search served over a fake stdio client fills amem capacity's s
     expect(exit).toBe(0); expect(stdout).toContain("ordinary note for read-tool telemetry");
   } finally { clearTimeout(timer); if (child.exitCode === null) { child.kill(); await child.exited; } }
 
-  const written = readFileSync(metricsPath(f.memory), "utf8").trim().split("\n").map(line => JSON.parse(line) as MetricSample);
+  const written = readFileSync(metricsPath(f.memory), "utf8").trim().split("\n").map(line => JSON.parse(line) as MetricSample).filter(row => row.kind === "search");
   expect(written).toHaveLength(1);
   expect(written[0]).toMatchObject({ kind: "search", tool: "amem_search" });
   expect(written[0]!.wallMs).toBeGreaterThan(0); expect(written[0]!.rssMB).toBeGreaterThan(0); expect(typeof written[0]!.peakRaised).toBe("boolean");
@@ -81,45 +81,51 @@ test("#485 AC2: each read-tool call appends one named sample, and the call that 
   const rows = await settled(f.memory, 3);
   expect(rows.map(row => row.tool)).toEqual(["amem_search", "amem_timeline", "amem_show"]);
   for (const row of rows) { expect(row.kind).toBe("search"); expect(row.wallMs).toBeGreaterThan(0); expect(row.rssMB).toBeGreaterThan(0); }
-  // The call after the sized fill is the identified raiser: its peak is above every earlier sample's.
-  expect(rows.at(-1)!.peakRaised).toBe(true);
+  // The fill happened between calls, so the subsequent read must not claim it.
+  expect(rows.at(-1)!.peakRaised).toBe(false);
   const peaks = rows.map(row => row.rssMB!);
   // From the second sample on a flag means this peak is above every earlier sample's, so the call that set a peak can
   // be named. The first sample is compared with the session baseline the wrapper reads before any call, which the
   // samples do not carry, so its flag is only a boolean here.
-  const raised = rows.slice(1).filter((_, offset) => peaks[offset + 1]! > Math.max(...peaks.slice(0, offset + 1)));
-  expect(rows.slice(1).filter(row => row.peakRaised).map(row => row.tool)).toEqual(raised.map(row => row.tool));
+  expect(peaks.at(-1)).toBeGreaterThanOrEqual(peaks[0]!);
+  expect(samples(f.memory).some(row => row.kind === "mcp-phase" && row.tool === "idle-gap")).toBe(true);
 }, 30_000);
 
-test("#485 AC3: a flood of one kind never evicts the other kind's samples", () => {
-  const hook = (index: number): MetricSample => ({ at: new Date(1_700_000_000_000 + index).toISOString(), kind: "hook", wallMs: index, rssMB: 10,
-    brief: { work: "complete", curated: "complete", capture: "complete" }, recordInstructionBytes: 900, recordInstructionEstimatedTokens: 225 });
-  const search = (index: number): MetricSample => ({ at: new Date(1_700_000_000_000 + index).toISOString(), kind: "search", tool: "amem_search", wallMs: index, rssMB: 20, peakRaised: false });
-  const flood = (kind: "hook" | "search", count: number, offset: number) => Array.from({ length: count }, (_, index) => kind === "hook" ? hook(offset + index) : search(offset + index));
+test("mixed metrics retain independent bounded windows and hook drop visibility", () => {
+  const f = seeded(), at = new Date().toISOString();
+  const hooks: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "hook", wallMs: i, captureDrops: 1, captureDropReason: "spool_full", brief: { work: "complete", curated: "complete", capture: "complete" } }));
+  const reads: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "search", tool: "amem_search", wallMs: i, rssMB: 40, peakRaised: false }));
+  const phases: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "mcp-phase", tool: "preload", wallMs: i, rssMB: 50, peakRaised: false }));
+  appendMetrics(f.memory, [...hooks, ...reads]);
+  appendMetrics(f.memory, phases); // force the first byte-bounded trim
+  const before = samples(f.memory).filter(row => row.kind !== "mcp-phase");
+  appendMetrics(f.memory, phases);
+  const after = samples(f.memory);
+  expect(after.filter(row => row.kind !== "mcp-phase")).toEqual(before);
+  expect(after.filter(row => row.kind === "mcp-phase").length).toBeLessThanOrEqual(32);
+  expect(statSync(metricsPath(f.memory)).size).toBeLessThanOrEqual(64 * 1024);
+  const drops = readCaptureDrops(f.memory); expect(drops.readable).toBe(true);
+  if (drops.readable) expect(drops.counts.spool_full).toBe(after.filter(row => row.kind === "hook").length);
+  const inode = statSync(metricsPath(f.memory)).ino;
+  appendMetrics(f.memory, [{ at, kind: "hook", wallMs: 1 }]);
+  expect(statSync(metricsPath(f.memory)).ino).toBe(inode);
+});
 
-  // Search samples past the bound must not push the hook window out, and hook samples must not push the search window out.
-  const searchesLast = seeded();
-  appendMetrics(searchesLast.memory, flood("hook", 200, 0));
-  appendMetrics(searchesLast.memory, flood("search", 400, 1000));
-  const keptAfterSearches = samples(searchesLast.memory);
-  expect(keptAfterSearches.filter(row => row.kind === "hook")).toHaveLength(200);
-  expect(keptAfterSearches.filter(row => row.kind === "search")).toHaveLength(200);
-  expect(keptAfterSearches.filter(row => row.kind === "search").map(row => row.wallMs)).toEqual(Array.from({ length: 200 }, (_, index) => 1200 + index));
-
-  const hooksLast = seeded();
-  appendMetrics(hooksLast.memory, flood("search", 200, 0));
-  appendMetrics(hooksLast.memory, flood("hook", 400, 1000));
-  const keptAfterHooks = samples(hooksLast.memory);
-  expect(keptAfterHooks.filter(row => row.kind === "search")).toHaveLength(200);
-  expect(keptAfterHooks.filter(row => row.kind === "hook")).toHaveLength(200);
-
-  // The read window is per kind too: 200 hook samples in the tail cannot hide the newest search samples.
-  const readsPerKind = seeded();
-  appendMetrics(readsPerKind.memory, flood("hook", 400, 0));
-  appendMetrics(readsPerKind.memory, flood("search", 5, 5000));
-  const read = samples(readsPerKind.memory);
-  expect(read.filter(row => row.kind === "search")).toHaveLength(5);
-  expect(read.filter(row => row.kind === "hook")).toHaveLength(200);
+test("hook and search floods retain the other kind's bounded window", () => {
+  const at = new Date().toISOString(), f = seeded(), g = seeded();
+  const hook = (i: number): MetricSample => ({ at, kind: "hook", wallMs: i, rssMB: 10, brief: { work: "complete", curated: "complete", capture: "complete" } });
+  const search = (i: number): MetricSample => ({ at, kind: "search", tool: "amem_search", wallMs: i, rssMB: 20, peakRaised: false });
+  appendMetrics(f.memory, Array.from({ length: 200 }, (_, i) => hook(i)));
+  appendMetrics(f.memory, Array.from({ length: 800 }, (_, i) => search(i)));
+  const savedHooks = samples(f.memory).filter(row => row.kind === "hook");
+  appendMetrics(f.memory, Array.from({ length: 800 }, (_, i) => search(i + 800)));
+  expect(samples(f.memory).filter(row => row.kind === "hook")).toEqual(savedHooks);
+  appendMetrics(g.memory, Array.from({ length: 200 }, (_, i) => search(i)));
+  appendMetrics(g.memory, Array.from({ length: 800 }, (_, i) => hook(i)));
+  const savedSearches = samples(g.memory).filter(row => row.kind === "search");
+  appendMetrics(g.memory, Array.from({ length: 800 }, (_, i) => hook(i + 800)));
+  expect(samples(g.memory).filter(row => row.kind === "search")).toEqual(savedSearches);
+  expect(savedHooks.length).toBeGreaterThan(0); expect(savedSearches.length).toBeGreaterThan(0);
 });
 
 test("#485 AC4: a sample holds no query text, arguments, ids or paths", async () => {
@@ -216,6 +222,9 @@ test("#485 review: telemetry I/O that cannot land never holds a completed read",
     const result = await mcp.tools.amem_search({ query: "telemetry" });
     expect(Date.now() - started).toBeLessThan(2000);
     expect(JSON.stringify(result)).toContain("ordinary note for read-tool telemetry");
+    const writeStarted = Date.now();
+    await mcp.tools.amem_remember({ text: "fixture candidate", kind: "finding" });
+    expect(Date.now() - writeStarted).toBeLessThan(2000);
     await Bun.sleep(100);
     // The path is untouched: no sample was appended and nothing replaced the FIFO. Reading it back is answered as
     // absent rather than waited on, so `amem capacity` cannot be held either.
@@ -236,9 +245,33 @@ test("#485 review: a peak set while two read calls overlap is credited to neithe
   // The peak advanced anyway, so the next call is compared with reality and does not re-claim it.
   expect(peaks.end(peaks.begin())).toEqual({ peakKB: 300, raised: false });
   peak = 400;
-  expect(peaks.end(peaks.begin())).toEqual({ peakKB: 400, raised: true });
+  const afterGap = peaks.begin(); expect(afterGap.gapKB).toBe(400);
+  peak = 450;
+  expect(peaks.end(afterGap)).toEqual({ peakKB: 450, raised: true });
   // A call that refuses or throws records nothing, but it still advances the baseline it may have raised.
   peak = 500;
   peaks.abort(peaks.begin());
   expect(peaks.end(peaks.begin())).toEqual({ peakKB: 500, raised: false });
+});
+
+test("MCP phase samples cover failed reads and write tools without content", async () => {
+  const f = seeded(CANARY), mcp = session(f);
+  await expect(mcp.tools.amem_search({ query: "" })).rejects.toThrow();
+  await mcp.tools.amem_remember({ text: CANARY, kind: "finding" });
+  await mcp.tools.amem_work_state_write({ list: "fixture", fields: { status: "active" } });
+  await expect(mcp.tools.amem_correct({ id: "invalid", proposedText: CANARY, reason: CANARY })).rejects.toThrow();
+  let rows: MetricSample[] = [];
+  for (let i = 0; i < 200; i++) { rows = readMetrics(f.memory).filter(row => row.kind === "mcp-phase"); if (rows.some(row => row.tool === "amem_correct")) break; await Bun.sleep(5); }
+  expect(rows.map(row => row.tool)).toEqual(expect.arrayContaining(["failed:amem_search", "amem_remember", "amem_work_state_write", "amem_correct"]));
+  for (const row of rows) expect(Object.keys(row).sort()).toEqual(["at", "kind", "peakRaised", "rssMB", "tool", "wallMs"]);
+  for (const secret of [CANARY, f.id, f.project, f.root, PATH_CANARY]) expect(JSON.stringify(rows)).not.toContain(secret);
+});
+
+test("nested phase attribution is conservative across overlap", () => {
+  let peak = 100; const tracker = createPeakTracker(() => peak);
+  const read = tracker.begin(), phase = tracker.begin(read); peak = 200;
+  expect(tracker.end(phase)).toEqual({ peakKB: 200, raised: true });
+  expect(tracker.end(read)).toEqual({ peakKB: 200, raised: false });
+  const a = tracker.begin(), b = tracker.begin(); peak = 300;
+  expect(tracker.end(a).raised).toBe(false); expect(tracker.end(b).raised).toBe(false);
 });
