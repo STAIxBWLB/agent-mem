@@ -69,7 +69,7 @@ import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, typ
 import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
 import { statusText, type StatusView } from "./memory/status-text.ts";
-import { asciiMarkers, errorLine, EXIT, markerCell, paint, resolveColor, streamEnv } from "@staix/cli-output";
+import { asciiMarkers, errorLine, errorSpans, EXIT, markerCell, paint, resolveColor, streamEnv } from "@staix/cli-output";
 import { style, wrapReport, facts, label, PLAIN, type Style } from "./memory/style.ts";
 import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
@@ -1592,8 +1592,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       try { options = parseCommand(argv).options; } catch { /* Invalid options still report their usage error. */ }
       const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv(true, process.env), "amem");
       const ascii = asciiMarkers(process.env, options["--ascii"] === true);
-      // cli-output#6: errorLine has no role spans for the existing colored, two-cell TTY marker.
-      prefix = `${paint([{ role: "error", text: markerCell("fail", ascii) }], !argv.includes("--json") && color === true)} `;
+      // ponytail: amem keeps the two-cell marker column; upgrade when errorSpans exposes that padding.
+      const marker = errorSpans("amem", "", "", { tty: true, ascii })[0]![0]!;
+      prefix = `${paint([{ ...marker, text: markerCell("fail", ascii) }], !argv.includes("--json") && color === true)} `;
     }
     const code = (error as { exitCode?: number }).exitCode ?? ((error as Error).message.startsWith("usage:") ? EXIT.usage : EXIT.fail);
     console.error(prefix + formatCliError(error, code === 2)); process.exitCode = code;

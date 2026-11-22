@@ -7,6 +7,9 @@ import { realPath } from "../src/memory/platform.ts";
 
 const root = realPath(resolve(import.meta.dir, "../src"));
 const failures: string[] = [];
+const manifest = JSON.parse(readFileSync(resolve(root, "../package.json"), "utf8")) as { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string> };
+if (JSON.stringify(manifest.dependencies) !== JSON.stringify({ "@staix/cli-output": "0.1.1" }) || Object.keys(manifest.optionalDependencies ?? {}).length || Object.keys(manifest.peerDependencies ?? {}).length)
+  failures.push("package.json: keep only @staix/cli-output at exact version 0.1.1; remove other runtime, optional or peer dependencies");
 let files = 0;
 const inside = (path: string) => { const rel = relative(root, path); return rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel); };
 

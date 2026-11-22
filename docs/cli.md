@@ -22,7 +22,7 @@ Memory commands: `list`, `search`, `show`, `graph`, `suggestions`, `confirm`, `r
 
 Use `--color=auto|always|never` to select color and `--ascii` to use ASCII markers. Explicit `always` or `never` wins; in auto mode, nonempty `NO_COLOR` disables color, nonzero `FORCE_COLOR` or `CLICOLOR_FORCE` enables it, and `FORCE_COLOR=0` or `CLICOLOR=0` disables it. Otherwise color requires a terminal and `TERM` other than `dumb`. An empty `NO_COLOR` has no effect. Single-document JSON uses 2-space indentation and is uncolored. Human output is the default on a pipe as well as a terminal; scripts that consume an ingest receipt should pass `--json`.
 
-Human output uses `@staix/cli-output` 0.1.0 for the shared color, marker and error primitives. Its terminal-text handling removes terminal escape sequences and control characters from painted spans and ordinary error messages. JSON documents keep their existing encoding.
+Human output uses `@staix/cli-output` 0.1.1 for the shared color, marker and error primitives. Its terminal-text handling removes terminal escape sequences and control characters from painted spans and ordinary error messages, and normalizes CRLF and CR to LF. JSON documents keep their existing encoding.
 
 `amem import codex` reads Codex's Markdown memory as review candidates. It supports both on-disk layouts: memories v1 under `$CODEX_HOME/memories` (else `~/.codex/memories`) and memories v2, the default for fresh profiles since Codex 0.165.0, under the sibling `memories_v2/` (`memory_summary.md`, `rollout_summaries/`, `extensions/`; v2 titles start with `memories_v2/`). The v2 SQLite state is never read. With `--from` only the given directory is read. When neither layout exists, the receipt names the locations it checked.
 
