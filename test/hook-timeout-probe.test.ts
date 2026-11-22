@@ -30,6 +30,8 @@ for (const [event, phase, branch] of [
       expect(result.ownedChildren).toBe(0);
     }
     expect(result.remainingProcesses).toBe(0);
+    expect(result.branchEvidenceOwners).toBe(result.ownedChildren);
+    expect(result.branchLine).not.toMatch(/"[A-Za-z]*[pP]ids?"\s*:/);
     expect(result.pending).toMatch(/^hook-/);
     expect(result.rssMB).toBeGreaterThan(0);
   } finally { f.close(); }
@@ -51,6 +53,8 @@ test("controlled PreToolUse timeout proves spawned-not-entered after admission",
     expect(result.branch).toBe("spawned-not-entered");
     expect(result.ownedChildren).toBe(2);
     expect(result.remainingProcesses).toBe(0);
+    expect(result.branchEvidenceOwners).toBe(result.ownedChildren);
+    expect(result.branchLine).not.toMatch(/"[A-Za-z]*[pP]ids?"\s*:/);
     expect(result.pending).toMatch(/^hook-/);
     expect(result.rssMB).toBeGreaterThan(0);
   } finally { f.close(); }
