@@ -4,17 +4,19 @@ import { realPath } from "../../src/memory/platform.ts";
 import { instrumentHookLifecycle, instrumentSessionNativeDeadline } from "./hooks-process-lifecycle.ts";
 
 export interface HookLifecycleReceipt {
-  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "truncated";
+  phase: "spawn-attempt" | "spawn" | "spawn-failed" | "exit" | "kill-request" | "reap-start" | "reap-end" | "output-end" | "rss-finish" | "truncated" | "origin";
   parentPid: number; childPid: number; kind: "worker" | "native"; atMs: number;
   boundMs?: number; reaped?: number; late?: number; code?: number; outputAvailable?: number;
   source?: "VmHWM" | "vmpeak-bound" | "platform-rusage" | "raw-fallback" | "unavailable";
   telemetryValid?: number; known?: number; kb?: number; rawKB?: number; observationFailed?: number;
   vmhwm?: number; vmpeakBound?: number; platformRusage?: number; rawFallback?: number; unavailable?: number;
+  spawnRemainingMs?: number;
 }
 
 export interface HookProcessEvidence { phase: "preload" | "precheck" | "deadline_skip" | "late_check" | "session-native-deadline-skip" | "attempt" | "returned"; pid: number; loads: number; exact?: number; native?: number; childPid?: number; remainingUs?: number; host?: number }
 export interface HookWorkerProcess { pid: number; detached: boolean; argv: string[]; kind: "worker" | "native" }
 export interface FixtureChildEvidence { pid: number; ownerPid: number; beforeMs: number; afterMs?: number }
+export interface FixtureEntryEvidence { ownerPid: number; entryMs: number }
 export const MAX_FIXTURE_CHILD_EVIDENCE = 512;
 /** Normal mode only observes. The timeout fixture can preload an owned native sleeper without a production port. */
 export function hookProcessObserver(root: string, stallWorker = false, sourceRoot = join(import.meta.dir, "../.."), lifecycleEnabled = false, sessionDeadlineEnabled = false) {
@@ -62,7 +64,7 @@ if(stallWorker&&process.argv[1]===worker){
  await sleeper.exited;
 }
 `;
-  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle,stallWorker);
+  if(lifecycleEnabled)rendered=instrumentHookLifecycle(rendered,lifecycle,stallWorker,stallWorker?nativePidFile:"");
   if(sessionDeadlineEnabled)rendered=instrumentSessionNativeDeadline(rendered);
   writeFileSync(preload,rendered,{mode:0o600});
   return { preload, worker, nativePidFile, entered,
@@ -89,17 +91,28 @@ if(stallWorker&&process.argv[1]===worker){
       }
       return { rows, truncated, invalid };
     },
+    /** #362: fixture entry markers, written before the fixture body (and any injected delay). Owner pid plus mtime only. */
+    fixtureEntries(): FixtureEntryEvidence[] {
+      const entries: FixtureEntryEvidence[] = [];
+      for (const name of readdirSync(root).sort().slice(0, MAX_FIXTURE_CHILD_EVIDENCE)) {
+        const match = /^owned-native[.]pid-entry[.]([1-9][0-9]*)$/.exec(name);
+        if (!match) continue;
+        const stat = lstatSync(join(root, name), { bigint: true, throwIfNoEntry: false });
+        if (stat?.isFile() && !stat.isSymbolicLink()) entries.push({ ownerPid: Number(match[1]), entryMs: Number(stat.mtimeNs) / 1_000_000 });
+      }
+      return entries;
+    },
     /** Observation only, never signalling authority. A missing exit flush is explicit missing evidence. */
-    lifecycle(parentPid?:number): HookLifecycleReceipt[] {
+    lifecycle(parentPid?:number, includeOrigin = false): HookLifecycleReceipt[] {
       if(!existsSync(lifecycle))return[];
       if(statSync(lifecycle).size>2*1024*1024)throw Error("child lifecycle diagnostic exceeds 2 MiB; retain the fixture and inspect its bounded observer workload");
       return readFileSync(lifecycle,"utf8").split("\n").filter(Boolean).map(line=>{
         const row=JSON.parse(line) as HookLifecycleReceipt;
-        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","truncated"].includes(row.phase)
+        if(!["spawn-attempt","spawn","spawn-failed","exit","kill-request","reap-start","reap-end","output-end","rss-finish","truncated","origin"].includes(row.phase)
           || !Number.isSafeInteger(row.parentPid)||row.parentPid<=0||!Number.isSafeInteger(row.childPid)||row.childPid<0
           || !["worker","native"].includes(row.kind)||!Number.isFinite(row.atMs)||row.atMs<0)throw Error("child lifecycle diagnostic is malformed; retain the fixture and inspect the observer receipts");
         return row;
-      }).filter(row=>parentPid===undefined||row.parentPid===parentPid);
+      }).filter(row=>(parentPid===undefined||row.parentPid===parentPid)&&(includeOrigin||row.phase!=="origin"));
     },
     evidence(): HookProcessEvidence[] {
       if (!existsSync(evidence)) return [];

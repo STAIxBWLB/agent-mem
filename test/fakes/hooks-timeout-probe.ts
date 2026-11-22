@@ -9,7 +9,7 @@ import { hookBin, hookFixture } from "./hooks-fixture.ts";
 import type { HookProcessEvidence, HookLifecycleReceipt, HookWorkerProcess } from "./hooks-process-observer.ts";
 import { hookProcessObserver } from "./hooks-process-observer.ts";
 import { hookProcessDiagnostic } from "../../scripts/hook-process-diagnostic.ts";
-import { timeoutReceiptEvidence } from "./hooks-timeout-evidence.ts";
+import { timeoutBranchEvidence, timeoutReceiptEvidence } from "./hooks-timeout-evidence.ts";
 
 const alive = (pid: number) => {
   try { process.kill(pid, 0); return true; }
@@ -235,9 +235,11 @@ Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filte
     const rss = functional || branch !== "admitted-blocked" || workers.length !== expected ? measuredHookRss(metric, cliRssMB)
       : measuredBudgetHookRss(metric, cliRssMB, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `timeout ${event}`);
     // Every invocation reports coverage, including legitimate refusals before fixture entry.
+    const branchEvidence = timeoutBranchEvidence({ workers, lifecycle: observer.lifecycle(result.pid, true), fixture: observer.fixtureChildren(), entries: observer.fixtureEntries() });
     console.log(JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, parentPid: result.pid, control: functional, branch,
-      observedOwnedChildren: workers.length, entered, descendantReceipt: receipt, remainingProcesses: 0 }));
-    return { event, branch, wallMs, metricWallMs: metric.wallMs!, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, remainingProcesses: 0 };
+      observedOwnedChildren: workers.length, entered, descendantReceipt: receipt, remainingProcesses: 0,
+      ...branchEvidence }));
+    return { event, branch, wallMs, metricWallMs: metric.wallMs!, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, branchEvidenceOwners: branchEvidence.owners.length, remainingProcesses: 0 };
   } finally {
     // Only a fresh PID/group/command match from this probe can be signalled on failure.
     for (const nativePid of nativePids.filter(alive)) {

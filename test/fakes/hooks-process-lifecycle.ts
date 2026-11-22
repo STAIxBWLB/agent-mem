@@ -1,5 +1,14 @@
+/** Remaining native deadline (ms) from the supervisor argv, or undefined when the shape is not the expected one. */
+export function supervisorRemainingMs(command: unknown): number | undefined {
+  if (!Array.isArray(command) || command[0] !== "/bin/sh" || command[1] !== "-c" || typeof command[2] !== "string"
+    || !command[2].startsWith("marker=$1; seconds=$2; shift 2; leader=$$") || command[3] !== "amem-hook-native"
+    || typeof command[5] !== "string" || !/^[0-9]+(?:[.][0-9]+)?$/.test(command[5])) return undefined;
+  const ms = Number(command[5]) * 1000;
+  return Number.isFinite(ms) && ms >= 0 ? Math.round(ms * 10) / 10 : undefined;
+}
+
 /** Nonshipping source observation only. This never edits a target file or changes its branch/timer expressions. */
-export function instrumentHookLifecycle(preload:string,receipt:string,fixtureOwner = false):string {
+export function instrumentHookLifecycle(preload:string,receipt:string,fixtureOwner = false,entryBase = ""):string {
   const worker=[
     ["if (parsed.rssTelemetryValid !== true) tracker!.invalidate();", "if (parsed.rssTelemetryValid !== true) { globalThis.__hookRssWireValid=false;tracker!.invalidate(); }"],
     ["exit = child.exited.then(code => { exited = true; return code; });","exit = child.exited.then(code => { exited = true;globalThis.__hookChildLife('exit',child.pid,'worker',{code}); return code; });"],
@@ -23,6 +32,7 @@ export function instrumentHookLifecycle(preload:string,receipt:string,fixtureOwn
   };
   // ponytail:512 metadata receipts per CLI, with explicit truncation; larger invocations need a reviewed streaming observer.
   replace("note('preload');",`const receipts=[];let truncated=false;
+receipts.push({phase:'origin',parentPid:process.pid,childPid:0,kind:'worker',atMs:performance.timeOrigin});
 const life=(phase,childPid,kind,values={})=>{if(receipts.length>=512){truncated=true;return;}receipts.push({phase,parentPid:process.pid,childPid,kind,atMs:performance.timeOrigin+performance.now(),...values});};
 globalThis.__hookChildLife=life;
 Bun.plugin({name:'observe-rss-wire-validity',setup(builder){builder.onLoad({filter:/[/]hook-rss-wire[.]ts$/},({path})=>{
@@ -40,10 +50,20 @@ note('preload');`);
   if(lines.length!==1)throw Error("Worker preload render changed; update the exact test observer and rerun its controls");
   const line=lines[0]!;replace(line,line.replace("contents:","contents:workerLifecycle(").slice(0,-2)+")};");
   replace("globalThis.__hookProcessNote=note;",`Bun.plugin({name:'observe-native-lifecycle',setup(builder){builder.onLoad({filter:/[/]hook-native\\.ts$/},({path})=>({loader:'ts',contents:transformLifecycle(readFileSync(path,'utf8'),${JSON.stringify(native)})}));}});
-globalThis.__hookProcessNote=note;`);
+let lastWorkerRemainingMs;
+globalThis.__hookProcessNote=(phase,values)=>{if((phase==='precheck'||phase==='late_check')&&Number.isFinite(values?.remainingUs)&&values.remainingUs>=0)lastWorkerRemainingMs=values.remainingUs/1000;note(phase,values);};`);
   replace(" const child=original(argv,options);",` if(matched||native)life('spawn-attempt',0,native?'native':'worker');
  let child;try{child=original(argv,options);}catch(error){if(matched||native)life('spawn-failed',0,native?'native':'worker');throw error;}
- if(matched||native)life('spawn',child.pid,native?'native':'worker');`);
+ if(matched||native){const remainingMs=native?supervisorRemainingMs(command):lastWorkerRemainingMs;life('spawn',child.pid,native?'native':'worker',remainingMs===undefined?{}:{spawnRemainingMs:remainingMs});}`);
+  // #362: the spawn-site deadline is read only from the supervisor shape the fixture expects; any other shape omits it.
+  replace("const original=Bun.spawn.bind(Bun);",`const supervisorRemainingMs=${supervisorRemainingMs.toString()};
+const original=Bun.spawn.bind(Bun);`);
+  if (fixtureOwner && entryBase) {
+    // #362: fixture-owner only. The entry marker precedes the fixture body, including any delay a test injects into it.
+    replace("'/bin/sh','-c',sleeper,", "'/bin/sh','-c','printf x > \"$1-entry.$leader\"; '+sleeper,");
+    replace(" const sleeper=Bun.spawn(['/bin/sleep','30']", ` writeFileSync(${JSON.stringify(entryBase)}+'-entry.'+process.pid,'x',{mode:0o600});
+ const sleeper=Bun.spawn(['/bin/sleep','30']`);
+  }
   return preload;
 }
 
