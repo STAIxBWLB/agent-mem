@@ -2,6 +2,29 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.36.0
+
+### Added
+
+- Opt-in sync-run placement checkpoint. With `syncPlacement.checkpointOnBound: true` in the machine `amem.config.json`, the CLI `amem sync`, including `--if-due`, runs one checkpoint when a publication refuses the `journal-objects` bound, then retries that batch once. The checkpoint runs only after the failed batch has released its locks, and only with writer pins identical to the active inventory. Changed pins, failed attestation, the epoch's last two checkpoints, a fence or any checkpoint refusal return `failure.cause: checkpoint-refused`, and nothing is written. `SyncResult.checkpoint` carries `{window, objectsBefore, objectsAfter}` (counts only), and the CLI prints one line. Hooks, `amem mcp` and capture never run it. `amem migrate --sync-placement --checkpoint-on-bound on|off` previews the change, and `--confirm` writes it atomically with mode 0600, keeping the other keys. Off by default. Refs #578 (PR #586, task 420).
+- Decision chunk reuse (v2 publication plans). Decisions are partitioned by key-hash prefix, and a leaf splits only above 64 KiB. An unchanged leaf references the verified physical chunk of the latest completed, committed v2 publication for the same realm set, including owners archived by a checkpoint. References are flattened to the physical owner and re-verified before and after the chunk writes; an ambiguous latest owner falls back to inline leaves. This is opt-in through an explicitly raised `home` floor of 0.36.0 (`amem formats raise home 0.36.0`, preview then `--confirm`). Without that floor the writer keeps v1 plans, and if a v2 bootstrap would not fit, the writer attempts the v1 plan. Refs #577 (PR #585, task 417).
+
+### Changed
+
+- Checkpoint confirm, resume and abandon take a placement-exclusive fence (`withPlacementCheckpointFences`: the profile lock, home, realm and transport mutation locks and the generation sync lock) instead of requiring zero live reader leases. Open agent sessions and `amem mcp` servers no longer block a checkpoint. A running placement sync, admission or renewal still does, and that refusal names its own wait-and-rerun step. A reader that starts mid-checkpoint is refused by the profile lock. Activation, renewal and admission keep their fences unchanged. Refs #578 (PR #579, task 419).
+
+### Fixed
+
+- Agent-marked sessions print the fixed placement fence refusal (`PlacementInventoryFenceError`) instead of the masked line. Refs #578 (PR #579).
+
+### Compatibility with N-1 (0.35.0)
+
+- `amem.config.json`: `syncPlacement` is a new machine-file key, and a repository `.amem/config` cannot set it. 0.35.0 refuses a config file that carries it as an unknown key, so opt in only after every amem install that reads the home, including a host's pinned copy, runs 0.36.0 or later. Without the key, 0.35.0 and 0.36.0 read the same file.
+- Sync results: `checkpoint-refused` is a new value in the closed `failure.cause` set, and `SyncResult.checkpoint` and `SyncOptions.placementCheckpoint` are optional additions. A 0.35.0-era host that switches on `failure.cause` should treat an unknown cause as a refusal with no automatic next step. The library host API (`HOST_API_VERSION` 1) is unchanged.
+- Checkpoint fence: a 0.35.0 checkpoint still refuses while any reader lease is live. A 0.35.0 reader is fenced by the same profile lock during a 0.36.0 checkpoint. Neither version creates a window during sync unless the home opted in and the sync runs 0.36.0.
+- Publication plans: a home without a raised floor keeps v1 plans, which 0.35.0 reads unchanged. After `amem formats raise home 0.36.0`, 0.35.0 refuses the home before access. Raise the floor only after every writer is upgraded. Existing journal records, the 256-object window and its record limits are unchanged.
+- Unchanged: curated and capture logs, entry ids and hashing, the index version, schema strings other than the new v2 publication plan, transport rows and checkpoint archive layout. No floor is raised by this release.
+
 ## 0.35.0
 
 ### Added
