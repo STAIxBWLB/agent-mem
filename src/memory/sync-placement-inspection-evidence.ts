@@ -79,7 +79,7 @@ export async function inspectRetainedPublicationHistories(snapshot: InspectionJo
       if (!tip) continue;
       if (planned.refHash !== hash(shardSyncRef(target.realm))) unavailable();
       const auditor = objects.auditor(target.realm, target.generation), history = await auditor.history(tip);
-      if (history.rows.size > SYNC_SCREEN_MAX_ROWS) bound();
+      if (history.rows.size > SYNC_SCREEN_MAX_ROWS) historyBound("history-rows", SYNC_SCREEN_MAX_ROWS, history.rows.size);
       const membership = [...history.rows.values()].map(row => ({ id: row.id, rowHash: hashJSON(row) })).sort((a, b) => a.id.localeCompare(b.id));
       if (hashJSON(membership) !== planned.exportSetHash || hash(history.files.get("shard.json") ?? Buffer.alloc(0)) !== planned.descriptorHash
         || planned.tree !== objects.tree(tip)) unavailable();

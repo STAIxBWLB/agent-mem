@@ -71,7 +71,15 @@ test.skipIf(process.env.AMEM_CHECKPOINT_LARGE !== "1")("#567: a window whose ret
   expect((await sync()).ok).toBe(true);
 }, 900_000);
 
-test("#567: the checkpoint CLI reports a retained-history refusal by cause class with counts in --json and text", async () => {
+// AC3: each retained-history read path that can reach a graph or object bound keeps cause bound with counts through the CLI:
+// the auditor's blob, commit and tree reads, and the direct tree and retained-object reads after the audit.
+const faults: { name: string; method: "object" | "tree"; when: (args: unknown[]) => boolean }[] = [
+  { name: "auditor blob read", method: "object", when: args => args[1] === "blob" },
+  { name: "auditor commit read", method: "object", when: args => args[1] === "commit" },
+  { name: "auditor tree read", method: "object", when: args => args[1] === "tree" },
+  { name: "direct tip tree read", method: "tree", when: () => true },
+];
+for (const fault of faults) test(`#567: the checkpoint CLI reports a retained-history bound from the ${fault.name} by cause class with counts`, async () => {
   const f = await placementActivationFixture(); cleanup.push(f.close);
   await activateSyncPlacement(f.options("apply"));
   writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "home", minReader: "0.30.0", since: "2026-11-19" }]) + "\n", { mode: 0o600 });
@@ -80,11 +88,11 @@ test("#567: the checkpoint CLI reports a retained-history refusal by cause class
   try { expect((await syncMemory(store, { remote, visibility: async () => "private", placementAttestation: attest })).ok).toBe(true); } finally { store.close(); }
   const store2 = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
   try { store2.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "finding", peer: "person", source: "person", text: "pending checkpoint row", about: [] }); } finally { store2.close(); }
-  // Fault injection only: the inspection port reports a retained-history bound with counts.
-  const proto = (await import("../src/memory/sync-placement-inspection-evidence.ts")).PlacementInspectionObjects.prototype as unknown as { object: (...args: unknown[]) => Buffer };
-  const original = proto.object;
-  proto.object = function (this: unknown, ...args: unknown[]) { if (args[1] === "blob") throw new PlacementHistoryBoundError("graph-bytes", 83886080, 90000000); return original.apply(this, args); };
-  cleanup.push(() => { proto.object = original; });
+  // Fault injection only: the inspection port reports a retained-history bound with counts on one read path.
+  const proto = (await import("../src/memory/sync-placement-inspection-evidence.ts")).PlacementInspectionObjects.prototype as unknown as Record<"object" | "tree", (...args: unknown[]) => unknown>;
+  const original = proto[fault.method];
+  proto[fault.method] = function (this: unknown, ...args: unknown[]) { if (fault.when(args)) throw new PlacementHistoryBoundError("graph-bytes", 83886080, 90000000); return original.apply(this, args); };
+  cleanup.push(() => { proto[fault.method] = original; });
   const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
   cleanup.push(() => { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; });
   let code = 0;

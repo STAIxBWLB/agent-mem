@@ -112,7 +112,10 @@ export class ShardHistoryAuditor {
   }
   async #object(object: string, type: "commit" | "tree"): Promise<Buffer> {
     if (!this.#options.object || !oid(object)) return fail();
-    const body = await this.#options.object(object, type);
+    let body: Uint8Array;
+    // #567: a source bound on a commit or tree read keeps cause bound with its counts, like a blob read.
+    try { body = await this.#options.object(object, type); }
+    catch (error) { const bound = sourceBound(error); if (bound !== false) throw new ShardHistoryError("bound", bound); throw error; }
     if (!(body instanceof Uint8Array) || body.length > (type === "commit" ? 65536 : SHARD_PACK_MAX_BYTES)) return fail();
     const bytes = Buffer.from(body);
     if (createHash("sha1").update(`${type} ${bytes.length}\0`).update(bytes).digest("hex") !== object) return fail();
