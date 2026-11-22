@@ -236,10 +236,12 @@ Bun.plugin({name:'timeout-bin-host-control',setup(builder){builder.onLoad({filte
       : measuredBudgetHookRss(metric, cliRssMB, { survivors: 0, abandonedOwnedWorkers: metric.abandonedChildren ?? 0 }, `timeout ${event}`);
     // Every invocation reports coverage, including legitimate refusals before fixture entry.
     const branchEvidence = timeoutBranchEvidence({ workers, lifecycle: observer.lifecycle(result.pid, true), fixture: observer.fixtureChildren(), entries: observer.fixtureEntries() });
-    console.log(JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, parentPid: result.pid, control: functional, branch,
-      observedOwnedChildren: workers.length, entered, descendantReceipt: receipt, remainingProcesses: 0,
-      ...branchEvidence }));
-    return { event, branch, wallMs, metricWallMs: metric.wallMs!, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, branchEvidenceOwners: branchEvidence.owners.length, remainingProcesses: 0 };
+    const branchLine = JSON.stringify({ diagnostic: "hook-timeout-branch/v1", event, ...invocation, control: functional, branch,
+      observedOwnedChildren: workers.length, entered,
+      descendantReceipt: { pidCount: receipt.pids.length, valid: receipt.valid, incomplete: receipt.incomplete, complete: receipt.complete }, remainingProcesses: 0,
+      ...branchEvidence });
+    console.log(branchLine);
+    return { event, branch, wallMs, metricWallMs: metric.wallMs!, ...rss, ...(descendantReceiptAdvisory ? { descendantReceiptAdvisory: true } : {}), pending: pending[0]!.name, ownedChildren: workers.length, branchEvidenceOwners: branchEvidence.owners.length, branchLine, remainingProcesses: 0 };
   } finally {
     // Only a fresh PID/group/command match from this probe can be signalled on failure.
     for (const nativePid of nativePids.filter(alive)) {
