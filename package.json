@@ -11,6 +11,9 @@
   "engines": {
     "bun": ">=1.4.2"
   },
+  "dependencies": {
+    "@staix/cli-output": "0.1.0"
+  },
   "devDependencies": {
     "@staix/agent-console": "0.1.3",
     "@types/bun": "^1.3.0",

@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "@staix/agent-mem",
+      "dependencies": {
+        "@staix/cli-output": "0.1.0",
+      },
       "devDependencies": {
         "@staix/agent-console": "0.1.3",
         "@staix/agent-mem-pre-vault": "npm:@staix/agent-mem@0.3.1",
@@ -51,6 +54,8 @@
     "@staix/agent-mem-v0290": ["@staix/agent-mem@0.29.0", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-qf7r9Ea1vGfnD6ubAQjhXd7a2LvSCXQx9Ta4UZFrEpqbS8nIikU5zGM7YrwYT5LYlxnO6BGzpGiyIu/tPk/U4Q=="],
 
     "@staix/agent-mem-v1": ["@staix/agent-mem@0.1.1", "", { "bin": { "amem": "bin/amem.js" } }, "sha512-YxbmvV2KMWsfE75GVkUwSwYe0dT+KPVLwL9vI5Exh81TX+sbDz/WlHsghXjzpmzFV0DZsdAmPp6NyivqgvZXtw=="],
+
+    "@staix/cli-output": ["@staix/cli-output@0.1.0", "", {}, "sha512-ZRGNoNR+m849k5bN3h37Jd/Jbm6OKnJfBUAdFgftbACvJNq0Ws2l0fT1+XLGPQAmwguyP4xw6afQrAHa4l6uNg=="],
 
     "@types/bun": ["@types/bun@1.4.3", "", { "dependencies": { "bun-types": "1.4.3" } }, "sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw=="],
 

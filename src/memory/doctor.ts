@@ -19,7 +19,8 @@ import { readSelector } from "./generation.ts";
 import { processLiveness, withGitTimeout } from "./platform.ts";
 import { endLikeSignal, STOP_SIGNALS } from "./sync-cadence.ts";
 import { boundRepoRoot } from "./repo-scope.ts";
-import { facts, label, paint, section, markerCell, PLAIN, singleLine, type Style } from "./style.ts";
+import { markerCell, paint } from "@staix/cli-output";
+import { facts, label, section, PLAIN, singleLine, type Style } from "./style.ts";
 import { aliasedKeys, shardDir } from "./shard.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } from "./sync-cadence.ts";
@@ -693,8 +694,8 @@ export function doctorText(report: DoctorReport, s: Style = PLAIN): string {
     if (item.hint) actions.push(`${name}: ${item.hint}`);
     if (name === "capture" && item.clis) for (const [cli, row] of Object.entries(item.clis as Record<string, { hint?: string }>)) if (row.hint) actions.push(`capture ${cli}: ${row.hint}`);
   }
-  const lines = [`${paint("header", " amem Doctor", s.color)}: ${report.status === "ok" ? s.ok(report.status) : report.status === "attention" ? s.attention(report.status) : s.error(report.status)}${summary ? `  (${summary})` : `  (all ${entries.length} checks ok)`}`,
-    ...(actions.length ? ["", section(s, "Attention"), ...actions.map(action => `  ${paint("accent", markerCell("next", s.ascii), s.color)} ${action}`)] : []),
+  const lines = [`${paint([{ role: "header", text: " amem Doctor" }], s.color)}: ${report.status === "ok" ? s.ok(report.status) : report.status === "attention" ? s.attention(report.status) : s.error(report.status)}${summary ? `  (${summary})` : `  (all ${entries.length} checks ok)`}`,
+    ...(actions.length ? ["", section(s, "Attention"), ...actions.map(action => `  ${paint([{ role: "accent", text: markerCell("next", s.ascii) }], s.color)} ${action}`)] : []),
     "", section(s, "Checks"), `  home:  ${report.home.path} ${s.dim(`(${report.home.source})`)}`, `  project:  ${report.project}`];
   const order: Record<SectionStatus, number> = { attention: 0, unavailable: 1, skipped: 2, ok: 3 };
   entries.sort((a, b) => order[a[1].status] - order[b[1].status]);
@@ -706,10 +707,10 @@ export function doctorText(report: DoctorReport, s: Style = PLAIN): string {
   }
   lines.push("", actions.length ? "Next actions: see Attention" : "Next actions: none");
   const counts = [
-    ...(count("attention") ? [`${paint("warning", markerCell("warn", s.ascii), s.color)} ${count("attention")} warnings`] : []),
-    ...(count("unavailable") ? [`${paint("hint", markerCell("unknown", s.ascii), s.color)} ${count("unavailable")} unknown`] : []),
-    ...(count("skipped") ? [`${paint("hint", markerCell("absent", s.ascii), s.color)} ${count("skipped")} skipped`] : []),
-    ...(count("ok") ? [`${paint("success", markerCell("ok", s.ascii), s.color)} ${count("ok")} ok`] : []),
+    ...(count("attention") ? [`${paint([{ role: "warning", text: markerCell("warn", s.ascii) }], s.color)} ${count("attention")} warnings`] : []),
+    ...(count("unavailable") ? [`${paint([{ role: "hint", text: markerCell("unknown", s.ascii) }], s.color)} ${count("unavailable")} unknown`] : []),
+    ...(count("skipped") ? [`${paint([{ role: "hint", text: markerCell("absent", s.ascii) }], s.color)} ${count("skipped")} skipped`] : []),
+    ...(count("ok") ? [`${paint([{ role: "success", text: markerCell("ok", s.ascii) }], s.color)} ${count("ok")} ok`] : []),
   ];
   if (counts.length) lines.push(counts.join("  "));
   return lines.join("\n");

@@ -8,6 +8,7 @@ import { COMMANDS, commandHelp } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
 import { installRoot, planSetup } from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
+import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
 
 // #199 change 6: versions coexist on one machine. A release is registered by its own install root, and a running server keeps its code.
 const PACKAGE = resolve(import.meta.dir, ".."), VERSION = (JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8")) as { version: string }).version;
@@ -18,6 +19,7 @@ function scratch(): string { const root = realPath(mkdtempSync(join(tmpdir(), "a
 function release(root: string, version: string): string {
   const dir = join(root, "releases", version);
   for (const part of ["bin", "src"]) cpSync(join(PACKAGE, part), join(dir, part), { recursive: true });
+  installCliOutputFixture(dir);
   const pkg = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8")) as Record<string, unknown>;
   writeFileSync(join(dir, "package.json"), JSON.stringify({ ...pkg, version }));
   return dir;

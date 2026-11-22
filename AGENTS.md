@@ -8,7 +8,7 @@
 
 ## Conventions and structure
 
-- Keep zero runtime dependencies. `src/` imports only Node built-ins, `bun:sqlite`, and relative files within `src/`; run the boundary check after changes.
+- Keep one exact-pinned runtime dependency, `@staix/cli-output` (#576); no others. `src/` imports only that package, Node built-ins, `bun:sqlite`, and relative files within `src/`; run the boundary check after changes.
 - Keep TypeScript strict with `noUncheckedIndexedAccess` and explicit `.ts` relative import extensions.
 - Put library exports in `src/index.ts`, person-facing argument and identity checks in `src/cli.ts`, and portable memory implementation in `src/memory/`.
 - Add a `ponytail:` comment naming the ceiling and upgrade path for deliberate shortcuts.

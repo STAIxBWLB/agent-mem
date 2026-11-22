@@ -6,17 +6,22 @@ import { activateSyncPlacement } from "../src/memory/sync-placement-activation.t
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { createInspectionRemote, inspectionFilesystemSnapshot, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
+import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
+import { measureSyncPlacementWriters } from "../src/memory/sync-placement-writers.ts";
 
 type HostApi = typeof import("../src/index.ts");
 const clean: (() => void)[] = [];
 afterEach(() => { for (const close of clean.splice(0).reverse()) close(); });
 
-/** Real isolated install bytes, never dependencies, build products or another memory home. */
+/** Real isolated install bytes and the pinned runtime dependency; no build products or another memory home. */
 async function copiedHost(root: string) {
   const install = join(root, "host install"); mkdirSync(install, { mode: 0o700 });
   for (const name of ["src", "bin", "hooks", ".claude-plugin"]) cpSync(join(activationOwnRoot, name), join(install, name), { recursive: true, errorOnExist: true, force: false });
   copyFileSync(join(activationOwnRoot, "package.json"), join(install, "package.json"));
-  expect(existsSync(join(install, "node_modules"))).toBe(false);
+  const before = measureSyncPlacementWriters([install]);
+  installCliOutputFixture(install);
+  const after = measureSyncPlacementWriters([install]);
+  expect(after.writers).toEqual(before.writers);
   const api = await import(pathToFileURL(join(install, "src", "index.ts")).href) as HostApi;
   expect(typeof api.createPlacementAttestation).toBe("function");
   return { install, api };

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
+import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { syncMemory } from "../src/memory/sync.ts";
@@ -245,9 +246,10 @@ test("v2 decision references survive a checkpoint archive", async () => {
   if (formatVersionBelow(manifest.version, "0.36.0")) {
     const isolated = mkdtempSync(join(tmpdir(), "amem-v2-checkpoint-")); cleanup.push(() => rmSync(isolated, { recursive: true, force: true }));
     cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
+    installCliOutputFixture(isolated);
     cpSync(join(import.meta.dir, "../bin"), join(isolated, "bin"), { recursive: true });
     mkdirSync(join(isolated, "test/fakes"), { recursive: true }); mkdirSync(join(isolated, "home"));
-    for (const name of ["sync-placement-activation.ts", "sync-placement-inspection.ts", "hooks-fixture.ts"]) copyFileSync(join(import.meta.dir, "fakes", name), join(isolated, "test/fakes", name));
+    for (const name of ["sync-placement-activation.ts", "sync-placement-inspection.ts", "hooks-fixture.ts", "cli-output-install.ts"]) copyFileSync(join(import.meta.dir, "fakes", name), join(isolated, "test/fakes", name));
     copyFileSync(import.meta.path, join(isolated, "test/checkpoint.test.ts"));
     writeFileSync(join(isolated, "package.json"), JSON.stringify({ ...manifest, version: "0.36.0" }));
     const child = Bun.spawnSync([process.execPath, "test", "--timeout", "180000", "test/checkpoint.test.ts", "--test-name-pattern", "v2 decision references survive"], { cwd: isolated, env: { ...process.env, HOME: join(isolated, "home"), AGENTHUB_HOME: join(isolated, "home/agenthub"), XDG_CONFIG_HOME: join(isolated, "home/config") }, stdout: "pipe", stderr: "pipe", timeout: 200000 });

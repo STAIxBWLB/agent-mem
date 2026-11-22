@@ -20,7 +20,7 @@ function check(path: string): void {
   function dependency(node: ts.Node, specifier: ts.Node | undefined): void {
     if (!specifier || !ts.isStringLiteralLike(specifier)) { fail(node, "dependency must be a string literal"); return; }
     const name = specifier.text;
-    if (isBuiltin(name) || name === "bun:sqlite") return;
+    if (isBuiltin(name) || name === "bun:sqlite" || name === "@staix/cli-output") return;
     if (!name.startsWith("./") && !name.startsWith("../")) { fail(node, `non-built-in dependency ${name}`); return; }
     try {
       const target = realPath(resolve(dirname(path), name));
