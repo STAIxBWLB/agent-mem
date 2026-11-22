@@ -2,6 +2,40 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.35.0
+
+### Added
+
+- Packaged amem skills: five agent memory skills (diagnose/status, recall, remember, review, ops) plus a shared adapter ship in the package under `skills/`. They use the existing policy and preview/confirm flows. Refs #560 (PR #562).
+- A staged skill installer and exporter. Installs carry an ownership marker (`.amem-skill.json`) and a content digest, are bounded, swap through a stage with rollback, and recover a verified interrupted swap on the next apply. Foreign or modified skills are preserved. Refs #560 (PR #561).
+- `amem setup claude|codex|kimi|qwen` previews and installs bundled skills alongside MCP and hooks, and `--undo` removes unmodified amem-owned skills. `amem skills export <dir> [--json]` exports them for other hosts. A skill refusal is reported separately and does not block MCP or hook setup. #560 (PR #563).
+- A skills root or export destination that is a symlink to a directory is followed. The link is preserved and both link and target are reported. Dangling, non-directory and memory-home or package-source targets are refused, and skill writes stop if a link is retargeted after the preview. #564 (PR #568).
+- MCP phase memory peaks: `amem mcp` records content-free `mcp-phase` samples for rising process high-water marks, and `amem capacity` shows the phase where the peak was observed (`metrics.mcpPhasePeak` in `--json`). No new gate is added; the live peak above 200 MiB stays unattributed. PR #570.
+
+### Changed
+
+- `metrics.jsonl` trims at 128 KiB instead of 64 KiB, with per-kind byte quotas: 200 `hook` rows in 74 KiB, 200 `search` rows in 30 KiB, 32 `mcp-phase` rows in 6 KiB and 1 KiB for other kinds. A phase flood cannot evict hook or search rows. `readCaptureDrops` reads the newest 200 hook rows in a 128 KiB tail. PR #570.
+- `amem migrate --sync-placement --dry-run --json`: `writers.refusalCategory` appears only when `missingCategories` is non-empty, and a new informational `changedCategory` names the category of a changed root. PR #569.
+- Placement migration help and placement recovery diagnostics are actor-neutral and name `amem formats raise` for home-floor changes. Commands, flags, causes and confirmation requirements are unchanged. Refs #431 (PR #566, PR #572).
+
+### Fixed
+
+- The placement checkpoint preview inspects the retained window's published history within the existing 80 MiB/20000-object graph bound instead of the 8 MiB publish-side source screen, which refused large homes as `blob`. A history-bound refusal reports `shard history bound` with the bound kind, limit and observed count; `--json` returns `{ok:false, refusal:{category, cause, kind, limit, observed}, nextStep}` with exit 1. The publish-side screen and per-pack bounds are unchanged. #567 (PR #569, task 406).
+- An unsafe entry in a packaged or owned skill tree is named by its relative path and the byte or file-count limit it exceeds. Ownership classification, marker and digest are unchanged. Refs #560 (PR #571).
+
+### Diagnostics
+
+- Each `hook-timeout-branch/v1` test line records spawn attempts and failures, per-owner spawn, kill, exit and reap times relative to the hook start, the deadline remaining at each spawn and fixture entry marker times. It carries no pids or paths. Test-side only. Refs #362 (PR #573, task 412).
+
+### Compatibility with N-1 (0.34.0)
+
+- Skills: new surface. 0.34.0 has no skills install, export, marker or digest. The `.amem-skill.json` marker `{tool, version, sha256}` and its framed SHA-256 digest are an on-disk contract from this release (docs/setup.md §Bundled skills). A 0.34.0 setup run neither installs nor removes skills and leaves 0.35.0-owned skill directories untouched.
+- `amem migrate --sync-placement --dry-run --json`: a 0.34.0-era consumer that reads `writers.refusalCategory` finds it absent when no category is missing. Before, it named the changed root's category even then. Treat absence as no missing category; read `changedCategory` for the changed root. `missingCategories` and `differences` are unchanged.
+- Checkpoint preview: a refusal that 0.34.0 raised as an uncaught `ShardHistoryError` (`blob`) now returns the `--json` shape `{ok:false, refusal:{category:"shard history", cause, kind, limit, observed}, nextStep}` with exit 1. Human output names the cause; `bound` is a new cause, and `history` a new checkpoint cause class.
+- metrics.jsonl: 0.34.0 readers ignore the new `mcp-phase` kind. A 0.34.0 writer still trims at 64 KiB and keeps 200 rows of each kind (including `mcp-phase`) until upgraded. A 0.34.0 `readCaptureDrops` reads only its 64 KiB tail, so it may count fewer hook rows from a file a 0.35.0 writer has grown to 128 KiB.
+- Refusal and diagnostic wording (#566, #572): text only. Causes, categories, commands, flags and confirmation flows are unchanged.
+- Unchanged: curated and capture logs, entry ids and hashing, the index version, the schema strings, the sealed placement plan format, transport rows and `formats.json` floors. No floor is raised. The library host API (`HOST_API_VERSION` 1) is unchanged.
+
 ## 0.34.0
 
 ### Fixed
