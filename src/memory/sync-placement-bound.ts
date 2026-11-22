@@ -18,7 +18,7 @@ const phases: Record<PlacementSyncBoundPhase, string> = { "source-capture": "sou
 export function placementSyncBoundMessage(bound: PlacementSyncBound): string {
   // #288 step 3: a full live window is relieved by a person-reviewed checkpoint; records stay a reported bound.
   const remedy = bound.kind === "journal-objects"
-    ? "The active epoch journal cannot hold this publication; have the person preview a checkpoint with amem migrate --sync-placement --checkpoint --writer-root <install root> (repeat for every install), then confirm it and rerun amem sync."
+    ? "The active epoch journal cannot hold this publication; preview a checkpoint with amem migrate --sync-placement --checkpoint --writer-root <install root> (repeat for every install), then confirm it after the exact command is approved and rerun amem sync."
     : bound.kind === "journal-records"
       ? "The active epoch journal cannot hold this publication; retain the inputs and report this bound."
       : "Retain the inputs and report this bound; no row was omitted to fit.";

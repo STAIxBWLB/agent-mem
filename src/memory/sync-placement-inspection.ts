@@ -92,8 +92,8 @@ function callbacks(input: SyncPlacementInspectionOptions): SyncPlacementInspecti
 }
 function inactive(store: MemoryStore): Extract<SyncPlacementInspection, { complete: false }> {
   const steps: string[] = [];
-  if (!store.profile.sharded) steps.push("Have the person run amem migrate --shards --dry-run, review the plan, then amem migrate --shards --apply.");
-  if (!store.profile.foreignPruneFormat) steps.push("Have the person run amem migrate --public-prune-view --dry-run, review the plan, then amem migrate --public-prune-view --apply.");
+  if (!store.profile.sharded) steps.push("Run amem migrate --shards --dry-run, review the plan, then run amem migrate --shards --apply after the exact command is approved.");
+  if (!store.profile.foreignPruneFormat) steps.push("Run amem migrate --public-prune-view --dry-run, review the plan, then run amem migrate --public-prune-view --apply after the exact command is approved.");
   steps.push("Complete separately person-authorized placement activation with compatible exact writer pins; this stage provides no placement activation command or marker writer.");
   return { complete: false, reason: "placement-not-active", nextStep: "Placement is not active. " + steps.join(" ") };
 }

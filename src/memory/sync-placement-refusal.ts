@@ -14,7 +14,7 @@ const NEXT: Record<PlacementRefusalCategory, string> = {
   "source-selection": "Another writer changed the selected sources during the run; close other memory writers, then rerun amem sync.",
   policy: "The memory policy changed or is not attested; reload the host so it passes the current policy, then rerun amem sync.",
   remote: "Check the private sync remote (amem sync --remote <url> once, and that the repository is private and reachable), then rerun amem sync.",
-  "writer-pin": "A writer sharing this home no longer matches its recorded install; upgrade it to the pinned version, or have the person review amem migrate --sync-placement --dry-run --writer-root <install root> to re-pin it, then rerun amem sync.",
+  "writer-pin": "A writer sharing this home no longer matches its recorded install; upgrade it to the pinned version, or review amem migrate --sync-placement --dry-run --writer-root <install root>, then apply the re-pin after the exact command is approved and rerun amem sync.",
   "size-bound": "Retain the inputs and report this bound; no row was omitted to fit.",
   lock: "Another sync or memory writer holds this home; wait for it to finish (amem sync --status), then rerun amem sync.",
   other: "Rerun amem sync; if it refuses again, report the category and phase shown here.",

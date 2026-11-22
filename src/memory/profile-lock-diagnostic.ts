@@ -4,11 +4,11 @@ import { join } from "node:path";
 import { realPath } from "./platform.ts";
 
 const messages={
-  shards:"An interrupted or still-running person shard migration retains profile.lock; have the person finish it or run amem migrate --shards --resume.",
-  prune:"An interrupted or still-running person public-prune view migration retains profile.lock; have the person finish it or run amem migrate --public-prune-view --resume.",
-  activation:"An interrupted or still-running person sync-placement activation retains profile.lock; have the person run amem migrate --sync-placement --resume, or amem migrate --sync-placement --abandon only while both markers retain their original v2 bytes.",
-  renewal:"An interrupted or still-running person writer-inventory renewal retains profile.lock; have the person run amem migrate --sync-placement --resume, or amem migrate --sync-placement --abandon only before the first commit-log byte.",
-  staging:"An interrupted or still-running person writer-inventory renewal retains profile.lock and unpublished intent staging; have the person run amem migrate --sync-placement --abandon, then amem migrate --sync-placement --dry-run before another apply.",
+  shards:"An interrupted or still-running shard migration retains profile.lock; wait for it to finish or run amem migrate --shards --resume.",
+  prune:"An interrupted or still-running public-prune view migration retains profile.lock; wait for it to finish or run amem migrate --public-prune-view --resume.",
+  activation:"An interrupted or still-running sync-placement activation retains profile.lock; run amem migrate --sync-placement --resume, or amem migrate --sync-placement --abandon only while both markers retain their original v2 bytes.",
+  renewal:"An interrupted or still-running writer-inventory renewal retains profile.lock; run amem migrate --sync-placement --resume, or amem migrate --sync-placement --abandon only before the first commit-log byte.",
+  staging:"An interrupted or still-running writer-inventory renewal retains profile.lock and unpublished intent staging; run amem migrate --sync-placement --abandon, then amem migrate --sync-placement --dry-run before another apply.",
 } as const;
 type Family=keyof typeof messages;
 const recognised=new WeakMap<object,string>();

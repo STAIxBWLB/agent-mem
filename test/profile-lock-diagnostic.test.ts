@@ -19,7 +19,7 @@ function v3(f:ReturnType<typeof fixture>){f.write("profile.json",{schema:"agent-
 
 test("a captured shard marker names resume without reclaiming its retained lock",()=>{
   const f=fixture();f.lock();f.write("shards.json",pending);const before=readFileSync(join(f.home,"profile.lock")),s=lstatSync(join(f.home,"profile.lock"));
-  expect(profileLockRefusal(f.home)).toContain("amem migrate --shards --resume");expect(profileLockRefusal(f.home)).toContain("person shard migration");
+  expect(profileLockRefusal(f.home)).toContain("amem migrate --shards --resume");expect(profileLockRefusal(f.home)).toContain("shard migration");
   expect(readFileSync(join(f.home,"profile.lock"))).toEqual(before);expect(lstatSync(join(f.home,"profile.lock")).ino).toBe(s.ino);
 });
 test("owned legacy selector markers may remain readable without being group- or world-writable",()=>{

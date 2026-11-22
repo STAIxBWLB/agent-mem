@@ -32,3 +32,10 @@ test("#426: foreign errors map by class and allowlisted code only, never by mess
   expect(classifyPlacementError(Object.assign(new Error("x"), { code: "EBUSY" }))).toBe("lock");
   expect(classifyPlacementError(new Error("remote epoch policy lock writer"))).toBeUndefined();
 });
+
+
+test("writer-pin remedy keeps the preview and exact-command approval without actor gating", () => {
+  const text = placementRefusalNextStep("writer-pin");
+  expect(text).toContain("amem migrate --sync-placement --dry-run --writer-root <install root>");
+  expect(text).toContain("exact command is approved"); expect(text).not.toMatch(/have the person/i);
+});

@@ -813,7 +813,7 @@ export class SetupWriterRootsError extends Error {
   constructor(readonly category: "unsafe" | "changed" | "bound" | "unsupported" | "pending" | "unavailable", readonly target?: SetupTarget) {
     super(target
       ? `Setup writer inventory: ${setupReceiptRemedy(target, true)}.`
-      : `Setup writer inventory ${category}; have the person inspect setup receipts and rerun setup before activation.`);
+      : `Setup writer inventory ${category}; inspect setup receipts and rerun setup before activation.`);
     this.name = "SetupWriterRootsError";
   }
 }
