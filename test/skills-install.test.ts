@@ -38,6 +38,7 @@ describe("skill installer", () => {
     rmSync(join(root, SKILL_NAMES[2], ".amem-skill.json"));
     const actions = installSkills(root, "undo").actions;
     expect(actions.slice(0, 3).map(a => a.change)).toEqual(["modified", "modified", "foreign"]);
+    expect(actions[1]?.reason).toContain("empty directory: empty");
     expect(readFileSync(join(root, SKILL_NAMES[0], "SKILL.md"), "utf8")).toBe("local");
   });
   test("recovers a verified interrupted backup and export rejects foreign entries", () => {
@@ -74,8 +75,29 @@ describe("skill installer", () => {
     symlinkSync(join(pkg, "skills", "_shared", "amem-adapter.md"), join(pkg, "skills", SKILL_NAMES[0], "SKILL.md"));
     writeFileSync(join(pkg, "skills", SKILL_NAMES[1], "SKILL.md"), Buffer.alloc(1024 * 1024 + 1));
     expect(spawnSync("mkfifo", [join(pkg, "skills", SKILL_NAMES[2], "pipe")]).status).toBe(0);
-    expect(installSkills(root, "preview", pkg, "1").actions.slice(0, 3).map(a => a.change)).toEqual(["refused", "refused", "refused"]);
+    const actions = installSkills(root, "preview", pkg, "1").actions;
+    expect(actions.slice(0, 3).map(a => a.change)).toEqual(["refused", "refused", "refused"]);
+    expect(actions[0]?.reason).toContain("symlink refused: SKILL.md");
+    expect(actions[1]?.reason).toContain("skill file size limit 1048576 bytes exceeded: SKILL.md");
+    expect(actions[2]?.reason).toContain("non-regular file refused: pipe");
 
+  });
+  test("tree errors identify nested paths, root and file count limits", () => {
+    const { pkg, root } = fixture(), first = join(pkg, "skills", SKILL_NAMES[0]), second = join(pkg, "skills", SKILL_NAMES[1]), third = join(pkg, "skills", SKILL_NAMES[2]);
+    mkdirSync(join(first, "nested", "empty"), { recursive: true });
+    rmSync(second, { recursive: true }); writeFileSync(second, "not a directory");
+    for (let i = 0; i < 256; i++) writeFileSync(join(third, `entry-${String(i).padStart(3, "0")}`), "x");
+    const actions = installSkills(root, "preview", pkg, "1").actions;
+    expect(actions[0]?.reason).toContain("empty directory: nested/empty");
+    expect(actions[1]?.reason).toContain("not a real directory: .");
+    expect(actions[2]?.reason).toContain("skill file count limit 256 exceeded: entry-255");
+  });
+  test("modified owned trees report the unsafe relative path and remain intact", () => {
+    const { pkg, root, base } = fixture(); installSkills(root, "apply", pkg, "1");
+    const path = join(root, SKILL_NAMES[0], "references", "extra-link"); symlinkSync(join(base, "missing"), path);
+    const action = installSkills(root, "undo").actions[0];
+    expect(action?.change).toBe("modified"); expect(action?.reason).toContain("symlink refused: references/extra-link");
+    expect(fs.lstatSync(path).isSymbolicLink()).toBe(true);
   });
   test("linked ancestors and roots work while linked skill targets are refused", () => {
     const { base, pkg, root } = fixture();
