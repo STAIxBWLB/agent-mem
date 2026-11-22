@@ -21,7 +21,7 @@ import { publicationFileNames } from "./sync-placement-publication-plan.ts";
 import { PLACEMENT_CHECKPOINT_COMMAND, PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending, resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { abandonPlacementCheckpoint, applyPlacementCheckpoint, planPlacementCheckpoint, resumePlacementCheckpoint, type PlacementCheckpointInput, type PlacementCheckpointPhase } from "./sync-placement-checkpoint.ts";
 import { PLACEMENT_CHECKPOINT_MIN_READER, validateCheckpointIntent, type CheckpointIntent } from "./sync-placement-checkpoint-format.ts";
-import { withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
+import { withPlacementCheckpointFences } from "./sync-placement-activation-locks.ts";
 import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
 import { initialPlacementWriterContext } from "../sync-placement-writer-context.ts";
@@ -185,7 +185,7 @@ export async function confirmPlacementCheckpoint(homeInput: string, value: unkno
   checkFloor(home, undefined, minReader); checkFloor(home, measured(home, opts.writerRoots, opts.ownRoot), minReader);
   const prospective = await checkpointHeadroom(home, intent);
   if (canonicalJSON(reviewedHeadroom(value)) !== canonicalJSON(prospective.headroom)) throw new PlacementCheckpointError("changed");
-  return withPlacementActivationFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
+  return withPlacementCheckpointFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
     const now = active(home), roots = measured(home, opts.writerRoots, opts.ownRoot);
     if (canonicalJSON(now) !== canonicalJSON(a)) throw new PlacementCheckpointError("changed");
     prospective.assertCurrent();
@@ -205,7 +205,7 @@ export async function confirmPlacementCheckpoint(homeInput: string, value: unkno
 /** Resume completes only the frozen bytes of the recorded intent: metadata only, no fresh install, policy or source check. */
 export async function resumePlacementCheckpointPerson(homeInput: string): Promise<{ window: number; resumed: boolean; nextStep: string }> {
   const home = realPath(homeInput), a = active(home), epochHash = a.profile.placementHead;
-  return withPlacementActivationFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
+  return withPlacementCheckpointFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
     try {
       const done = resumePlacementCheckpoint(home, epochHash, { mutation, assertCurrent: () => assertPlacementActivationOwner(owner) });
       return done ? { window: done.window, resumed: true, nextStep: "amem sync" } : { window: resolvePlacementWindow(home, epochHash).window, resumed: false, nextStep: "amem sync" };
@@ -219,7 +219,7 @@ export async function resumePlacementCheckpointPerson(homeInput: string): Promis
 /** Abandon removes only intent-owned staging before the first commit byte; after it, refuses and names resume. */
 export async function abandonPlacementCheckpointPerson(homeInput: string): Promise<{ removed: number; abandoned: boolean; nextStep: string }> {
   const home = realPath(homeInput), a = active(home), epochHash = a.profile.placementHead;
-  return withPlacementActivationFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
+  return withPlacementCheckpointFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
     try {
       const pending = placementCheckpointPending(home, epochHash), done = abandonPlacementCheckpoint(home, epochHash, { mutation, assertCurrent: () => assertPlacementActivationOwner(owner) });
       return { removed: done.removed, abandoned: pending, nextStep: CHECKPOINT_PREVIEW };
