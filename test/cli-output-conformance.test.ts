@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { commandHelp } from "../src/commands-table.ts";
 import { statusText, type StatusView } from "../src/memory/status-text.ts";
-import { ROLE_SGR, SGR_RESET, style, wrapReport } from "../src/memory/style.ts";
+import { ROLE_SGR, SGR_RESET } from "@staix/cli-output";
+import { style, wrapReport } from "../src/memory/style.ts";
 
 const fixture: StatusView = { home: { path: "/fixture/memory", source: "fixture" },
   config: { machine: null, repo: null, denyPaths: 0, piiPatterns: 0 },

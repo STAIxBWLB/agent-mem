@@ -7,7 +7,7 @@
  * major instead. The registry is read with a cache-busting request, never `npm view`.
  *
  * Usage: bun scripts/previous-release.ts <dir>   (prints `version<TAB>root` and, under GitHub Actions, exports AMEM_PREV_ROOT)
- * Dev-only: the package keeps zero runtime dependencies; this script uses fetch, tar and node built-ins.
+ * Dev-only: this script uses fetch, tar and node built-ins.
  */
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";

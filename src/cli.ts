@@ -69,7 +69,8 @@ import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, typ
 import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
 import { statusText, type StatusView } from "./memory/status-text.ts";
-import { asciiMarkers, markerCell, paint, resolveColor, streamEnv, style, wrapReport, facts, label, PLAIN, type Style } from "./memory/style.ts";
+import { asciiMarkers, errorLine, EXIT, markerCell, paint, resolveColor, streamEnv } from "@staix/cli-output";
+import { style, wrapReport, facts, label, PLAIN, type Style } from "./memory/style.ts";
 import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -1536,7 +1537,7 @@ async function placementProgress(home: string, mode: string, context: CliContext
   return new SyncProgress({ sink: snapshot => { for (const index of live) try { parts[index]!(snapshot); } catch { live.delete(index); } } });
 }
 function outputStyle(context: CliContext, options: Record<string, string | boolean>): Style {
-  const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv((context.stdoutTTY ?? process.stdout.isTTY) === true, context.env ?? process.env));
+  const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv((context.stdoutTTY ?? process.stdout.isTTY) === true, context.env ?? process.env), "amem");
   if (color instanceof Error) throw color;
   return style(options["--json"] !== true && color, asciiMarkers(context.env ?? process.env, options["--ascii"] === true));
 }
@@ -1573,7 +1574,7 @@ export function ingestText(kind: IngestKind, result: IngestReceipt, s: Style = P
 
 export function formatCliError(error: unknown, usage = false): string {
   if (error instanceof DecayApplyError || error instanceof CliPartialApplyError) return error.render();
-  const message = `amem: ${(error as Error).message}`;
+  const message = errorLine("amem", String((error as Error).message), "", { tty: false })[0]!;
   return usage || (error as { exitCode?: number }).exitCode === 2 ? `${message}\nUsage: amem <command> [options]\nRun 'amem --help' for details.` : message;
 }
 
@@ -1589,11 +1590,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (process.stderr.isTTY) {
       let options: Record<string, string | boolean> = {};
       try { options = parseCommand(argv).options; } catch { /* Invalid options still report their usage error. */ }
-      const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv(true, process.env));
+      const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv(true, process.env), "amem");
       const ascii = asciiMarkers(process.env, options["--ascii"] === true);
-      prefix = `${paint("error", markerCell("fail", ascii), !argv.includes("--json") && color === true)} `;
+      // cli-output#6: errorLine has no role spans for the existing colored, two-cell TTY marker.
+      prefix = `${paint([{ role: "error", text: markerCell("fail", ascii) }], !argv.includes("--json") && color === true)} `;
     }
-    const code = (error as { exitCode?: number }).exitCode ?? ((error as Error).message.startsWith("usage:") ? 2 : 1);
+    const code = (error as { exitCode?: number }).exitCode ?? ((error as Error).message.startsWith("usage:") ? EXIT.usage : EXIT.fail);
     console.error(prefix + formatCliError(error, code === 2)); process.exitCode = code;
   }
   if (personStop !== undefined) endLikeSignal(personStop);   // after the report, with amem's own handlers already removed

@@ -15,7 +15,9 @@ import { memoryProjectKey } from "../src/memory/project.ts";
 import { doctorText, DOCTOR_SCHEMA, type DoctorReport } from "../src/memory/doctor.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { statusText, type StatusView } from "../src/memory/status-text.ts";
-import { colorEnabled, PLAIN, style } from "../src/memory/style.ts";
+import { resolveColor, streamEnv } from "@staix/cli-output";
+import { PLAIN, style } from "../src/memory/style.ts";
+const colorEnabled = (env: Readonly<Record<string, string | undefined>>, isTTY: boolean | undefined) => resolveColor("auto", streamEnv(isTTY === true, env), "amem") === true;
 import { setupConfirmationText, setupPlanText, type SetupPlan } from "../src/setup.ts";
 
 const ANSI = /\x1b\[/, COLOR = style(true), WIDTH = 160;

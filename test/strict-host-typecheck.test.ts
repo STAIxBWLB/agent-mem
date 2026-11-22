@@ -17,6 +17,7 @@ function compileHost(install:string){
     mkdirSync(join(project,"node_modules","@staix"),{recursive:true,mode:0o700});mkdirSync(home,{mode:0o700});mkdirSync(temp,{mode:0o700});
     const localModules=join(project,"node_modules"),localTypes=join(localModules,"@types");mkdirSync(localTypes,{mode:0o700});
     symlinkSync(install,join(project,"node_modules","@staix","agent-mem"),"dir");
+    if (existsSync(join(modules,"@staix","cli-output"))) symlinkSync(join(modules,"@staix","cli-output"),join(project,"node_modules","@staix","cli-output"),"dir");
     symlinkSync(join(modules,hostTypes),join(localModules,"bun-types"),"dir");
     symlinkSync(join(modules,hostWrapper),join(localTypes,"bun"),"dir");
     symlinkSync(join(modules,"@types","node"),join(localTypes,"node"),"dir");

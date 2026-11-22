@@ -1,4 +1,5 @@
-import { facts, label, markerCell, paint, section, PLAIN, type Style } from "./style.ts";
+import { markerCell, paint } from "@staix/cli-output";
+import { facts, label, section, PLAIN, type Style } from "./style.ts";
 
 /** The `amem status` object as the CLI builds it; `amem status --json` prints it unchanged. */
 export interface StatusView {
@@ -32,8 +33,8 @@ export function statusText(status: StatusView, s: Style = PLAIN): string {
   const { machine, repo, denyPaths, piiPatterns, ...limits } = status.config;
   const pendingCounts = facts(Object.fromEntries(Object.entries(status.pending).filter(([key]) => !key.endsWith("Ids"))));
   const lines = [
-    `${paint("header", " amem Status", s.color)}: ${overall === "ok" ? s.ok(overall) : overall === "attention" ? s.attention(overall) : s.error(overall)}`,
-    ...(warnings.length || actions.length ? ["", section(s, "Attention"), ...warnings.map(warning => `  ${s.attention(markerCell("warn", s.ascii))} ${warning}`), ...actions.map(action => `  ${paint("accent", markerCell("next", s.ascii), s.color)} ${action}`)] : []),
+    `${paint([{ role: "header", text: " amem Status" }], s.color)}: ${overall === "ok" ? s.ok(overall) : overall === "attention" ? s.attention(overall) : s.error(overall)}`,
+    ...(warnings.length || actions.length ? ["", section(s, "Attention"), ...warnings.map(warning => `  ${s.attention(markerCell("warn", s.ascii))} ${warning}`), ...actions.map(action => `  ${paint([{ role: "accent", text: markerCell("next", s.ascii) }], s.color)} ${action}`)] : []),
     "", section(s, "Memory"),
     `  home:  ${status.home.path} ${s.dim(`(${status.home.source})`)}`,
     `${label(s, "ok")} policy: machine ${machine ?? "none (defaults)"}, repo ${repo ?? "none"}; ${denyPaths} deny paths, ${piiPatterns} PII patterns${facts(limits) ? `; ${facts(limits)}` : ""}`,
