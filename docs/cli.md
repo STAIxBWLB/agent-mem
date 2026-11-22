@@ -259,4 +259,4 @@ General memory candidates are separate from curated evidence. `amem review accep
 
 ## Bundled skills
 
-`amem skills export <dir> [--json]` exports self-contained skills to a directory without foreign entries. Each skill includes the shared adapter and an ownership marker. The command preserves foreign or modified skills and reports each action; it exits 1 if an action is refused, foreign or modified and no skill was installed or replaced. Setup previews and installs skills for Claude, Codex, Kimi and Qwen; see [setup](setup.md).
+`amem skills export <dir> [--json]` exports self-contained skills to a directory without foreign entries. A symlinked destination directory is followed and the report identifies the link and resolved target; dangling links, non-directory targets, and links into the memory home or packaged skill source are refused. Each skill includes the shared adapter and an ownership marker. The command preserves foreign or modified skills and reports each action; it exits 1 if an action is refused, foreign or modified and no skill was installed or replaced. Setup previews and installs skills for Claude, Codex, Kimi and Qwen; see [setup](setup.md).

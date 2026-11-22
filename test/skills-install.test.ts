@@ -77,16 +77,52 @@ describe("skill installer", () => {
     expect(installSkills(root, "preview", pkg, "1").actions.slice(0, 3).map(a => a.change)).toEqual(["refused", "refused", "refused"]);
 
   });
-  test("linked ancestors work but linked roots and skill targets are refused", () => {
+  test("linked ancestors and roots work while linked skill targets are refused", () => {
     const { base, pkg, root } = fixture();
     const link = join(base, "link"); symlinkSync(base, link);
     expect(exportSkills(join(link, "output"), { packageRoot: join(link, "package"), packageVersion: "1" }).actions.every(a => a.change === "install")).toBe(true);
     const linkedRoot = join(base, "linked-root"); symlinkSync(join(base, "output"), linkedRoot);
-    const reason = exportSkills(linkedRoot, { packageRoot: pkg, packageVersion: "1" }).actions[0]?.reason;
-    expect(reason).toContain(linkedRoot); expect(reason).toContain("amem skills export <dir>");
+    const report = exportSkills(linkedRoot, { packageRoot: pkg, packageVersion: "1" });
+    expect(report.linkedFrom).toBe(linkedRoot); expect(report.root).toBe(join(base, "output"));
+    expect(report.actions.every(a => a.change === "unchanged")).toBe(true);
     mkdirSync(root, { recursive: true }); symlinkSync(join(base, "output", SKILL_NAMES[0]), join(root, SKILL_NAMES[0]));
     const foreign = installSkills(root, "apply", pkg, "1").actions[0];
     expect(foreign?.change).toBe("foreign"); expect(foreign?.reason).toContain("symlink"); expect(foreign?.reason).toContain("move it aside");
+  });
+  test("linked root installs, re-applies and undoes without touching the link or foreign skills", () => {
+    const { base, pkg } = fixture(), target = join(base, "shared"), link = join(base, "skills-link"), env = { AMEM_HOME: join(base, "memory") };
+    mkdirSync(target); mkdirSync(join(target, "other-tool")); symlinkSync(target, link);
+    const preview = installSkills(link, "preview", pkg, "1", undefined, env);
+    expect(preview.root).toBe(target); expect(preview.linkedFrom).toBe(link); expect(readdirSync(target)).toEqual(["other-tool"]);
+    expect(installSkills(link, "apply", pkg, "1", undefined, env).actions.every(a => a.change === "install")).toBe(true);
+    expect(installSkills(link, "apply", pkg, "1", undefined, env).actions.every(a => a.change === "unchanged")).toBe(true);
+    expect(installSkills(link, "undo", pkg, "1", undefined, env).actions.every(a => a.change === "remove")).toBe(true);
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true); expect(readdirSync(target)).toEqual(["other-tool"]);
+  });
+  test("retargeting during staging refuses before swap and never writes the new target", () => {
+    const { base, pkg } = fixture(), first = join(base, "first"), second = join(base, "second"), link = join(base, "link"), env = { AMEM_HOME: join(base, "memory") };
+    mkdirSync(first); mkdirSync(second); symlinkSync(first, link);
+    const original = fs.writeFileSync; let swapped = false;
+    const spy = spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
+      original(file, data, options);
+      if (!swapped && String(file).includes("-stage-") && String(file).endsWith(".amem-skill.json")) { swapped = true; rmSync(link); symlinkSync(second, link); }
+    }) as typeof fs.writeFileSync);
+    try {
+      const report = installSkills(link, "apply", pkg, "1", undefined, env);
+      expect(swapped).toBe(true); expect(report.actions.every(a => a.change === "refused")).toBe(true);
+      expect(readdirSync(second)).toEqual([]); expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    } finally { spy.mockRestore(); }
+  });
+  test("unsafe linked roots identify link, target and recovery", () => {
+    const { base, pkg } = fixture(), memory = join(base, "memory"), env = { AMEM_HOME: memory };
+    mkdirSync(memory); const file = join(base, "file"); writeFileSync(file, "x");
+    for (const [name, target] of [["missing", join(base, "missing")], ["file-link", file], ["memory-link", memory], ["source-link", join(pkg, "skills")]]) {
+      const link = join(base, name!); symlinkSync(target!, link);
+      const result = installSkills(link, "apply", pkg, "1", undefined, env);
+      expect(result.actions.every(a => a.change === "refused")).toBe(true);
+      expect(result.actions[0]?.reason).toContain(link); expect(result.actions[0]?.reason).toContain(target!); expect(result.actions[0]?.reason).toContain("retry");
+      expect(exportSkills(link, { packageRoot: pkg, packageVersion: "1", env }).actions[0]?.change).toBe("refused");
+    }
   });
   test("preview of installed skills is read-only", () => {
     const { pkg, root } = fixture(); installSkills(root, "apply", pkg, "1");

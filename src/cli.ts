@@ -498,10 +498,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (parsed.positionals.length !== 1) throw new Error("usage: amem skills export <dir> [--json]");
     const { exportSkills } = await import("./skills-install.ts");
     const destination = parsed.positionals[0]!;
-    const report = exportSkills(destination.trim() ? resolve(context.cwd ?? process.cwd(), destination) : destination);
+    const report = exportSkills(destination.trim() ? resolve(context.cwd ?? process.cwd(), destination) : destination, { env: context.env ?? process.env });
     if (report.actions.some(a => ["refused", "foreign", "modified"].includes(a.change)) && !report.actions.some(a => a.change === "install" || a.change === "replace")) context.onExitCode?.(1);
     if (options["--json"] === true) return JSON.stringify(report, null, 2);
-    return [`amem skills export: ${report.root}`, "NAME                 CHANGE     PATH / REASON", ...report.actions.map(a => `${a.name.padEnd(20)} ${a.change.padEnd(10)} ${a.path}${a.reason ? ` / ${a.reason}` : ""}`)].join("\n");
+    return [`amem skills export: ${report.root}${report.linkedFrom ? ` (linked from ${report.linkedFrom})` : ""}`, "NAME                 CHANGE     PATH / REASON", ...report.actions.map(a => `${a.name.padEnd(20)} ${a.change.padEnd(10)} ${a.path}${a.reason ? ` / ${a.reason}` : ""}`)].join("\n");
   }
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
