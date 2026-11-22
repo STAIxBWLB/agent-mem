@@ -20,10 +20,10 @@ import type { PlannedGitObject } from "./sync-placement-git.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, SyncPlacementFormatError } from "./sync-placement-format.ts";
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
-import { readPlacementJournal, readPlacementWriterJournalAnchors, placementWriterJournalToken, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, readPlacementWriterJournalAnchors, placementWriterJournalToken, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementDecisionOwners, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
 import { formatFloorAtLeast } from "./formats.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
-import { planPlacementPublication, planPlacementPublicationAsync, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
+import { planPlacementPublication, planPlacementPublicationAsync, planPlacementPublicationV2Async, placementDecisionReuseEnabled, PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationSource, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
 import { placementPublicationEventSteps } from "./sync-placement-publication-events.ts";
 import { ShardHistoryAuditor, type ShardHistory } from "./shard-sync-history.ts";
 import { ShardSyncApplications } from "./shard-sync-applications.ts";
@@ -470,7 +470,10 @@ class PlacementTransport {
       sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,policyHash:capture.context.policyHash,remoteHash:digest(this.url),
       journal:frozen?.root.journal??{sequence:frontier.sequence,headHash:frontier.headHash},createdUnixSeconds,policySnapshotUnixMs:frozen?.root.policySnapshotUnixMs??this.lastPolicyCheckUnixMs??Date.now(),targets,reservedRecords:0,reservedRecordBytes:[] as number[]};
     const planPause=cooperativeYield();
-    let bundle=await planPlacementPublicationAsync(body,{sources:capture.prefixes,decisions,objects},planPause);
+    const v2 = frozen ? frozen.root.schema === PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA : placementDecisionReuseEnabled(this.home);
+    const owners = v2 ? frozen ? frozen.root.chunks.filter(c => c.kind === "decisions" && c.ownerAttemptHash && typeof c.bucket === "string").map(c => ({ bucket: c.bucket!, hash: c.hash, count: c.count, bytes: c.bytes, ownerAttemptHash: c.ownerAttemptHash! })) : await placementDecisionOwners(this.home, this.epochHash, body.journal.sequence, body.targets.map(target => target.realm)) : [];
+    const items = {sources:capture.prefixes,decisions,objects};
+    let bundle=v2 ? await planPlacementPublicationV2Async(body,items,owners,planPause) : await planPlacementPublicationAsync(body,items,planPause);
     await yieldTurn(); // #462: planning is pure; each step gets its own turn
     let scheduled=await this.eventsAsync(bundle,projection,old,planPause);
     await yieldTurn();
@@ -480,7 +483,7 @@ class PlacementTransport {
     const lengths:number[]=[],pause=cooperativeYield();
     for(const [index,event]of scheduled.events.entries()){await pause();const record=createPlacementRecord(this.epochHash,body.journal.sequence+index+1,head,event);head=record.seal;lengths.push(publicationBytes(record).length);}
     await yieldTurn();
-    bundle=await planPlacementPublicationAsync({...body,reservedRecords:lengths.length,reservedRecordBytes:lengths},{sources:capture.prefixes,decisions,objects},planPause);
+    bundle=v2 ? await planPlacementPublicationV2Async({...body,reservedRecords:lengths.length,reservedRecordBytes:lengths},items,owners,planPause) : await planPlacementPublicationAsync({...body,reservedRecords:lengths.length,reservedRecordBytes:lengths},items,planPause);
     await yieldTurn();
     scheduled=await this.eventsAsync(bundle,projection,old,planPause);
     if(frozen&&canonicalJSON(bundle)!==canonicalJSON(frozen))refuse();
@@ -733,7 +736,17 @@ class PlacementTransport {
       const material=await this.materialize(retained?.bundle.root.createdUnixSeconds??Math.floor(Date.now()/1000),frontier,retained?.bundle);
       const changed=material.bundle.root.targets.some((target,index)=>target.publish&&target.commit!==(this.targets[index]!.remote??null));
       // Nothing durable exists for a fresh attempt yet: an epoch without room for this plan refuses here, typed.
-      await yieldTurn();if(!retained&&(material.events.length||changed))this.assertPlanCapacity(material.bundle);
+      await yieldTurn();if(!retained&&(material.events.length||changed)) {
+        try { this.assertPlanCapacity(material.bundle); }
+        catch (error) {
+          if (!(error instanceof PlacementSyncBoundError) || error.bound.kind !== "journal-objects" || material.bundle.root.schema !== PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA) throw error;
+          const {schema:_schema,chunks:_chunks,seal:_seal,...body} = material.bundle.root;
+          const byKind = (kind: "sources" | "decisions" | "objects") => material.bundle.chunks.filter(chunk => chunk.kind === kind).flatMap(chunk => chunk.items);
+          const fallback = planPlacementPublication(body, {sources:byKind("sources") as PlacementPublicationSource[], decisions:byKind("decisions") as PlacementPublicationDecision[], objects:byKind("objects") as PlacementPublicationObject[]});
+          this.assertPlanCapacity(fallback); material.bundle = fallback;
+          Object.assign(material, this.events(fallback, material.projection, material.old));
+        }
+      }
       this.current=material;this.attemptHash=material.bundle.root.seal;
       await yieldTurn();const applications=await this.applicationCoordinator();await applications.prepare();
       if(!retained&&!material.events.length&&!changed&&!this.importsNeeded()){this.attemptHash=undefined;return this.result(true,"not-needed");}

@@ -1,14 +1,17 @@
-import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
+import { appendFileSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { syncMemory } from "../src/memory/sync.ts";
+import { syncPlacementMemory } from "../src/memory/sync-placement-transport.ts";
 import { inspectSyncPlacement } from "../src/memory/sync-placement-inspection.ts";
 import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
-import { readPlacementJournal, readPlacementPublicationMetadata, releasePlacementStorageCaches } from "../src/memory/sync-placement-journal-storage.ts";
+import { readPlacementJournal, readPlacementPublicationMetadata, placementDecisionOwners, releasePlacementStorageCaches } from "../src/memory/sync-placement-journal-storage.ts";
 import { readPlacementProjection } from "../src/memory/sync-placement-journal.ts";
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
 import { readActivePlacementBinding } from "../src/memory/sync-placement-active.ts";
@@ -22,6 +25,8 @@ import { abandonPlacementCheckpoint, applyPlacementCheckpoint, planPlacementChec
 import { validateCheckpointIntent, checkpointWriterGenesis } from "../src/memory/sync-placement-checkpoint-format.ts";
 import { WRITER_COMMIT_LOG, createWriterCommit, createWriterRevision, validateWriterRevision, writerRevisionFile } from "../src/memory/sync-placement-writer-revision-format.ts";
 import { canonicalJSON } from "../src/memory/generation.ts";
+import type { PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
+import { formatVersionBelow } from "../src/memory/formats.ts";
 import { createInspectionRemote, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
 import { SyncPlacementJournalError } from "../src/memory/sync-placement-journal-format.ts";
 
@@ -234,3 +239,88 @@ test("#288: a committed window refuses a substituted, internally valid (W, 1) wr
   expect(code(() => readWriterHistory(f.base, f.binding))).toBe("invalid");
   expect(() => readEffectiveSyncPlacementWriters(f.base)).toThrow();
 }, 180_000);
+
+test("v2 decision references survive a checkpoint archive", async () => {
+  const manifest = JSON.parse(readFileSync(join(import.meta.dir, "../package.json"), "utf8")) as { version: string };
+  if (formatVersionBelow(manifest.version, "0.36.0")) {
+    const isolated = mkdtempSync(join(tmpdir(), "amem-v2-checkpoint-")); cleanup.push(() => rmSync(isolated, { recursive: true, force: true }));
+    cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
+    cpSync(join(import.meta.dir, "../bin"), join(isolated, "bin"), { recursive: true });
+    mkdirSync(join(isolated, "test/fakes"), { recursive: true }); mkdirSync(join(isolated, "home"));
+    for (const name of ["sync-placement-activation.ts", "sync-placement-inspection.ts", "hooks-fixture.ts"]) copyFileSync(join(import.meta.dir, "fakes", name), join(isolated, "test/fakes", name));
+    copyFileSync(import.meta.path, join(isolated, "test/checkpoint.test.ts"));
+    writeFileSync(join(isolated, "package.json"), JSON.stringify({ ...manifest, version: "0.36.0" }));
+    const child = Bun.spawnSync([process.execPath, "test", "--timeout", "180000", "test/checkpoint.test.ts", "--test-name-pattern", "v2 decision references survive"], { cwd: isolated, env: { ...process.env, HOME: join(isolated, "home"), AGENTHUB_HOME: join(isolated, "home/agenthub"), XDG_CONFIG_HOME: join(isolated, "home/config") }, stdout: "pipe", stderr: "pipe", timeout: 200000 });
+    expect(child.stderr.toString()).toContain("1 pass"); expect(child.exitCode).toBe(0); return;
+  }
+  const f = await fixture();
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "home", minReader: "0.36.0", since: "2026-11-22" }]) + "\n", { mode: 0o600 });
+  // This synthetic fixture tests unchanged decision reuse; avoid seeding a policy hold that changes after its first publication.
+  writeFileSync(join(f.base, "amem.config.json"), "{}\n", { mode: 0o600 });
+  for (let i = 0; i < 400; i++) f.note(`v2 stable decision fixture ${i}`);
+  await f.sync();
+  const first = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))));
+  expect(first.some(row => row.bundle.root.schema.endsWith("/v2"))).toBe(true);
+  expect(first.some(row => row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").length >= 2)).toBe(true);
+  f.checkpoint();
+  const journal = readPlacementJournal(f.base, f.epochHash), firstRoot = first.find(row => row.bundle.root.schema.endsWith("/v2"))!.bundle.root;
+  resolvePlacementWindow(f.base, f.epochHash); // Warm the existing archive verifier before counting candidate discovery reads.
+  let chunkReads = 0, rootReads = 0; const nativeOpen = fs.openSync;
+  const spy = spyOn(fs, "openSync").mockImplementation(((file: fs.PathLike, flags: fs.OpenMode, mode?: fs.Mode) => {
+    if (String(file).includes("-chunk-")) chunkReads++;
+    if (String(file).includes("-root.json")) rootReads++;
+    return nativeOpen(file, flags, mode);
+  }) as typeof fs.openSync);
+  try {
+    const owners = await placementDecisionOwners(f.base, f.epochHash, journal.sequence, firstRoot.targets.map(target => target.realm));
+    expect(owners.length).toBeGreaterThan(0); expect(rootReads).toBeGreaterThan(0); expect(chunkReads).toBe(0);
+  } finally { spy.mockRestore(); }
+  f.note("v2 post-checkpoint insertion");
+  const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true }); let interrupted = false;
+  try {
+    const result = await syncPlacementMemory(store, { remote: f.remote, visibility: async () => "private", placementAttestation: () => activePlacementWriterContext(f.base, activationOwnRoot).attest() }, at => {
+      if (at === "plan-fsynced") { interrupted = true; throw Error("v2 publication interrupted"); }
+    });
+    expect(interrupted).toBe(true); expect(result.ok).toBe(false);
+  } finally { store.close(); }
+  await f.sync();
+  const current = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))));
+  const rows = (publications: typeof first) => publications.flatMap(row => row.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]));
+  const priorRows = new Map(rows(first).map(row => [canonicalJSON(row.key), row])), nextRows = rows(current);
+  const fieldChanges = { added: 0, sourcePlacement: 0, eligible: 0, hold: 0, reason: 0, dependencies: 0 };
+  for (const row of nextRows) {
+    const prior = priorRows.get(canonicalJSON(row.key)); if (!prior) { fieldChanges.added++; continue; }
+    for (const field of ["sourcePlacement", "eligible", "hold", "reason", "dependencies"] as const) if (canonicalJSON(prior[field]) !== canonicalJSON(row[field])) fieldChanges[field]++;
+  }
+  expect(fieldChanges).toEqual({ added: 1, sourcePlacement: 0, eligible: 0, hold: 0, reason: 0, dependencies: 0 });
+  expect(current.some(row => row.bundle.root.chunks.some(chunk => chunk.ownerAttemptHash)), JSON.stringify({
+    first: first.map(row => ({ targets: row.bundle.root.targets.map(target => target.realm), sequence: row.bundle.root.journal.sequence, decisions: row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => [chunk.bucket, chunk.hash]) })),
+    current: current.map(row => ({ targets: row.bundle.root.targets.map(target => target.realm), sequence: row.bundle.root.journal.sequence, decisions: row.bundle.root.chunks.filter(chunk => chunk.kind === "decisions").map(chunk => [chunk.bucket, chunk.hash]) })), fieldChanges
+  })).toBe(true);
+  expect(() => f.checkpoint(phase => { if (phase === "staged-fsync") throw Error("v2 checkpoint staging interrupted"); })).toThrow();
+  expect(f.withMutation(opts => abandonPlacementCheckpoint(f.base, f.epochHash, opts)).removed).toBeGreaterThan(0);
+  expect(() => f.checkpoint(phase => { if (phase === "commit-started") throw Error("v2 checkpoint commit interrupted"); })).toThrow();
+  expect(f.withMutation(opts => resumePlacementCheckpoint(f.base, f.epochHash, opts))).toEqual({ window: 2 });
+  const archived = readPlacementPublicationMetadata(f.base, f.epochHash, io => io.archivedPublications().map(attempt => io.publication(attempt)));
+  expect(archived.some(row => row.bundle.root.chunks.some(chunk => chunk.ownerAttemptHash))).toBe(true);
+  expect((await f.inspect()).complete).toBe(true);
+  const reference = archived.flatMap(row => row.bundle.root.chunks).find(chunk => chunk.ownerAttemptHash)!;
+  const owner = resolvePlacementWindow(f.base, f.epochHash).catalog.get(reference.ownerAttemptHash!)!;
+  const receipt = owner.members.find(item => item.name.endsWith("-receipt.json"))!, receiptFile = join(owner.dir, receipt.name), savedReceipt = readFileSync(receiptFile);
+  writeFileSync(receiptFile, "corrupt\n", { mode: 0o600 }); releasePlacementStorageCaches();
+  expect(() => readPlacementPublicationMetadata(f.base, f.epochHash, io => io.archivedPublications())).toThrow();
+  writeFileSync(receiptFile, savedReceipt, { mode: 0o600 }); releasePlacementStorageCaches();
+  const member = owner.members.find(item => item.sha256 === reference.hash && item.name.includes("-chunk-"))!;
+  expect(member).toBeDefined(); writeFileSync(join(owner.dir, member.name), "corrupt\n", { mode: 0o600 });
+  releasePlacementStorageCaches();
+  expect(() => readPlacementPublicationMetadata(f.base, f.epochHash, io => io.archivedPublications())).toThrow();
+}, 240_000);
+
+test("a recorded policy hold changes the next decision without a checkpoint", async () => {
+  const f = await fixture(); await f.sync();
+  const read = () => readPlacementPublicationMetadata(f.base, f.epochHash, io => io.names().filter(name => /^publication-.*-root\.json$/.test(name)).map(name => io.publication(name.slice(12, 76))).sort((a, b) => a.bundle.root.journal.sequence - b.bundle.root.journal.sequence));
+  const before = read().at(-1)!, previous = before.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]).find(row => row.hold);
+  expect(previous).toBeDefined(); f.note("independent synthetic insertion"); await f.sync();
+  const after = read().at(-1)!, next = after.bundle.chunks.filter(chunk => chunk.kind === "decisions").flatMap(chunk => chunk.items as PlacementPublicationDecision[]).find(row => canonicalJSON(row.key) === canonicalJSON(previous!.key));
+  expect(next).toMatchObject({ hold: false, reason: "journal-hold" });
+}, 120_000);
