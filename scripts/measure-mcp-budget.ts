@@ -143,7 +143,7 @@ try {
           (args.since && Date.parse(row.at) < Date.parse(since))) throw new Error("search returned incorrect seeded evidence");
     }
   }
-  const timelineCases = [{ limit: 10 }, { limit: 10, since }, { limit: 3, id: curatedAnchor }, { limit: 3, id: captureAnchor }];
+  const timelineCases = [{ limit: 10, expand: true }, { limit: 10, since, expand: true }, { limit: 3, id: curatedAnchor, expand: true }, { limit: 3, id: captureAnchor, expand: true }];
   if (timelineCases.length !== TIMELINES) throw new Error("timeline case count mismatch");
   for (const args of timelineCases) {
     const result = await call("amem_timeline", args) as (Entry | Hit)[];
