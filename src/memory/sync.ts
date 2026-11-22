@@ -8,7 +8,7 @@ import { memoryGitArgv, memoryGitEnv, memoryGitSync, processLiveness, processSig
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 import { syncGenerationMemory } from "./generation-sync.ts";
-import { loadAmemConfig } from "./config.ts";
+import { checkpointOnBoundOptIn, loadAmemConfig } from "./config.ts";
 import { memoryHome } from "./home.ts";
 import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } from "./sync-screen.ts";
 import { shardSyncBinding } from "./sync-binding.ts";
@@ -299,7 +299,7 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
       open: realm => reuse(realm) ?? (() => { const fresh = openShardStore({ memoryDir: home, deferPromotions: true, ...(realm.scope === "user" ? { user: true } : { project: realm.key }) }); opened.add(fresh); return fresh; })(),
       close: item => { if (opened.delete(item)) item.close(); },
       publish: (primary, targets, options) => syncPlacementMemory(primary, options, undefined, undefined, undefined, targets),
-      ...(opts.placementCheckpoint === true && opts.placementAttestation && (await import("./config.ts")).checkpointOnBoundOptIn(home)
+      ...(opts.placementCheckpoint === true && opts.placementAttestation && checkpointOnBoundOptIn(home)
         ? { checkpointOnBound: async () => (await import("./sync-placement-checkpoint-person.ts")).checkpointOnBound(home, opts.placementAttestation!) } : {}),
     });
   }
