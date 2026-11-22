@@ -17,7 +17,7 @@ export const CONFIG_FILE = "amem.config.json";
 export const REPO_CONFIG_DIR = ".amem";
 export const REPO_CONFIG_FILE = "config";
 const MAX_CONFIG_BYTES = 64 * 1024;
-const MACHINE_KEYS = ["home", "denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "capture", "records", "privateRemotes", "review"] as const;
+const MACHINE_KEYS = ["home", "denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "capture", "records", "privateRemotes", "review", "syncPlacement"] as const;
 const REPO_KEYS = ["denyPaths", "piiPatterns", "briefBytes", "excerptBytes", "capturePaths", "records"] as const;
 
 export interface AmemConfig {
@@ -38,6 +38,8 @@ export interface AmemConfig {
   capture: { capMb?: number; retentionDays?: number };
   /** Exact non-GitHub remote URLs the person attests are private (#420). A statement, not a check. Machine file only. */
   privateRemotes?: string[];
+  /** #578 Q2 (owner choice c): opt-in for a sync-run placement checkpoint at the journal-objects bound. Machine file only; absent means off. */
+  syncPlacement?: { checkpointOnBound?: boolean };
 }
 export interface ConfigSource { machine: string | null; repo: string | null }
 export interface LoadedConfig { config: AmemConfig; source: ConfigSource }
@@ -112,6 +114,14 @@ function parseFile(raw: unknown, label: string, keys: readonly string[]): Partia
     if (capMb !== undefined) out.capture.capMb = capMb;
     if (retentionDays !== undefined) out.capture.retentionDays = retentionDays;
   }
+  if (body.syncPlacement !== undefined) {
+    const value = body.syncPlacement;
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).some(key => key !== "checkpointOnBound")
+      || ((value as Record<string, unknown>).checkpointOnBound !== undefined && typeof (value as Record<string, unknown>).checkpointOnBound !== "boolean"))
+      return fail(label, "syncPlacement takes only checkpointOnBound (a boolean)");
+    const on = (value as { checkpointOnBound?: boolean }).checkpointOnBound;
+    out.syncPlacement = on === undefined ? {} : { checkpointOnBound: on };
+  }
   if (body.review !== undefined) {
     if (!body.review || typeof body.review !== "object" || Array.isArray(body.review) || Object.keys(body.review).some(key => !["recheck_days", "unused_rendered", "unused_days"].includes(key))) return fail(label, "review takes only recheck_days, unused_rendered and unused_days");
     const rawReview = body.review as Record<string, unknown>;
@@ -177,6 +187,7 @@ export function loadAmemConfig(base: string, repoRoot?: string): LoadedConfig {
   if (machine?.review !== undefined) config.review = { ...machine.review };
   if (machine?.home !== undefined) config.home = machine.home;
   if (machine?.privateRemotes?.length) config.privateRemotes = machine.privateRemotes;
+  if (machine?.syncPlacement !== undefined) config.syncPlacement = { ...machine.syncPlacement };
   if (machine?.records !== undefined || repo?.records !== undefined) config.records = machine?.records !== false && repo?.records !== false;
   for (const key of ["briefBytes", "excerptBytes", "capturePaths"] as const) { const value = lower(machine?.[key], repo?.[key]); if (value !== undefined) config[key] = value; }
   return { config, source: { machine: machineRaw === undefined ? null : machinePath, repo: repoPath } };
@@ -198,4 +209,9 @@ export function configuredPolicyOptions(base: string, cwd?: string, options: Sta
 }
 export function configuredPolicy(base: string, cwd?: string, options: StandalonePolicyOptions = {}): StandalonePolicy {
   return createStandalonePolicy(configuredPolicyOptions(base, cwd, options));
+}
+
+/** #578 Q2: the home's opt-in for a sync-run placement checkpoint. The machine file only; a repository file cannot set it. */
+export function checkpointOnBoundOptIn(base: string): boolean {
+  return loadAmemConfig(base).config.syncPlacement?.checkpointOnBound === true;
 }

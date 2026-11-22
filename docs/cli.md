@@ -211,6 +211,8 @@ amem migrate --sync-placement --apply --writer-root <new root> --writer-root <ot
 amem setup <target> --apply
 ```
 
+After a writer root changes, an opted-in sync-run checkpoint (`amem migrate --sync-placement --checkpoint-on-bound on --confirm`, see [sync](sync.md)) refuses with `checkpoint-refused` until this renewal is applied, because it runs only with identical writer pins.
+
 `amem setup` previews that same order. When the root it would register is provably outside the active placement writer inventory it prints a WARNING naming `amem migrate --sync-placement --dry-run --writer-root <root>`, repeats the warning in the `--apply` receipt (`warnings`), writes no inventory entry, renews nothing and never refuses on this alone; the `<root>` it prints is shell-quoted, so a root with a space, a quote or a shell metacharacter can be pasted as one argument. An inventory it cannot read, or a home whose placement markers it cannot read or parse, is reported as unverified rather than as a root the inventory does not hold or as a home that never activated placement sync. Only a home proven not to be a placement home stays silent.
 
 V1 split-home sync durably holds verified foreign-generation prunes with a "held, not applied" warning. The opt-in v2 path below applies eligible complete same-realm public prunes across generations after durable proof and root-map commitment. Unsupported historical lineage and multi-realm translations remain held; targets can remain visible and agent-mem#15 AC4 stays open (see [the sync contract](contracts.md#per-shard-private-sync-15-t3)).

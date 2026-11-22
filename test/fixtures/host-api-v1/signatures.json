@@ -2236,7 +2236,7 @@
     "SyncFailureCause": {
       "calls": [],
       "constructors": [],
-      "type": "\"unavailable\" | \"bound\" | \"checkpoint-pending\" | \"remote\" | \"unknown-outcome\" | \"refusal\" | \"writer-renewal\" | \"stopped\""
+      "type": "\"unavailable\" | \"bound\" | \"checkpoint-pending\" | \"remote\" | \"unknown-outcome\" | \"refusal\" | \"writer-renewal\" | \"stopped\" | \"checkpoint-refused\""
     },
     "SyncOptions": {
       "calls": [],
@@ -2246,6 +2246,11 @@
           "calls": [],
           "constructors": [],
           "type": "(() => { writers: readonly SyncPlacementWriterAttestation[]; legacySyncQuiesced: true; }) | undefined"
+        },
+        "placementCheckpoint": {
+          "calls": [],
+          "constructors": [],
+          "type": "boolean | undefined"
         },
         "policyVersion": {
           "calls": [],
@@ -2284,6 +2289,11 @@
       "calls": [],
       "constructors": [],
       "members": {
+        "checkpoint": {
+          "calls": [],
+          "constructors": [],
+          "type": "{ window: number; objectsBefore: number; objectsAfter: number; } | undefined"
+        },
         "entries": {
           "calls": [],
           "constructors": [],
@@ -2297,7 +2307,7 @@
         "failure": {
           "calls": [],
           "constructors": [],
-          "type": "{ cause: \"unavailable\" | \"bound\" | \"checkpoint-pending\" | \"remote\" | \"unknown-outcome\" | \"refusal\" | \"writer-renewal\" | \"stopped\"; category?: \"remote\" | \"epoch\" | \"source-selection\" | \"policy\" | \"writer-pin\" | \"size-bound\" | \"lock\" | \"other\" | undefined; } | undefined"
+          "type": "{ cause: \"unavailable\" | \"bound\" | \"checkpoint-pending\" | \"remote\" | \"unknown-outcome\" | \"refusal\" | \"writer-renewal\" | \"stopped\" | \"checkpoint-refused\"; category?: \"remote\" | \"epoch\" | \"source-selection\" | \"policy\" | \"writer-pin\" | \"size-bound\" | \"lock\" | \"other\" | undefined; } | undefined"
         },
         "ok": {
           "calls": [],
@@ -9546,6 +9556,11 @@
             "constructors": [],
             "type": "(() => { writers: readonly SyncPlacementWriterAttestation[]; legacySyncQuiesced: true; }) | undefined"
           },
+          "placementCheckpoint": {
+            "calls": [],
+            "constructors": [],
+            "type": "boolean | undefined"
+          },
           "policyVersion": {
             "calls": [],
             "constructors": [],
@@ -9583,6 +9598,11 @@
         "calls": [],
         "constructors": [],
         "members": {
+          "checkpoint": {
+            "calls": [],
+            "constructors": [],
+            "type": "{ window: number; objectsBefore: number; objectsAfter: number; } | undefined"
+          },
           "entries": {
             "calls": [],
             "constructors": [],
@@ -9596,7 +9616,7 @@
           "failure": {
             "calls": [],
             "constructors": [],
-            "type": "{ cause: \"unavailable\" | \"bound\" | \"checkpoint-pending\" | \"remote\" | \"unknown-outcome\" | \"refusal\" | \"writer-renewal\" | \"stopped\"; category?: \"remote\" | \"epoch\" | \"source-selection\" | \"policy\" | \"writer-pin\" | \"size-bound\" | \"lock\" | \"other\" | undefined; } | undefined"
+            "type": "{ cause: \"unavailable\" | \"bound\" | \"checkpoint-pending\" | \"remote\" | \"unknown-outcome\" | \"refusal\" | \"writer-renewal\" | \"stopped\" | \"checkpoint-refused\"; category?: \"remote\" | \"epoch\" | \"source-selection\" | \"policy\" | \"writer-pin\" | \"size-bound\" | \"lock\" | \"other\" | undefined; } | undefined"
           },
           "ok": {
             "calls": [],

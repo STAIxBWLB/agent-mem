@@ -8,7 +8,7 @@ import { memoryGitArgv, memoryGitEnv, memoryGitSync, processLiveness, processSig
 import { acquireMutation } from "./mutation.ts";
 import type { MemoryStore } from "./store.ts";
 import { syncGenerationMemory } from "./generation-sync.ts";
-import { loadAmemConfig } from "./config.ts";
+import { checkpointOnBoundOptIn, loadAmemConfig } from "./config.ts";
 import { memoryHome } from "./home.ts";
 import { outboundScreen, screenOutboundRows, screenOwnSegment, type RowScreen } from "./sync-screen.ts";
 import { shardSyncBinding } from "./sync-binding.ts";
@@ -28,7 +28,7 @@ export type Visibility = "public" | "private" | "unknown";
  * parsing `error` text. `bound` carries its numbers in `placementPublication.bound`; `refusal` carries its fixed
  * category; `unavailable` is any other refusal before an attempt (activation, inventory or I/O).
  */
-export const SYNC_FAILURE_CAUSES = ["bound", "refusal", "unknown-outcome", "writer-renewal", "remote", "stopped", "unavailable", "checkpoint-pending"] as const;
+export const SYNC_FAILURE_CAUSES = ["bound", "refusal", "unknown-outcome", "writer-renewal", "remote", "stopped", "unavailable", "checkpoint-pending", "checkpoint-refused"] as const;
 export type SyncFailureCause = typeof SYNC_FAILURE_CAUSES[number];
 export interface SyncResult { ok: boolean; pushed: boolean; entries: number; warning?: string; error?: string;
   /** #462: set on every failed placement sync; absent on success and on the legacy transports. */
@@ -43,6 +43,8 @@ export interface SyncResult { ok: boolean; pushed: boolean; entries: number; war
     journalObjects?: PlacementJournalObjectComposition;
     /** #426: the fixed category and phase of a refusal before any publication attempt; no path, row or secret. */
     refusal?: { category: PlacementRefusalCategory; phase: SyncProgressPhase } };
+  /** #578 Q2: set only when this call ran a sync-run placement checkpoint at the journal-objects bound; numbers only. */
+  checkpoint?: { window: number; objectsBefore: number; objectsAfter: number };
   pruneApplication?: {transport:"durable"|"unconfirmed";proofComplete:number;projectionActive:number|null;nativeApplied:number|null;held:number;phase:"preflight"|"prepared"|"active"|"complete"};
 }
 
@@ -257,6 +259,12 @@ export interface SyncOptions {
   policyVersion?: () => string;
   /** A stopping hub aborts: the running git step is killed and the sync ends without touching the store. */
   signal?: AbortSignal;
+  /**
+   * #578 Q2: this caller may run a placement checkpoint when the next publication refuses the journal-objects bound.
+   * Effective only with the home's `syncPlacement.checkpointOnBound` opt-in and a `placementAttestation` port. The CLI
+   * `amem sync` (including `--if-due`) and a library host may set it; hooks, `amem mcp` and capture never do.
+   */
+  placementCheckpoint?: boolean;
 }
 
 export { shardSyncBinding, shardSyncSourceBinding } from "./sync-binding.ts";
@@ -291,6 +299,8 @@ export async function syncMemory(store: MemoryStore, opts: SyncOptions = {}): Pr
       open: realm => reuse(realm) ?? (() => { const fresh = openShardStore({ memoryDir: home, deferPromotions: true, ...(realm.scope === "user" ? { user: true } : { project: realm.key }) }); opened.add(fresh); return fresh; })(),
       close: item => { if (opened.delete(item)) item.close(); },
       publish: (primary, targets, options) => syncPlacementMemory(primary, options, undefined, undefined, undefined, targets),
+      ...(opts.placementCheckpoint === true && opts.placementAttestation && checkpointOnBoundOptIn(home)
+        ? { checkpointOnBound: async () => (await import("./sync-placement-checkpoint-person.ts")).checkpointOnBound(home, opts.placementAttestation!) } : {}),
     });
   }
   if (opts.signal?.aborted) return { ok: false, pushed: false, entries: 0, error: "stopped" };

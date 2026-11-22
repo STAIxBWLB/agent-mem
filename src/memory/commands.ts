@@ -231,12 +231,14 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         const placement = r.placementPublication, placementText = placement ? `; placement ${placement.outcome}, ${placement.exported} exported, ${placement.withheld} withheld this attempt` : "";
         // #450: one line per activated realm (`user` or a key hash; never a project name).
         const realmLines = r.placementRealms?.length ? `\n${r.placementRealms.map(item => `realm ${item.realm === "user" ? "user" : item.realm.slice(0, 16)}: ${item.outcome}${item.publication ? ` (publication ${item.publication})` : ""}`).join("\n")}` : "";
-        if (!r.ok) fail(`${names.memory} sync: ${r.error}${realmLines}`);
+        // #578 Q2: one counts-only line when this sync ran a placement checkpoint.
+        const checkpointLine = r.checkpoint ? `\nplacement checkpoint: window ${r.checkpoint.window}, objects ${r.checkpoint.objectsBefore} -> ${r.checkpoint.objectsAfter}` : "";
+        if (!r.ok) fail(`${names.memory} sync: ${r.error}${checkpointLine}${realmLines}`);
         if (r.pruneApplication) {
           const a = r.pruneApplication;
           return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries transported; ${a.proofComplete} prune proofs complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native prunes applied, ${a.held} held${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${realmLines}`;
         }
-        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${realmLines}`;
+        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${checkpointLine}${realmLines}`;
       }
       case "dedupe": {
         const apply = rest.includes("--apply");
