@@ -55,16 +55,16 @@ for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID"
   const f = fixture(), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(join(f.home, ".claude.json"), original); const before = snapshot(f.root);
   for (const value of ["", "fixture"]) {
     const context = { ...f.context, env: { ...f.env, [marker]: value } };
-    expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toEqual({ applied: ["claude"], unchanged: [] });
-    expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], context))).toEqual({ restored: ["claude"] });
+    expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toMatchObject({ applied: ["claude"], unchanged: [] });
+    expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], context))).toMatchObject({ restored: ["claude"] });
   }
   expect(f.calls()).toHaveLength(2); expect(f.calls().every(call => call.argv[0] === "claude")).toBe(true);
-  expect(snapshot(f.root).filter(row => !["home/memory", "home/memory/setup", "native-calls"].includes(row.file))).toEqual(before);
+  expect(snapshot(f.root).filter(row => !["home/memory", "home/memory/setup", "native-calls", "home/.claude/skills"].includes(row.file))).toEqual(before);
 });
 test("setup apply and undo flags need no stdin TTY or confirmation callback", async () => {
   const f = fixture(), config = join(f.home, ".claude.json"), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(config, original);
-  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], f.context))).toEqual({ applied: ["claude"], unchanged: [] });
-  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], f.context))).toEqual({ restored: ["claude"] });
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], f.context))).toMatchObject({ applied: ["claude"], unchanged: [] });
+  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], f.context))).toMatchObject({ restored: ["claude"] });
   expect(f.calls()).toHaveLength(1); expect(readFileSync(config, "utf8")).toBe(original);
 });
 test("setup CLI refuses invalid targets, unknown flags and conflicting modes before effects", async () => {
@@ -78,20 +78,20 @@ test("setup CLI apply and undo flags do not invoke the legacy confirmation callb
   const f = fixture(), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(join(f.home, ".claude.json"), original); let confirmations = 0;
   for (const [flag, mode] of [["--apply", "apply"], ["--undo", "undo"]] as const) {
     const output = await runCli(["setup", "claude", flag, "--json"], { ...f.context, setupConfirm: async () => { confirmations++; throw Error("legacy confirmation callback must not run"); } });
-    expect(JSON.parse(output)).toEqual(mode === "apply" ? { applied: ["claude"], unchanged: [] } : { restored: ["claude"] });
+    expect(JSON.parse(output)).toMatchObject(mode === "apply" ? { applied: ["claude"], unchanged: [] } : { restored: ["claude"] });
   }
   expect(confirmations).toBe(0); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, ".claude.json"), "utf8")).toBe(original);
 });
 test("explicit CLI apply uses only fake native registration in staging and undo restores the original", async () => {
   const f = fixture(), config = join(f.home, ".claude.json"), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(config, original, 0o640);
   const rules = f.rules.map(file => readFileSync(file)), context = f.context;
-  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toEqual({ applied: ["claude"], unchanged: [] });
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toMatchObject({ applied: ["claude"], unchanged: [] });
   const calls = f.calls(); expect(calls).toHaveLength(1); expect(calls[0]?.argv.slice(0, 8)).toEqual(["claude", "mcp", "add", "--scope", "user", "--transport", "stdio", "amem"]); expect(calls[0]?.home).not.toBe(f.home); expect(calls[0]?.cwd).toBe(calls[0]?.home); expect(existsSync(calls[0]!.home)).toBe(false);
   const document = JSON.parse(readFileSync(config, "utf8")); expect(document.mcpServers.other).toEqual({ command: "keep" });
   expect(document.mcpServers.amem).toEqual({ command: Bun.which("bun", { PATH: f.env.PATH }), args: ["--smol", fileURLToPath(new URL("../bin/amem.js", import.meta.url)), "mcp"] });
   const receipt = readFileSync(join(f.home, "memory", "setup", "claude.json"));
-  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toEqual({ applied: [], unchanged: ["claude"] }); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, "memory", "setup", "claude.json"))).toEqual(receipt);
-  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], context))).toEqual({ restored: ["claude"] }); expect(readFileSync(config, "utf8")).toBe(original); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(existsSync(join(f.home, ".claude", "settings.json"))).toBe(false); expect(f.rules.map(file => readFileSync(file))).toEqual(rules); expect(f.calls()).toHaveLength(1);
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--json"], context))).toMatchObject({ applied: [], unchanged: ["claude"] }); expect(f.calls()).toHaveLength(1); expect(readFileSync(join(f.home, "memory", "setup", "claude.json"))).toEqual(receipt);
+  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], context))).toMatchObject({ restored: ["claude"] }); expect(readFileSync(config, "utf8")).toBe(original); expect(lstatSync(config).mode & 0o777).toBe(0o640); expect(existsSync(join(f.home, ".claude", "settings.json"))).toBe(false); expect(f.rules.map(file => readFileSync(file))).toEqual(rules); expect(f.calls()).toHaveLength(1);
 });
 
 test("a native CLI without MCP administration is refused before free-form prompt execution", async () => {
@@ -178,7 +178,7 @@ if(argv[2]==='remove')delete document.mcpServers.amem;
 else{const marker=argv.indexOf('--');document.mcpServers.amem=target==='qwen'?{command:argv[marker-1],args:argv.slice(marker+1)}:{command:argv[marker+1],args:argv.slice(marker+2)};}
 mkdirSync(dirname(file),{recursive:true});writeFileSync(file,JSON.stringify(document,null,2)+'\\n');`);
   put(join(f.root, "bin", target), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fake)} ${quote(target)} "$@"\n`, 0o700);
-  expect(JSON.parse(await runCli(["setup", target, "--apply", "--json"], f.context))).toEqual({ applied: [target], unchanged: [] });
+  expect(JSON.parse(await runCli(["setup", target, "--apply", "--json"], f.context))).toMatchObject({ applied: [target], unchanged: [] });
   expect(f.calls()).toHaveLength(1);
   const config = target === "claude" ? join(f.home, ".claude.json") : target === "pi" ? join(f.env.PI_CODING_AGENT_DIR!, "mcp.json") : join(f.home, ".qwen", "settings.json");
   const receipt = join(f.home, "memory", "setup", `${target}.json`), receiptBytes = readFileSync(receipt), calls = f.calls().length;
@@ -250,10 +250,10 @@ test("a stale receipt names its cause, and --adopt-current (only with --apply) k
   await expect(runCli(["setup", "claude", "--apply"], f.context)).rejects.toThrow("setup receipt is stale");
   for (const argv of [["setup", "claude", "--adopt-current"], ["setup", "claude", "--undo", "--adopt-current"], ["setup", "console", "--apply", "--adopt-current"]]) await expect(runCli(argv, f.context)).rejects.toThrow("usage: amem setup");
   expect(snapshot(f.root)).toEqual(before); expect(f.calls()).toHaveLength(calls);
-  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--adopt-current", "--json"], f.context))).toEqual({ applied: ["claude"], unchanged: [] });
+  expect(JSON.parse(await runCli(["setup", "claude", "--apply", "--adopt-current", "--json"], f.context))).toMatchObject({ applied: ["claude"], unchanged: [] });
   const aside = readdirSync(dirname(receiptFile)).filter(name => name.startsWith("claude.json.stale-"));
   expect(aside).toHaveLength(1); expect(readFileSync(join(dirname(receiptFile), aside[0]!))).toEqual(receipt);
   for (const file of files) { const value = readFileSync(file, "utf8"); expect(value).toContain(entry); expect(value).not.toContain(other); }
-  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], f.context))).toEqual({ restored: ["claude"] });
+  expect(JSON.parse(await runCli(["setup", "claude", "--undo", "--json"], f.context))).toMatchObject({ restored: ["claude"] });
   for (const file of files) { const value = readFileSync(file, "utf8"); expect(value).toContain(other); expect(value).not.toContain(entry); }
 });

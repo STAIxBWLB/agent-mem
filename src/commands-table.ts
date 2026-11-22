@@ -29,6 +29,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   setup: { description: "Preview reversible MCP setup and supported capture hooks for native coding CLIs, or the acon console plugin manifest (console); apply and undo use explicit flags", options: { ...json, "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
     "--root": { description: "Register this absolute install root (such as <install>/releases/<version>/, resolved to its real path) instead of the running one", value: "path" },
     "--adopt-current": flag("With --apply: keep a stale setup receipt aside (its entries were replaced at another install root) and adopt the current wiring, which --undo restores") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy", "all", "console"] }] },
+  skills: { description: "Export packaged skills to a directory", commands: { export: { description: "Export self-contained skills", options: json, args: [{ name: "dir", path: true }], mutates: true } } },
   mcp: { description: "Run the project-bound MCP stdio server for this session" },
   manifest: { description: "Describe this install: package name, version, MCP server and tools (read-only ones marked), commands", options: json },
   hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },

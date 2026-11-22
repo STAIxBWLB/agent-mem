@@ -1,7 +1,8 @@
 import { isBuiltin } from "node:module";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, lstatSync } from "node:fs";
 import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
+import { SKILL_NAMES } from "../src/skills-install.ts";
 import { realPath } from "../src/memory/platform.ts";
 
 const root = realPath(resolve(import.meta.dir, "../src"));
@@ -49,6 +50,28 @@ function walk(dir: string): void {
   }
 }
 walk(root);
+const skillsRoot = resolve(root, "../skills");
+function skillWalk(dir: string): void {
+  try {
+    const stat = lstatSync(dir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) { failures.push(`${dir}: skill directory must be real`); return; }
+    for (const entry of readdirSync(dir)) {
+      const file = resolve(dir, entry), st = lstatSync(file);
+      if (st.isSymbolicLink()) failures.push(`${file}: skill symlink is forbidden`);
+      else if (st.isDirectory()) skillWalk(file);
+      else if (!st.isFile()) failures.push(`${file}: skill file must be regular`);
+    }
+  } catch { failures.push(`${dir}: skill directory unavailable`); }
+}
+skillWalk(skillsRoot);
+for (const name of ["_shared/amem-adapter.md", ...SKILL_NAMES.map(name => `${name}/SKILL.md`)]) {
+  try { const st = lstatSync(resolve(skillsRoot, name)); if (!st.isFile() || st.isSymbolicLink()) throw Error(); }
+  catch { failures.push(`${name}: required skill file missing or unsafe`); }
+}
+for (const name of SKILL_NAMES) {
+  try { lstatSync(resolve(skillsRoot, name, "references/amem-adapter.md")); failures.push(`${name}: injected adapter must not be in source`); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") failures.push(`${name}: cannot inspect injected adapter`); }
+}
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;

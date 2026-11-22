@@ -188,7 +188,10 @@ test("ordinary Claude/Codex setup plans and file bytes match the pre-redirect go
     const r = rig("/fixture/stable-runtime/bin/bun");
     if (custom) r.env[target === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"] = join(r.home, "custom config");
     const plan = planSetup(target, "preview", r.options), normalized = JSON.parse(r.normalize(JSON.stringify(plan)));
-    expect({ plan: normalized, text: r.normalize(setupPlanText(plan)) }).toEqual(golden[`${target}-${custom ? "custom" : "default"}`].preview);
+    expect(plan.skills?.[0]?.report?.actions.every(a => a.change === "install")).toBe(true);
+    delete normalized.skills;
+    const oldText = setupPlanText(plan).split("\n").filter(line => !line.startsWith("  skill ")).join("\n");
+    expect({ plan: normalized, text: r.normalize(oldText) }).toEqual(golden[`${target}-${custom ? "custom" : "default"}`].preview);
     applySetup(plan, r.options);
     const files = plan.actions[0]!.files.map(file => ({ file: r.normalize(file), bytes: r.normalize(r.text(file)) }));
     expect(files).toEqual(golden[`${target}-${custom ? "custom" : "default"}`].appliedFiles);

@@ -1,3 +1,4 @@
+import { SKILL_NAMES } from "../src/skills-install.ts";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
@@ -253,6 +254,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const installedMetadata = object(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")));
     requireSmoke(installedMetadata.name === PACKAGE && installedMetadata.version === metadata.version && installedMetadata.exports?.["."] === "./src/index.ts" && installedMetadata.bin?.amem === "bin/amem.js", "installed artifact metadata differs from its source contract");
     for (const name of ["bin/amem.js", "src/index.ts", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json"]) requireSmoke(lstatSync(join(installed, name)).isFile(), "installed artifact is missing a required executable/plugin component");
+    for (const file of ["skills/_shared/amem-adapter.md", ...SKILL_NAMES.map(name => `skills/${name}/SKILL.md`)]) requireSmoke(lstatSync(join(installed, file)).isFile(), `installed artifact missing ${file}`);
     const appBin = join(app, "node_modules", ".bin"), installedEnv = { ...env, PATH: `${appBin}${delimiter}${runtimePath}` };
     const executable = Bun.which("amem", { PATH: installedEnv.PATH }); requireSmoke(executable, "installed package did not register its executable");
     assertInstalledAlias(executable!, realPath(executable!), entry, appBin);
@@ -283,7 +285,14 @@ appendFileSync(${JSON.stringify(nativeCalls)},JSON.stringify({target,args,home})
 const server={command:launch[0],args:launch.slice(1)},file=target==='claude'?join(process.env.CLAUDE_CONFIG_DIR,'.claude.json'):target==='codex'?join(process.env.CODEX_HOME,'config.toml'):target==='qwen'?join(process.env.QWEN_HOME,'settings.json'):target==='gemini'?join(process.env.GEMINI_CLI_HOME,'.gemini','settings.json'):join(process.env.PI_CODING_AGENT_DIR,'mcp.json');
 mkdirSync(dirname(file),{recursive:true});writeFileSync(file,target==='codex'?Bun.TOML.stringify({mcp_servers:{amem:server}}):JSON.stringify({mcpServers:{amem:server}}));\n`);
     for (const target of ["claude", "codex", "pi", "qwen", "gemini"]) writeFileSync(join(traps, target), `#!/bin/sh\nexec ${quote(bun)} --smol ${quote(nativeStub)} ${quote(target)} "$@"\n`, { mode: 0o700 });
-    assertSetupApplied(await cli(["setup", "all", "--apply", "--json"])); verifyRules();
+    const appliedSkills = await cli(["setup", "all", "--apply", "--json"]);
+    assertSetupApplied(appliedSkills); verifyRules();
+    const skillResult = JSON.parse(appliedSkills);
+    requireSmoke(Array.isArray(skillResult.skills) && skillResult.skills.length === 4, "setup did not report four skill targets");
+    for (const row of skillResult.skills) {
+      requireSmoke(row.report?.actions?.length === SKILL_NAMES.length && row.report.actions.every((a: any) => a.change === "install"), "setup did not install all skills");
+      for (const name of SKILL_NAMES) for (const file of ["SKILL.md", "references/amem-adapter.md", ".amem-skill.json"]) requireSmoke(lstatSync(join(row.report.root, name, file)).isFile(), `installed skill missing ${name}/${file}`);
+    }
     const registrations = readFileSync(nativeCalls, "utf8"), calls = registrations.trim().split("\n").map(line => object(JSON.parse(line)));
     requireSmoke(JSON.stringify(calls.map(call => call.target)) === JSON.stringify(["claude", "codex", "pi", "qwen", "gemini"]) && calls.every(call => !existsSync(call.home)), "setup did not use and remove only its private native staging homes");
     const seedFile = join(app, "seed-installed.ts");

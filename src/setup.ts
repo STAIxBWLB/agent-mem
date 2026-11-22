@@ -1,3 +1,4 @@
+import { installSkills, skillRoot, type SkillInstallReport } from "./skills-install.ts";
 import { cliAttribution } from "./memory/cli-attribution.ts";
 import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
@@ -50,7 +51,9 @@ export interface SetupContext {
   /** Trusted test seam; production always runs the named native CLI in a private staging HOME. */
   native?: (argv: readonly string[], env: Env, cwd: string) => void;
 }
+export type SetupSkillResult = { target: SetupTarget; report?: SkillInstallReport; reason?: string; refused?: boolean };
 export interface SetupPlan {
+  skills?: SetupSkillResult[];
   targets: SetupTarget[]; mode: "preview" | "apply" | "undo"; root?: InstallRoot;
   actions: { target: SetupTarget; version?: ClientVersion; files: string[]; receipt: string; cwd?: string; registration: string[] | null; lifecycle: string; available: boolean; hooks: PlannedHook[]; removes?: { file: string; event: string; command: string }[]; mcpChange: "add" | "replace" | "restore" | "unchanged"; commands: string[][]; state: string }[];
   notes: string[];
@@ -319,7 +322,8 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   if (placementWriter) pluginNotes.push(placementWriter);
   if (target === "all") pluginNotes.push("Antigravity is repository-scoped and excluded from all; run amem setup agy explicitly inside its repository.");
   if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
-  return { targets, mode, ...(c.root ? { root: c.root } : {}), ...(placementWriter ? { placementWriter } : {}), actions: targets.map(target => {
+  const skills = skillResults(c, targets.filter(target => mode === "undo" || available(c, target, options)), "preview", mode);
+  return { targets, mode, ...(skills.length ? { skills } : {}), ...(c.root ? { root: c.root } : {}), ...(placementWriter ? { placementWriter } : {}), actions: targets.map(target => {
     const receipted = receipt(c, target, false), files = mode === "undo" && receipted ? receipted.changes.map(change => change.path) : c.paths[target];
     for (const file of files) read(file);
     const stale = mode !== "undo" && !!receipted && staleReceipt(target, receipted);
@@ -628,7 +632,18 @@ function prepare(c: ReturnType<typeof context>, target: SetupTarget, options: Se
 }
 function save(c: ReturnType<typeof context>, value: Receipt): void { write(journal(c, value.target), image(JSON.stringify(value) + "\n")); }
 function available(c: ReturnType<typeof context>, target: SetupTarget, options: SetupContext): boolean { return target === "agy" || !!options.native || Bun.which(target, { PATH: c.env.PATH ?? process.env.PATH }) !== null; }
-export interface SetupApplyResult { applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[]; warnings?: string[] }
+export interface SetupApplyResult { skills?: SetupSkillResult[]; applied: SetupTarget[]; unchanged: SetupTarget[]; skipped?: { target: SetupTarget; reason: string }[]; warnings?: string[] }
+function skillResults(c: ReturnType<typeof context>, targets: SetupTarget[], mode: "preview" | "apply" | "undo", requested: SetupPlan["mode"] = mode): SetupSkillResult[] {
+  return targets.flatMap((target): SetupSkillResult[] => {
+    const retry = `amem setup ${target} ${requested === "undo" ? "--undo" : "--apply"}${requested !== "undo" && c.root ? ` --root ${quote(c.root.path)}` : ""}`;
+    try {
+      const root = skillRoot(target, c.env, c.home);
+      if (!root) return [];
+      return [{ target, report: installSkills(root, mode, c.root?.path, c.root?.version, retry) }];
+    }
+    catch (error) { return [{ target, refused: true, reason: `${error instanceof Error ? error.message : String(error)}; inspect and retry ${retry}` }]; }
+  });
+}
 /** Claim only a directory this invocation actually created, never one merely absent at preview. */
 function prepareCreatedDirectory(c: ReturnType<typeof context>, value: Receipt): void {
   if (value.target !== "agy") return;
@@ -677,15 +692,17 @@ function applyUnlocked(plan: SetupPlan, options: SetupContext = {}): SetupApplyR
     for (let i = 0; i < value.changes.length; i++) { const change = value.changes[i]!; if (!sameImage(item.expected[i]!, change.after)) write(change.path, change.after, item.expected[i]!, publishGuard(c, value.target, options)); }
     value.phase = "applied"; save(c, value); applied.push(value.target);
   }
-  return { applied, unchanged, ...(skipped.length ? { skipped } : {}) };
+  const skills = skillResults(c, targets, "apply");
+  return { applied, unchanged, ...(skills.length ? { skills } : {}), ...(skipped.length ? { skipped } : {}) };
 }
 /** Byte-exact for untouched files, otherwise remove/restore only this installer's owned entries. */
-function undoUnlocked(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
+function undoUnlocked(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[]; skills?: SetupSkillResult[] } {
   const c = contextForPlan(plan, options), receipts = plan.targets.map(target => receipt(c, target, false)).filter((value): value is Receipt => !!value);
   const pending = receipts.map(value => ({ value, files: value.changes.map((change, index) => { const expected = read(change.path); return { change, expected, restored: restoreChange(value, change, index, expected) }; }) }));
   for (const item of pending) for (const file of item.files) if (!sameImage(read(file.change.path), file.expected)) throw Error("setup configuration changed during undo preparation");
   for (const item of pending) { if (item.value.target === "agy") c.workspace!.assertCurrent(); for (const file of item.files) if (!sameImage(file.expected, file.restored)) write(file.change.path, file.restored, file.expected, publishGuard(c, item.value.target, options)); removeCreatedDirectory(c, item.value); rmSync(journal(c, item.value.target)); }
-  return { restored: receipts.map(value => value.target) };
+  const skills = skillResults(c, plan.targets, "undo");
+  return { restored: receipts.map(value => value.target), ...(skills.length ? { skills } : {}) };
 }
 
 function withSetupLock<T>(options: SetupContext, run: () => T): T {
@@ -715,7 +732,7 @@ export function applySetup(plan: SetupPlan, options: SetupContext = {}): SetupAp
   // #551 AC2: `--apply` prints only this result, so the plan's placement warning is repeated on the receipt.
   return plan.placementWriter ? { ...result, warnings: [plan.placementWriter] } : result;
 }
-export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[] } {
+export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restored: SetupTarget[]; skills?: SetupSkillResult[] } {
   if (plan.targets.includes("jcode")) assertJcodeHome(options.env ?? process.env);
   if (plan.targets.includes("agy")) contextForPlan(plan, options);
   return withSetupLock(options, () => undoUnlocked(plan, options));
@@ -746,6 +763,8 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
     if (action.available && !action.hooks.length && plan.mode !== "undo") lines.push(`            hook     ${s.dim("none")}`);
     lines.push(`            ${s.dim(action.lifecycle)}`);
   }
+  for (const row of plan.skills ?? []) for (const action of row.report?.actions ?? []) lines.push(`  skill ${row.target}: ${action.name} ${action.change} ${action.path}${action.reason ? `: ${action.reason}` : ""}`);
+  for (const row of plan.skills ?? []) if (row.reason) lines.push(`  skill ${row.target}: ${row.reason}`);
   const warnings = plan.notes.filter(note => /^WARNING|detected|version-specific/.test(note)), notes = plan.notes.filter(note => !warnings.includes(note));
   if (skipped.length) lines.push("", `Skipped clients: ${skipped.map(action => action.target).join(", ")} (not installed)`);
   if (warnings.length) lines.push("", "Warnings:", ...warnings.map(note => `  - ${s.attention(note)}`));
@@ -754,11 +773,12 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
   return lines.join("\n");
 }
 
-function setupResultText(result: SetupApplyResult | { restored: SetupTarget[] }, s: Style): string {
-  if ("restored" in result) return `${label(s, "ok")} restored: ${result.restored.join(", ") || "none"}`;
+function setupResultText(result: SetupApplyResult | { restored: SetupTarget[]; skills?: SetupSkillResult[] }, s: Style): string {
+  const skills = (result.skills ?? []).flatMap(row => [...(row.reason ? [`skill ${row.target}: ${row.reason}`] : []), ...(row.report?.actions ?? []).map(a => `skill ${row.target}: ${a.name} ${a.change} ${a.path}${a.reason ? `: ${a.reason}` : ""}`)]);
+  if ("restored" in result) return [`${label(s, "ok")} restored: ${result.restored.join(", ") || "none"}`, ...skills].join("\n");
   return [`${label(s, "ok")} applied: ${result.applied.join(", ") || "none"}`, `${label(s, "ok")} unchanged: ${result.unchanged.join(", ") || "none"}`,
     ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`),
-    ...(result.warnings ?? []).map(warning => `${label(s, "attention")} ${warning}`)].join("\n");
+    ...(result.warnings ?? []).map(warning => `${label(s, "attention")} ${warning}`), ...skills].join("\n");
 }
 
 /** Compatibility formatter for confirmation-style callers: the raw plan under `--json`, the readable plan otherwise. */

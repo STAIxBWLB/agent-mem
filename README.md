@@ -76,3 +76,5 @@ Run `amem --help` or `amem <command> --help` for every option.
 - [Development and publishing](https://github.com/STAIxBWLB/agent-mem/blob/main/docs/development.md)
 
 License: MIT.
+
+Bundled amem skills are previewed and installed alongside supported client setup. For other hosts, use `amem skills export <dir>`; see [setup](docs/setup.md) and [CLI](docs/cli.md).
