@@ -25,24 +25,26 @@ export function skillRoot(target: SetupTarget, env: SetupEnvironment, givenHome?
   return undefined;
 }
 function exists(path: string): boolean { try { lstatSync(path); return true; } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; } }
+class SkillTreeError extends Error {}
 function tree(root: string, skipMarker = false): Tree {
   const result: Tree = new Map();
   function visit(dir: string, prefix: string): void {
     const stat = lstatSync(dir);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("not a real directory");
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new SkillTreeError(`not a real directory: ${prefix || "."}`);
     const entries = readdirSync(dir).sort();
-    if (!entries.length && prefix) throw new Error("empty directory");
+    if (!entries.length && prefix) throw new SkillTreeError(`empty directory: ${prefix}`);
     for (const name of entries) {
       if (!prefix && skipMarker && name === markerName) continue;
       const rel = prefix ? `${prefix}/${name}` : name, path = join(dir, name), st = lstatSync(path);
-      if (st.isSymbolicLink()) throw new Error("symlink refused");
+      if (st.isSymbolicLink()) throw new SkillTreeError(`symlink refused: ${rel}`);
       if (st.isDirectory()) visit(path, rel);
       else if (st.isFile()) {
-        if (st.size > maxBytes || result.size >= maxFiles) throw new Error("skill size limit exceeded");
+        if (st.size > maxBytes) throw new SkillTreeError(`skill file size limit ${maxBytes} bytes exceeded: ${rel}`);
+        if (result.size >= maxFiles) throw new SkillTreeError(`skill file count limit ${maxFiles} exceeded: ${rel}`);
         const data = readFileSync(path);
-        if (data.length > maxBytes) throw new Error("skill size limit exceeded");
+        if (data.length > maxBytes) throw new SkillTreeError(`skill file size limit ${maxBytes} bytes exceeded: ${rel}`);
         result.set(rel, data);
-      } else throw new Error("non-regular file refused");
+      } else throw new SkillTreeError(`non-regular file refused: ${rel}`);
     }
   }
   visit(root, "");
@@ -169,7 +171,7 @@ export function installSkills(root: string, mode: "preview" | "apply" | "undo", 
         if (st.isSymbolicLink()) { action("foreign", "Skill target is a symlink"); continue; }
         if (!st.isDirectory()) { action("foreign", "Skill target is not a directory"); continue; }
         if (!(old = marker(path))) { action("foreign", "Skill directory lacks a valid amem ownership marker"); continue; }
-        try { if (!owned(path)) { action("modified", "Owned skill changed; preserve it"); continue; } } catch { action("modified", "Owned skill contains unsafe or changed files"); continue; }
+        try { if (!owned(path)) { action("modified", "Owned skill changed; preserve it"); continue; } } catch (error) { action("modified", error instanceof SkillTreeError ? `Owned skill contains unsafe files (${error.message})` : "Owned skill contains unsafe or changed files"); continue; }
       }
       if (mode === "undo") {
         if (!old) { action("absent"); continue; }
