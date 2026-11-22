@@ -1,6 +1,6 @@
 ---
 name: amem-remember
-description: Propose project memory, record curated notes and maintain amem work lists and goals.
+description: Propose project memory, record curated notes and maintain amem work lists and goals. Use when asked to record an amem decision, finding or failure, or update amem project work state.
 ---
 
 # amem remember

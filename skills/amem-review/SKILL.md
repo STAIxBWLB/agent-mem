@@ -1,6 +1,6 @@
 ---
 name: amem-review
-description: Review and consolidate amem candidates, recheck notes and prepare scoped promotion.
+description: Review and consolidate amem candidates, recheck notes and prepare scoped promotion. Use when asked to curate amem candidates, review stale project memory or promote an amem note.
 ---
 
 # amem review

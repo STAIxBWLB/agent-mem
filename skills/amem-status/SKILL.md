@@ -1,6 +1,6 @@
 ---
 name: amem-status
-description: Diagnose amem installation, capture, storage and sync health in a read-only report.
+description: Diagnose amem installation, capture, storage and sync health in a read-only report. Use when asked to check amem health, setup drift, capture freshness or sync status.
 ---
 
 # amem status

@@ -1,6 +1,6 @@
 ---
 name: amem-recall
-description: Recall and verify project memory, evidence and historical context before or during work.
+description: Recall and verify project memory, evidence and historical context. Use when looking up prior project decisions, failures or evidence before or during work.
 ---
 
 # amem recall
