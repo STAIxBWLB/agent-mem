@@ -109,6 +109,10 @@ test("migration apply is explicit in parser help and completion metadata", () =>
   expect(migrate.options["--apply"]?.description).toContain("Apply");
   expect(migrate.options["--dry-run"]?.description).toContain("default");
   expect(commandHelp(["migrate"])).toContain("--apply");
+  expect(migrate.options["--sync-placement"]?.description).toContain("preview by default");
+  expect(migrate.options["--abandon"]?.description).toContain("--confirm");
+  expect(commandHelp(["migrate"])).not.toContain("Person-only");
+  for (const shell of ["zsh", "bash", "fish"] as const) expect(completionScript(shell)).not.toContain("Person-only");
 });
 
 test("completion metadata and CLI parser cover the retained raw command cases and flags", () => {

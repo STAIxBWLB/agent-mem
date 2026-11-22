@@ -44,7 +44,7 @@ export class PlacementActivationError extends Error {
 }
 export class PlacementActivationInputError extends Error {
   constructor(readonly inputClass:"policy"|"source"|"aliases"|"writer root"|"receipt"|"floor"){
-    super(`Sync placement activation frozen ${inputClass} input changed or is unavailable; restore that input and run amem migrate --sync-placement --resume. If both markers still contain their original v2 bytes, the person may run amem migrate --sync-placement --abandon, then review a fresh --dry-run and --apply. Once any v3 marker exists, only forward resume is supported.`);
+    super(`Sync placement activation frozen ${inputClass} input changed or is unavailable; restore that input and run amem migrate --sync-placement --resume. If both markers still contain their original v2 bytes, run amem migrate --sync-placement --abandon, then review a fresh --dry-run and --apply. Once any v3 marker exists, only forward resume is supported.`);
     this.name="PlacementActivationInputError";
   }
 }
@@ -128,7 +128,7 @@ export async function activateSyncPlacement(options:PlacementActivationOptions) 
     const active=initialBase.active,dirs=active.activation.realms.map(realm=>realm.scope==="user"?join(home,"user"):join(home,"projects",realm.keyHash.slice(0,16)));
     return withPlacementActivationFences(home,dirs,(mutation,owner)=>finishCommittedActivation(home,{epoch:active.epoch,plan:active.activation},options,mutation,owner)).catch(error=>rethrowActivationFailure(error));
   }
-  if(pending&&options.mode!=="resume")throw Error("Sync placement activation is retained; run amem migrate --sync-placement --resume, or person --abandon while both markers retain the original v2 bytes, before reviewing a new --dry-run.");
+  if(pending&&options.mode!=="resume")throw Error("Sync placement activation is retained; run amem migrate --sync-placement --resume, or --abandon while both markers retain the original v2 bytes, before reviewing a new --dry-run.");
   const source=pending?undefined:previewSyncPlacementSources(home);
   const writer=pending?undefined:initialPlacementWriterContext(home,options.writerRoots,options.ownRoot);
   const report=source?counts(source):undefined;
