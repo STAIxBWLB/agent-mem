@@ -12,6 +12,7 @@ import { PLACEMENT_EPOCH_SCHEMA, placementEpochHash, placementKeyId, createPlace
 import { preparePlacementEpoch, ensurePlacementFence, ensurePlacementPublicationDurability, readPlacementJournal, appendPlacementEvent, latestDecisionOwners, placementDecisionOwners, type PlacementDecisionCandidate, type PlacementStorageOptions, type PlacementStoragePhase } from "../src/memory/sync-placement-journal-storage.ts";
 import { validatePlacementPublicationChunk, PLACEMENT_PUBLICATION_CHUNK_SCHEMA, planPlacementPublication, planPlacementPublicationV2, planPlacementPublicationV2Async, partitionPlacementDecisions, validatePlacementPublicationBundle, publicationBytes, publicationFileNames, type PlacementPublicationSource, type PlacementPublicationDecision } from "../src/memory/sync-placement-publication-plan.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationFactInput } from "../src/memory/sync-placement-publication-storage.ts";
+import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
 
 const h = (x: string) => hashJSON(x), key = { realm: { scope: "user" as const }, id: "d".repeat(32), rowHash: h("row") };
 const cleanup: (() => void)[] = [];
@@ -188,7 +189,9 @@ test("v2 persists and reads a completed owner's decision leaf and refuses change
   if (formatVersionBelow(version, "0.36.0")) {
     const isolated = mkdtempSync(join(tmpdir(), "amem-v2-reader-")); cleanup.push(() => rmSync(isolated, { recursive: true, force: true }));
     cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
-    mkdirSync(join(isolated, "test")); mkdirSync(join(isolated, "home")); copyFileSync(import.meta.path, join(isolated, "test/publication.test.ts"));
+    installCliOutputFixture(isolated);
+    mkdirSync(join(isolated, "test/fakes"), { recursive: true }); mkdirSync(join(isolated, "home")); copyFileSync(import.meta.path, join(isolated, "test/publication.test.ts"));
+    copyFileSync(join(import.meta.dir, "fakes/cli-output-install.ts"), join(isolated, "test/fakes/cli-output-install.ts"));
     writeFileSync(join(isolated, "package.json"), json({ name: "amem-v2-test", version: "0.36.0", type: "module" }));
     const child = Bun.spawnSync([process.execPath, "test", "test/publication.test.ts", "--test-name-pattern", "v2 persists"], { cwd: isolated, env: { ...process.env, HOME: join(isolated, "home"), AGENTHUB_HOME: join(isolated, "home/agenthub"), XDG_CONFIG_HOME: join(isolated, "home/config") }, stdout: "pipe", stderr: "pipe", timeout: 30000 });
     expect(child.stderr.toString()).toContain("1 pass"); expect(child.exitCode).toBe(0); return;

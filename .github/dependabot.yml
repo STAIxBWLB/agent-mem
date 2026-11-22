@@ -1,6 +1,6 @@
 version: 2
 updates:
-  # Keeps the workflow actions current; npm stays manual (zero runtime dependencies).
+  # Keeps workflow actions current; the single exact-pinned runtime dependency is updated manually.
   - package-ecosystem: github-actions
     directory: /
     schedule:

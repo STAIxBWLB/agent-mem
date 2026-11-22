@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { PREFERENCE_MIN_READER } from "../src/memory/formats.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
+import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
 import { drainHookCaptures, stageHookCapture, stageTranscriptCapture } from "../src/hook-spool.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
@@ -198,6 +199,7 @@ try { console.log(JSON.stringify({ ids: s.list({ project: ${JSON.stringify(f.pro
     const isolated = mkdtempSync(join(tmpdir(), "amem-n1-preference-"));
     try {
       cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
+      installCliOutputFixture(isolated);
       writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-preference-writer", version: PREFERENCE_MIN_READER, type: "module" }));
       // The person's record: without it this writer refuses as well, and with it the write is the shipping configuration's.
       writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "curated", minReader: PREFERENCE_MIN_READER, since: "2026-11-11" }]) + "\n");
