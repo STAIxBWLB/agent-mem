@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, openSync, readSync, appendFileSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdir as mkdirAsync, open as openAsync, readFile as readFileAsync, rename as renameAsync, stat as statAsync, unlink as unlinkAsync, writeFile as writeFileAsync } from "node:fs/promises";
 import type { RecordIntakeRefusal } from "../hook-record.ts";
-import type { HookRssSources } from "../hook-resources.ts";
+import { processImageRssKB, type HookRssSources } from "../hook-resources.ts";
 import type { HookTranscriptStopReason } from "../hook-contract.ts";
 import { join } from "node:path";
 
@@ -75,11 +75,11 @@ function newestPerKind<T>(items: readonly T[], limit: number, kindOf: (item: T) 
 }
 
 /**
- * Process lifetime peak via getrusage, without synchronous filesystem I/O on a tool call. Values are KiB on supported
- * Bun platforms. `undefined` when unavailable; telemetry never makes a call fail.
+ * Process lifetime peak on the same basis as `scripts/budget-rss.ts`: VmHWM on Linux, maxRSS elsewhere.
+ * `undefined` when unavailable; telemetry never makes a call fail.
  */
 export function processPeakRssKB(): number | undefined {
-  try { const peak = process.resourceUsage().maxRSS; return Number.isFinite(peak) && peak > 0 ? peak : undefined; } catch { return undefined; }
+  try { return processImageRssKB("self") ?? process.resourceUsage().maxRSS; } catch { return undefined; }
 }
 
 /** #485: one read-tool call's window; `alone` goes false as soon as another read call shares any part of it. */
