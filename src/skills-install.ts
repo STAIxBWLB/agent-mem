@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { realPath } from "./memory/platform.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
 import type { SetupTarget } from "./setup.ts";
 
@@ -89,10 +90,18 @@ function writeTree(dir: string, files: Tree, version: string): void {
   for (const [name, data] of files) { const path = join(dir, ...name.split("/")); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, data, { flag: "wx" }); }
   writeFileSync(join(dir, markerName), JSON.stringify({ tool: "amem", version, sha256: digest(files) }) + "\n", { flag: "wx" });
 }
-function safeRoot(root: string): void {
-  let current = resolve(root);
-  while (true) { if (exists(current) && lstatSync(current).isSymbolicLink()) throw new Error("symlinked root refused"); const parent = dirname(current); if (parent === current) break; current = parent; }
+function safeRoot(root: string): string {
+  const absolute = resolve(root);
+  if (exists(absolute) && lstatSync(absolute).isSymbolicLink()) throw new Error(`Skill root ${absolute} is a symlink; use amem skills export <dir> with a real directory`);
+  function parentPath(path: string): string {
+    if (exists(path)) return realPath(path);
+    const parent = dirname(path);
+    if (parent === path) throw new Error(`Cannot resolve ${path}`);
+    return join(parentPath(parent), basename(path));
+  }
+  return join(parentPath(dirname(absolute)), basename(absolute));
 }
+function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 function leftovers(root: string, name: string): string[] {
   if (!exists(root)) return [];
   return readdirSync(root).filter(x => x.startsWith(`.amem-skill-${name}-`)).map(x => join(root, x));
@@ -101,30 +110,32 @@ export function installSkills(root: string, mode: "preview" | "apply" | "undo", 
   root = resolve(root);
   const actions: SkillAction[] = [];
   let rootError: string | undefined;
-  try { safeRoot(root); if (exists(root) && !lstatSync(root).isDirectory()) throw new Error("root is not a directory"); } catch (e) { rootError = String(e); }
+  try { root = safeRoot(root); if (exists(root) && !lstatSync(root).isDirectory()) throw new Error(`${root} is not a directory; choose a directory`); } catch (e) { rootError = message(e); }
   let version = packageVersion;
-  if (mode !== "undo" && version === undefined) { try { version = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version; if (typeof version !== "string") throw new Error("invalid version"); } catch (e) { rootError = String(e); } }
+  if (mode !== "undo" && version === undefined) { try { version = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).version; if (typeof version !== "string") throw new Error("invalid version"); } catch (e) { rootError = `${message(e)}; check the package and rerun ${retryCommand}`; } }
   for (const name of SKILL_NAMES) {
     const path = join(root, name);
-    const action = (change: SkillAction["change"], reason?: string) => actions.push({ name, path, change, ...(reason ? { reason } : {}) });
+    const action = (change: SkillAction["change"], reason?: string) => actions.push({ name, path, change, ...(reason ? { reason: change === "foreign" || change === "modified" ? `${reason} at ${path}; keep it, or move it aside and rerun ${retryCommand}` : reason } : {}) });
     if (rootError) { action("refused", rootError); continue; }
     try {
       const pending = leftovers(root, name);
       // Recover only verified leftovers. A backup is restored if the destination is absent; verified stages and obsolete backups can then be removed.
       if (pending.length) {
-        const backups = pending.filter(p => p.includes("-backup-"));
-        const stages = pending.filter(p => p.includes("-stage-"));
+        const backups = pending.filter(p => basename(p).startsWith(`.amem-skill-${name}-backup-`));
+        const stages = pending.filter(p => basename(p).startsWith(`.amem-skill-${name}-stage-`));
         const verified = pending.every(p => { try { return !!owned(p); } catch { return false; } });
-        if (!verified || backups.length > 1 || stages.length > 1 || backups.length + stages.length !== pending.length) { action("refused", `Unverified or ambiguous interrupted swap; inspect ${root}`); continue; }
+        if (!verified || backups.length > 1 || stages.length > 1 || backups.length + stages.length !== pending.length) { action("refused", `Unverified or ambiguous interrupted swap: ${pending.join(", ")}; inspect and remove the leftovers if no longer needed, then rerun ${retryCommand}`); continue; }
         if (mode === "preview") { action("refused", `Interrupted swap requires recovery; run ${retryCommand}`); continue; }
         if (!exists(path) && backups.length === 1) renameSync(backups[0]!, path);
-        if (exists(path) && !owned(path)) { action("refused", "Interrupted swap destination is not verified"); continue; }
+        if (exists(path) && !owned(path)) { action("refused", `Interrupted swap destination ${path} is not verified; keep it, or move it aside and rerun ${retryCommand}`); continue; }
         for (const item of pending) if (exists(item)) { if (!owned(item)) throw new Error("Interrupted swap changed during recovery"); rmSync(item, { recursive: true }); }
       }
       let old: Marker | undefined;
       if (exists(path)) {
         const st = lstatSync(path);
-        if (!st.isDirectory() || st.isSymbolicLink() || !(old = marker(path))) { action("foreign", "Not an amem-owned directory"); continue; }
+        if (st.isSymbolicLink()) { action("foreign", "Skill target is a symlink"); continue; }
+        if (!st.isDirectory()) { action("foreign", "Skill target is not a directory"); continue; }
+        if (!(old = marker(path))) { action("foreign", "Skill directory lacks a valid amem ownership marker"); continue; }
         try { if (!owned(path)) { action("modified", "Owned skill changed; preserve it"); continue; } } catch { action("modified", "Owned skill contains unsafe or changed files"); continue; }
       }
       if (mode === "undo") {
@@ -150,31 +161,41 @@ export function installSkills(root: string, mode: "preview" | "apply" | "undo", 
       try {
         renameSync(stage, path);
         if (!owned(path) || marker(path)?.sha256 !== expected) throw new Error("post-swap verification failed");
-        if (old) { if (!matches(backup, old)) throw new Error("backup changed before removal"); rmSync(backup, { recursive: true }); }
-        action(old ? "replace" : "install");
+        if (old && !matches(backup, old)) throw new Error("backup changed before removal");
       } catch (e) {
         if (exists(path) && matches(path, { tool: "amem", version: version!, sha256: expected })) rmSync(path, { recursive: true });
         if (old && !exists(path) && exists(backup)) renameSync(backup, path);
         if (exists(stage) && owned(stage)) rmSync(stage, { recursive: true });
-        action("refused", `${String(e)}; retry ${retryCommand}`);
+        action("refused", `${message(e)}; inspect the affected files and rerun ${retryCommand}`);
+        continue;
       }
-    } catch (e) { action("refused", `${String(e)}; retry ${retryCommand}`); }
+      if (old) {
+        try { rmSync(backup, { recursive: true }); }
+        catch (e) { action("refused", `Installed skill is verified but backup removal failed at ${backup}: ${message(e)}; inspect and remove the leftover, then rerun ${retryCommand}`); continue; }
+      }
+      action(old ? "replace" : "install");
+    } catch (e) { action("refused", `${message(e)}; inspect the affected files and rerun ${retryCommand}`); }
   }
   return { root, actions };
 }
 export function exportSkills(destination: string, options: { packageRoot?: string; packageVersion?: string } = {}): SkillInstallReport {
-  const root = resolve(destination || "."), refuse = (reason: string): SkillInstallReport => ({ root, actions: SKILL_NAMES.map(name => ({ name, path: join(root, name), change: "refused", reason })) });
-  if (!destination.trim() || [...destination].some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return refuse("Invalid destination");
+  let root = resolve(destination || ".");
+  const retry = `amem skills export '${destination.replace(/'/g, "'\\''")}'`;
+  const refuse = (reason: string): SkillInstallReport => ({ root, actions: SKILL_NAMES.map(name => ({ name, path: join(root, name), change: "refused", reason })) });
+  if (!destination.trim() || [...destination].some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)) return refuse("Destination is empty or contains control characters; choose a valid directory and rerun amem skills export <dir>");
   try {
-    safeRoot(root);
+    root = safeRoot(root);
     if (exists(root)) {
-      if (!lstatSync(root).isDirectory()) return refuse("Destination is not a directory");
+      if (!lstatSync(root).isDirectory()) return refuse(`Destination ${root} is not a directory; choose a directory and rerun ${retry}`);
       for (const entry of readdirSync(root)) {
         if ((SKILL_NAMES as readonly string[]).includes(entry)) continue;
         const recognized = SKILL_NAMES.some(name => entry.startsWith(`.amem-skill-${name}-`));
-        if (!recognized || !owned(join(root, entry))) return refuse(`Foreign destination entry: ${entry}`);
+        if (!recognized) return refuse(`Foreign destination entry ${join(root, entry)}; keep it or move it aside, then rerun ${retry}`);
+        let valid = false;
+        try { valid = !!owned(join(root, entry)); } catch { /* preserve unverified leftovers */ }
+        if (!valid) return refuse(`Unverified interrupted swap ${join(root, entry)}; inspect and remove it if no longer needed, then rerun ${retry}`);
       }
     }
-  } catch (e) { return refuse(String(e)); }
-  return installSkills(root, "apply", options.packageRoot, options.packageVersion, `amem skills export '${destination.replace(/'/g, "'\\''")}'`);
+  } catch (e) { return refuse(`${message(e)}; inspect the destination and rerun ${retry}`); }
+  return installSkills(root, "apply", options.packageRoot, options.packageVersion, retry);
 }

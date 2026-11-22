@@ -75,13 +75,59 @@ describe("skill installer", () => {
     writeFileSync(join(pkg, "skills", SKILL_NAMES[1], "SKILL.md"), Buffer.alloc(1024 * 1024 + 1));
     expect(spawnSync("mkfifo", [join(pkg, "skills", SKILL_NAMES[2], "pipe")]).status).toBe(0);
     expect(installSkills(root, "preview", pkg, "1").actions.slice(0, 3).map(a => a.change)).toEqual(["refused", "refused", "refused"]);
-    symlinkSync(base, join(base, "link"));
-    expect(exportSkills(join(base, "link", "output"), { packageRoot: pkg, packageVersion: "1" }).actions[0]?.change).toBe("refused");
+
+  });
+  test("linked ancestors work but linked roots and skill targets are refused", () => {
+    const { base, pkg, root } = fixture();
+    const link = join(base, "link"); symlinkSync(base, link);
+    expect(exportSkills(join(link, "output"), { packageRoot: join(link, "package"), packageVersion: "1" }).actions.every(a => a.change === "install")).toBe(true);
+    const linkedRoot = join(base, "linked-root"); symlinkSync(join(base, "output"), linkedRoot);
+    const reason = exportSkills(linkedRoot, { packageRoot: pkg, packageVersion: "1" }).actions[0]?.reason;
+    expect(reason).toContain(linkedRoot); expect(reason).toContain("amem skills export <dir>");
+    mkdirSync(root, { recursive: true }); symlinkSync(join(base, "output", SKILL_NAMES[0]), join(root, SKILL_NAMES[0]));
+    const foreign = installSkills(root, "apply", pkg, "1").actions[0];
+    expect(foreign?.change).toBe("foreign"); expect(foreign?.reason).toContain("symlink"); expect(foreign?.reason).toContain("move it aside");
+  });
+  test("preview of installed skills is read-only", () => {
+    const { pkg, root } = fixture(); installSkills(root, "apply", pkg, "1");
+    const marker = join(root, SKILL_NAMES[0], ".amem-skill.json");
+    const before = fs.statSync(marker); const bytes = readFileSync(marker);
+    expect(installSkills(root, "preview", pkg, "2").actions.every(a => a.change === "replace")).toBe(true);
+    expect(readFileSync(marker)).toEqual(bytes); expect(fs.statSync(marker).mtimeMs).toBe(before.mtimeMs);
+    expect(readdirSync(root).sort()).toEqual([...SKILL_NAMES].sort());
+  });
+  test("unverified interrupted stage identifies the leftover and recovery action", () => {
+    const { pkg, root } = fixture(); mkdirSync(root, { recursive: true });
+    const stage = join(root, `.amem-skill-${SKILL_NAMES[0]}-stage-incomplete`); mkdirSync(stage);
+    const action = installSkills(root, "apply", pkg, "1").actions[0];
+    expect(action?.change).toBe("refused"); expect(action?.reason).toContain(stage); expect(action?.reason).toContain("remove");
+    const exportAction = exportSkills(root, { packageRoot: pkg, packageVersion: "1" }).actions[0];
+    expect(exportAction?.reason).toContain(stage); expect(exportAction?.reason).toContain("remove");
+  });
+  test("verified leftover kind is determined from the entry name", () => {
+    const { pkg, base } = fixture(); const root = join(base, "stage-backup-container");
+    installSkills(root, "apply", pkg, "1");
+    renameSync(join(root, SKILL_NAMES[0]), join(root, `.amem-skill-${SKILL_NAMES[0]}-backup-test`));
+    expect(installSkills(root, "apply", pkg, "2").actions[0]?.change).toBe("replace");
+  });
+  test("backup removal failure keeps the verified replacement", () => {
+    const { pkg, root } = fixture(); installSkills(root, "apply", pkg, "1");
+    const original = fs.rmSync; let injected = false;
+    const spy = spyOn(fs, "rmSync").mockImplementation(((path: fs.PathLike, options?: fs.RmOptions) => {
+      if (!injected && String(path).includes(`.amem-skill-${SKILL_NAMES[0]}-backup-`)) { injected = true; throw new Error("removal failure"); }
+      return original(path, options);
+    }) as typeof fs.rmSync);
+    try {
+      const action = installSkills(root, "apply", pkg, "2").actions[0];
+      expect(action?.change).toBe("refused"); expect(action?.reason).toContain("backup removal failed");
+      expect(JSON.parse(readFileSync(join(root, SKILL_NAMES[0], ".amem-skill.json"), "utf8")).version).toBe("2");
+    } finally { spy.mockRestore(); }
   });
   test("host roots share setup resolution and Orca redirect", () => {
     const { base } = fixture();
     const env = { HOME: base, QWEN_HOME: "~/qwen", CODEX_HOME: join(base, "Library/Application Support/orca/codex-accounts/id/home") };
     expect(skillRoot("claude", env, base)).toBe(join(base, ".claude/skills"));
+    expect(skillRoot("claude", { ...env, CLAUDE_CONFIG_DIR: join(base, "Library/Application Support/orca/claude-profiles/id/home") }, base)).toBe(join(base, ".claude/skills"));
     expect(skillRoot("codex", env, base)).toBe(join(base, ".codex/skills"));
     expect(skillRoot("kimi", env, base)).toBe(join(base, ".kimi-code/skills"));
     expect(skillRoot("qwen", env, base)).toBe(join(base, "qwen/skills"));
