@@ -46,7 +46,7 @@ export interface McpVolumeReport {
   engine: "fts5"; first: number; hits: number;
   R1: { pass: boolean; eofExitCode: number; childReaped: boolean };
   R3: { pass: boolean; idleMeasured: false; peakRssMB: number; selfPeakKB: number; darwinWait4KB: number | null; peakKB: number; budgetPeakMB: 200 };
-  phasePeaks?: { phase: string; wallMs: number; rssMB: number; peakRaised: boolean }[];
+  phasePeaks?: { phase: string; wallMs: number; rssMB: number; peakRaised: boolean; shared?: boolean }[];
   pass: boolean;
 }
 
@@ -184,7 +184,7 @@ process.once('exit',code=>{if(process.platform==='linux'&&!/VmHWM:\\s*(\\d+)\\s*
       requireVolume(averageBytes === MCP_VOLUME_EXCERPT_BYTES && averageChars >= 1130 && averageChars <= 1140, "fixture character density drifted");
     } finally { metadata.close(); }
     const databaseBytes = databaseSize();
-    const phasePeaks = diagnostic ? readMetrics(base).filter(s => (s.kind === "mcp-phase" || s.kind === "search") && typeof s.tool === "string" && ((MCP_PHASE_NAMES as readonly string[]).includes(s.tool) || s.kind === "search" && s.tool === "amem_search") && typeof s.wallMs === "number" && typeof s.rssMB === "number" && typeof s.peakRaised === "boolean").map(s => ({ phase: s.tool!, wallMs: s.wallMs!, rssMB: s.rssMB!, peakRaised: s.peakRaised! })) : undefined;
+    const phasePeaks = diagnostic ? readMetrics(base).filter(s => (s.kind === "mcp-phase" || s.kind === "search") && typeof s.tool === "string" && ((MCP_PHASE_NAMES as readonly string[]).includes(s.tool) || s.kind === "search" && s.tool === "amem_search") && typeof s.wallMs === "number" && typeof s.rssMB === "number" && typeof s.peakRaised === "boolean").map(s => ({ phase: s.tool!, wallMs: s.wallMs!, rssMB: s.rssMB!, peakRaised: s.peakRaised!, ...(s.shared ? { shared: true } : {}) })) : undefined;
     const report: McpVolumeReport = { ...(phasePeaks ? { phasePeaks } : {}), platform: process.platform, bun: Bun.version, runtimeMode: "--smol", transport: "stdio", entry: "bin/amem.js", sessionMs: Math.round(sessionMs), queryMs: Math.round(queryMs), wallTimingPass: true,
       corpus: { capture: MCP_VOLUME_ROWS, excerptBytes: MCP_VOLUME_EXCERPT_BYTES, matchingRows, logicalBytes, seedDatabaseBytes, databaseBytes, vocabulary, tokens, averageChars, averageBytes, ...(tempFreeBytes === undefined ? {} : { tempFreeBytes }) }, ...found,
       R1: { pass: !remains, eofExitCode: exitCode, childReaped: true },

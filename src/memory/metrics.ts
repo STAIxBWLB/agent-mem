@@ -55,10 +55,10 @@ export interface RecordVariantMetric {
 /** All marks are process-local performance.now() milliseconds since the process time origin. */
 export interface JcodeJournalTiming { scanStartMs?: number; scanEndMs?: number; workStartMs?: number; publishStartMs?: number; publishEndMs?: number; publishTotalMs?: number; workerSpawnStartMs?: number; workerSpawnEndMs?: number; cursorCloseStartMs?: number; cursorCloseEndMs?: number; metricSampleAtMs?: number }
 export interface TranscriptTiming { killAtMs?: number; reapAtMs?: number; metricSampleAtMs: number }
-export interface MetricSample extends RecordVariantMetric { jcodeJournalTiming?: JcodeJournalTiming; transcriptTiming?: TranscriptTiming; at: string; kind: "hook" | "search" | "mcp-phase"; /** #485: the read tool that completed, so a peak can be attributed; never its arguments or result. */ tool?: string; /** #485: the process peak after this call was higher than after any sample before it. */ peakRaised?: boolean; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
-const METRICS_MAX_BYTES = 64 * 1024, METRICS_KEEP = 200, MCP_PHASE_KEEP = 32;
-// ponytail: reserve 3 KiB for future appends; upgrade to separate bounded files if these windows need larger guarantees.
-const HOOK_BYTES = 50 * 1024, SEARCH_BYTES = 6 * 1024, PHASE_BYTES = 4 * 1024, OTHER_BYTES = 1024;
+export interface MetricSample extends RecordVariantMetric { jcodeJournalTiming?: JcodeJournalTiming; transcriptTiming?: TranscriptTiming; at: string; kind: "hook" | "search" | "mcp-phase"; /** #485: the read tool that completed, so a peak can be attributed; never its arguments or result. */ tool?: string; /** #485: the process peak after this call was higher than after any sample before it. */ peakRaised?: boolean; shared?: boolean; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+const METRICS_MAX_BYTES = 128 * 1024, METRICS_KEEP = 200, MCP_PHASE_KEEP = 32;
+// ponytail: reserve 17 KiB for future appends; upgrade to separate bounded files if these windows need larger guarantees.
+const HOOK_BYTES = 74 * 1024, SEARCH_BYTES = 30 * 1024, PHASE_BYTES = 6 * 1024, OTHER_BYTES = 1024;
 
 /**
  * #485: the newest `limit` samples of each kind. Hook samples share this file with the read-tool samples a long-lived
@@ -83,7 +83,7 @@ export function processPeakRssKB(): number | undefined {
 }
 
 /** #485: one read-tool call's window; `alone` goes false as soon as another read call shares any part of it. */
-export interface PeakWindow { alone: boolean; parent?: PeakWindow; gapKB?: number; gapMs?: number }
+export interface PeakWindow { alone: boolean; startPeak?: number; parent?: PeakWindow; gapKB?: number; gapMs?: number }
 
 /** A host that cannot report its peak must not turn a read into a failure, so a throwing read is `undefined`. */
 const peekOnce = (read: () => number | undefined): number | undefined => { try { return read(); } catch { return undefined; } };
@@ -103,21 +103,23 @@ export function createPeakTracker(read: () => number | undefined = processPeakRs
     begin(parent?: PeakWindow): PeakWindow {
       let gapKB: number | undefined;
       if (windows.size === 0) { const current = peek(); if (current !== undefined) { if (observed !== undefined && current > observed) gapKB = current; advance(current); } }
-      const window: PeakWindow = { alone: parent ? parent.alone && windows.size === 1 && windows.has(parent) : windows.size === 0, ...(parent ? { parent } : {}), ...(gapKB === undefined ? {} : { gapKB, gapMs: Math.max(0, performance.now() - idleSince) }) };
+      const startPeak = windows.size === 0 ? observed : peek();
+      const window: PeakWindow = { alone: parent ? parent.alone && windows.size === 1 && windows.has(parent) : windows.size === 0, ...(startPeak === undefined ? {} : { startPeak }), ...(parent ? { parent } : {}), ...(gapKB === undefined ? {} : { gapKB, gapMs: Math.max(0, performance.now() - idleSince) }) };
       for (const other of windows) if (other !== parent) other.alone = false;
       windows.add(window);
       return window;
     },
     /** The call completed: report whether it may be credited with the peak, and the peak to record with its sample. */
-    end(window: PeakWindow): { peakKB?: number; raised: boolean } {
+    end(window: PeakWindow): { peakKB?: number; raised: boolean; shared?: true } {
       windows.delete(window);
       if (windows.size === 0) idleSince = performance.now();
       const peakKB = peek();
       if (peakKB === undefined) return { raised: false };
       const raised = window.alone && observed !== undefined && peakKB > observed;
+      const shared = !window.alone && window.startPeak !== undefined && peakKB > window.startPeak;
       if (raised && window.parent) window.parent.alone = false;
       advance(peakKB);
-      return { peakKB, raised };
+      return { peakKB, raised, ...(shared ? { shared: true as const } : {}) };
     },
     /** The call refused or threw: it records nothing, but the peak still advances so a later call is not miscredited. */
     abort(window: PeakWindow): void {
@@ -144,7 +146,7 @@ export function observeMcpPhase(base: string, peaks: PeakTracker, name: McpPhase
     try {
       if (!window) return;
       const ended = peaks.end(window); window = undefined;
-      if (ended.peakKB !== undefined) appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
+      if (ended.peakKB !== undefined && (ended.raised || ended.shared)) appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised, ...(ended.shared ? { shared: true } : {}) }]);
     } catch { /* observational only */ }
   };
 }

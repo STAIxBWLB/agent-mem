@@ -170,4 +170,6 @@ test("capacity reports only allowlisted MCP phase peak without changing search m
   ] }) });
   expect(report.metrics.searchP95Ms).toBe(42); expect(report.metrics.searchRssMB).toBe(100);
   expect(report.metrics.mcpPhasePeak).toEqual({ phase: "preload", wallMs: 12, rssMB: 250, peakRaised: true });
+  const ambiguous = capacityReport({ home: dir, ...readings({ metrics: [{ at, kind: "mcp-phase", tool: "amem_remember", wallMs: 8, rssMB: 280, peakRaised: false, shared: true }] }) });
+  expect(ambiguous.metrics.mcpPhasePeak).toEqual({ phase: "amem_remember", wallMs: 8, rssMB: 280, peakRaised: false, shared: true });
 });

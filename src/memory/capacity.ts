@@ -56,7 +56,7 @@ export interface CapacityReport {
   capture: { shards: number; bytes: number; rows: number; rowsPerDay: number; bytesPerDay: number };
   disk: { freeBytes: number; totalBytes: number };
   memory: { totalBytes: number; pressure: string | null };
-  metrics: { samples: number; hookP95Ms: number | null; hookRssMB: number | null; searchP95Ms: number | null; searchRssMB: number | null; mcpPhasePeak: { phase: string; wallMs: number; rssMB: number; peakRaised: boolean } | null };
+  metrics: { samples: number; hookP95Ms: number | null; hookRssMB: number | null; searchP95Ms: number | null; searchRssMB: number | null; mcpPhasePeak: { phase: string; wallMs: number; rssMB: number; peakRaised: boolean; shared?: boolean } | null };
   projected: { days: number; bytes: number };
   current: CaptureConfig;
   diskShare: number;
@@ -219,7 +219,7 @@ export function capacityReport(opts: {
   const searchRss = searchSamples.filter((s) => typeof s.rssMB === "number").map((s) => s.rssMB!);
   const phases = samples.filter(s => s.kind === "mcp-phase" && typeof s.tool === "string" && (MCP_PHASE_NAMES as readonly string[]).includes(s.tool) && typeof s.wallMs === "number" && Number.isFinite(s.wallMs) && s.wallMs >= 0 && typeof s.rssMB === "number" && Number.isFinite(s.rssMB) && s.rssMB > 0 && typeof s.peakRaised === "boolean");
   const peak = phases.reduce<MetricSample | undefined>((best, row) => !best || row.rssMB! > best.rssMB! ? row : best, undefined);
-  const mcpPhasePeak = peak ? { phase: peak.tool!, wallMs: peak.wallMs!, rssMB: peak.rssMB!, peakRaised: peak.peakRaised! } : null;
+  const mcpPhasePeak = peak ? { phase: peak.tool!, wallMs: peak.wallMs!, rssMB: peak.rssMB!, peakRaised: peak.peakRaised!, ...(peak.shared === true ? { shared: true } : {}) } : null;
   const metrics = { mcpPhasePeak, samples: samples.length, hookP95Ms: p95(hookWalls), hookRssMB: p95(hookRss), searchP95Ms: p95(searchWalls), searchRssMB: p95(searchRss) };
 
   const homeConfig = readCaptureConfigFile(join(base, "capture-config.json"));
@@ -280,7 +280,7 @@ export function capacityText(report: CapacityReport): string {
     `capture: ${report.capture.rows} rows, ${mb(report.capture.bytes)} in ${report.capture.shards} shard(s), +${report.capture.rowsPerDay.toFixed(1)} rows/day, +${mb(report.capture.bytesPerDay)}/day`,
     `disk: ${mb(report.disk.freeBytes)} free of ${mb(report.disk.totalBytes)}; memory: ${mb(report.memory.totalBytes)} total${report.memory.pressure ? `, pressure ${report.memory.pressure}` : ""}`,
     `metrics: ${report.metrics.samples} samples (hook p95 ${report.metrics.hookP95Ms?.toFixed(1) ?? "?"} ms, search peak ${report.metrics.searchRssMB?.toFixed(1) ?? "?"} MB)`,
-    ...(report.metrics.mcpPhasePeak ? [`MCP phase peak: ${report.metrics.mcpPhasePeak.phase} ${report.metrics.mcpPhasePeak.rssMB.toFixed(1)} MB (${report.metrics.mcpPhasePeak.peakRaised ? "peak raised" : "not attributed"})`] : []),
+    ...(report.metrics.mcpPhasePeak ? [`MCP phase peak: ${report.metrics.mcpPhasePeak.phase} ${report.metrics.mcpPhasePeak.rssMB.toFixed(1)} MB (${report.metrics.mcpPhasePeak.shared ? "shared peak" : report.metrics.mcpPhasePeak.peakRaised ? "peak raised" : "not attributed"})`] : []),
     `projected capture in ${report.projected.days} days: ${mb(report.projected.bytes)}`,
     `current: cap ${report.current.capMb} MB, retention ${report.current.retentionDays} days`,
     `proposal: cap ${report.proposal.capMb} MB, retention ${report.proposal.retentionDays} days (${report.proposal.reason})`,

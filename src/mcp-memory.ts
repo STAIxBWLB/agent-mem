@@ -409,7 +409,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           const ended = window === undefined ? undefined : peaks.end(window);
           window = undefined;
           if (ended?.peakKB === undefined) return;
-          appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "search", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
+          appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "search", tool: name, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised, ...(ended.shared ? { shared: true } : {}) }]);
         } catch { /* a lost telemetry sample is never a failed call */ }
       };
       try {
@@ -431,7 +431,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         // A failed read remains separate from successful search samples and records no input or error text.
         try {
           const ended = window === undefined ? undefined : peaks.end(window); window = undefined;
-          if (ended?.peakKB !== undefined) appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: `failed:${name}`, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised }]);
+          if (ended?.peakKB !== undefined && (ended.raised || ended.shared)) appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "mcp-phase", tool: `failed:${name}`, wallMs: performance.now() - started, rssMB: ended.peakKB / 1024, peakRaised: ended.raised, ...(ended.shared ? { shared: true } : {}) }]);
         } catch { /* observational only */ }
         throw error;
       }

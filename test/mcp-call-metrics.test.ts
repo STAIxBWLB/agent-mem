@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryMcp, type MemoryMcp } from "../src/mcp-memory.ts";
-import { appendMetrics, createPeakTracker, metricsPath, processPeakRssKB, readCaptureDrops, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
+import { appendMetrics, createPeakTracker, observeMcpPhase, metricsPath, processPeakRssKB, readCaptureDrops, readMetrics, type MetricSample } from "../src/memory/metrics.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 
@@ -23,8 +23,8 @@ function seeded(text = "ordinary note for read-tool telemetry", about = [`path:$
   store.close();
   return { root, memory, project, id };
 }
-function session(f: ReturnType<typeof seeded>): MemoryMcp {
-  const created = createMemoryMcp({ cwd: f.root, base: f.memory, project: f.project });
+function session(f: ReturnType<typeof seeded>, peaks?: ReturnType<typeof createPeakTracker>): MemoryMcp {
+  const created = createMemoryMcp({ cwd: f.root, base: f.memory, project: f.project, ...(peaks ? { peaks } : {}) });
   sessions.push(created); return created;
 }
 const samples = (memory: string): MetricSample[] => readMetrics(memory);
@@ -93,17 +93,19 @@ test("#485 AC2: each read-tool call appends one named sample, and the call that 
 
 test("mixed metrics retain independent bounded windows and hook drop visibility", () => {
   const f = seeded(), at = new Date().toISOString();
-  const hooks: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "hook", wallMs: i, captureDrops: 1, captureDropReason: "spool_full", brief: { work: "complete", curated: "complete", capture: "complete" } }));
-  const reads: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "search", tool: "amem_search", wallMs: i, rssMB: 40, peakRaised: false }));
-  const phases: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "mcp-phase", tool: "preload", wallMs: i, rssMB: 50, peakRaised: false }));
+  const hooks: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "hook", wallMs: i, captureDrops: 1, captureDropReason: "spool_full", brief: { work: "complete".repeat(20), curated: "complete", capture: "complete" } }));
+  const reads: MetricSample[] = Array.from({ length: 200 }, (_, i) => ({ at, kind: "search", tool: "amem_search", wallMs: i + 0.123456789, rssMB: 40.123456789, peakRaised: false }));
+  const phases: MetricSample[] = Array.from({ length: 800 }, (_, i) => ({ at, kind: "mcp-phase", tool: "preload", wallMs: i, rssMB: 50, peakRaised: false }));
   appendMetrics(f.memory, [...hooks, ...reads]);
   appendMetrics(f.memory, phases); // force the first byte-bounded trim
   const before = samples(f.memory).filter(row => row.kind !== "mcp-phase");
   appendMetrics(f.memory, phases);
   const after = samples(f.memory);
   expect(after.filter(row => row.kind !== "mcp-phase")).toEqual(before);
+  expect(after.filter(row => row.kind === "hook")).toHaveLength(200);
+  expect(after.filter(row => row.kind === "search")).toHaveLength(200);
   expect(after.filter(row => row.kind === "mcp-phase").length).toBeLessThanOrEqual(32);
-  expect(statSync(metricsPath(f.memory)).size).toBeLessThanOrEqual(64 * 1024);
+  expect(statSync(metricsPath(f.memory)).size).toBeLessThanOrEqual(128 * 1024);
   const drops = readCaptureDrops(f.memory); expect(drops.readable).toBe(true);
   if (drops.readable) expect(drops.counts.spool_full).toBe(after.filter(row => row.kind === "hook").length);
   const inode = statSync(metricsPath(f.memory)).ino;
@@ -133,7 +135,7 @@ test("#485 AC4: a sample holds no query text, arguments, ids or paths", async ()
   await mcp.tools.amem_search({ query: CANARY });
   const rows = await settled(f.memory, 1);
   expect(rows).toHaveLength(1);
-  expect(Object.keys(rows[0]!).sort()).toEqual(["at", "kind", "peakRaised", "rssMB", "tool", "wallMs"]);
+  expect(Object.keys(rows[0]!).filter(key => key !== "shared").sort()).toEqual(["at", "kind", "peakRaised", "rssMB", "tool", "wallMs"]);
   const text = JSON.stringify(rows[0]);
   for (const secret of [CANARY, f.id, f.project, PATH_CANARY, f.root]) expect(text).not.toContain(secret);
 }, 30_000);
@@ -241,7 +243,7 @@ test("#485 review: a peak set while two read calls overlap is credited to neithe
   const second = peaks.begin();
   // Either call could have raised this peak, so neither is named; both still record the peak they saw.
   expect(peaks.end(second)).toEqual({ peakKB: 300, raised: false });
-  expect(peaks.end(first)).toEqual({ peakKB: 300, raised: false });
+  expect(peaks.end(first)).toEqual({ peakKB: 300, raised: false, shared: true });
   // The peak advanced anyway, so the next call is compared with reality and does not re-claim it.
   expect(peaks.end(peaks.begin())).toEqual({ peakKB: 300, raised: false });
   peak = 400;
@@ -255,7 +257,8 @@ test("#485 review: a peak set while two read calls overlap is credited to neithe
 });
 
 test("MCP phase samples cover failed reads and write tools without content", async () => {
-  const f = seeded(CANARY), mcp = session(f);
+  const f = seeded(CANARY); let peak = 100;
+  const mcp = session(f, createPeakTracker(() => peak += 10));
   await expect(mcp.tools.amem_search({ query: "" })).rejects.toThrow();
   await mcp.tools.amem_remember({ text: CANARY, kind: "finding" });
   await mcp.tools.amem_work_state_write({ list: "fixture", fields: { status: "active" } });
@@ -263,7 +266,7 @@ test("MCP phase samples cover failed reads and write tools without content", asy
   let rows: MetricSample[] = [];
   for (let i = 0; i < 200; i++) { rows = readMetrics(f.memory).filter(row => row.kind === "mcp-phase"); if (rows.some(row => row.tool === "amem_correct")) break; await Bun.sleep(5); }
   expect(rows.map(row => row.tool)).toEqual(expect.arrayContaining(["failed:amem_search", "amem_remember", "amem_work_state_write", "amem_correct"]));
-  for (const row of rows) expect(Object.keys(row).sort()).toEqual(["at", "kind", "peakRaised", "rssMB", "tool", "wallMs"]);
+  for (const row of rows) expect(Object.keys(row).filter(key => key !== "shared").sort()).toEqual(["at", "kind", "peakRaised", "rssMB", "tool", "wallMs"]);
   for (const secret of [CANARY, f.id, f.project, f.root, PATH_CANARY]) expect(JSON.stringify(rows)).not.toContain(secret);
 });
 
@@ -271,7 +274,26 @@ test("nested phase attribution is conservative across overlap", () => {
   let peak = 100; const tracker = createPeakTracker(() => peak);
   const read = tracker.begin(), phase = tracker.begin(read); peak = 200;
   expect(tracker.end(phase)).toEqual({ peakKB: 200, raised: true });
-  expect(tracker.end(read)).toEqual({ peakKB: 200, raised: false });
+  expect(tracker.end(read)).toEqual({ peakKB: 200, raised: false, shared: true });
   const a = tracker.begin(), b = tracker.begin(); peak = 300;
-  expect(tracker.end(a).raised).toBe(false); expect(tracker.end(b).raised).toBe(false);
+  expect(tracker.end(a)).toMatchObject({ raised: false, shared: true }); expect(tracker.end(b)).toMatchObject({ raised: false, shared: true });
+});
+
+
+test("a raising phase survives 100 later non-raising phases", async () => {
+  const f = seeded(); let peak = 100; const tracker = createPeakTracker(() => peak);
+  const first = observeMcpPhase(f.memory, tracker, "amem_remember"); peak = 200; first();
+  for (let i = 0; i < 100; i++) observeMcpPhase(f.memory, tracker, "amem_correct")();
+  let phases: MetricSample[] = [];
+  for (let i = 0; i < 200; i++) { phases = readMetrics(f.memory).filter(row => row.kind === "mcp-phase"); if (phases.length) break; await Bun.sleep(5); }
+  expect(phases).toHaveLength(1); expect(phases[0]).toMatchObject({ tool: "amem_remember", rssMB: 200 / 1024, peakRaised: true });
+});
+
+test("an overlapping phase rise is recorded as shared", async () => {
+  const f = seeded(); let peak = 100; const tracker = createPeakTracker(() => peak);
+  const first = observeMcpPhase(f.memory, tracker, "amem_remember"), second = observeMcpPhase(f.memory, tracker, "amem_correct");
+  peak = 300; first(); second();
+  let phases: MetricSample[] = [];
+  for (let i = 0; i < 200; i++) { phases = readMetrics(f.memory).filter(row => row.kind === "mcp-phase"); if (phases.length === 2) break; await Bun.sleep(5); }
+  expect(phases).toHaveLength(2); expect(phases.every(row => row.shared === true && row.peakRaised === false)).toBe(true);
 });
