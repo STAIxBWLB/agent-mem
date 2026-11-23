@@ -118,7 +118,7 @@ test("version table recognizes Jcode's v prefix and leaves undocumented baseline
 test.each(["development snapshot", "qwen 0.26.1.1"])("unrecognised version %s is reported without a mismatch warning", output => {
   const f = versionFixture("qwen", `console.log(${JSON.stringify(output)});`), plan = f.preview();
   expect(plan.actions[0]!.version).toEqual({ output, verified: "0.26.1", matches: null });
-  expect(plan.notes.join("\n")).not.toContain("WARNING: qwen version"); expect(setupPlanText(plan)).toContain(`version unrecognised (${output})`);
+  expect(plan.notes.join("\n")).not.toContain("WARNING: qwen version"); expect(setupPlanText(plan)).toContain(`unrecognised (${output})`);
 });
 test("Pi's advisory probe runs only in staging and leaves the real fixture home unchanged", () => {
   const f = versionFixture("pi", 'writeFileSync(process.env.HOME + "/stage-only", "probe wrote here"); console.log("pi 1.2.3");'), before = snapshot(f.home), plan = f.preview();

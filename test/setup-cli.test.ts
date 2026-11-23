@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { runCli, type CliContext } from "../src/cli.ts";
 import { COMMANDS, parseCommand } from "../src/commands-table.ts";
 import { realPath } from "../src/memory/platform.ts";
+import { cellWidth } from "@staix/cli-output";
 const cleanup: Array<() => void> = [], targets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy", "all"] as const;
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function put(file: string, value: string, mode = 0o600) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, value); chmodSync(file, mode); }
@@ -31,7 +32,7 @@ function fixture() {
 test("setup command table, parser and actual help expose the same targets and apply/undo options", async () => {
   const f = fixture(), before = snapshot(f.root), help = await runCli(["setup", "--help"], f.context);
   expect(help).toContain("setup <target>"); expect(help).toContain("[--apply]"); expect(help).toContain("[--undo]");
-  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--adopt-current", "--apply", "--json", "--root", "--undo"]);
+  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--adopt-current", "--apply", "--json", "--root", "--undo", "--verbose"]);
   for (const target of targets) expect(parseCommand(["setup", target])).toMatchObject({ path: ["setup"], positionals: [target] });
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
 });
@@ -50,6 +51,37 @@ test("default setup CLI previews every target with no commands, home writes or c
     expect(plan.actions.every((action: { target: string; files: string[] }) => action.files.length === (["qwen", "opencode", "gemini", "agy"].includes(action.target) ? 1 : 2))).toBe(true);
   }
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before); expect(existsSync(f.env.AMEM_HOME!)).toBe(false);
+});
+test("setup verbose changes only the human report and retains exact JSON bytes", async () => {
+  const f = fixture();
+  const ordinary = await runCli(["setup", "claude", "--json"], f.context);
+  const verbose = await runCli(["setup", "claude", "--json", "--verbose"], f.context);
+  expect(verbose).toBe(ordinary);
+  expect(ordinary).toBe(JSON.stringify(JSON.parse(ordinary), null, 2));
+  const plain = await runCli(["setup", "claude"], f.context);
+  const detailed = await runCli(["setup", "claude", "--verbose"], f.context);
+  expect(plain).not.toContain("No AGENTS.md, CLAUDE.md or rule files are edited.");
+  expect(detailed).toContain("No AGENTS.md, CLAUDE.md or rule files are edited.");
+});
+test("setup reports fit 80 columns for preview, apply and undo", async () => {
+  const f = fixture(), context = { ...f.context, env: { ...f.env, COLUMNS: "80" } };
+  for (const [index, args] of [["setup", "all"], ["setup", "claude", "--apply"], ["setup", "claude", "--apply"], ["setup", "claude", "--undo"]].entries()) {
+    const output = await runCli([...args, "--ascii", "--color=never"], context);
+    expect(output).toContain(" amem Setup");
+    expect(output.split("\n").every(line => cellWidth(line) <= 80)).toBe(true);
+    expect(output.trimEnd().split("\n").at(-1)).toMatch(/(?:ok|warnings?)/);
+    if (index === 2) {
+      expect(output).not.toContain("> Notes");
+      expect(await runCli([...args, "--ascii", "--color=never", "--verbose"], context)).toContain("> Notes");
+    }
+  }
+  rmSync(join(f.root, "bin", "codex")); rmSync(join(f.root, "bin", "pi"));
+  for (const mode of ["--apply", "--undo"]) {
+    const output = await runCli(["setup", "all", mode, "--ascii", "--color=never"], context);
+    expect(output).toContain("> claude"); expect(output).toContain("> codex");
+    expect(output.split("\n").every(line => cellWidth(line) <= 80)).toBe(true);
+    expect(output.trimEnd().split("\n").at(-1)).toMatch(/(?:ok|warnings?)/);
+  }
 });
 for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) test(`setup explicit modes work with ${marker} set and leave no setup state after undo`, async () => {
   const f = fixture(), original = '{ "other": true, "mcpServers": { "other": { "command": "keep" } } }\n'; put(join(f.home, ".claude.json"), original); const before = snapshot(f.root);

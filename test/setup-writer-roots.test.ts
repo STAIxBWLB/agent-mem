@@ -8,6 +8,7 @@ import { realPath } from "../src/memory/platform.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
+import { parseCommand } from "../src/commands-table.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -163,7 +164,7 @@ test("a same-stamp newly registered receipt cannot be omitted from completeness"
 test("#551 AC2: setup warns when the root it would register is outside the placement writer inventory", async () => {
   const f = await placementActivationFixture(); cleanup.push(f.close);
   expect((await activateSyncPlacement(f.options("apply"))).active).toBe(true);
-  const outside = join(f.root, "outside install");
+  const outside = join(f.root, "outside ' install");
   for (const part of [outside, join(outside, "bin"), join(outside, "src")]) mkdirSync(part, { mode: 0o755 });
   writeFileSync(join(outside, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.21.0" }), { mode: 0o600 });
   writeFileSync(join(outside, "bin", "amem.js"), "// fixture only\n", { mode: 0o600 }); writeFileSync(join(outside, "src", "cli.ts"), "// fixture only\n", { mode: 0o600 });
@@ -185,7 +186,20 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   expect(warning).toContain("never refuses on this alone");
   expect(plan.notes).toContain(warning);
   const preview = await runSetup("kimi", "preview", { ...options(outside), json: false } as SetupContext);
-  expect(preview).toContain("Warnings:"); expect(preview).toContain(`--writer-root ${quote(outside)}`);
+  expect(preview).toContain("> Attention"); expect(preview).toContain(`--writer-root ${quote(outside)}`);
+  const narrow = await runSetup("kimi", "preview", { ...options(outside), json: false, columns: 80 } as SetupContext & { columns: number });
+  const commands = narrow.replace(/\\\n\s+/g, " ").split("\n").filter(line => line.trimStart().startsWith("-> amem migrate "));
+  expect(commands).toHaveLength(2);
+  for (const line of commands) {
+    // Fixture roots are controlled; ask the shell to split the displayed, quoted arguments without running amem.
+    const command = line.trim().slice("-> amem ".length);
+    const split = Bun.spawnSync(["sh", "-c", `set -- ${command}; printf '%s\\n' "$@"`]);
+    expect(split.exitCode).toBe(0);
+    const args = split.stdout.toString().trimEnd().split("\n");
+    expect(parseCommand(args).path).toEqual(["migrate"]);
+    expect(args).toContain(realPath(outside));
+    expect(args).toContain(realPath(activationOwnRoot));
+  }
   // A preview writes nothing at all.
   expect(readFileSync(join(f.base, "sync-placement-writer-roots.json"))).toEqual(inventory); expect(epochs()).toEqual(before);
   const applied = JSON.parse(await runSetup("kimi", "apply", options(outside))) as { applied: string[]; unchanged: string[]; warnings?: string[] };
@@ -244,6 +258,23 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   expect(unproven.placementWriter).toContain("neither confirmed nor refused");
   expect(unproven.placementWriter).not.toContain("outside the active placement writer inventory");
 }, 120_000);
+
+test("setup writer commands use the plan's HOME-only relocated memory home", async () => {
+  const f = await placementActivationFixture(); cleanup.push(f.close);
+  expect((await activateSyncPlacement(f.options("apply"))).active).toBe(true);
+  const outside = join(f.root, "outside"), home = f.env.HOME!;
+  for (const part of [outside, join(outside, "bin"), join(outside, "src")]) mkdirSync(part, { mode: 0o755 });
+  writeFileSync(join(outside, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.21.0" }), { mode: 0o600 });
+  writeFileSync(join(outside, "bin", "amem.js"), "// fixture\n", { mode: 0o600 });
+  writeFileSync(join(outside, "src", "cli.ts"), "// fixture\n", { mode: 0o600 });
+  const defaultHome = join(home, ".agenthub", "memory"); mkdirSync(defaultHome, { recursive: true });
+  writeFileSync(join(defaultHome, "amem.config.json"), JSON.stringify({ home: f.base }), { mode: 0o600 });
+  const env = { ...f.env }; delete env.AMEM_HOME; delete env.AGENTHUB_HOME;
+  const text = await runSetup("kimi", "preview", { env, root: outside, cwd: f.cwd, native: () => { throw Error("unexpected native call"); } });
+  expect(text).toContain("amem migrate --sync-placement --dry-run");
+  expect(text).toContain(`--writer-root ${quote(outside)}`);
+  expect(text).not.toContain("-> amem doctor");
+});
 
 test("#551 AC2: a home that never activated placement sync tells setup nothing about writers", async () => {
   const f = hookFixture(); cleanup.push(f.close);

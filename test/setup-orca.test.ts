@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { applySetup, planSetup, setupPlanText, undoSetup } from "../src/setup.ts";
+import { applySetup, planSetup, runSetup, setupPlanText, undoSetup } from "../src/setup.ts";
 import { readSetupDrift } from "../src/setup-drift.ts";
 import { resolveSetupPaths } from "../src/setup-paths.ts";
 import { setup202Rig } from "./fakes/setup-202.ts";
@@ -9,6 +10,19 @@ import { setup202Rig } from "./fakes/setup-202.ts";
 const rigs: ReturnType<typeof setup202Rig>[] = [];
 afterEach(() => { for (const rig of rigs.splice(0)) rig.close(); });
 const rig = (bun?: string) => { const r = setup202Rig(bun); rigs.push(r); return r; };
+
+test("setup JSON bytes match main before the report change", async () => {
+  const r = rig("/fixture/stable-runtime/bin/bun");
+  // Captured from main 78e411bb with the same isolated fixture and normalization.
+  for (const [mode, expected] of [
+    ["preview", "0f2509139889b4ac492b1b4bfb5b70595788d30f4e5dfcaf21c56100c2595015"],
+    ["apply", "aec9399999af38534a692dd74b83ae1831c06a78532fabbabdecc70d885b8d4b"],
+    ["undo", "9633125fb95432321e36bf4299ae03d7f06983d818d8a087537fb3d8cf518c6d"],
+  ] as const) {
+    const output = r.normalize(await runSetup("claude", mode, { ...r.options, json: true }));
+    expect(createHash("sha256").update(output).digest("hex")).toBe(expected);
+  }
+});
 
 for (const target of ["claude", "codex"] as const) test(`Orca ${target} publishes the durable personal source and undo restores exact bytes`, () => {
   const r = rig(), data = join(r.home, "Library", "Application Support", "orca");
@@ -190,8 +204,8 @@ test("ordinary Claude/Codex setup plans and file bytes match the pre-redirect go
     const plan = planSetup(target, "preview", r.options), normalized = JSON.parse(r.normalize(JSON.stringify(plan)));
     expect(plan.skills?.[0]?.report?.actions.every(a => a.change === "install")).toBe(true);
     delete normalized.skills;
-    const oldText = setupPlanText(plan).split("\n").filter(line => !line.startsWith("  skill ")).join("\n");
-    expect({ plan: normalized, text: r.normalize(oldText) }).toEqual(golden[`${target}-${custom ? "custom" : "default"}`].preview);
+    expect(normalized).toEqual(golden[`${target}-${custom ? "custom" : "default"}`].preview.plan);
+    expect(JSON.stringify(normalized, null, 2)).toBe(JSON.stringify(golden[`${target}-${custom ? "custom" : "default"}`].preview.plan, null, 2));
     applySetup(plan, r.options);
     const files = plan.actions[0]!.files.map(file => ({ file: r.normalize(file), bytes: r.normalize(r.text(file)) }));
     expect(files).toEqual(golden[`${target}-${custom ? "custom" : "default"}`].appliedFiles);

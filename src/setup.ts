@@ -1,4 +1,5 @@
 import { installSkills, skillRoot, type SkillInstallReport } from "./skills-install.ts";
+import { Report, cellWidth } from "@staix/cli-output";
 import { cliAttribution } from "./memory/cli-attribution.ts";
 import { configuredPolicy } from "./memory/config.ts";
 import { SETUP_CONFIG_BYTES, updateTomlArray } from "./setup-toml.ts";
@@ -20,7 +21,7 @@ import { HOOK_EVENTS } from "./hook-contract.ts";
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { memoryHome } from "./memory/home.ts";
-import { label, PLAIN, singleLine, type Style } from "./memory/style.ts";
+import { PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
 export const SETUP_TARGETS = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy"] as const;
@@ -741,58 +742,113 @@ export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restor
   return withSetupLock(options, () => undoUnlocked(plan, options));
 }
 
-/** Person-facing setup plan (#125): each target once, with its effective files, MCP and hook changes, then skipped clients and notes. `--json` keeps the raw plan. */
-export function setupPlanText(plan: SetupPlan, s: Style = PLAIN): string {
-  const verb = plan.mode === "undo" ? "undo" : plan.mode === "apply" ? "apply" : "preview";
-  // Undo restores every target with a receipt whether or not its CLI is still installed (undoUnlocked), so undo never collapses an action.
-  const full = (action: SetupPlan["actions"][number]) => plan.mode === "undo" || action.available;
-  const skipped = plan.actions.filter(action => !full(action)), changing = plan.actions.filter(action => full(action) && action.mcpChange !== "unchanged");
-  const lines = [`${s.bold(`amem setup ${verb}:`)} ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}, ${changing.length} with ${plan.mode === "undo" ? "restores" : "MCP changes"}${skipped.length ? `, ${skipped.length} skipped` : ""}`, ""];
-  for (const action of plan.actions) {
-    if (!full(action)) { lines.push(`${label(s, "skipped")} ${s.bold(action.target)}: CLI not installed`); continue; }
-    const state = action.mcpChange === "unchanged" ? "ok" : "attention";
-    const what = action.mcpChange === "unchanged" ? plan.mode === "undo" ? "no setup receipt; nothing to restore" : "already set up; no change" : action.mcpChange === "restore" ? `restore original MCP/hook files${action.available ? "" : " (CLI not installed)"}` : `MCP ${action.mcpChange}`;
-    lines.push(`${label(s, state)} ${s.bold(action.target)}: ${what} ${s.dim(`(${action.state})`)}`);
-    if (action.version) {
-      const reported = action.version.output === null ? "unknown" : action.version.verified && action.version.matches === null ? `unrecognised (${action.version.output})` : action.version.output;
-      lines.push(`            version ${reported}; ${action.version.verified ? `verified ${action.version.verified}` : "unverified (no verified version recorded)"}`);
+interface SetupRenderOptions { columns?: number; verbose?: boolean; writerCommands?: readonly string[] }
+type SetupResult = SetupApplyResult | { restored: SetupTarget[]; skills?: SetupSkillResult[] };
+
+/** Human-only shortening; --json retains the exact path and command bytes. */
+function setupDisplay(value: string, columns?: number): string {
+  const limit = columns === undefined ? undefined : Math.max(12, columns - 30);
+  if (limit === undefined) return singleLine(value);
+  return singleLine(value).replace(/\S+/g, token => {
+    if (cellWidth(token) <= limit) return token;
+    const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(token)].map(item => item.segment);
+    let left = "", right = ""; const budget = limit - 3;
+    while (graphemes.length && cellWidth(left) < Math.floor(budget / 2)) left += graphemes.shift();
+    while (graphemes.length && cellWidth(left + "..." + graphemes.at(-1) + right) <= limit) right = graphemes.pop() + right;
+    return left + "..." + right;
+  });
+}
+
+function setupWriterCommands(plan: SetupPlan): string[] {
+  if (!plan.placementWriter) return [];
+  try {
+    // The plan's receipt uses the same resolved memory home as setup, including HOME-only contexts.
+    const receipt = plan.actions[0]?.receipt;
+    if (!receipt) return ["amem doctor"];
+    const home = dirname(dirname(receipt)), roots = readEffectiveSyncPlacementWriters(home).roots;
+    if (!roots) return ["amem doctor"];
+    const root = plan.root?.path ?? realPath(fileURLToPath(new URL("..", import.meta.url)));
+    const all = [...new Set([...roots, ...readSetupWriterRoots(home), root].map(realPath))].sort();
+    if (all.some(value => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value))) return ["amem doctor"];
+    const flags = all.map(value => `--writer-root ${quote(value)}`).join(" ");
+    return [`amem migrate --sync-placement --dry-run ${flags}`, `amem migrate --sync-placement --apply ${flags}`];
+  } catch { return ["amem doctor"]; }
+}
+
+function renderSetup(plan: SetupPlan, result: SetupResult | undefined, s: Style, options: SetupRenderOptions = {}): string {
+  const report = new Report(options.columns, s.ascii, { keepTokensWhole: true });
+  const verb = plan.mode, changed = new Set(result && "applied" in result ? result.applied : result && "restored" in result ? result.restored : plan.actions.filter(action => action.mcpChange !== "unchanged").map(action => action.target));
+  const skipped = new Map<SetupTarget, string>(result && "skipped" in result ? result.skipped?.map(row => [row.target, row.reason]) : !result && plan.mode !== "undo" ? plan.actions.filter(action => !action.available).map(action => [action.target, "CLI not installed"]) : []);
+  const skills = result?.skills ?? plan.skills ?? [], warnings = plan.notes.filter(note => (note.startsWith("WARNING:") || note.includes("detected:") || note.includes("version-specific") && changed.size > 0) && note !== plan.placementWriter);
+  let warningCount = 0;
+  report.header("amem", "Setup"); report.line(`${verb}: ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}`);
+  if ((plan.mode !== "undo" && plan.placementWriter) || warnings.length) {
+    report.section("Attention");
+    if (plan.mode !== "undo" && plan.placementWriter) {
+      const writerCommands = options.writerCommands ?? ["amem doctor"];
+      warningCount++; report.bullet("warn", writerCommands[0] === "amem doctor" ? "The placement writer inventory or its roots could not be verified; check them before renewal." : plan.placementWriter.includes("outside the active") ? "This install root is outside the active placement writer inventory; sync may refuse until it is renewed. Approve the exact apply command before renewal." : "The active placement writer inventory could not be verified.");
+      for (const command of writerCommands) report.next(command);
     }
-    for (const file of action.files) lines.push(`            file     ${file}`);
-    if (action.cwd) lines.push(`            cwd      ${action.cwd}`);
-    lines.push(`            receipt  ${action.receipt}`);
-    if (action.available && action.registration) lines.push(`            command  ${action.registration.map(quote).join(" ")}`);
-    for (const hook of action.hooks) lines.push(`            hook     ${hook.event}: ${hook.command} (timeout ${hook.timeout})`);
-    for (const row of action.removes ?? []) lines.push(`            remove   ${row.event}: ${row.command} (an earlier amem install, in ${row.file})`);
-    if (action.available && !action.hooks.length && plan.mode !== "undo") lines.push(`            hook     ${s.dim("none")}`);
-    lines.push(`            ${s.dim(action.lifecycle)}`);
+    const versionWarnings = warnings.filter(note => /layout verified on/.test(note));
+    if (versionWarnings.length) { warningCount++; report.bullet("warn", `${versionWarnings.length} client version${versionWarnings.length === 1 ? " differs" : "s differ"} from a verified layout; native validation remains enabled.`); }
+    for (const warning of [...new Set(warnings.filter(note => !versionWarnings.includes(note)))]) { warningCount++; report.bullet("warn", setupDisplay(warning.replace(/^WARNING:\s*/, ""), options.columns)); }
   }
-  for (const row of plan.skills ?? []) for (const action of row.report?.actions ?? []) lines.push(`  skill ${row.target}: ${action.name} ${action.change} ${action.path}${row.report?.linkedFrom ? ` (linked from ${row.report.linkedFrom})` : ""}${action.reason ? `: ${action.reason}` : ""}`);
-  for (const row of plan.skills ?? []) if (row.reason) lines.push(`  skill ${row.target}: ${row.reason}`);
-  const warnings = plan.notes.filter(note => /^WARNING|detected|version-specific/.test(note)), notes = plan.notes.filter(note => !warnings.includes(note));
-  if (skipped.length) lines.push("", `Skipped clients: ${skipped.map(action => action.target).join(", ")} (not installed)`);
-  if (warnings.length) lines.push("", "Warnings:", ...warnings.map(note => `  - ${s.attention(note)}`));
-  lines.push("", "Notes:", ...notes.map(note => `  - ${note}`));
-  if (plan.mode === "preview") lines.push("", `Next: amem setup ${plan.targets.length === 1 ? plan.targets[0] : "all"} --apply writes without a prompt; --json prints the full plan`);
-  return lines.join("\n");
+  for (const action of plan.actions) {
+    report.section(action.target);
+    const reason = skipped.get(action.target) ?? (!result && plan.mode !== "undo" && !action.available ? "CLI not installed" : undefined);
+    const state = reason ? `skipped: ${reason}` : plan.mode === "undo" && action.mcpChange === "unchanged" ? "no setup receipt; nothing to restore" : result ? changed.has(action.target) ? plan.mode === "undo" ? "restored" : "applied" : "unchanged" : action.mcpChange === "unchanged" ? "unchanged" : `${action.mcpChange}: ${action.state}`;
+    const rows: [string, string][] = [["MCP", state]];
+    if (!reason) {
+      if (action.version) rows.push(["Version", `${action.version.output === null ? "unknown" : action.version.verified && action.version.matches === null ? `unrecognised (${action.version.output})` : action.version.output}; ${action.version.verified ? `verified ${action.version.verified}` : "unverified"}`]);
+      if (plan.root) rows.push(["Install", setupDisplay(`${plan.root.path} (amem ${plan.root.version})`, options.columns)]);
+      for (const file of action.files) rows.push(["File", setupDisplay(file, options.columns)]);
+      if (action.cwd) rows.push(["Directory", setupDisplay(action.cwd, options.columns)]);
+      rows.push(["Receipt", setupDisplay(action.receipt, options.columns)]);
+      if (!result && action.available && action.registration) rows.push(["Command", setupDisplay(action.registration.map(quote).join(" "), options.columns)]);
+      for (const hook of action.hooks) rows.push(["Hook", setupDisplay(`${hook.event}: ${hook.command} (timeout ${hook.timeout})`, options.columns)]);
+      for (const removal of action.removes ?? []) rows.push(["Remove", setupDisplay(`${removal.event}: ${removal.command} (in ${removal.file})`, options.columns)]);
+    }
+    const skill = skills.find(row => row.target === action.target);
+    if (skill?.report) {
+      const changedSkills = skill.report.actions.filter(item => item.change !== "unchanged" && item.change !== "absent");
+      const unchanged = skill.report.actions.filter(item => item.change === "unchanged").length;
+      const summary = [...changedSkills.map(item => `${item.name} ${item.change}`), ...(unchanged ? [`${unchanged} unchanged`] : []), ...(skill.report.linkedFrom ? [`root ${setupDisplay(skill.report.root, options.columns)} (linked from ${setupDisplay(skill.report.linkedFrom, options.columns)})`] : [])];
+      rows.push(["Skills", summary.join(", ") || "no changes"]);
+    } else if (skill?.reason) rows.push(["Skills", skill.refused ? "refused" : "unavailable"]);
+    report.kv(rows);
+    if (skill?.reason) { warningCount++; report.bullet("warn", singleLine(skill.reason)); }
+    for (const item of skill?.report?.actions ?? []) if (item.reason) { warningCount++; report.bullet("warn", singleLine(`${item.name}: ${item.reason}`)); }
+  }
+  const actionable = plan.actions.some(action => changed.has(action.target) && (plan.mode === "undo" || action.available))
+    || skills.some(row => row.report?.actions.some(item => ["install", "replace", "remove"].includes(item.change)));
+  const notes = plan.notes.filter(note => note !== plan.placementWriter && !warnings.includes(note));
+  const noteTargets: [RegExp, SetupTarget][] = [[/^Codex requires/, "codex"], [/^Qwen capture/, "qwen"], [/^(Jcode setup|Launch Jcode)/, "jcode"], [/^Gemini CLI setup/, "gemini"], [/^OpenCode setup/, "opencode"], [/^Antigravity MCP/, "agy"]];
+  const visibleNotes = options.verbose ? notes : notes.filter(note => (plan.mode !== "undo" && noteTargets.some(([pattern, target]) => pattern.test(note) && changed.has(target) && plan.actions.some(action => action.target === target && action.available))) || plan.actions.some(action => changed.has(action.target) && note.startsWith(`${action.target}: `)) || (plan.mode !== "undo" && actionable && note.startsWith("Antigravity is repository-scoped")));
+  if (visibleNotes.length) { report.section("Notes"); for (const note of [...new Set(visibleNotes)]) report.note(setupDisplay(note, options.columns)); }
+  if (!result && plan.mode === "preview" && actionable) {
+    if (plan.root && /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(plan.root.path)) {
+      warningCount++; report.bullet("warn", "The install root contains control characters; inspect it with --json before rerunning setup.");
+    } else report.next(`amem setup ${plan.targets.length === 1 ? plan.targets[0] : "all"} --apply${plan.actions.some(action => action.state.includes("apply needs --adopt-current")) ? " --adopt-current" : ""}${plan.root ? ` --root ${quote(plan.root.path)}` : ""}`);
+  }
+  report.summary({ ok: plan.targets.length - skipped.size, warnings: warningCount + skipped.size });
+  return report.render(s.color).join("\n");
 }
 
-function setupResultText(result: SetupApplyResult | { restored: SetupTarget[]; skills?: SetupSkillResult[] }, s: Style): string {
-  const skills = (result.skills ?? []).flatMap(row => [...(row.reason ? [`skill ${row.target}: ${row.reason}`] : []), ...(row.report?.actions ?? []).map(a => `skill ${row.target}: ${a.name} ${a.change} ${a.path}${row.report?.linkedFrom ? ` (linked from ${row.report.linkedFrom})` : ""}${a.reason ? `: ${a.reason}` : ""}`)]);
-  if ("restored" in result) return [`${label(s, "ok")} restored: ${result.restored.join(", ") || "none"}`, ...skills].join("\n");
-  return [`${label(s, "ok")} applied: ${result.applied.join(", ") || "none"}`, `${label(s, "ok")} unchanged: ${result.unchanged.join(", ") || "none"}`,
-    ...(result.skipped ?? []).map(item => `${label(s, "skipped")} ${item.target}: ${item.reason}`),
-    ...(result.warnings ?? []).map(warning => `${label(s, "attention")} ${warning}`), ...skills].join("\n");
-}
-
+export function setupPlanText(plan: SetupPlan, s: Style = PLAIN, options: SetupRenderOptions = {}): string { return renderSetup(plan, undefined, s, options); }
+function setupResultText(result: SetupResult, s: Style, plan: SetupPlan, options: SetupRenderOptions = {}): string { return renderSetup(plan, result, s, options); }
 /** Compatibility formatter for confirmation-style callers: the raw plan under `--json`, the readable plan otherwise. */
 export function setupConfirmationText(plan: SetupPlan, json: boolean, s: Style = PLAIN): string { return json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s); }
 
-export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext & { json?: boolean; style?: Style } = {}): Promise<string> {
+export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext & { json?: boolean; style?: Style; columns?: number; verbose?: boolean } = {}): Promise<string> {
   const plan = planSetup(target, mode, options), s = options.json ? PLAIN : options.style ?? PLAIN;
-  if (cliAttribution()?.actor === "agent" && !configuredPolicy(memoryHome(options.env ?? process.env), options.cwd ?? process.cwd()).screenStandalone(JSON.parse(JSON.stringify(plan)))) throw Error("Memory operation unavailable or refused; no partial result is shown.");
-  if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s);
+  const renderOptions: SetupRenderOptions = { columns: options.columns, verbose: options.verbose, ...(!options.json && mode !== "undo" && plan.placementWriter ? { writerCommands: setupWriterCommands(plan) } : {}) };
+  if (cliAttribution()?.actor === "agent") {
+    const policy = configuredPolicy(memoryHome(options.env ?? process.env), options.cwd ?? process.cwd());
+    if (!policy.screenStandalone(JSON.parse(JSON.stringify(plan))) || (renderOptions.writerCommands && !policy.screenStandalone(renderOptions.writerCommands))) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+  }
+  if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s, renderOptions);
   const result = mode === "apply" ? applySetup(plan, options) : undoSetup(plan, options);
-  return options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s);
+  return options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s, plan, renderOptions);
 }
 
 
