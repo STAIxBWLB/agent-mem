@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isAmemCommand } from "../src/commands-table.ts";
-import { CLIS, captureFinding, captureHint, DOCTOR_HINTS, DOCTOR_SCHEMA, doctorText, hintFinding, writerFinding, type DoctorReport } from "../src/memory/doctor.ts";
+import { CLIS, captureHint, DOCTOR_SCHEMA, type DoctorReport } from "../src/memory/doctor.ts";
+import { captureFinding, DOCTOR_HINTS, doctorText, hintFinding, writerFinding } from "../src/memory/doctor-text.ts";
 import { statusText, type StatusView } from "../src/memory/status-text.ts";
 import { style } from "../src/memory/style.ts";
 

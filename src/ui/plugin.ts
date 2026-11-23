@@ -25,12 +25,14 @@ import { catalogKeys, readCatalogFresh } from "../memory/catalog.ts";
 import { configuredPolicy, configuredPolicyOptions } from "../memory/config.ts";
 import { openCuratedForRead, requireShard } from "../memory/curated-read.ts";
 import { applyDecay, assertExactDecayForget, decayPreview, DECAY_DEFAULT_DAYS, readDecayCounters } from "../memory/decay-review.ts";
-import { gcText, planGc, runGc } from "../memory/gc.ts";
+import { planGc, runGc } from "../memory/gc.ts";
+import { gcText } from "../memory/gc-text.ts";
 import { memoryHome } from "../memory/home.ts";
 import { appendLifecycle, assertProjectActive, projectState } from "../memory/lifecycle.ts";
 import { hasFailLabel, noteAdd, parseFailTemplate } from "../memory/note-add.ts";
 import type { StandalonePolicy } from "../memory/policy.ts";
-import { applyPrune, planPrune, pruneText } from "../memory/prune.ts";
+import { applyPrune, planPrune } from "../memory/prune.ts";
+import { pruneText } from "../memory/prune-text.ts";
 import { aliasedKeys, PlacementRealmRefusal, placementRealmGap, placementRealmView, readShardedSelection, resolveAlias, type PlacementRealmGap, type PlacementRealmView } from "../memory/shard.ts";
 import { machineId, MemoryStore, openShardStore, type StoreOptions, type View } from "../memory/store.ts";
 

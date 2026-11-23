@@ -37,7 +37,8 @@ import { CandidateStore, candidateInputId, candidateTargetRevision, type Candida
 import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-overlaps.ts";
 import { openCuratedForRead } from "./memory/curated-read.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
-import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
+import { capacityReport } from "./memory/capacity.ts";
+import { capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity-text.ts";
 import { CaptureStore, readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
 import { COMMANDS, CommandUsageError, commandHelp, commandPath, parseCommand, usageLine } from "./commands-table.ts";
@@ -46,12 +47,16 @@ import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
 import { RemoteRealmRefusal } from "./memory/sync-placement-remote-refusal.ts";
 import { hashJSON, readSelector, resolveProfile } from "./memory/generation.ts";
-import { migrate, migrationText } from "./memory/migrate.ts";
-import { migrateShards, shardMigrationStatus, shardMigrationText } from "./memory/shard-migration.ts";
-import { applyPrune, planPrune, pruneText, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
+import { migrate } from "./memory/migrate.ts";
+import { migrationText } from "./memory/migrate-text.ts";
+import { migrateShards, shardMigrationStatus } from "./memory/shard-migration.ts";
+import { shardMigrationText } from "./memory/shard-migration-text.ts";
+import { applyPrune, planPrune, PRUNE_PLAN_MAX_BYTES } from "./memory/prune.ts";
+import { pruneText } from "./memory/prune-text.ts";
 import { readCatalogFresh } from "./memory/catalog.ts";
 import { appendLifecycle, assertProjectActive, projectState } from "./memory/lifecycle.ts";
-import { gcText, runGc } from "./memory/gc.ts";
+import { runGc } from "./memory/gc.ts";
+import { gcText } from "./memory/gc-text.ts";
 import { usageReport, usageText } from "./memory/usage.ts";
 import * as reports from "./memory/report-text.ts";
 import { exportProject, type ProjectExportFormat } from "./memory/project-export.ts";
@@ -63,13 +68,15 @@ import { requireShard } from "./memory/curated-read.ts";
 import { appendGitattributes, appendRepoLine, boundRepoRoot, planGitattributes, planRepoPromotion, readRepoScope, repoLogIgnored, repoLogPath, repoReadPolicy, repoVisibility } from "./memory/repo-scope.ts";
 import type { Visibility } from "./memory/sync.ts";
 import { applySplit, previewSplit } from "./memory/capacity-split.ts";
-import { evalText, parseKs } from "./memory/eval.ts";
+import { parseKs } from "./memory/eval.ts";
+import { evalText } from "./memory/eval-text.ts";
 import { unrankedScoreDetails } from "./memory/search-score.ts";
 import { builtinSet, evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./memory/eval-fixture.ts";
 import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
 import { runEditor } from "./memory/editor.ts";
-import { doctorReport, doctorText } from "./memory/doctor.ts";
+import { doctorReport } from "./memory/doctor.ts";
+import { doctorText } from "./memory/doctor-text.ts";
 import { statusText, type StatusView } from "./memory/status-text.ts";
 import { asciiMarkers, errorLine, errorSpans, EXIT, markerCell, paint, Report, resolveColor, streamEnv } from "@staix/cli-output";
 import { style, facts, label, memoryRecordText, memoryScoresText, memoryTableText, PLAIN, singleLine, wordedKey, type Style } from "./memory/style.ts";
@@ -1142,7 +1149,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     // F13: read-only. A set with entries is scored against a throwaway store seeded with them (touches no memory home); one without scores the bound project's real entries.
     if (parsed.path[1] === "audit") {
       // #326: a private local sheet plus a content-free score. Judging happens outside amem, so nothing on this path calls a model or the network.
-      const audit = await import("./memory/eval-audit.ts"), { MAX_AUDIT_NOTES } = await import("./memory/eval.ts");
+      const audit = await import("./memory/eval-audit.ts"), auditText = await import("./memory/eval-audit-text.ts"), { MAX_AUDIT_NOTES } = await import("./memory/eval.ts");
       if (parsed.path[2] === "sample") {
         const n = options["--n"] === undefined ? 40 : Number(options["--n"]), seed = typeof options["--seed"] === "string" ? options["--seed"] : "";
         if (!Number.isInteger(n) || n < 1 || n > MAX_AUDIT_NOTES) throw new Error(`--n must be an integer from 1 to ${MAX_AUDIT_NOTES}`);
@@ -1164,13 +1171,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         try { sheet = audit.auditSample({ store, project, n, seed, root, asOf, screen: view => screen.screenStandalone(view) }); } finally { store.close(); }
         const out = typeof options["--out"] === "string" ? options["--out"] : join(memoryHome(), "eval", `audit-${project.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 80)}-${seed}.json`);
         const file = audit.writeAuditSheet(out, sheet);
-        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, asOf: sheet.asOf, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated, withheld: sheet.withheld }, null, 2) : screenedLegacy(audit.auditSheetText(sheet, file), audit.auditSheetText(sheet, file, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }));
+        return options["--json"] === true ? JSON.stringify({ file, project: sheet.project, seed: sheet.seed, asOf: sheet.asOf, frame: sheet.frame, drawn: sheet.drawn, truncated: sheet.truncated, withheld: sheet.withheld }, null, 2) : screenedLegacy(auditText.auditSheetText(sheet, file), auditText.auditSheetText(sheet, file, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }));
       }
       if (parsed.path[2] === "score") {
         const [sheet] = parsed.positionals;
         if (!sheet) throw new Error("usage: amem eval audit score <sheet> (the file `amem eval audit sample` wrote)");
         const score = audit.auditScore(audit.readAuditSheet(sheet));
-        return options["--json"] === true ? JSON.stringify(score, null, 2) : screenedLegacy(audit.auditScoreText(score), audit.auditScoreText(score, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }));
+        return options["--json"] === true ? JSON.stringify(score, null, 2) : screenedLegacy(auditText.auditScoreText(score), auditText.auditScoreText(score, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }));
       }
       throw new Error("usage: amem eval audit sample --seed <s> [--n <n>] [--project <key>] | amem eval audit score <sheet>");
     }

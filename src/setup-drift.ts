@@ -2,7 +2,7 @@ import { closeSync, constants, type Dir, existsSync, fstatSync, lstatSync, opend
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { setupReceiptRemedy, type SetupTarget } from "./setup.ts";
+import { setupReceiptRemedy, type SetupTarget } from "./setup-writer-roots.ts";
 import { SETUP_CONFIG_BYTES } from "./setup-toml.ts";
 import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpLauncher, mcpRecord, type ConfigImage } from "./setup-owned.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";

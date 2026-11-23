@@ -4,6 +4,7 @@ import { dirname, extname, isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
 import { SKILL_NAMES } from "../src/skills-install.ts";
 import { realPath } from "../src/memory/platform.ts";
+import { dependencyReach } from "./boundary-graph.ts";
 
 const root = realPath(resolve(import.meta.dir, "../src"));
 const failures: string[] = [];
@@ -75,7 +76,9 @@ for (const name of SKILL_NAMES) {
   try { lstatSync(resolve(skillsRoot, name, "references/amem-adapter.md")); failures.push(`${name}: injected adapter must not be in source`); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") failures.push(`${name}: cannot inspect injected adapter`); }
 }
+const reach = dependencyReach(root);
+failures.push(...reach.failures);
 if (failures.length) {
   console.error(failures.join("\n"));
   process.exitCode = 1;
-} else console.log(`boundary: OK (${files} source files)`);
+} else console.log(`boundary: OK (${files} source files, ${reach.roots} write-path roots, none reach a runtime dependency)`);

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { rawMemoryCommand } from "../src/memory/commands.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { ingestText } from "../src/cli.ts";
-import { capacityApplyText } from "../src/memory/capacity.ts";
+import { capacityApplyText } from "../src/memory/capacity-text.ts";
 import { memoryTableText, PLAIN } from "../src/memory/style.ts";
 import { isAmemCommand } from "../src/commands-table.ts";
 

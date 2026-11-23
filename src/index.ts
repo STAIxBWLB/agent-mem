@@ -9,9 +9,11 @@ export type { CuratedDoc, RankedRef } from "./memory/search-fts.ts";
 export * from "./memory/shard.ts";
 export * from "./memory/catalog.ts";
 export * from "./memory/capacity.ts";
+export { capacityApplyText, capacitySplitText, capacityText } from "./memory/capacity-text.ts";
 export * from "./memory/lifecycle.ts";
 export * from "./memory/usage.ts";
 export * from "./memory/gc.ts";
+export { gcText } from "./memory/gc-text.ts";
 export * from "./memory/project-export.ts";
 export * from "./memory/project-import.ts";
 export * from "./memory/external-import.ts";
@@ -38,8 +40,11 @@ export type {
 export * from "./memory/ops-contract.ts";
 export * from "./memory/generation.ts";
 export * from "./memory/migrate.ts";
+export { migrationText } from "./memory/migrate-text.ts";
 export * from "./memory/prune.ts";
+export { pruneText } from "./memory/prune-text.ts";
 export * from "./memory/shard-migration.ts";
+export { shardMigrationText } from "./memory/shard-migration-text.ts";
 
 export * from "./mcp.ts";
 export * from "./mcp-memory.ts";
