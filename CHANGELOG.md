@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.38.0
 
 ### Changed
 
@@ -12,6 +12,12 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Parser change: a command no longer accepts its parent group's flags (#590 H5). Newly refused, all previously ignored: `--set` and `--k` on `amem eval audit`, `amem eval audit sample` and `amem eval audit score`; `--json` on `amem repo attributes`, `amem goal new`, `amem goal link`, `amem goal state`, `amem goal take` and `amem review walk`. `amem import codex` and `amem import claude-auto` keep declaring `--db`, `--limit`, `--restart` and `--capture-days`, so their existing refusal text is unchanged. Each is refused as an unknown option with exit code 2. Command and flag names, `--json` output, the other exit codes, refusal texts and the manifest are unchanged.
 - Human output of `amem status` and `amem doctor` follows the layout grammar of #590. Each report has one header line with its state and one context line. Findings are `⚠` rows, each followed by `→` rows that hold one complete command, with no Markdown backticks; doctor's placement-writer paragraph becomes one finding with one row per command. Rows use worded labels instead of raw keys or JSON, relative times and binary size units, and state words that match the summary line (`warning`, `unknown`, `ok`, `skipped`). Wrapped text continues under its value. The `Next actions` lines and the per-run `Full report` line are gone. The dead reader lease line appears only with the new `--verbose` flag. `--json` output, exit codes and the agent-marked screening and refusal texts are unchanged. Scripts should use `--json`.
 - Human `amem setup` output groups changes by target, summarizes skills and warnings, and ends with a summary. `--verbose` includes static notes. JSON and exit codes are unchanged. Refs #590.
+
+### Compatibility with N-1 (0.37.0)
+
+- Human output: every human report, receipt, table and help page changes layout (#590; PRs #598, #600, #601, #602, #603; tasks 425-429). A script that parses human output breaks; use `--json`, whose fields are unchanged.
+- Exit codes and parsing: `amem help <unknown>` and a bare `amem project`, `skills`, `formats`, `note` or `import` now exit 2, and the parent-group flags listed above are refused as unknown options with exit 2. A script that passed one of those ignored flags must drop it. `amem status`, `amem doctor` and `amem setup` gain `--verbose`. Every other exit code is unchanged.
+- Unchanged: storage formats, curated and capture logs, entry ids and hashing, the index version, schema strings, sync transport and placement records and writer pins, configuration keys, MCP tool names, arguments and results, agent-marked refusal texts, library exports and the bytes of the exported host renderers, and `HOST_API_VERSION` 1. The `@staix/cli-output` pin stays at 0.1.3. No floor is raised, and 0.37.0 and 0.38.0 share a home without restriction.
 
 ## 0.37.0
 
