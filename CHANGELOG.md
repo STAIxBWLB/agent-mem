@@ -6,6 +6,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Changed
 
+- Human list, search, show, receipt, ingest, capacity, gc and evaluation output follows the CLI layout grammar, with bounded tables, relative times and copyable next steps. `--json`, host output and policy boundaries are unchanged. Refs #590.
 - Human output of `amem status` and `amem doctor` follows the layout grammar of #590. Each report has one header line with its state and one context line. Findings are `⚠` rows, each followed by `→` rows that hold one complete command, with no Markdown backticks; doctor's placement-writer paragraph becomes one finding with one row per command. Rows use worded labels instead of raw keys or JSON, relative times and binary size units, and state words that match the summary line (`warning`, `unknown`, `ok`, `skipped`). Wrapped text continues under its value. The `Next actions` lines and the per-run `Full report` line are gone. The dead reader lease line appears only with the new `--verbose` flag. `--json` output, exit codes and the agent-marked screening and refusal texts are unchanged. Scripts should use `--json`.
 - Human `amem setup` output groups changes by target, summarizes skills and warnings, and ends with a summary. `--verbose` includes static notes. JSON and exit codes are unchanged. Refs #590.
 

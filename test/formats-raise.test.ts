@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { readFormatFloors } from "../src/memory/formats.ts";
 import { runningAmemRoots, versionBelow } from "../src/memory/formats-raise.ts";
+import { isAmemCommand } from "../src/commands-table.ts";
 
 const cleanup: (() => void)[] = [], savedHome = process.env.AMEM_HOME;
 afterEach(() => { for (const fn of cleanup.splice(0)) fn(); if (savedHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = savedHome; });
@@ -27,7 +28,11 @@ test("#431 AC6: an agent-marked preview names the record and the writers; --conf
   expect(preview.record).toEqual({ surface: "curated", minReader: floor, since: "2026-11-16" });
   expect(preview.writers.map((w: { source: string }) => w.source).sort()).toEqual(["running", "self"]);
   expect(preview.refusal).toBeNull(); expect(existsSync(join(r.home, "formats.json"))).toBe(false);
-  expect(await runCli(["formats", "raise", "curated", floor, "--confirm"], r.context(table))).toContain(`appended {"surface":"curated","minReader":"${floor}","since":"2026-11-16"}`);
+  const human = await runCli(["formats", "raise", "curated", floor, "--ascii"], r.context(table));
+  expect(human).toContain("~"); expect(human).not.toContain('{"');
+  const next = human.split("\n").find(line => line.trimStart().startsWith("-> "));
+  expect(next).toBeDefined(); expect(isAmemCommand(next!.replace(/^\s*->\s*/, ""))).toBe(true);
+  expect(await runCli(["formats", "raise", "curated", floor, "--confirm"], r.context(table))).toContain(`Appended curated minimum reader ${floor}`);
   expect(readFormatFloors(r.home)).toEqual([{ surface: "curated", minReader: floor, since: "2026-11-16" }]);
   // Append-only: a second surface keeps the first record, and the same or a lower floor is refused as nothing to raise.
   await runCli(["formats", "raise", "capture", floor, "--confirm"], r.context(table));
@@ -39,7 +44,7 @@ test("#431 AC6: a raise refuses while a running writer or this install is below 
   const r = rig(), old = realpathSync(r.install("0.20.0"));
   const table = `  777 bun ${join(old, "bin", "amem.js")} hook session-start\n`;
   const preview = await runCli(["formats", "raise", "home", floor], r.context(table, false));
-  expect(preview).toContain(`refused: writers below ${floor}: running ${old} (pid 777) at 0.20.0`);
+  expect(preview.replace(/\s+/g, " ")).toContain(`writers below ${floor}: running ${old} (pid 777) at 0.20.0`);
   await expect(runCli(["formats", "raise", "home", floor, "--confirm"], r.context(table, false))).rejects.toThrow(`running ${old} (pid 777) at 0.20.0`);
   await expect(runCli(["formats", "raise", "home", above, "--confirm"], r.context("", false))).rejects.toThrow(`self ${realpathSync(own)}`);
   expect(existsSync(join(r.home, "formats.json"))).toBe(false);

@@ -54,7 +54,8 @@ test("a fail note missing any field is refused, naming exactly the missing flags
 test("the structured flags belong to --kind fail, and a plain note takes text as arguments or from stdin with -", async () => {
   const r = rig();
   expect(await message(cli(r, ["note", "add", "--approach", "x", "some text"]))).toContain("belong to --kind fail");
-  expect(await cli(r, ["note", "add", "the", "quay", "lights", "are", "amber"])).toMatch(/^added finding note [a-f0-9]{32}$/);
+  const receipt = await cli(r, ["note", "add", "the", "quay", "lights", "are", "amber", "--ascii"]);
+  expect(receipt.replace(/[a-f0-9]{32}/g, "<id>")).toBe("  ok added finding note <id>");
   expect(await cli(r, ["note", "add", "--kind", "decision", "--tier", "short", "--scope", "shared", "-"], { stdin: () => "typed on stdin\n" })).toContain("added decision note");
   const byText = Object.fromEntries(notes(r).map(note => [note.text, note]));
   expect(byText["the quay lights are amber"]).toMatchObject({ kind: "finding", tier: "long", scope: "project", source: "person" });

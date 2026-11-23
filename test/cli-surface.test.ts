@@ -116,7 +116,8 @@ test("#431 AC8: an agent-marked history read keeps the configured policy screen;
       const agent = { ...person, env: { ...person.env, CODEX_THREAD_ID: "x" } };
       const agentOut = await runCli(["list", "--history"], agent), personOut = await runCli(["list", "--history"], person);
       expect(agentOut).toContain("ordinary history row"); expect(agentOut).not.toContain("NEVER_PUBLIC_HISTORY");
-      expect(personOut).toContain("NEVER_PUBLIC_HISTORY");
+      expect(personOut).toContain("NEVER_PUBLIC_HISTO...");
+      expect(await runCli(["list", "--history", "--json"], person)).toContain("NEVER_PUBLIC_HISTORY");
     } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
   } finally { r.restore(); }
 });

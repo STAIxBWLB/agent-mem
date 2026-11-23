@@ -1,12 +1,14 @@
 /**
  * F13 (agent-mem#40, AC7): local recall evaluation. A question set is a list of (question, expected entry) pairs; the evaluation replays each question
  * through a search function and reports recall@k, hit@k and MRR. No model judge, no network, no embedding: a result either is one of the expected
- * entries or it is not. This leaf has no imports, so the parser and the arithmetic are testable without a store.
+ * entries or it is not. The parser and arithmetic remain testable without a store.
  *
  * Two shapes of set:
  *  - self-contained: `entries` are synthetic notes seeded into a throwaway store, and `expect` names them by `key` (the committed fixture is one);
  *  - the person's own: no `entries`, `expect` holds real entry ids (or `mem:<id>`, or a prefix of 8 or more hex characters) and the bound project's store is searched.
  */
+import { Report } from "@staix/cli-output";
+import { PLAIN, singleLine, type Style } from "./style.ts";
 export const EVAL_SCHEMA = "amem.eval/v1";
 export const MAX_QUESTIONS = 500, MAX_ENTRIES = 200, MAX_QUESTION_CHARS = 500, MAX_EXPECT = 20, MAX_ENTRY_CHARS = 4000, MAX_SET_BYTES = 1024 * 1024, MAX_K = 100;
 export const DEFAULT_KS: readonly number[] = [1, 5, 10];
@@ -214,7 +216,20 @@ export function runEval(rank: (question: string) => readonly string[], resolve: 
 
 const pct = (value: number | null): string => value === null ? "  n/a" : value.toFixed(3);
 /** Human text for `amem eval`; the JSON report is the machine form. */
-export function evalText(report: EvalReport, label: string): string {
+export function evalText(report: EvalReport, label: string, render?: { columns?: number; style?: Style }): string {
+  if (render) {
+    const s = render.style ?? PLAIN, out = new Report(render.columns ?? 80, s.ascii, { sanitize: singleLine });
+    out.header("amem", "Evaluation"); out.section("Results");
+    out.kv([["Set", label], ["Engine", report.engine], ["Questions", String(report.all.questions)], ["Answerable", String(report.answerable.questions)], ["All MRR", report.all.mrr === null ? "?" : report.all.mrr.toFixed(3)], ["Answerable MRR", report.answerable.mrr === null ? "?" : report.answerable.mrr.toFixed(3)]]);
+    if (report.answerable.questions < report.all.questions) out.note(`${report.all.questions - report.answerable.questions} questions name entries this store does not hold; they score zero in all.`);
+    out.section("Cutoffs", String(report.ks.length));
+    const number = (value: number | null | undefined) => value == null ? "?" : value.toFixed(3);
+    out.table(["K", "ALL RECALL", "ALL HIT", "ANSWERABLE RECALL", "ANSWERABLE HIT"], report.ks.map(k => [String(k), number(report.all.recall[k]), number(report.all.hit[k]), number(report.answerable.recall[k]), number(report.answerable.hit[k])]), 0);
+    const missed = report.perQuestion.filter(row => row.rank === null || row.rank > Math.min(...report.ks));
+    if (missed.length) { out.section("Questions to review", String(missed.length)); out.table(["RESULT", "QUESTION"], missed.map(row => [row.rank === null ? "miss" : `rank ${row.rank}`, `${row.answerable ? "" : "not in store: "}${row.q}`]), 1); }
+    out.line(""); out.line(`Summary: ${report.all.questions} questions, ${report.answerable.questions} answerable`);
+    return out.render(s.color).join("\n");
+  }
   const head = (name: string, row: EvalAggregate) => `${name.padEnd(11)} ${String(row.questions).padStart(4)}  ${report.ks.map(k => `${pct(row.recall[k] ?? null)}/${pct(row.hit[k] ?? null)}`.padStart(13)).join(" ")}  ${pct(row.mrr).padStart(6)}`;
   return [
     `eval: ${label} (${report.engine === "substring" ? "substring fallback" : "ranked store.search, engine " + report.engine}; same ranked search path as default \`amem search\`; \`--filter\` keeps legacy substring matching)`,

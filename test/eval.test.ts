@@ -177,7 +177,7 @@ async function cli(h: ReturnType<typeof home>, args: string[]): Promise<string> 
 test("amem eval with no set scores the built-in fixture, as text and as JSON, and never writes the memory home", async () => {
   const h = home();
   const text = await cli(h, ["eval"]);
-  expect(text).toContain("eval: built-in fixture (ranked store.search, engine fts5;"); expect(text).toContain("MRR"); expect(text).toContain("miss: who approves overtime");
+  expect(text).toContain("amem Evaluation"); expect(text).toContain("built-in fixture"); expect(text).toContain("fts5"); expect(text).toContain("MRR"); expect(text).toContain("who approves overtime");
   const json = JSON.parse(await cli(h, ["eval", "--json", "--k", "1,3"])) as { engine: string; ks: number[]; all: { questions: number; mrr: number; hit: Record<string, number> }; answerable: { questions: number } };
   expect(json.engine).toBe("fts5"); expect(json.ks).toEqual([1, 3]); expect(json.all.questions).toBe(32); expect(json.all.mrr).toBe(0.9063);
   expect(Object.keys(json.all.hit)).toEqual(["1", "3"]);
@@ -480,7 +480,7 @@ test("the Korean baseline is pinned exactly: recall@1/5/10, hit, MRR and the ans
 test("amem eval --set ko scores the built-in Korean set, as text and JSON, never touches the memory home, and --set <path> still works", async () => {
   const h = home();
   const text = await cli(h, ["eval", "--set", "ko"]);
-  expect(text).toContain("eval: built-in fixture ko (ranked store.search, engine fts5;"); expect(text).toContain("miss: 개인정보처리방침");
+  expect(text).toContain("amem Evaluation"); expect(text).toContain("built-in fixture ko"); expect(text).toContain("fts5"); expect(text).toContain("개인정보처리방침");
   const json = JSON.parse(await cli(h, ["eval", "--set", "ko", "--json"])) as { all: { questions: number; mrr: number; hit: Record<string, number> }; answerable: { questions: number } };
   expect(json.all.questions).toBe(38); expect(json.all.mrr).toBe(0.8934); expect(json.all.hit).toEqual({ 1: 0.8684, 5: 0.9474, 10: 0.9474 }); expect(json.answerable.questions).toBe(38);
   expect((await import("node:fs")).readdirSync(h.memory)).toEqual([]);

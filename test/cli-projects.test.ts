@@ -203,7 +203,7 @@ test("curated counts are unavailable on an unsplit home, never 0: projects, usag
   const usage = await json(["usage", "--json"], person);
   expect(usage.curatedSplit).toBe(false); expect(usage.totals.curatedEntries).toBeNull();
   expect(await runCli(["usage"], person)).toContain("home not split into shards");
-  expect(await runCli(["project", "forget", A], person)).toContain("curated unavailable (home not split)");
+  expect((await runCli(["project", "forget", A], person)).replace(/\s+/g, " ")).toContain("curated unavailable (home not split)");
   const { migrateShards } = await import("../src/memory/shard-migration.ts");
   await migrateShards({ memoryDir: join(dir, "memory"), mode: "apply", authorizedPerson: true, tty: true });
   expect(await runCli(["projects"], person)).toMatch(/curated 1\b/);
@@ -239,7 +239,7 @@ test("project export and import preview provenance before confirmation and prese
   process.env.AMEM_HOME = join(dir, "restored");
   expect(await json(["project", "import", A, "--from", jsonl, "--json"], { ...person, stdinTTY: false })).toMatchObject({ applied: false, read: 1, added: 0, wouldAdd: 1,
     provenance: { source: { person: 1 }, peer: { codex: 1 }, scope: { project: 1 }, machine: { [machine]: 1 } } });
-  expect(await runCli(["project", "import", A, "--from", jsonl], { ...person, stdinTTY: false })).toContain(`machines ${JSON.stringify({ [machine]: 1 })}`);
+  expect(await runCli(["project", "import", A, "--from", jsonl], { ...person, stdinTTY: false })).toContain(`machines ${machine} 1`);
   expect(await json(["project", "import", A, "--from", jsonl, "--confirm", "--json"], person)).toMatchObject({ applied: true, read: 1, added: 1 });
   const restored = new MemoryStore({ memoryDir: process.env.AMEM_HOME, deferPromotions: true });
   expect(restored.list().map(view => view.id)).toEqual(expected); restored.close();

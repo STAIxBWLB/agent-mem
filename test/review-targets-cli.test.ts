@@ -35,6 +35,19 @@ test("review targets is deterministic and does not write the memory home", async
   } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; rmSync(root, { recursive: true, force: true }); }
 });
 
+test("review targets use table headings and question marks for unknown counts", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "amem-review-layout-"))), base = join(root, "memory"), project = memoryProjectKey(root), previous = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = base;
+  try {
+    const store = new MemoryStore({ memoryDir: base, deferPromotions: true, now: () => Date.now() - 60 * 86400_000 });
+    try { store.note({ op: "note", project, scope: "project", tier: "long", kind: "decision", peer: "person", source: "person", text: "public fixture", about: [] }); } finally { store.close(); }
+    const output = await runCli(["review", "targets", "--ascii"], { cwd: root, env: { COLUMNS: "80" } });
+    expect(output).toContain("RENDERED"); expect(output).toContain("DELIVERED"); expect(output).toContain("CITED");
+    expect(output).toContain("?"); expect(output).not.toContain("unknown");
+    expect(output.split("\n").every(line => Bun.stringWidth(line, { ambiguousIsNarrow: true }) <= 80)).toBe(true);
+  } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; rmSync(root, { recursive: true, force: true }); }
+});
+
 test("review settings are validated and loaded from the machine configuration", () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "amem-review-config-")));
   try {

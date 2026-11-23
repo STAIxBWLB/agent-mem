@@ -2,7 +2,8 @@ import { cliAttribution, noteDisplayActor } from "./cli-attribution.ts";
 import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "./store.ts";
 import { syncMemory, type SyncOptions } from "./sync.ts";
 import { importClaudeMem, type ImportResult, type WorkStateImportResult, type CaptureImportResult } from "./import.ts";
-import { facts, label, PLAIN, type Style } from "./style.ts";
+import { CLI_MEMORY_RENDER, facts, label, memoryDetailText, memoryScoresText, memoryTableText, PLAIN, relativeTime, singleLine, type HumanMemoryRender, type Style } from "./style.ts";
+import { Report } from "@staix/cli-output";
 import { memoryProjectKey, projectChain } from "./project.ts";
 import { recallForViews, recallGraph, recallRows, recallShow } from "./recall.ts";
 import type { GoalPromotionReport } from "./goal-promotion.ts";
@@ -71,13 +72,26 @@ const fail = (message: string): never => { throw new Error(message); };
 
 /** A person-facing aggregate receipt; import results and their JSON representation stay untouched. */
 export function claudeMemImportText(notes: ImportResult, work: WorkStateImportResult, capture?: CaptureImportResult,
-  options: { captureDays?: number; restart?: boolean } = {}, s: Style = PLAIN): string {
+  options: { captureDays?: number; restart?: boolean } = {}, s: Style = PLAIN, render?: { columns?: number; next?: string }): string {
   const more = notes.more || work.more || capture?.more === true;
   const row = (name: string, result: { read: number; added: number; more: boolean }, skipped: number, spooled?: number) =>
     `${label(s, result.more || (spooled ?? 0) > 0 ? "attention" : "ok")} ${name}: ${facts({ read: String(result.read), added: String(result.added), skipped: String(skipped), spooled: spooled === undefined ? "n/a" : String(spooled) })}${result.more ? "; more remain" : ""}`;
   const noteSkipped = notes.read - notes.added, workSkipped = work.read - work.added;
   const otherNotes = Math.max(0, noteSkipped - notes.skipped.model - notes.skipped.pii - notes.skipped.secret);
   const duplicateWork = Math.max(0, workSkipped - work.skipped.invalid - work.skipped.policy);
+  if (render) {
+    const out = new Report(render.columns ?? 80, s.ascii, { sanitize: singleLine, keepTokensWhole: true });
+    out.header("amem", "Import claude-mem"); out.section("Receipts");
+    out.bullet(more || capture?.spooled ? "warn" : "ok", more ? "More rows remain to import." : capture?.spooled ? "Import completed; capture rows are spooled." : "Import completed.");
+    out.kv([["Notes", `read ${notes.read}, added ${notes.added}, skipped ${noteSkipped}${notes.more ? "; more remain" : ""}`], ["Note skips", `model ${notes.skipped.model}, personal data ${notes.skipped.pii}, secret ${notes.skipped.secret}, other ${otherNotes}`], ["Work lists", `read ${work.read}, added ${work.added}, skipped ${workSkipped}${work.more ? "; more remain" : ""}`], ["Work skips", `invalid ${work.skipped.invalid}, policy ${work.skipped.policy}, already imported ${duplicateWork}`], ["Capture", capture ? `read ${capture.read}, added ${capture.added}, skipped ${capture.skipped}, spooled ${capture.spooled}${capture.more ? "; more remain" : ""}` : "not requested"]]);
+    if (capture?.skipped) out.note(`Capture skipped ${capture.skipped} rows (empty, invalid, policy or already imported; no breakdown reported).`);
+    if (capture && options.captureDays !== undefined) out.note(`Capture window: last ${options.captureDays} days. Widening --capture-days later requires --restart.`);
+    if (options.restart) out.note("Selected cursors replayed from the start; existing receipts prevent duplicates.");
+    if (more && render.next) out.next(render.next);
+    else if (more) out.bullet("warn", "Some rows remain; inspect --json and rerun without --restart.");
+    else if (capture?.spooled) out.note("The next capture write replays rows spooled while the store was busy.");
+    return out.render(s.color).join("\n");
+  }
   const lines = [`amem import claude-mem: ${more ? s.attention("run again") : s.ok("complete")}`,
     row("notes", notes, noteSkipped),
     `  skipped reasons: ${facts({ model: notes.skipped.model, PII: notes.skipped.pii, secret: notes.skipped.secret, "empty/malformed/already imported": otherNotes }) || "none"}`,
@@ -98,12 +112,15 @@ export function claudeMemImportText(notes: ImportResult, work: WorkStateImportRe
 }
 
 const one = (v: View) => `${v.id.slice(0, 8)}  ${v.at.slice(0, 16).replace("T", " ")}  ${v.tier.padEnd(5)} ${v.kind.padEnd(8)} ${v.peer.padEnd(8)} ${v.scope === "shared" ? "shared " : ""}${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 100)}${v.supersededBy ? `  (superseded by ${v.supersededBy.slice(0, 8)})` : ""}`;
+
 function detail(v: View): string[] {
   return [`${v.id}  ${v.kind}, ${v.tier}-term${v.expiresAt ? ` until ${v.expiresAt}` : ""}, ${v.scope}`, `by ${v.peer} on machine ${v.machine}, ${v.at}, project ${v.project}${v.task ? `, task ${v.task}` : ""}`,
     ...(cliAttribution() ? [`actor: ${noteDisplayActor(v.peer)}, peer: ${v.peer}`] : []), ...(v.promotedFrom ? [`promoted from ${v.promotedFrom}`] : []), ...(v.supersededBy ? [`superseded by ${v.supersededBy}`] : []), ...(v.about.length ? [`about: ${v.about.join(", ")}`] : []), "", ...(v.title ? [v.title] : []), v.text];
 }
 
 export async function rawMemoryCommand(args: string[], cwd: string, opts: MemoryCommandOptions): Promise<string> {
+  // CLI-only presentation options do not extend the exported host API.
+  const internal = (opts as MemoryCommandOptions & { [CLI_MEMORY_RENDER]?: { render: HumanMemoryRender; renderLegacy?: (legacy: string, formatted: string) => string } })[CLI_MEMORY_RENDER];
   const json = args.includes("--json");
   const rest = args.filter((a) => a !== "--json");
   const flag = (name: string) => { const i = rest.indexOf(name); if (i < 0) return undefined; const v = rest[i + 1] ?? fail(`${name} needs a value`); rest.splice(i, 2); return v; };
@@ -140,6 +157,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   };
   const staleDetail = (view: View): string[] => { const marker = staleMarker(view).trimEnd(); return marker ? [marker] : []; };
   const ready = (rows: readonly View[]) => { try { opts.outputReady?.(rows); } catch { /* optional output metadata cannot fail recall */ } };
+  const rendered = (legacy: string, formatted: string) => internal?.renderLegacy ? internal.renderLegacy(legacy, formatted) : formatted;
   const decorated = (view: View) => { const info = staleInfo(view); return { ...view, ...(info.stale ? { stale: true, ...(info.reason ? { staleReason: info.reason } : {}) } : {}) }; };
   if (!["list", "search", "show", "graph"].includes(sub) && (rest.includes("--history") || rest.includes("--as-of"))) fail("history/as-of apply only to memory reads");
   try {
@@ -175,15 +193,23 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           const emitted = recallForViews(state, rows), publicIds = new Set(rows.map(view => view.id)), allForgotten = q?.trim() ? [] : state.forgotten;
           const forgotten = allForgotten.slice(0, Math.max(0, (limit ? Math.floor(Number(limit)) : 50) - rows.length));
           const result = { at: state.at, entries: rows.map(decorated), forgotten, relations: state.relations.filter(edge => publicIds.has(edge.from) && publicIds.has(edge.to)), incomplete: emitted.incomplete || readable.length > rows.length || forgotten.length < allForgotten.length, notices: emitted.notices };
-          return json ? JSON.stringify(result, null, 2) : [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${staleMarker(view)}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+          const legacy = [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${staleMarker(view)}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+          if (!json && internal?.render) return rendered(legacy, [memoryTableText([...rows.map(view => { const marker = staleMarker(view); return { id: view.id, kind: view.kind, tier: view.tier, peer: view.peer, scope: view.scope, at: view.at, text: `${view.title ? `${view.title}: ` : ""}${view.text}`, flags: [...(view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ["(expired)"] : []), ...(marker ? [marker.trim()] : []), ...(view.supersededBy ? [`superseded by ${view.supersededBy.slice(0, 8)}`] : [])] }; }), ...forgotten.map(row => ({ id: row.id, kind: "forgotten", at: row.at, text: "No retained text" }))], "Retained memory", internal?.render, `retained memory as of ${relativeTime(state.at, internal?.render.now ?? Date.now())}.`), ...result.notices.map(singleLine), ...(result.incomplete ? ["Retained state is incomplete."] : [])].join("\n"));
+          return json ? JSON.stringify(result, null, 2) : legacy;
         }
         if (json) return JSON.stringify(rows.map(view => ({ ...view, ...(folded.has(view.id) ? { folded: folded.get(view.id) } : {}), ...(opts.explainSearch && scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })), null, 2);
         const counted = opts.readable(store.withDeferredPromotions(() => store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
         const withheld = all.length - readable.length;
-        return [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? opts.explainSearch
+        const legacy = [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? opts.explainSearch
           ? rows.flatMap(view => [`${staleMarker(view)}${one(view)}${foldNote(view)}`, ...(scoreDetails?.has(view.id) ? [`score: ${JSON.stringify(scoreDetails.get(view.id))}`] : [])])
           : rows.map(view => `${staleMarker(view)}${one(view)}${foldNote(view)}`) : ["(nothing)"]),
           ...(withheld ? [`(${withheld} withheld: they match a PII pattern; the dashboard shows them)`] : [])].join("\n");
+        if (internal?.render) {
+          const table = memoryTableText(rows.map(view => { const marker = staleMarker(view); return { id: view.id, kind: view.kind, tier: view.tier, peer: view.peer, scope: view.scope, at: view.at, text: `${view.title ? `${view.title}: ` : ""}${view.text}`, flags: [...(marker ? [marker.trim()] : []), ...(folded.has(view.id) ? [`+${folded.get(view.id)} same task`] : []), ...(view.supersededBy ? [`superseded by ${view.supersededBy.slice(0, 8)}`] : [])] }; }), sub === "search" ? "Search" : "Memory", internal?.render, `Project ${project}; machine ${store.machine.label}; ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term.`);
+          const scores = opts.explainSearch ? memoryScoresText(rows.flatMap(view => scoreDetails?.has(view.id) ? [{ id: view.id, details: scoreDetails.get(view.id)! as unknown as Record<string, unknown> }] : []), internal?.render) : "";
+          return rendered(legacy, [table, scores, ...(withheld ? [`${withheld} entries withheld by policy; review them in the dashboard.`] : [])].filter(Boolean).join("\n\n"));
+        }
+        return legacy;
       }
       case "show": {
         const asOf = flag("--as-of"), history = rest.includes("--history"); if (history) rest.splice(rest.indexOf("--history"), 1);
@@ -193,10 +219,12 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         if (shown.state) {
           const rows = opts.readable(shown.state.views), ids = new Set(rows.map(view => view.id)); ready(rows);
           const state = { ...recallForViews(shown.state, rows), views: rows.map(decorated), relations: shown.state.relations.filter(edge => ids.has(edge.from) && ids.has(edge.to)) };
-          return json ? JSON.stringify(state, null, 2) : [`retained memory as of ${state.at}`, ...state.notices, ...rows.flatMap(view => [...staleDetail(view), ...detail(view)]), ...state.forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(state.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+          const legacy = [`retained memory as of ${state.at}`, ...state.notices, ...rows.flatMap(view => [...staleDetail(view), ...detail(view)]), ...state.forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(state.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
+          if (!json && internal?.render) return rendered(legacy, [...state.notices.map(singleLine), ...rows.map(view => memoryDetailText(view, { ...internal?.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) })), ...state.forgotten.map(row => `Forgotten ${singleLine(row.id)}; no retained text.`), ...(state.incomplete ? ["Retained state is incomplete."] : [])].join("\n"));
+          return json ? JSON.stringify(state, null, 2) : legacy;
         }
         const view = need(shown.entry, id); if (!opts.readable([view]).length) fail(`${view.id.slice(0, 8)} is withheld: it matches a PII pattern (the dashboard shows it)`);
-        ready([view]); return json ? JSON.stringify(view, null, 2) : [...staleDetail(view), ...detail(view)].join("\n");
+        ready([view]); return json ? JSON.stringify(view, null, 2) : internal?.render ? rendered([...staleDetail(view), ...detail(view)].join("\n"), [ ...staleDetail(view), memoryDetailText(view, { ...internal?.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) }) ].join("\n")) : [...staleDetail(view), ...detail(view)].join("\n");
       }
       case "graph": {
         const hops = Number(flag("--hops") ?? 1);

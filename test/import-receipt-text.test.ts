@@ -12,6 +12,7 @@ import {memoryProjectKey as importReceiptProjectKey,projectChain as importReceip
 import {appendAlias as importReceiptAppendAlias} from "../src/memory/shard.ts";
 import {MemoryStore as ImportReceiptMemoryStore} from "../src/memory/store.ts";
 import {CONFIG_FILE as IMPORT_CONFIG_FILE} from "../src/memory/config.ts";
+import { isAmemCommand } from "../src/commands-table.ts";
 const ANSI=/\x1b\[/,COLOR=style(true),WIDTH=160;
 const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const fn of cleanup.splice(0))fn();});
@@ -100,12 +101,20 @@ async function runImportReceipt(h: { cwd: string; memory: string; file: string }
 test.each(["work", "capture"] as const)("claude-mem CLI follows %s-only pagination and then completes", async kind => {
   const h = importReceiptFixture(kind), before = importReceiptFs.readFileSync(h.file), args = ["--limit", "1", ...(kind === "capture" ? ["--capture-days", "7"] : [])];
   const first = await runImportReceipt(h, [...args, "--restart"]);
-  expect(first).toStartWith("amem import claude-mem: run again\n");
-  expect(first).toMatch(kind === "work" ? /^  !  ATTENTION +work lists: read 1, added 1/m : /^  !  ATTENTION +capture: read 1, added 1/m);
-  expect(first).toMatch(/^  ok OK +notes: read 0, added 0/m);
-  expect(first).toContain("without --restart, keeping all other arguments");
+  expect(first).toStartWith(" amem Import claude-mem\n");
+  expect(first).toContain("More rows remain to import.");
+  expect(first.replace(/\s+/g, " ")).toContain(kind === "work" ? "Work lists: read 1, added 1" : "Capture: read 1, added 1");
+  expect(first.replace(/\s+/g, " ")).toContain("Notes: read 0, added 0");
+  expect(first).toContain("amem import claude-mem");
+  const next = first.replace(/\\\n\s+/g, " ").split("\n").find(line => line.trimStart().startsWith("-> amem import"));
+  expect(next).toBeDefined();
+  const split = Bun.spawnSync(["sh", "-c", `set -- ${next!.trim().slice("-> amem ".length)}; printf '%s\\n' "$@"`]);
+  expect(split.exitCode).toBe(0);
+  const nextArgs = split.stdout.toString().trimEnd().split("\n");
+  expect(nextArgs).toContain(h.file); expect(nextArgs).not.toContain("--restart");
+  expect(isAmemCommand(`amem ${nextArgs.map(arg => arg.startsWith("/") ? "<path>" : arg).join(" ")}`)).toBe(true);
   if (kind === "capture") expect(first).toContain("Widening --capture-days later requires --restart.");
-  expect(await runImportReceipt(h, args)).toStartWith("amem import claude-mem: complete\n");
+  expect(await runImportReceipt(h, args)).toContain("Import completed.");
   expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
 });
 
@@ -154,6 +163,6 @@ test("marked claude-mem receipt policy withholds details without denying a compl
   const store = new ImportReceiptMemoryStore({ memoryDir: h.memory });
   try { expect(store.list({ project: importReceiptProjectKey(h.cwd) })[0]).toMatchObject({ peer: "original-source-peer", source: "claude-mem", title: "import title", text: "imported public source body" }); }
   finally { store.close(); }
-  expect(await runImportReceipt(h, [], marked, false, false)).toBe("Operation completed; receipt withheld by policy.");
+  expect(await runImportReceipt(h, [], marked, false, false)).toBe("Operation completed; receipt withheld by policy. Run amem status to inspect state.");
   expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
 });

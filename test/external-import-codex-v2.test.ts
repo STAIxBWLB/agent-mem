@@ -84,5 +84,5 @@ test("empty profile: the receipt names both locations checked", async () => {
   const result = await importExternalMemory({ base, project: PROJECT, source: "codex", env: { HOME: root, CODEX_HOME: codex }, policy: allow });
   expect(result).toMatchObject({ files: 0, added: 0, checked: [join(codex, "memories"), join(codex, "memories_v2")] });
   const text = await runCli(["import", "codex"], { cwd: repo, env: { HOME: root, CODEX_HOME: codex, AMEM_HOME: base }, stdinTTY: false, stdoutTTY: false });
-  expect(text).toBe(`no codex memory found; checked ${join(codex, "memories")} and ${join(codex, "memories_v2")}`);
+  expect(text).toContain("no codex memory found; checked"); expect(text).toContain(join(codex, "memories")); expect(text).toContain(join(codex, "memories_v2"));
 });
