@@ -249,7 +249,7 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const tarball = realPath(join(artifacts, packed[0].filename)); requireSmoke(inside(artifacts, tarball), "packed artifact escaped its private directory");
     const dependencyRoot = realPath(join(checkout, "node_modules", "@staix", "cli-output"));
     const dependency = object(JSON.parse(readFileSync(join(dependencyRoot, "package.json"), "utf8")));
-    requireSmoke(dependency.name === "@staix/cli-output" && dependency.version === "0.1.1", "installed cli-output dependency has the wrong identity or version");
+    requireSmoke(dependency.name === "@staix/cli-output" && dependency.version === "0.1.3", "installed cli-output dependency has the wrong identity or version");
     const packedDependency = JSON.parse(await ownedCommand(bun, [npm!, "pack", dependencyRoot, "--offline", "--json", "--ignore-scripts", "--pack-destination", artifacts], artifacts, env));
     requireSmoke(Array.isArray(packedDependency) && packedDependency.length === 1 && typeof packedDependency[0]?.filename === "string" && basename(packedDependency[0].filename) === packedDependency[0].filename, "npm pack did not return the cli-output artifact");
     const dependencyTarball = realPath(join(artifacts, packedDependency[0].filename)); requireSmoke(inside(artifacts, dependencyTarball), "cli-output artifact escaped its private directory");
@@ -258,10 +258,10 @@ export async function runInstalledPackageSmoke(options: { afterInstall?: (instal
     const installed = realPath(join(app, "node_modules", "@staix", "agent-mem")), entry = realPath(join(installed, "bin", "amem.js"));
     const installedDependency = realPath(join(app, "node_modules", "@staix", "cli-output"));
     const installedDependencyMetadata = object(JSON.parse(readFileSync(join(installedDependency, "package.json"), "utf8")));
-    requireSmoke(inside(app, installedDependency) && !inside(checkout, installedDependency) && installedDependencyMetadata.name === "@staix/cli-output" && installedDependencyMetadata.version === "0.1.1", "installed cli-output dependency is missing, escaped the artifact or has the wrong version");
+    requireSmoke(inside(app, installedDependency) && !inside(checkout, installedDependency) && installedDependencyMetadata.name === "@staix/cli-output" && installedDependencyMetadata.version === "0.1.3", "installed cli-output dependency is missing, escaped the artifact or has the wrong version");
     assertInstalledEntry(entry, installed, checkout, env.TMPDIR!);
     const installedMetadata = object(JSON.parse(readFileSync(join(installed, "package.json"), "utf8")));
-    requireSmoke(JSON.stringify(installedMetadata.dependencies) === JSON.stringify({ "@staix/cli-output": "0.1.1" }), "installed artifact does not declare the exact cli-output dependency");
+    requireSmoke(JSON.stringify(installedMetadata.dependencies) === JSON.stringify({ "@staix/cli-output": "0.1.3" }), "installed artifact does not declare the exact cli-output dependency");
     requireSmoke(installedMetadata.name === PACKAGE && installedMetadata.version === metadata.version && installedMetadata.exports?.["."] === "./src/index.ts" && installedMetadata.bin?.amem === "bin/amem.js", "installed artifact metadata differs from its source contract");
     for (const name of ["bin/amem.js", "src/index.ts", ".claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "hooks/hooks.json"]) requireSmoke(lstatSync(join(installed, name)).isFile(), "installed artifact is missing a required executable/plugin component");
     for (const file of ["skills/_shared/amem-adapter.md", ...SKILL_NAMES.map(name => `skills/${name}/SKILL.md`)]) requireSmoke(lstatSync(join(installed, file)).isFile(), `installed artifact missing ${file}`);
