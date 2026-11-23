@@ -33,6 +33,8 @@ const json = (what: string) => ({ "--json": flag(`Print ${what} as JSON`) });
 const history = { "--history": flag("Read retained supersession and expiry history", "Forgotten text stays hidden."),
   "--as-of": date("Read memory as of a past UTC date or timestamp", "Current forget and prune masks still apply.") };
 const policy = { "--policy-free": flag("Accepted and ignored", "The configured privacy policy always applies.") };
+// Declared on import codex and claude-auto so their handler keeps its own refusal text for these claude-mem flags.
+const claudeMemOnly = Object.fromEntries(["--db", "--limit", "--restart", "--capture-days"].map(name => [name, { description: "Only for import claude-mem; refused here", ...(name === "--restart" ? {} : { value: "text" as const }) }])) as Record<string, OptionDefinition>;
 const CANDIDATE_KINDS = ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] as const;
 const filters = (what: string) => ({ ...json(what), "--tier": { description: "Memory tier", value: ["short", "long"] } as OptionDefinition,
   "--kind": { description: "Note kind", value: KINDS } as OptionDefinition, "--peer": text("Author peer"), "--machine": text("Machine ID"),
@@ -186,9 +188,9 @@ export const COMMANDS: Record<string, CommandDefinition> = {
         options: { ...json("the import receipt"), ...policy, "--db": path("SQLite database file"), "--limit": number("Maximum observations"), "--restart": flag("Restart the import cursor"),
           "--capture-days": number("Also import recent days into capture", "Imports recent claude-mem observations and summaries into capture.") } },
       "claude-auto": { description: "Import Claude Code auto memory as candidates", details: "CLAUDE.md and AGENTS.md stay excluded.", examples: ["amem import claude-auto"],
-        options: { ...json("the import receipt"), ...policy, "--from": path("Claude projects directory (default ~/.claude/projects)") } },
+        options: { ...json("the import receipt"), ...policy, "--from": path("Claude projects directory (default ~/.claude/projects)"), ...claudeMemOnly } },
       codex: { description: "Import Codex memories as review candidates", details: "The originals stay unchanged.", examples: ["amem import codex"],
-        options: { ...json("the import receipt"), ...policy, "--from": path("Codex memories directory (default ~/.codex/memories)") } },
+        options: { ...json("the import receipt"), ...policy, "--from": path("Codex memories directory (default ~/.codex/memories)"), ...claudeMemOnly } },
     } },
   goal: { group: "write", description: "Track long-term goals", options: json("the goals"), defaultCommand: "list", commands: {
     list: { description: "List goals", examples: ["amem goal list --all"], options: { ...json("the goals"), "--all": flag("Include completed goals") } },

@@ -196,10 +196,10 @@ test("ingest help returns guidance before intake, cwd access or any memory write
         get cwd(): string {throw new Error("help must not inspect a project or transcript");},
         env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"},stdinTTY:false,
       });
-      expect(help).toContain("usage: amem");expect(help).toContain("ingest");expect(existsSync(f.base)).toBe(false);
+      expect(help).toContain("▸ Usage\n  amem ingest");expect(existsSync(f.base)).toBe(false);
     }
     // Static help remains safe; an unsupported historical read uses the same fixed refusal as MCP.
-    expect(await runCli(["--help"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).toContain("usage: amem");
+    expect(await runCli(["--help"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).toContain("▸ Usage\n  amem ");
     expect(await runCli(["list","--history"],{cwd:f.cwd,env:{AMEM_HOME:f.base,AGENTHUB_PEER_ID:"codex"}})).toContain("retained memory as of"); // #431
     expect(existsSync(f.base)).toBe(false);
   } finally {if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;}

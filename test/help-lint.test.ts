@@ -57,11 +57,11 @@ test("a command accepts only its own and global flags, never a parent's (H5)", (
   }
   // The flags this change refuses, as listed in CHANGELOG Unreleased.
   for (const argv of [["eval", "audit", "score", "s.tsv", "--k", "1"], ["eval", "audit", "sample", "--seed", "s", "--set", "ko"], ["repo", "attributes", "--json"],
-    ["import", "codex", "--db", "x"], ["import", "claude-auto", "--limit", "1"], ["goal", "new", "--json", "t"], ["goal", "link", "--json", "a", "b"],
+    ["goal", "new", "--json", "t"], ["goal", "link", "--json", "a", "b"],
     ["goal", "state", "--json", "a", "open"], ["goal", "take", "--json", "a"], ["review", "walk", "--json"]]) expect(() => parseCommand(argv), argv.join(" ")).toThrow();
   const changelog = readFileSync(join(import.meta.dir, "../CHANGELOG.md"), "utf8");
   const unreleased = changelog.slice(changelog.indexOf("## Unreleased"), changelog.indexOf("\n## ", changelog.indexOf("## Unreleased") + 1));
-  for (const named of ["eval audit", "repo attributes", "import codex", "import claude-auto", "goal new", "goal link", "goal state", "goal take", "review walk"]) expect(unreleased, named).toContain(`\`amem ${named}`);
+  for (const named of ["eval audit", "repo attributes", "goal new", "goal link", "goal state", "goal take", "review walk"]) expect(unreleased, named).toContain(`\`amem ${named}`);
 });
 
 test("every example, and every command amem emits, resolves to a real command (H6, AC9)", () => {
