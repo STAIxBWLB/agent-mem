@@ -109,3 +109,28 @@ test("#590 task 429: every CLI call of a new renderer goes through the two-step 
   // rawMemoryCommand sync renders only for the CLI, through the private render hook and its renderLegacy screen.
   expect(commands).toMatch(/internal \? rendered\(legacy, syncReportText\(/);
 });
+
+test("#590 task 429: a marked sync that completed keeps the withheld-receipt line when either text is denied", async () => {
+  const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os"), { execFileSync } = await import("node:child_process");
+  const { runCli } = await import("../src/cli.ts"), { MemoryStore } = await import("../src/memory/store.ts"), { memoryProjectKey } = await import("../src/memory/project.ts");
+  const before = process.env.AMEM_HOME;
+  try {
+    // legacyOnly appears only in the host line ("synced and pushed: ..."), formattedOnly only in the new report.
+    for (const pattern of ["long-term entries visible here", "amem Sync"]) {
+      const root = mkdtempSync(join(tmpdir(), "amem-429-sync-")), repo = join(root, "repo"), home = join(root, "memory"), remote = join(root, "remote.git");
+      try {
+        mkdirSync(repo); execFileSync("git", ["init", "-q"], { cwd: repo }); execFileSync("git", ["init", "-q", "--bare", remote]);
+        process.env.AMEM_HOME = home;
+        const store = new MemoryStore({ memoryDir: home, screen: () => "keep" });
+        try { store.note({ op: "note", project: memoryProjectKey(repo), scope: "project", tier: "long", kind: "decision", peer: "fixture", text: "a public decision", about: [], source: "person" }); }
+        finally { store.close(); }
+        writeFileSync(join(home, "amem.config.json"), JSON.stringify({ piiPatterns: [pattern] }));
+        const env = { HOME: root, AGENTHUB_HOME: root, AMEM_HOME: home, NO_COLOR: "1", CODEX_THREAD_ID: "fixture" };
+        const out = await runCli(["sync", "--remote", remote], { cwd: repo, env, stdinTTY: false });
+        expect(out, pattern).toBe("Operation completed; receipt withheld by policy. Run amem status to inspect state.");
+        // The sync really completed: the bare remote now has a branch.
+        expect(execFileSync("git", ["--git-dir", remote, "for-each-ref", "--format=%(refname)"], { encoding: "utf8" }).trim(), pattern).not.toBe("");
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  } finally { if (before === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = before; }
+}, 60_000);
