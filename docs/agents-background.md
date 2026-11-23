@@ -18,3 +18,4 @@ Agents working in this repository run only the typecheck, boundary check, the te
 - 2026-11-20: #502 replaced the local full-suite completion check with the affected test files (CI holds the full suite) and added plan review before boundary, privacy-screen or storage-format changes; rationale in §Commands and verification above.
 - 2026-11-20: #514 added the README-overview rule to §Conventions and structure; the #502 rationale moved here from README §Development.
 - 2026-11-21: #538 permits a checked host API range for vault-link-capable hosts while retaining the P2 minimum.
+- 2026-11-24: Added the host-facing dependency rule to §Things agents get wrong. agent-hub's recovery package checked agent-mem's declared dependencies and refused 0.37.0, so `ahub upgrade` failed (agent-hub#1664). One shared `@staix/cli-output` version across amem, agent-hub and vault-mem also keeps a single installed copy.
