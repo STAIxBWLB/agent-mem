@@ -515,7 +515,7 @@ test("amem repo attributes keeps existing lines, accepts explicit marked nonTTY 
 
 test("amem repo status is a read: no terminal needed; outside the project's repository it refuses", async () => {
   const r = rig(); writeLog(r, [repoLine("a shared sqlite decision for the team")]);
-  expect(await runCli(["repo", "status"], { ...r.person, stdinTTY: false })).toContain("entries: 1");
+  expect(await runCli(["repo", "status"], { ...r.person, stdinTTY: false })).toMatch(/^  Entries: +1$/m);
   const status = JSON.parse(await runCli(["repo", "status", "--json"], { ...r.person, stdinTTY: false })) as { entries: number; state: string };
   expect(status).toMatchObject({ entries: 1, state: "ok" });
   const elsewhere = mkdtempSync(join(tmpdir(), "amem-not-a-repo-")); cleanup.push(() => rmSync(elsewhere, { recursive: true, force: true }));
