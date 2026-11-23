@@ -745,6 +745,15 @@ export function undoSetup(plan: SetupPlan, options: SetupContext = {}): { restor
 interface SetupRenderOptions { columns?: number; verbose?: boolean; writerCommands?: readonly string[] }
 type SetupResult = SetupApplyResult | { restored: SetupTarget[]; skills?: SetupSkillResult[] };
 
+function setupHookSummary(hooks: SetupPlan["actions"][number]["hooks"]): string {
+  const events = hooks.map(hook => hook.event).join(", ");
+  if (hooks.length === 1) return `${events}: ${hooks[0]!.command} (timeout ${hooks[0]!.timeout})`;
+  const templates = hooks.map(hook => hook.command.endsWith(` ${hook.event}`) ? `${hook.command.slice(0, -hook.event.length)}<event>` : hook.command);
+  const first = templates[0];
+  return first !== undefined && templates.every(value => value === first) && hooks.every(hook => hook.timeout === hooks[0]!.timeout)
+    ? `${events}; ${first} (timeout ${hooks[0]!.timeout})` : `${events}; commands differ (see --verbose or --json)`;
+}
+
 /** Human-only shortening; --json retains the exact path and command bytes. */
 function setupDisplay(value: string, columns?: number): string {
   const limit = columns === undefined ? undefined : Math.max(12, columns - 30);
@@ -781,12 +790,13 @@ function renderSetup(plan: SetupPlan, result: SetupResult | undefined, s: Style,
   const skipped = new Map<SetupTarget, string>(result && "skipped" in result ? result.skipped?.map(row => [row.target, row.reason]) : !result && plan.mode !== "undo" ? plan.actions.filter(action => !action.available).map(action => [action.target, "CLI not installed"]) : []);
   const skills = result?.skills ?? plan.skills ?? [], warnings = plan.notes.filter(note => (note.startsWith("WARNING:") || note.includes("detected:") || note.includes("version-specific") && changed.size > 0) && note !== plan.placementWriter);
   let warningCount = 0;
+  const counts = { toChange: 0, applied: 0, unchanged: 0, skipped: 0, restored: 0, nothing: 0 };
   report.header("amem", "Setup"); report.line(`${verb}: ${plan.targets.length} target${plan.targets.length === 1 ? "" : "s"}`);
   if ((plan.mode !== "undo" && plan.placementWriter) || warnings.length) {
     report.section("Attention");
     if (plan.mode !== "undo" && plan.placementWriter) {
       const writerCommands = options.writerCommands ?? ["amem doctor"];
-      warningCount++; report.bullet("warn", writerCommands[0] === "amem doctor" ? "The placement writer inventory or its roots could not be verified; check them before renewal." : plan.placementWriter.includes("outside the active") ? "This install root is outside the active placement writer inventory; sync may refuse until it is renewed. Approve the exact apply command before renewal." : "The active placement writer inventory could not be verified.");
+      warningCount++; report.bullet("warn", writerCommands[0] === "amem doctor" ? "The placement writer inventory or its roots could not be verified; check them before renewal." : plan.placementWriter.includes("outside the active") ? "This install root is outside the active placement writer inventory; sync may refuse until it is renewed." : "The active placement writer inventory could not be verified.");
       for (const command of writerCommands) report.next(command);
     }
     const versionWarnings = warnings.filter(note => /layout verified on/.test(note));
@@ -801,14 +811,19 @@ function renderSetup(plan: SetupPlan, result: SetupResult | undefined, s: Style,
     if (!reason) {
       if (action.version) rows.push(["Version", `${action.version.output === null ? "unknown" : action.version.verified && action.version.matches === null ? `unrecognised (${action.version.output})` : action.version.output}; ${action.version.verified ? `verified ${action.version.verified}` : "unverified"}`]);
       if (plan.root) rows.push(["Install", setupDisplay(`${plan.root.path} (amem ${plan.root.version})`, options.columns)]);
-      for (const file of action.files) rows.push(["File", setupDisplay(file, options.columns)]);
+      if (action.files.length) rows.push(["Files", action.files.map(file => setupDisplay(file, options.columns)).join(", ")]);
       if (action.cwd) rows.push(["Directory", setupDisplay(action.cwd, options.columns)]);
       rows.push(["Receipt", setupDisplay(action.receipt, options.columns)]);
       if (!result && action.available && action.registration) rows.push(["Command", setupDisplay(action.registration.map(quote).join(" "), options.columns)]);
-      for (const hook of action.hooks) rows.push(["Hook", setupDisplay(`${hook.event}: ${hook.command} (timeout ${hook.timeout})`, options.columns)]);
+      if (action.hooks.length) rows.push(["Hooks", setupDisplay(setupHookSummary(action.hooks), options.columns)]);
       for (const removal of action.removes ?? []) rows.push(["Remove", setupDisplay(`${removal.event}: ${removal.command} (in ${removal.file})`, options.columns)]);
     }
     const skill = skills.find(row => row.target === action.target);
+    const skillChanged = skill?.report?.actions.some(item => ["install", "replace", "remove"].includes(item.change)) === true;
+    if (reason) counts.skipped++;
+    else if (plan.mode === "undo") { if (changed.has(action.target) || skillChanged) counts.restored++; else counts.nothing++; }
+    else if (result) { if (changed.has(action.target) || skillChanged) counts.applied++; else counts.unchanged++; }
+    else if (changed.has(action.target) || skillChanged) counts.toChange++; else counts.unchanged++;
     if (skill?.report) {
       const changedSkills = skill.report.actions.filter(item => item.change !== "unchanged" && item.change !== "absent");
       const unchanged = skill.report.actions.filter(item => item.change === "unchanged").length;
@@ -816,6 +831,7 @@ function renderSetup(plan: SetupPlan, result: SetupResult | undefined, s: Style,
       rows.push(["Skills", summary.join(", ") || "no changes"]);
     } else if (skill?.reason) rows.push(["Skills", skill.refused ? "refused" : "unavailable"]);
     report.kv(rows);
+    if (options.verbose) for (const hook of action.hooks) report.note(singleLine(`${hook.event}: ${hook.command} (timeout ${hook.timeout})`));
     if (skill?.reason) { warningCount++; report.bullet("warn", singleLine(skill.reason)); }
     for (const item of skill?.report?.actions ?? []) if (item.reason) { warningCount++; report.bullet("warn", singleLine(`${item.name}: ${item.reason}`)); }
   }
@@ -830,7 +846,11 @@ function renderSetup(plan: SetupPlan, result: SetupResult | undefined, s: Style,
       warningCount++; report.bullet("warn", "The install root contains control characters; inspect it with --json before rerunning setup.");
     } else report.next(`amem setup ${plan.targets.length === 1 ? plan.targets[0] : "all"} --apply${plan.actions.some(action => action.state.includes("apply needs --adopt-current")) ? " --adopt-current" : ""}${plan.root ? ` --root ${quote(plan.root.path)}` : ""}`);
   }
-  report.summary({ ok: plan.targets.length - skipped.size, warnings: warningCount + skipped.size });
+  const outcomes = plan.mode === "undo" ? `${counts.restored} restored, ${counts.nothing} nothing to restore`
+    : result ? `${counts.applied} applied, ${counts.unchanged} unchanged, ${counts.skipped} skipped`
+    : `${counts.toChange} to change, ${counts.unchanged} unchanged, ${counts.skipped} skipped`;
+  report.line("");
+  report.line(`Summary: ${outcomes}${warningCount ? `, ${warningCount} warning${warningCount === 1 ? "" : "s"}` : ""}`);
   return report.render(s.color).join("\n");
 }
 

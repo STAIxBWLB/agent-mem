@@ -69,7 +69,7 @@ test("setup reports fit 80 columns for preview, apply and undo", async () => {
     const output = await runCli([...args, "--ascii", "--color=never"], context);
     expect(output).toContain(" amem Setup");
     expect(output.split("\n").every(line => cellWidth(line) <= 80)).toBe(true);
-    expect(output.trimEnd().split("\n").at(-1)).toMatch(/(?:ok|warnings?)/);
+    expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Summary:/);
     if (index === 2) {
       expect(output).not.toContain("> Notes");
       expect(await runCli([...args, "--ascii", "--color=never", "--verbose"], context)).toContain("> Notes");
@@ -80,7 +80,9 @@ test("setup reports fit 80 columns for preview, apply and undo", async () => {
     const output = await runCli(["setup", "all", mode, "--ascii", "--color=never"], context);
     expect(output).toContain("> claude"); expect(output).toContain("> codex");
     expect(output.split("\n").every(line => cellWidth(line) <= 80)).toBe(true);
-    expect(output.trimEnd().split("\n").at(-1)).toMatch(/(?:ok|warnings?)/);
+    expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Summary:/);
+    if (mode === "--apply") expect(output.trimEnd().split("\n").at(-1)).toBe("Summary: 1 applied, 0 unchanged, 7 skipped");
+    else expect(output.trimEnd().split("\n").at(-1)).toBe("Summary: 1 restored, 7 nothing to restore");
   }
 });
 for (const marker of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) test(`setup explicit modes work with ${marker} set and leave no setup state after undo`, async () => {

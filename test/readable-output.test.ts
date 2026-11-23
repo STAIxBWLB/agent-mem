@@ -123,10 +123,11 @@ test("setup plan shows targets, files, MCP and hook changes, skipped clients and
   expect(text).toContain(" amem Setup\npreview: 2 targets");
   expect(text).toContain("> claude\n  MCP:      add: not installed");
   expect(text).toContain("> codex\n  MCP:  skipped: CLI not installed");
-  expect(text).toContain("File:     /h/.claude/config.json");
+  expect(text).toContain("Files:    /h/.claude/config.json");
   expect(text).toContain("Receipt:  /h/memory/setup/claude.json");
-  expect(text).toContain("Hook:     PostToolUse: bun amem hook PostToolUse (timeout 5)");
+  expect(text).toContain("Hooks:    PostToolUse: bun amem hook PostToolUse (timeout 5)");
   expect(text).toContain("something to see");
+  expect(text.split("\n").at(-1)).toBe("Summary: 1 to change, 0 unchanged, 1 skipped, 1 warning");
   expect(text.split("/h/.claude/config.json").length).toBe(2);
   expect(text).not.toMatch(ANSI); expect(text).not.toContain("\"actions\"");
   expect(strip(setupPlanText(plan("apply", 6), COLOR))).toContain("apply: 6 targets");
@@ -134,12 +135,42 @@ test("setup plan shows targets, files, MCP and hook changes, skipped clients and
 
 test("setup report golden uses ASCII markers at 80 columns, plain and color", () => {
   const shown: SetupPlan = { targets: ["kimi"], mode: "preview", notes: [], actions: [{ target: "kimi", files: ["/home/u/kimi.json"], receipt: "/home/u/receipt.json", registration: null, lifecycle: "", available: true, hooks: [], mcpChange: "unchanged", commands: [], state: "installed" }] };
-  const plain = " amem Setup\npreview: 1 target\n\n> kimi\n  MCP:      unchanged\n  File:     /home/u/kimi.json\n  Receipt:  /home/u/receipt.json\n\nok 1 ok";
+  const plain = " amem Setup\npreview: 1 target\n\n> kimi\n  MCP:      unchanged\n  Files:    /home/u/kimi.json\n  Receipt:  /home/u/receipt.json\n\nSummary: 0 to change, 1 unchanged, 0 skipped";
   const esc = SGR_RESET.slice(0, 1), reset = SGR_RESET;
-  const color = `${esc}[1;34m amem Setup${reset}\npreview: 1 target\n\n${esc}[1;35m> kimi${reset}\n  ${esc}[34mMCP:${reset}      unchanged\n  ${esc}[34mFile:${reset}     /home/u/kimi.json\n  ${esc}[34mReceipt:${reset}  /home/u/receipt.json\n\n${esc}[1;32mok 1 ok${reset}`;
+  const color = `${esc}[1;34m amem Setup${reset}\npreview: 1 target\n\n${esc}[1;35m> kimi${reset}\n  ${esc}[34mMCP:${reset}      unchanged\n  ${esc}[34mFiles:${reset}    /home/u/kimi.json\n  ${esc}[34mReceipt:${reset}  /home/u/receipt.json\n\nSummary: 0 to change, 1 unchanged, 0 skipped`;
   expect(setupPlanText(shown, style(false, true), { columns: 80 })).toBe(plain);
   expect(setupPlanText(shown, style(true, true), { columns: 80 })).toBe(color);
   expect(plain.split("\n").every(line => line.length <= 80)).toBe(true);
+});
+
+test("setup preview summary counts all targets requiring changes", () => {
+  const shown = plan("preview", 6);
+  for (const target of ["opencode", "gemini"] as const) {
+    shown.targets.push(target);
+    shown.actions.push({ ...shown.actions[0]!, target });
+  }
+  shown.notes = [];
+  for (const action of shown.actions) { action.available = true; action.mcpChange = "replace"; }
+  expect(setupPlanText(shown, PLAIN, { columns: 80 }).split("\n").at(-1)).toBe("Summary: 8 to change, 0 unchanged, 0 skipped");
+});
+
+test("setup undo summary distinguishes restored and absent receipts", () => {
+  const shown = plan("undo"); shown.notes = [];
+  shown.actions[0]!.mcpChange = "restore"; shown.actions[1]!.mcpChange = "unchanged";
+  expect(setupPlanText(shown).split("\n").at(-1)).toBe("Summary: 1 restored, 1 nothing to restore");
+});
+
+test("setup groups files and matching event commands, with full hooks in verbose", () => {
+  const shown = plan("preview", 1), action = shown.actions[0]!;
+  action.files = ["/home/u/settings.json", "/home/u/hooks.json"];
+  action.hooks = ["SessionStart", "Stop"].map(event => ({ event, command: `bun amem hook ${event}`, timeout: 1 }));
+  const text = setupPlanText(shown, PLAIN, { columns: 80 });
+  expect(text.match(/^  Files:/gm)).toHaveLength(1);
+  expect(text.match(/^  Hooks:/gm)).toHaveLength(1);
+  expect(text.replace(/\s+/g, " ")).toContain("SessionStart, Stop; bun amem hook <event> (timeout 1)");
+  const verbose = setupPlanText(shown, PLAIN, { columns: 80, verbose: true });
+  expect(verbose).toContain("SessionStart: bun amem hook SessionStart (timeout 1)");
+  expect(verbose).toContain("Stop: bun amem hook Stop (timeout 1)");
 });
 
 test("setup groups skill changes and removed hooks under their target", () => {
@@ -260,7 +291,7 @@ test("undo of an uninstalled client with a receipt still shows its files and res
   const text = setupPlanText(undo);
   expect(text).toContain("undo: 1 target");
   expect(text).toContain("MCP:      restore: applied");
-  expect(text).toContain("File:     /h/.codex/config.toml");
+  expect(text).toContain("Files:    /h/.codex/config.toml");
   expect(text).toContain("Receipt:  /h/memory/setup/codex.json");
   expect(text).not.toContain("skipped");
 });
