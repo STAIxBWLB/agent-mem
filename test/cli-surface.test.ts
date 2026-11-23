@@ -28,7 +28,7 @@ test("help and usage text names amem and never a host", () => {
   expect(help).toContain("  mcp "); expect(commandHelp(["review"])).toContain("list");
   expect(help).toContain("--policy-free is accepted and ignored");
   expect(help).toContain("Agent-marked reads use the MCP privacy ceiling.");
-  expect(help).toContain("Apply and confirm need no TTY");
+  expect(help).toContain("Apply and confirm need no");
   expect(help).not.toContain("Mutating commands require a terminal on stdin");
   expect(commandHelp(["setup"])).toContain("--apply"); expect(commandHelp(["gc"])).toContain("--confirm");
 });
@@ -61,7 +61,7 @@ for (const marker of MARKERS) test(`${marker}: --help, help, --version and versi
     for (const value of ["", "1", "codex"]) {
       const agent = { cwd: r.cwd, env: { [marker]: value }, stdinTTY: false };
       expect(agentMarked(agent.env)).toBe(true);
-      for (const args of [["--help"], ["help"]]) expect(await runCli(args, agent)).toContain("usage: amem");
+      for (const args of [["--help"], ["help"]]) expect(await runCli(args, agent)).toContain("▸ Usage\n  amem ");
       for (const args of [["--version"], ["version"]]) expect(await runCli(args, agent)).toMatch(/^amem \d+\.\d+\.\d+/);
       expect(await runCli(["completion", "bash"], agent)).toContain("_amem_candidates");
     }
@@ -85,7 +85,7 @@ test("ingest keeps its capture-only agent-facing path", async () => {
   const r = rig();
   try {
     const agent = { cwd: r.cwd, env: { AGENTHUB_PEER_ID: "codex" }, stdinTTY: false };
-    expect(await runCli(["ingest", "codex", "--help"], agent)).toContain("usage: amem");
+    expect(await runCli(["ingest", "codex", "--help"], agent)).toContain("▸ Usage\n  amem ingest");
     // Ingest retains its command-specific validation.
     const bad = await message(runCli(["ingest", "nonsense"], agent));
     expect(bad).toContain("kind takes codex or kimi or pi or qwen"); expect(bad).not.toMatch(HOST);
@@ -97,7 +97,7 @@ test("the bin prints help and version in an agent shell and runs a history read 
   const home = mkdtempSync(join(tmpdir(), "amem-surface-bin-")); roots.push(home);
   const env = { PATH: process.env.PATH, HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_PEER_ID: "codex" };
   const help = Bun.spawnSync([process.execPath, bin, "--help"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("usage: amem"); expect(help.stdout.toString()).not.toMatch(HOST);
+  expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("▸ Usage\n  amem "); expect(help.stdout.toString()).not.toMatch(HOST);
   const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
   expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
   const history = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });

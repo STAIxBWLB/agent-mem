@@ -38,15 +38,15 @@ describe("CLI output standard primitives", () => {
     expect(child.exitCode).toBe(2);
     expect(child.stdout.toString()).toBe("");
     expect(child.stderr.toString()).toContain("amem: unknown option --not-a-real-option");
-    expect(child.stderr.toString()).toContain("Run 'amem --help' for details.");
+    expect(child.stderr.toString()).toContain("Usage: amem status [options]\nRun 'amem help status' for details.");
   });
   test("ordinary error text uses package terminal sanitization", () => {
     expect(formatCliError(new Error(`failed ${ROLE_SGR.error}red${SGR_RESET}`))).toBe("amem: failed red");
-    expect(formatCliError(new Error("failure"), true)).toBe("amem: failure\nUsage: amem <command> [options]\nRun 'amem --help' for details.");
+    expect(formatCliError(new Error("failure"), true)).toBe("amem: failure\nUsage: amem <command> [options]\nRun 'amem help' for details.");
   });
   test("TTY errors retain the colored two-cell marker and usage bytes", () => {
     const script = `import { main } from "./src/cli.ts"; Object.defineProperty(process.stderr, "isTTY", { value: true }); console.error = value => process.stderr.write(String(value) + ${JSON.stringify("\n")}); await main(["status", "--not-a-real-option"]);`;
-    const message = formatCliError(new Error("unknown option --not-a-real-option"), true);
+    const message = formatCliError(new Error("unknown option --not-a-real-option"), true, ["status", "--not-a-real-option"]);
     for (const color of [false, true]) {
       const child = Bun.spawnSync([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe", env: { ...process.env, LC_ALL: "C", NO_COLOR: color ? "" : "1", FORCE_COLOR: color ? "1" : "0" } });
       expect(child.exitCode).toBe(2);

@@ -109,8 +109,8 @@ test("migration apply is explicit in parser help and completion metadata", () =>
   expect(migrate.options["--apply"]?.description).toContain("Apply");
   expect(migrate.options["--dry-run"]?.description).toContain("default");
   expect(commandHelp(["migrate"])).toContain("--apply");
-  expect(migrate.options["--sync-placement"]?.description).toContain("preview by default");
-  expect(migrate.options["--abandon"]?.description).toContain("--confirm");
+  expect(migrate.options["--sync-placement"]?.details).toContain("Previews by default");
+  expect(migrate.options["--abandon"]?.details).toContain("--confirm");
   expect(commandHelp(["migrate"])).not.toContain("Person-only");
   for (const shell of ["zsh", "bash", "fish"] as const) expect(completionScript(shell)).not.toContain("Person-only");
 });
