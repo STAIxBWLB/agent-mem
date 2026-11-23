@@ -118,7 +118,7 @@ test("version table recognizes Jcode's v prefix and leaves undocumented baseline
 test.each(["development snapshot", "qwen 0.26.1.1"])("unrecognised version %s is reported without a mismatch warning", output => {
   const f = versionFixture("qwen", `console.log(${JSON.stringify(output)});`), plan = f.preview();
   expect(plan.actions[0]!.version).toEqual({ output, verified: "0.26.1", matches: null });
-  expect(plan.notes.join("\n")).not.toContain("WARNING: qwen version"); expect(setupPlanText(plan)).toContain(`version unrecognised (${output})`);
+  expect(plan.notes.join("\n")).not.toContain("WARNING: qwen version"); expect(setupPlanText(plan)).toContain(`unrecognised (${output})`);
 });
 test("Pi's advisory probe runs only in staging and leaves the real fixture home unchanged", () => {
   const f = versionFixture("pi", 'writeFileSync(process.env.HOME + "/stage-only", "probe wrote here"); console.log("pi 1.2.3");'), before = snapshot(f.home), plan = f.preview();
@@ -262,6 +262,13 @@ test("setup preview inventories every target without commands, files or confirma
   const output = await runSetup("all", "preview", { ...f.options, json: true, stdinTTY: false, confirm: async () => { confirmations++; return true; } });
   expect(JSON.parse(output).targets).toEqual([...SETUP_ALL_TARGETS]); expect(confirmations).toBe(0); expect(f.calls).toEqual([]); expect(snapshot(f.home)).toEqual(before);
 });
+test("setup mixed apply summary counts applied and unchanged targets", async () => {
+  const f = fixture(), options = { ...f.options, env: { ...f.env, PATH: "" } };
+  await runSetup("claude", "apply", options);
+  const text = await runSetup("all", "apply", options);
+  expect(text.split("\n").at(-1)).toBe("Summary: 7 applied, 1 unchanged, 0 skipped");
+});
+
 test("all-target apply stages native commands, records private receipts and is byte/mode-idempotent", () => {
   const f = fixture(), rules = seedOtherFiles(f), rulesBefore = rules.map(image), plan = f.plan("all", "apply");
   expect(applySetup(plan, f.options)).toMatchObject({ applied: [...SETUP_ALL_TARGETS], unchanged: [] });

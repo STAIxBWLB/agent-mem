@@ -532,7 +532,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
       ...(typeof options["--root"] === "string" ? { root: options["--root"] } : {}),
       ...(options["--adopt-current"] === true ? { adoptCurrent: true } : {}),
-      ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context, options),
+      ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context, options), columns: reportWidth(context), verbose: options["--verbose"] === true,
     });
   }
   if (identity.actor === "agent") {

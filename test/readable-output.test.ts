@@ -15,10 +15,11 @@ import { memoryProjectKey } from "../src/memory/project.ts";
 import { doctorText, DOCTOR_SCHEMA, type DoctorReport } from "../src/memory/doctor.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { statusText, type StatusView } from "../src/memory/status-text.ts";
-import { resolveColor, streamEnv } from "@staix/cli-output";
+import { resolveColor, SGR_RESET, streamEnv } from "@staix/cli-output";
 import { PLAIN, style } from "../src/memory/style.ts";
 const colorEnabled = (env: Readonly<Record<string, string | undefined>>, isTTY: boolean | undefined) => resolveColor("auto", streamEnv(isTTY === true, env), "amem") === true;
 import { setupConfirmationText, setupPlanText, type SetupPlan } from "../src/setup.ts";
+import { isAmemCommand } from "../src/commands-table.ts";
 
 const ANSI = /\x1b\[/, COLOR = style(true), WIDTH = 160;
 const cleanup: (() => void)[] = [];
@@ -120,17 +121,107 @@ function plan(mode: SetupPlan["mode"], count = 2): SetupPlan {
 
 test("setup plan shows targets, files, MCP and hook changes, skipped clients and warnings once", () => {
   const text = setupPlanText(plan("preview"));
-  expect(text.split("\n")[0]).toBe("amem setup preview: 2 targets, 1 with MCP changes, 1 skipped");
-  expect(text).toMatch(/^  !  ATTENTION +claude: MCP add \(not installed\)$/m);
-  expect(text).toMatch(/^  -  SKIPPED +codex: CLI not installed$/m);
-  expect(text).toContain("file     /h/.claude/config.json"); expect(text).toContain("receipt  /h/memory/setup/claude.json");
-  expect(text).toContain("hook     PostToolUse: bun amem hook PostToolUse (timeout 5)");
-  expect(text).toContain("Skipped clients: codex (not installed)");
-  expect(text).toContain("Warnings:\n  - WARNING: something to see");
+  expect(text).toContain(" amem Setup\npreview: 2 targets");
+  expect(text).toContain("> claude\n  MCP:      add: not installed");
+  expect(text).toContain("> codex\n  MCP:  skipped: CLI not installed");
+  expect(text).toContain("Files:    /h/.claude/config.json");
+  expect(text).toContain("Receipt:  /h/memory/setup/claude.json");
+  expect(text).toContain("Hooks:    PostToolUse: bun amem hook PostToolUse (timeout 5)");
+  expect(text).toContain("something to see");
+  expect(text.split("\n").at(-1)).toBe("Summary: 1 to change, 0 unchanged, 1 skipped, 1 warning");
   expect(text.split("/h/.claude/config.json").length).toBe(2);
   expect(text).not.toMatch(ANSI); expect(text).not.toContain("\"actions\"");
-  const large = setupPlanText(plan("apply", 6), COLOR);
-  expect(strip(large).split("\n")[0]).toBe("amem setup apply: 6 targets, 1 with MCP changes, 1 skipped");
+  expect(strip(setupPlanText(plan("apply", 6), COLOR))).toContain("apply: 6 targets");
+});
+
+test("setup report golden uses ASCII markers at 80 columns, plain and color", () => {
+  const shown: SetupPlan = { targets: ["kimi"], mode: "preview", notes: [], actions: [{ target: "kimi", files: ["/home/u/kimi.json"], receipt: "/home/u/receipt.json", registration: null, lifecycle: "", available: true, hooks: [], mcpChange: "unchanged", commands: [], state: "installed" }] };
+  const plain = " amem Setup\npreview: 1 target\n\n> kimi\n  MCP:      unchanged\n  Files:    /home/u/kimi.json\n  Receipt:  /home/u/receipt.json\n\nSummary: 0 to change, 1 unchanged, 0 skipped";
+  const esc = SGR_RESET.slice(0, 1), reset = SGR_RESET;
+  const color = `${esc}[1;34m amem Setup${reset}\npreview: 1 target\n\n${esc}[1;35m> kimi${reset}\n  ${esc}[34mMCP:${reset}      unchanged\n  ${esc}[34mFiles:${reset}    /home/u/kimi.json\n  ${esc}[34mReceipt:${reset}  /home/u/receipt.json\n\nSummary: 0 to change, 1 unchanged, 0 skipped`;
+  expect(setupPlanText(shown, style(false, true), { columns: 80 })).toBe(plain);
+  expect(setupPlanText(shown, style(true, true), { columns: 80 })).toBe(color);
+  expect(plain.split("\n").every(line => line.length <= 80)).toBe(true);
+});
+
+test("setup preview summary counts all targets requiring changes", () => {
+  const shown = plan("preview", 6);
+  for (const target of ["opencode", "gemini"] as const) {
+    shown.targets.push(target);
+    shown.actions.push({ ...shown.actions[0]!, target });
+  }
+  shown.notes = [];
+  for (const action of shown.actions) { action.available = true; action.mcpChange = "replace"; }
+  expect(setupPlanText(shown, PLAIN, { columns: 80 }).split("\n").at(-1)).toBe("Summary: 8 to change, 0 unchanged, 0 skipped");
+});
+
+test("setup undo summary distinguishes restored and absent receipts", () => {
+  const shown = plan("undo"); shown.notes = [];
+  shown.actions[0]!.mcpChange = "restore"; shown.actions[1]!.mcpChange = "unchanged";
+  expect(setupPlanText(shown).split("\n").at(-1)).toBe("Summary: 1 restored, 1 nothing to restore");
+});
+
+test("setup groups files and matching event commands, with full hooks in verbose", () => {
+  const shown = plan("preview", 1), action = shown.actions[0]!;
+  action.files = ["/home/u/settings.json", "/home/u/hooks.json"];
+  action.hooks = ["SessionStart", "Stop"].map(event => ({ event, command: `bun amem hook ${event}`, timeout: 1 }));
+  const text = setupPlanText(shown, PLAIN, { columns: 80 });
+  expect(text.match(/^  Files:/gm)).toHaveLength(1);
+  expect(text.match(/^  Hooks:/gm)).toHaveLength(1);
+  expect(text.replace(/\s+/g, " ")).toContain("SessionStart, Stop; bun amem hook <event> (timeout 1)");
+  const verbose = setupPlanText(shown, PLAIN, { columns: 80, verbose: true });
+  expect(verbose).toContain("SessionStart: bun amem hook SessionStart (timeout 1)");
+  expect(verbose).toContain("Stop: bun amem hook Stop (timeout 1)");
+});
+
+test("setup groups skill changes and removed hooks under their target", () => {
+  const shown = plan("preview", 1);
+  shown.actions[0]!.removes = [{ file: "/home/u/hooks.json", event: "SessionEnd", command: "old hook" }];
+  shown.skills = [{ target: "claude", report: { root: "/home/u/shared", linkedFrom: "/home/u/skills", actions: [
+    { name: "amem-status", path: "/home/u/skills/amem-status", change: "replace" },
+    { name: "amem-recall", path: "/home/u/skills/amem-recall", change: "unchanged" },
+    { name: "amem-remember", path: "/home/u/skills/amem-remember", change: "unchanged" },
+  ] } }];
+  const text = setupPlanText(shown, style(false, true), { columns: 80 });
+  expect(text).toContain("Remove:"); expect(text).toContain("SessionEnd: old hook");
+  expect(text).toContain("amem-status replace, 2 unchanged");
+  expect(text).toMatch(/\/home\/u\/shared \(linked from\s+\/home\/u\/skills\)/);
+  expect(text).not.toContain("amem-recall unchanged");
+  expect(text.indexOf("> claude")).toBeLessThan(text.indexOf("Remove:"));
+  shown.actions[0]!.mcpChange = "unchanged";
+  const next = setupPlanText(shown, style(false, true), { columns: 80 }).split("\n").find(line => line.includes("-> amem setup"));
+  expect(next).toBeDefined();
+  expect(isAmemCommand(next!.replace(/^\s*->\s*/, ""))).toBe(true);
+});
+
+test("setup combines layout-version warnings into one finding", () => {
+  const shown = plan("preview");
+  shown.notes = ["WARNING: claude version 1; layout verified on 2.", "WARNING: codex version 3; layout verified on 4."];
+  const text = setupPlanText(shown, style(false, true), { columns: 80 });
+  expect(text.match(/client versions differ from a verified layout/g)).toHaveLength(1);
+  expect(text).toContain("2 client versions differ");
+});
+
+test("setup does not emit a copyable command containing a control character in its root", () => {
+  const shown = plan("preview", 1);
+  shown.root = { path: "/home/u/bad\nroot", version: "0.37.0" };
+  const text = setupPlanText(shown, style(false, true), { columns: 80 });
+  expect(text).toContain("install root contains control characters");
+  expect(text).not.toContain("-> amem setup");
+  expect(text).not.toContain("/home/u/bad\nroot");
+});
+
+test("setup shows Jcode's session note only when its wiring changes or verbose is set", () => {
+  const shown = plan("preview", 6), note = "Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1.";
+  shown.notes = [note];
+  shown.actions[0]!.mcpChange = "unchanged";
+  shown.actions[5]!.mcpChange = "add";
+  expect(setupPlanText(shown)).toContain(note);
+  shown.actions[5]!.mcpChange = "unchanged";
+  expect(setupPlanText(shown)).not.toContain(note);
+  expect(setupPlanText(shown, PLAIN, { verbose: true })).toContain(note);
+  shown.mode = "undo"; shown.actions[5]!.mcpChange = "restore";
+  expect(setupPlanText(shown)).not.toContain(note);
 });
 
 test("setup versions are advisory, explicit in plain and color output, and additive in JSON", () => {
@@ -146,12 +237,11 @@ test("setup versions are advisory, explicit in plain and color output, and addit
   expect(plain).not.toMatch(ANSI);
   expect(colored).toMatch(ANSI);
   expect(strip(colored)).toBe(plain);
-  expect(plain).toContain("version claude 1.2.3");
-  expect(plain).toContain("verified 1.2.3");
-  const mismatch = plain.split("\n").find(row => row.includes("WARNING") && row.includes("codex"));
-  expect(mismatch).toContain("codex-cli 9.8.7"); expect(mismatch).toContain("verified on 9.8.6");
-  expect(plain).toContain("version unknown; verified 0.26.1");
-  expect(plain).toContain("version Pi 0.51.0; unverified (no verified version recorded)");
+  expect(plain).toContain("claude 1.2.3; verified 1.2.3");
+  expect(plain).toContain("codex-cli 9.8.7; verified 9.8.6");
+  expect(plain).toContain("1 client version differs from a verified layout");
+  expect(plain).toContain("unknown; verified 0.26.1");
+  expect(plain).toContain("Pi 0.51.0; unverified");
   expect(JSON.parse(setupConfirmationText(shown, true, COLOR))).toEqual(shown);
   expect(setupConfirmationText(shown, true, COLOR)).not.toMatch(ANSI);
 });
@@ -193,8 +283,8 @@ test("setup confirmation shows the raw plan under --json and the readable plan o
 test("setup command lines quote paths with spaces and skipped clients take one line", () => {
   const shown = plan("preview"); shown.actions[0]!.registration = ["claude", "mcp", "add", "amem", "--", "/opt/my bun/bun"];
   const text = setupPlanText(shown);
-  expect(text).toContain("command  'claude' 'mcp' 'add' 'amem' '--' '/opt/my bun/bun'");
-  expect(text).toMatch(/^  -  SKIPPED +codex: CLI not installed$/m);
+  expect(text).toContain("Command:  'claude' 'mcp' 'add' 'amem' '--' '/opt/my bun/bun'");
+  expect(text).toContain("MCP:  skipped: CLI not installed");
   expect(text).not.toContain("/h/.codex/config.json");
 });
 
@@ -202,10 +292,11 @@ test("undo of an uninstalled client with a receipt still shows its files and res
   const undo: SetupPlan = { targets: ["codex"], mode: "undo", notes: [], actions: [{ target: "codex", files: ["/h/.codex/config.toml"], receipt: "/h/memory/setup/codex.json", registration: null,
     lifecycle: "restore original MCP/hook files", available: false, hooks: [], mcpChange: "restore", commands: [], state: "applied" }] };
   const text = setupPlanText(undo);
-  expect(text.split("\n")[0]).toBe("amem setup undo: 1 target, 1 with restores");
-  expect(text).toMatch(/^  !  ATTENTION +codex: restore original MCP\/hook files \(CLI not installed\)/m);
-  expect(text).toContain("file     /h/.codex/config.toml"); expect(text).toContain("receipt  /h/memory/setup/codex.json");
-  expect(text).not.toContain("SKIPPED");
+  expect(text).toContain("undo: 1 target");
+  expect(text).toContain("MCP:      restore: applied");
+  expect(text).toContain("Files:    /h/.codex/config.toml");
+  expect(text).toContain("Receipt:  /h/memory/setup/codex.json");
+  expect(text).not.toContain("skipped");
 });
 
 test("status flags a shard migration stopped after capture with the resume action", () => {
@@ -224,9 +315,11 @@ test("pending old-layout rows point to the resume that carries them", () => {
 test("undo of a target without a receipt says there is nothing to restore", () => {
   const undo: SetupPlan = { targets: ["kimi"], mode: "undo", notes: [], actions: [{ target: "kimi", files: ["/h/.kimi/config.json"], receipt: "/h/memory/setup/kimi.json", registration: null,
     lifecycle: "restore original MCP/hook files", available: true, hooks: [], mcpChange: "unchanged", commands: [], state: "not installed" }] };
-  expect(setupPlanText(undo)).toMatch(/^  ok OK +kimi: no setup receipt; nothing to restore/m);
+  expect(setupPlanText(undo)).toContain("no setup receipt; nothing to restore");
   expect(setupPlanText(undo)).not.toContain("already set up");
-  expect(setupPlanText({ ...undo, mode: "apply" })).toMatch(/^  ok OK +kimi: already set up; no change/m);
+  expect(setupPlanText({ ...undo, mode: "apply" })).toContain("MCP:      unchanged");
+  const warning = "WARNING: this install root is outside the active placement writer inventory";
+  expect(setupPlanText({ ...undo, placementWriter: warning, notes: [warning] })).not.toContain("placement writer");
 });
 
 const emptyIngest: IngestReceipt = { records: { supported: true, found: 0, staged: 0, refused: {}, duplicatesSkipped: 0 }, files: 0, read: 0, imported: 0, skipped: 0, spooled: 0, remaining: false, errors: 0 };
