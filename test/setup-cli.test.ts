@@ -31,7 +31,7 @@ function fixture() {
 }
 test("setup command table, parser and actual help expose the same targets and apply/undo options", async () => {
   const f = fixture(), before = snapshot(f.root), help = await runCli(["setup", "--help"], f.context);
-  expect(help).toContain("setup <target>"); expect(help).toContain("[--apply]"); expect(help).toContain("[--undo]");
+  expect(help).toContain("amem setup <target> [options]"); expect(help).toContain("\n  --apply "); expect(help).toContain("\n  --undo ");
   expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--adopt-current", "--apply", "--json", "--root", "--undo", "--verbose"]);
   for (const target of targets) expect(parseCommand(["setup", target])).toMatchObject({ path: ["setup"], positionals: [target] });
   expect(f.calls()).toEqual([]); expect(snapshot(f.root)).toEqual(before);
