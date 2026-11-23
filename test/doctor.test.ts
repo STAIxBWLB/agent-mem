@@ -251,7 +251,7 @@ test("the human report names every section, marks attention and shows the hint",
   const r = rig(); r.note("n");
   const text = await doctor(r, ["doctor"]);
   for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence", "drops", "spool"]) expect(text).toContain(`${name}:`);
-  expect(text).toMatch(/^ amem Doctor: (ok|attention|unavailable)/);
+  expect(text).toMatch(/^ amem doctor  (ok|warning|unknown)$/m);
 });
 
 test("#431 AC1: an agent-marked doctor gives the same report a person gets and still creates no home", async () => {
@@ -488,9 +488,9 @@ test("#217: doctor reports both full hook spool tiers without changing pending f
   expect(report.sections.spool!.hint).toContain("pending hook spool needs attention");
   expect(exact(r)).toEqual(before);
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^  !  ATTENTION +spool:/m);
-  expect(text).toContain("active 256/256 files"); expect(text).toContain("reserve 32/32 files");
-  expect(text).toContain("claimed 1"); expect(text).not.toContain("amem spool replay");
+  expect(text).toMatch(/^  !  warning +spool:/m);
+  expect(text).toContain("active 256 of 256 files"); expect(text).toContain("reserve 32 of 32 files");
+  expect(text).toContain("1 claimed"); expect(text).not.toContain("amem spool replay");
   expect(text).toContain("native 0, summaries 0, unclassified 288");
   expect(text).toContain("classification partial (native and summary counts are lower bounds)");
   expect(exact(r)).toEqual(before);
@@ -532,7 +532,7 @@ for (const surface of ["active", "reserve"] as const) test("#217: a symlinked ho
   expect(report.sections.spool!.active).toBeUndefined();
   expect(lstatSync(linked).isSymbolicLink()).toBe(true); expect(tree(target)).toEqual(before);
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^  [?]  UNAVAILABLE +spool:/m); expect(text).not.toContain("active 0/256 files");
+  expect(text).toMatch(/^  [?]  unknown +spool:/m); expect(text).not.toContain("active 0 of 256 files");
 });
 
 test("#132: recent capture drops by reason are an attention item with counts only", async () => {
@@ -546,7 +546,7 @@ test("#132: recent capture drops by reason are an attention item with counts onl
   expect(report.status).toBe("attention");
   expect(Object.keys(report.sections.drops).sort()).toEqual(["counts", "hint", "status", "total", "window"]);
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^  !  ATTENTION +drops:/m); expect(text).toContain("spool full 2, cwd removed 1");
+  expect(text).toMatch(/^  !  warning +drops:/m); expect(text).toContain("spool full 2, cwd removed 1");
 });
 
 test("#132: an existing metrics file doctor cannot read is unavailable, never a healthy zero", async () => {
@@ -569,7 +569,7 @@ test("#132: a torn metrics line is counted, a tail with no decodable record is u
   const garbage = (await doctor(r)).sections.drops;
   expect(garbage).toMatchObject({ status: "unavailable", reason: "metrics.jsonl has no decodable record in its recent tail" });
   const text = await doctor(r, ["doctor"]);
-  expect(text).toMatch(/^  [?]  UNAVAILABLE +drops:/m); expect(text).not.toContain("none in the recent metrics tail");
+  expect(text).toMatch(/^  [?]  unknown +drops:/m); expect(text).not.toContain("none in the recent metrics tail");
   const { captureDropSummary } = await import("../src/memory/metrics.ts");
   expect(captureDropSummary(r.memory)).toEqual({});
 });
@@ -818,7 +818,7 @@ test("#511: stale example IDs tell a marked reader that the person inspects them
     expect(report.sections.stale.examples).toContain(id.slice(0, 8));
     expect(report.sections.stale.hint).toContain("own shell");
     expect(report.sections.stale.hint).toContain("amem show <id>");
-    expect(await runCli(["doctor"], context)).toContain("own shell");
+    expect(await runCli(["doctor"], context)).toContain("open the examples from your own shell");
     const shown = await runCli(["show", id, "--json"], context);
     expect(shown).not.toContain("PRIVATE_SENTINEL");
   } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }

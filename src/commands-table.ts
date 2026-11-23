@@ -141,12 +141,12 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     "--plan": { description: "Saved --checkpoint --json preview to confirm", value: "path" },
     "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
   } },
-  status: { description: "Report shard migration and pending old-layout appends", options: json },
+  status: { description: "Report shard migration and pending old-layout appends", options: { ...json, "--verbose": flag("Show static notes and history lines (human output only)") } },
   formats: { description: "Format floors in formats.json", commands: {
     raise: { description: "Preview the record and the writer inventory; append it to formats.json only with --confirm, refused while any known writer is below the floor", mutates: "confirm",
       options: { ...json, "--confirm": flag("Append the previewed record") }, args: [{ name: "surface", values: ["home", "curated", "capture", "hook-spool", "candidates", "work-lists", "sync"] }, { name: "min-reader" }] },
   } },
-  doctor: { description: "One read-only report (F15): duplicates and stale notes, pending candidates, capture freshness per CLI, the brief's token cost, index equals rebuild, reader leases, the policy in effect, ingest and sync cadence", options: json },
+  doctor: { description: "One read-only report (F15): duplicates and stale notes, pending candidates, capture freshness per CLI, the brief's token cost, index equals rebuild, reader leases, the policy in effect, ingest and sync cadence", options: { ...json, "--verbose": flag("Show static notes and history lines (human output only)") } },
   prune: { description: "Plan or apply exact-entry durable expiry in a generation", mutates: true, options: {
     ...json, "--cutoff": text("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),
     "--user": flag("Select the user shard explicitly after a curated split (default: current project)"),
@@ -245,6 +245,17 @@ const described = (rows: [string, string][]) => {
   const width = Math.min(24, Math.max(...rows.map(([label]) => label.length)));
   return rows.map(([label, description]) => `  ${label.padEnd(width)}  ${description}`);
 };
+
+/**
+ * #590 AC9: true when `line` is one complete amem command that parses against `COMMANDS`. `<id>`-style placeholders are
+ * accepted as an argument value. Shared with setup's next steps (#425) so every `->` row is checked the same way.
+ */
+export function isAmemCommand(line: string): boolean {
+  const words = line.trim().split(/\s+/);
+  if (words[0] !== "amem" || words.length < 2) return false;
+  try { parseCommand(words.slice(1).map(word => /^<[a-z-]+>$/.test(word) ? "placeholder" : word)); return true; }
+  catch { return false; }
+}
 
 /** Full command list, or one command's help when argv names a command path (defaultCommand is not applied). */
 export function commandHelp(argv: readonly string[] = []): string {
