@@ -1,11 +1,21 @@
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { GOAL_STATES, KINDS } from "./memory/store.ts";
+import { cellWidth, wrap } from "@staix/cli-output";
 import { wrapReport } from "./memory/style.ts";
 
-export interface OptionDefinition { description: string; value?: "text" | "path" | readonly string[] }
-export interface ArgumentDefinition { name: string; values?: readonly string[]; path?: boolean; variadic?: boolean }
+/** `number` and `date` are help labels for a text value (#590 H3); the parser and completion treat them as text. */
+export interface OptionDefinition { description: string; details?: string; value?: "text" | "path" | "number" | "date" | readonly string[] }
+export interface ArgumentDefinition { name: string; values?: readonly string[]; path?: boolean; variadic?: boolean; optional?: boolean }
+export type CommandGroup = "read" | "write" | "review" | "maintenance" | "setup";
 export interface CommandDefinition {
+  /** #590 H1: one imperative verb phrase, at most 60 ASCII characters, no design references. */
   description: string;
+  /** Longer description, shown under `▸ Details` in this command's help. */
+  details?: string;
+  /** #590 H6: complete command lines, each resolved against `COMMANDS` by the help lint. */
+  examples?: readonly string[];
+  /** Root overview group of a top-level command (#590 H2). */
+  group?: CommandGroup;
   options?: Record<string, OptionDefinition>;
   args?: readonly ArgumentDefinition[];
   commands?: Record<string, CommandDefinition>;
@@ -14,171 +24,273 @@ export interface CommandDefinition {
   policyFree?: boolean;
   defaultCommand?: string;
 }
-const flag = (description: string): OptionDefinition => ({ description });
-const text = (description: string): OptionDefinition => ({ description, value: "text" });
-const json = { "--json": flag("Print JSON where supported") };
-const history = { "--history": flag("Read retained supersession/expiry history; forgotten text stays hidden"), "--as-of": text("Past canonical UTC date or timestamp; current forget/prune masks still apply") };
-const policy = { "--policy-free": flag("Accepted and ignored: the configured privacy policy always applies") };
-const filters = { ...json, "--tier": { description: "Memory tier", value: ["short", "long"] } as OptionDefinition,
-  "--kind": { description: "Note kind", value: KINDS }, "--peer": text("Author peer"), "--machine": text("Machine ID"),
-  "--since": text("ISO date or time"), "--limit": text("Maximum results") };
+const flag = (description: string, details?: string): OptionDefinition => ({ description, ...(details ? { details } : {}) });
+const text = (description: string, details?: string): OptionDefinition => ({ description, value: "text", ...(details ? { details } : {}) });
+const number = (description: string, details?: string): OptionDefinition => ({ description, value: "number", ...(details ? { details } : {}) });
+const date = (description: string, details?: string): OptionDefinition => ({ description, value: "date", ...(details ? { details } : {}) });
+const path = (description: string, details?: string): OptionDefinition => ({ description, value: "path", ...(details ? { details } : {}) });
+const json = (what: string) => ({ "--json": flag(`Print ${what} as JSON`) });
+const history = { "--history": flag("Read retained supersession and expiry history", "Forgotten text stays hidden."),
+  "--as-of": date("Read memory as of a past UTC date or timestamp", "Current forget and prune masks still apply.") };
+const policy = { "--policy-free": flag("Accepted and ignored", "The configured privacy policy always applies.") };
+// Declared on import codex and claude-auto so their handler keeps its own refusal text for these claude-mem flags.
+const claudeMemOnly = Object.fromEntries(["--db", "--limit", "--restart", "--capture-days"].map(name => [name, { description: "Only for import claude-mem; refused here", ...(name === "--restart" ? {} : { value: "text" as const }) }])) as Record<string, OptionDefinition>;
+const CANDIDATE_KINDS = ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] as const;
+const filters = (what: string) => ({ ...json(what), "--tier": { description: "Memory tier", value: ["short", "long"] } as OptionDefinition,
+  "--kind": { description: "Note kind", value: KINDS } as OptionDefinition, "--peer": text("Author peer"), "--machine": text("Machine ID"),
+  "--since": date("Only notes since this ISO date or time"), "--limit": number("Maximum results") });
 export const GLOBAL_OPTIONS = { "--help": flag("Show help"), "--color": { description: "Color output: auto, always or never", value: ["auto", "always", "never"] } as OptionDefinition, "--ascii": flag("Use ASCII markers") };
-export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json };
+export const ROOT_OPTIONS = { "--version": flag("Show version"), ...json("the notes") };
+const setupTargets = ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy", "all", "console"] as const;
 export const COMMANDS: Record<string, CommandDefinition> = {
-  consolidate: { description: "Queue deterministic project-local consolidation candidates; curated notes change only after explicit acceptance", mutates: true, options: { ...json, "--project": text("The current project's key; another project is refused (run from its directory)") } },
-  setup: { description: "Preview reversible MCP setup and supported capture hooks for native coding CLIs, or the acon console plugin manifest (console); apply and undo use explicit flags", options: { ...json, "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
-    "--verbose": flag("Show static notes and history lines (human output only)"),
-    "--root": { description: "Register this absolute install root (such as <install>/releases/<version>/, resolved to its real path) instead of the running one", value: "path" },
-    "--adopt-current": flag("With --apply: keep a stale setup receipt aside (its entries were replaced at another install root) and adopt the current wiring, which --undo restores") }, args: [{ name: "target", values: ["claude", "codex", "kimi", "pi", "qwen", "jcode", "opencode", "gemini", "agy", "all", "console"] }] },
-  skills: { description: "Export packaged skills to a directory", commands: { export: { description: "Export self-contained skills", options: json, args: [{ name: "dir", path: true }], mutates: true } } },
-  mcp: { description: "Run the project-bound MCP stdio server for this session" },
-  manifest: { description: "Describe this install: package name, version, MCP server and tools (read-only ones marked), commands", options: json },
-  hook: { description: "Run a fail-open, context-only Claude Code hook", args: [{ name: "event", values: [...HOOK_EVENTS] }] },
-  ingest: { description: "Incrementally capture native session transcripts without a watcher", options: { ...json, "--since": text("ISO date or time") }, args: [{ name: "kind", values: ["codex", "kimi", "pi", "qwen"] }] },
-  "vault-candidates": { description: "List screened durable curated vault candidates (per project, or across projects)", options: { ...json, "--limit": text("Maximum candidates per project (1..100)"),
-    "--all-projects": flag("List every active project's candidates; the reply says it crossed projects"), "--project": text("List one named project's candidates") } },
-  list: { description: "List memory", options: { ...filters, ...history, "--ungrouped": flag("Accepted for parity with search; list never folds notes") } },
-  search: { description: "Rank current curated project notes; history/as-of and empty queries retain newest-first filtering", options: { ...filters, ...history,
-    "--filter": flag("Current-project curated notes: match every word as a substring, newest first; not with --all-projects"), "--explain": flag("Include the score factors for ranked project-local results"), "--ungrouped": flag("List every note of a task instead of folding them into the best hit"), "--all-projects": flag("Search every active project; the reply says it crossed projects"),
-    "--include-archived": flag("With --all-projects, also read archived projects") }, args: [{ name: "words", variadic: true }] },
-  brief: { description: "Read intent/path memory: fails first, then decisions and contracts; untrusted data within a UTF-8 byte cap", options: { ...json,
-    "--for": text("Explicit intent"), "--paths": text("Repeatable named path"), "--symbols": text("Repeatable named symbol"), "--bytes": text("Complete brief-body byte cap (1..8192, default 2048)") } },
-  projects: { description: "List the project shards of this memory home (#15 D3)", options: { ...json, "--all": flag("Include forgotten projects (archived ones are always listed)") } },
-  usage: { description: "Totals and the largest project shards", options: { ...json, "--limit": text("Largest shards to list (1..100)"), "--all": flag("Include forgotten projects") } },
-  eval: { description: "Replay a local question set against ranked store.search and report recall@k and MRR (no model, no network; the built-in synthetic set without --set, `--set ko` for the built-in Korean one)", options: { ...json,
-    "--set": { description: "`ko` (the built-in Korean set) or a question set file (amem.eval/v1); with entries it is self-contained, without them its ids name entries of this project", value: "path" }, "--k": text("Cutoffs, comma separated (default 1,5,10; each 1..100)") }, commands: {
-    audit: { description: "Audit whether stored notes are still right (#326): sample a private sheet, judge it outside amem, then score it (no model, no network)", options: json, commands: {
-      sample: { description: "Draw a seeded, stratified sample of this project's curated notes into a private 0600 sheet with anchor status and empty judge columns", options: { ...json,
-        "--project": text("The project key to audit (default: this directory's project)"), "--n": text("Notes to draw (1..200, default 40)"), "--seed": text("Required: 1..64 letters, digits, '.', '_' or '-' - the same seed and store draw the same sample"),
-        "--as-of": text("The instant the notes' ages are measured at (canonical UTC date or timestamp; default: now), recorded in the sheet so the same seed and as-of draw the same sample"),
-        "--out": { description: "Sheet path (default: this home's eval/ directory); never overwritten, always 0600", value: "path" } } },
-      score: { description: "Score a filled sheet into content-free counts, per kind/age/anchor, and Cohen's kappa; refuses any leak of note text or a path", options: json, args: [{ name: "sheet" }] },
-    } } } },
-  spool: { description: "Off-hook hook-spool maintenance (#217)", options: json, commands: {
-    replay: { description: "Preview (read-only, no record bodies) or apply a replay of orphaned or parked hook records; --apply takes the saved preview", mutates: "apply", options: { ...json,
-      "--source": { description: "Absolute path of a private parked directory to read instead of this home's hook spool", value: "path" },
-      "--apply": flag("Apply the saved preview given with --plan"), "--confirm-unverifiable": flag("With --apply: also replay the saved plan's 'needs confirmation' cwd -> project mappings (records this boot cannot prove)"), "--plan": { description: "Saved preview from `amem spool replay --json`", value: "path" } } },
+  consolidate: { group: "review", description: "Queue consolidation candidates for review", details: "Deterministic and project-local. Curated notes change only after explicit acceptance.",
+    examples: ["amem consolidate", "amem consolidate --json"], mutates: true,
+    options: { ...json("the queued candidates"), "--project": text("This project's key", "Another project is refused; run from its directory.") } },
+  setup: { group: "setup", description: "Preview or apply MCP setup and capture hooks",
+    details: "Covers native coding CLIs, or the acon console plugin manifest (console). Apply and undo use explicit flags.",
+    examples: ["amem setup claude", "amem setup all --apply"],
+    options: { ...json("the setup plan"), "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
+      "--verbose": flag("Show static notes and history lines (human output only)"),
+      "--root": path("Register this absolute install root", "Such as <install>/releases/<version>/, resolved to its real path, instead of the running one."),
+      "--adopt-current": flag("With --apply: adopt the current wiring", "Keeps a stale setup receipt aside (its entries were replaced at another install root) and adopts the current wiring, which --undo restores.") },
+    args: [{ name: "target", values: setupTargets }] },
+  skills: { group: "setup", description: "Export packaged skills to a directory", commands: {
+    export: { description: "Export self-contained skills", examples: ["amem skills export ./skills"], options: json("the export receipt"), args: [{ name: "dir", path: true }], mutates: true } } },
+  mcp: { group: "setup", description: "Run the project-bound MCP stdio server" },
+  manifest: { group: "setup", description: "Describe this install, its MCP tools and commands", details: "Package name, version, MCP server and tools (read-only ones marked), and the command list.",
+    examples: ["amem manifest --json"], options: json("the manifest") },
+  hook: { group: "setup", description: "Run a fail-open, context-only capture hook", examples: ["amem hook SessionStart"], args: [{ name: "event", values: [...HOOK_EVENTS, "jcode"] }] },
+  ingest: { group: "setup", description: "Capture native session transcripts incrementally", details: "Runs once per call; no watcher.",
+    examples: ["amem ingest codex", "amem ingest pi --since 2026-11-01"], options: { ...json("the ingest receipt"), "--since": date("Only transcripts since this ISO date or time") },
+    args: [{ name: "kind", values: ["codex", "kimi", "pi", "qwen"] }] },
+  "vault-candidates": { group: "read", description: "List screened durable vault candidates", details: "Per project, or across projects with --all-projects.",
+    examples: ["amem vault-candidates", "amem vault-candidates --all-projects --limit 20"],
+    options: { ...json("the candidates"), "--limit": number("Maximum candidates per project (1..100)"),
+      "--all-projects": flag("List every active project's candidates", "The reply says it crossed projects."), "--project": text("List one named project's candidates") } },
+  list: { group: "read", description: "List memory notes", examples: ["amem list --kind decision", "amem list --since 2026-11-01 --limit 20"],
+    options: { ...filters("the notes"), ...history, "--ungrouped": flag("Accepted for parity with search", "list never folds notes.") } },
+  search: { group: "read", description: "Rank this project's curated notes",
+    details: "History, as-of and empty queries keep newest-first filtering.",
+    examples: ["amem search release gate", "amem search sync --all-projects"],
+    options: { ...filters("the ranked notes"), ...history,
+      "--filter": flag("Match every word as a substring, newest first", "Current-project curated notes only; not with --all-projects."),
+      "--explain": flag("Show the score factors of each result", "Ranked project-local results only."),
+      "--ungrouped": flag("List every note of a task, not the best hit"),
+      "--all-projects": flag("Search every active project", "The reply says it crossed projects."),
+      "--include-archived": flag("With --all-projects, read archived projects") }, args: [{ name: "words", variadic: true }] },
+  brief: { group: "read", description: "Read the fails, decisions and contracts for an intent",
+    details: "Fails first, then decisions and contracts, as untrusted data within a UTF-8 byte cap.",
+    examples: ["amem brief --for sync-lock", "amem brief --for review --paths src/cli.ts"],
+    options: { ...json("the brief"), "--for": text("Explicit intent"), "--paths": text("Named path (repeatable)"), "--symbols": text("Named symbol (repeatable)"),
+      "--bytes": number("Brief body byte cap (1..8192, default 2048)") } },
+  projects: { group: "read", description: "List the project shards of this memory home", examples: ["amem projects", "amem projects --all"],
+    options: { ...json("the projects"), "--all": flag("Include forgotten projects", "Archived projects are always listed.") } },
+  usage: { group: "read", description: "Show totals and the largest project shards", examples: ["amem usage", "amem usage --limit 5"],
+    options: { ...json("the usage totals"), "--limit": number("Largest shards to list (1..100)"), "--all": flag("Include forgotten projects") } },
+  eval: { group: "maintenance", description: "Measure search recall@k and MRR on a question set",
+    details: "Replays a local question set against ranked search. No model and no network. Without --set it uses the built-in synthetic set; --set ko uses the built-in Korean one.",
+    examples: ["amem eval", "amem eval --set ko --k 1,5"],
+    options: { ...json("the eval report"),
+      "--set": path("Built-in set name (ko) or a question set file", "A file uses amem.eval/v1. With entries it is self-contained; without them its ids name entries of this project."),
+      "--k": text("Cutoffs, comma separated (default 1,5,10)", "Each cutoff is 1..100.") }, commands: {
+      audit: { description: "Audit whether stored notes are still right", details: "Sample a private sheet, judge it outside amem, then score it. No model and no network.", options: json("the audit result"), commands: {
+        sample: { description: "Draw a seeded sample of notes into a private sheet",
+          details: "Stratified over this project's curated notes, with anchor status and empty judge columns, in a 0600 sheet.",
+          examples: ["amem eval audit sample --seed s1", "amem eval audit sample --seed s1 --n 20"],
+          options: { ...json("the sheet receipt"),
+            "--project": text("Project key to audit (default: this directory's)"), "--n": number("Notes to draw (1..200, default 40)"),
+            "--seed": text("Required seed: 1..64 of letters, digits, . _ -", "The same seed and store draw the same sample."),
+            "--as-of": date("Instant the note ages are measured at", "A canonical UTC date or timestamp; default now. Recorded in the sheet so the same seed and as-of draw the same sample."),
+            "--out": path("Sheet path (default: this home's eval/ directory)", "Never overwritten, always 0600.") } },
+        score: { description: "Score a filled sheet into content-free counts",
+          details: "Counts per kind, age and anchor, and Cohen's kappa. Refuses any leak of note text or a path.",
+          examples: ["amem eval audit score ./sheet.tsv"], options: json("the score"), args: [{ name: "sheet" }] },
+      } } } },
+  spool: { group: "maintenance", description: "Maintain the hook spool outside hooks", options: json("the replay plan or receipt"), commands: {
+    replay: { description: "Preview or apply a replay of parked hook records",
+      details: "The preview is read-only and shows no record bodies. --apply takes the saved preview.",
+      examples: ["amem spool replay --json", "amem spool replay --apply --plan plan.json"], mutates: "apply",
+      options: { ...json("the replay plan or receipt"),
+        "--source": path("Private parked directory to read instead", "An absolute path, read instead of this home's hook spool."),
+        "--apply": flag("Apply the saved preview given with --plan"),
+        "--confirm-unverifiable": flag("With --apply: replay unproven cwd mappings too", "Also replays the saved plan's 'needs confirmation' cwd -> project mappings, which this boot cannot prove."),
+        "--plan": path("Saved preview from amem spool replay --json") } },
   } },
-  gc: { description: "Apply each shard's retention and cap across shards in bounded batches (preview without --confirm)", mutates: "confirm", options: {
-    ...json, "--confirm": flag("Evict now; without it, preview only"), "--batches": text("evict() windows per shard in this run (1..1000, default 1)") } },
-  project: { description: "Per-project lifecycle and portable import/export (#15 D3, F17): one project only", options: json, commands: {
-    export: { description: "Write one project's capture, curated notes, goals and work lists to a new JSON, JSONL or Markdown file (never overwrites)", options: { "--to": { description: "Destination file, outside the memory home", value: "path" }, "--format": { description: "Portable format (default json)", value: ["json", "jsonl", "markdown"] }, ...policy },
+  gc: { group: "maintenance", description: "Apply each shard's retention and cap in batches", details: "Previews without --confirm.",
+    examples: ["amem gc", "amem gc --confirm --batches 10"], mutates: "confirm",
+    options: { ...json("the gc result"), "--confirm": flag("Evict now; without it, preview only"), "--batches": number("Evict windows per shard (1..1000, default 1)") } },
+  project: { group: "maintenance", description: "Export, import, archive or forget one project", options: json("the project receipt"), commands: {
+    export: { description: "Write one project's memory to a new export file",
+      details: "Capture, curated notes, goals and work lists, as JSON, JSONL or Markdown. Never overwrites.",
+      examples: ["amem project export repo@1234abcd --to ./repo.json"],
+      options: { ...json("the export receipt"), "--to": path("Destination file, outside the memory home"), "--format": { description: "Portable format (default json)", value: ["json", "jsonl", "markdown"] }, ...policy },
       args: [{ name: "key" }] },
-    import: { description: "Preview or re-import curated notes from a JSONL project export with their original entry ids", options: { "--from": { description: "JSONL project export", value: "path" }, "--confirm": flag("Write after the preview; without it, preview only"), "--allow-shared": flag("Explicitly permit shared-scope notes from this file"), ...policy }, args: [{ name: "key" }], mutates: "confirm", policyFree: true },
-    archive: { description: "Take a cold project out of recall (append-only op; unarchive brings it back)", args: [{ name: "key" }], mutates: true },
-    unarchive: { description: "Bring an archived project back into recall (append-only op)", args: [{ name: "key" }], mutates: true },
-    forget: { description: "Forget one project for good (append-only op; preview without --confirm)", options: { "--confirm": flag("Record the forget after the preview") }, args: [{ name: "key" }], mutates: "confirm" },
+    import: { description: "Preview or re-import notes from a JSONL export", details: "Keeps the original entry ids.",
+      examples: ["amem project import repo@1234abcd --from ./repo.jsonl", "amem project import repo@1234abcd --from ./repo.jsonl --confirm"],
+      options: { ...json("the import preview or receipt"), "--from": path("JSONL project export"), "--confirm": flag("Write after the preview"),
+        "--allow-shared": flag("Permit shared-scope notes from this file"), ...policy }, args: [{ name: "key" }], mutates: "confirm", policyFree: true },
+    archive: { description: "Take a cold project out of recall", details: "An append-only op; unarchive brings it back.", examples: ["amem project archive repo@1234abcd"],
+      options: json("the archive receipt"), args: [{ name: "key" }], mutates: true },
+    unarchive: { description: "Bring an archived project back into recall", details: "An append-only op.", examples: ["amem project unarchive repo@1234abcd"],
+      options: json("the unarchive receipt"), args: [{ name: "key" }], mutates: true },
+    forget: { description: "Forget one project for good", details: "An append-only op; previews without --confirm.", examples: ["amem project forget repo@1234abcd", "amem project forget repo@1234abcd --confirm"],
+      options: { ...json("the forget receipt"), "--confirm": flag("Record the forget after the preview") }, args: [{ name: "key" }], mutates: "confirm" },
   } },
-  show: { description: "Show a note", options: { ...json, ...history }, args: [{ name: "id" }] },
-  graph: { description: "Show a graph", options: { ...json, ...history, "--hops": { description: "Graph depth", value: ["1", "2"] } }, args: [{ name: "id-or-node" }] },
-  suggestions: { description: "List pending suggestions", options: json },
-  confirm: { description: "Confirm a suggestion", options: json, args: [{ name: "id" }], mutates: true },
-  reject: { description: "Reject a suggestion", options: json, args: [{ name: "id" }], mutates: true },
-  promote: { description: "Promote a note (--to repo: append its screened line to this repository's .amem/log.jsonl)", options: { ...json, ...policy, "--to": { description: "Promote into the repository scope", value: ["repo"] },
-    "--confirm": flag("With --to repo: append the previewed line"), "--confirm-public": text("With --to repo, unless the repository is verified private: the first 8 characters of the entry id") }, args: [{ name: "id" }], mutates: true, policyFree: true },
-  repo: { description: "The repository scope (#15 D6): this repository's .amem/log.jsonl", options: json, defaultCommand: "status", commands: {
-    status: { description: "Show the repository log, its entries and what the screen withheld" },
-    attributes: { description: "Add the merge=union entry for .amem/log.jsonl to .gitattributes (preview without --confirm; never committed)", mutates: "confirm", options: { "--confirm": flag("Write after the preview") } },
+  show: { group: "read", description: "Show a note", examples: ["amem show abcdef12", "amem show abcdef12 --history"], options: { ...json("the note"), ...history }, args: [{ name: "id" }] },
+  graph: { group: "read", description: "Show the graph around a note or node", examples: ["amem graph abcdef12", "amem graph abcdef12 --hops 2"],
+    options: { ...json("the graph"), ...history, "--hops": { description: "Graph depth", value: ["1", "2"] } }, args: [{ name: "id-or-node" }] },
+  suggestions: { group: "review", description: "List pending suggestions", examples: ["amem suggestions --json"], options: json("the suggestions") },
+  confirm: { group: "review", description: "Confirm a suggestion", examples: ["amem confirm abcdef12"], options: json("the receipt"), args: [{ name: "id" }], mutates: true },
+  reject: { group: "review", description: "Reject a suggestion", examples: ["amem reject abcdef12"], options: json("the receipt"), args: [{ name: "id" }], mutates: true },
+  promote: { group: "write", description: "Promote a note, or copy it into the repository log",
+    details: "With --to repo, appends the note's screened line to this repository's .amem/log.jsonl.",
+    examples: ["amem promote abcdef12", "amem promote abcdef12 --to repo --confirm"],
+    options: { ...json("the receipt"), ...policy, "--to": { description: "Promote into the repository scope", value: ["repo"] },
+      "--confirm": flag("With --to repo: append the previewed line"),
+      "--confirm-public": text("With --to repo: the entry id's first 8 characters", "Required unless the repository is verified private.") }, args: [{ name: "id" }], mutates: true, policyFree: true },
+  repo: { group: "maintenance", description: "Show or set up this repository's memory log", details: "The repository scope is this repository's .amem/log.jsonl.", options: json("the repository status"), defaultCommand: "status", commands: {
+    status: { description: "Show the repository log and what the screen withheld", examples: ["amem repo status --json"], options: json("the repository status") },
+    attributes: { description: "Add the merge=union entry to .gitattributes", details: "For .amem/log.jsonl. Previews without --confirm; never committed.",
+      examples: ["amem repo attributes", "amem repo attributes --confirm"], mutates: "confirm", options: { "--confirm": flag("Write after the preview") } },
   } },
-  demote: { description: "Demote a note", options: json, args: [{ name: "id" }], mutates: true },
-  forget: { description: "Forget a note", options: json, args: [{ name: "id" }], mutates: true },
-  note: { description: "Write curated notes through the configured policy (F6)", options: json, commands: {
-    add: { description: "Add one curated note: text as arguments, `-` to type it on the terminal until end of input, or no text to open $EDITOR. A fail note takes --approach, --symptom, --cause, --evidence (repeatable) and --retry-when", mutates: true, options: {
-      "--kind": { description: "Note kind (default finding)", value: KINDS }, "--tier": { description: "Memory tier (default long)", value: ["short", "long"] },
-      "--scope": { description: "Scope (default project)", value: ["project", "shared"] }, "--title": text("One-line title"),
-      "--approach": text("fail: what was tried"), "--symptom": text("fail: what went wrong"), "--cause": text("fail: why"), "--evidence": text("fail: a reference (repeatable)"), "--retry-when": text("fail: what would make the approach worth retrying") },
-      args: [{ name: "text", variadic: true }] },
+  demote: { group: "write", description: "Demote a note", examples: ["amem demote abcdef12"], options: json("the receipt"), args: [{ name: "id" }], mutates: true },
+  forget: { group: "write", description: "Forget a note", examples: ["amem forget abcdef12"], options: json("the receipt"), args: [{ name: "id" }], mutates: true },
+  note: { group: "write", description: "Write curated notes through the configured policy", options: json("the new note id"), commands: {
+    add: { description: "Add one curated note",
+      details: "Text as arguments, - to type it until end of input, or no text to open $EDITOR. A fail note takes --approach, --symptom, --cause, --evidence (repeatable) and --retry-when.",
+      examples: ["amem note add --kind decision Use one lock per home", "amem note add --kind fail --approach retry --symptom timeout -"], mutates: true,
+      options: { ...json("the new note id"),
+        "--kind": { description: "Note kind (default finding)", value: KINDS }, "--tier": { description: "Memory tier (default long)", value: ["short", "long"] },
+        "--scope": { description: "Scope (default project)", value: ["project", "shared"] }, "--title": text("One-line title"),
+        "--approach": text("fail: what was tried"), "--symptom": text("fail: what went wrong"), "--cause": text("fail: why"), "--evidence": text("fail: a reference (repeatable)"),
+        "--retry-when": text("fail: when the approach is worth retrying") },
+      args: [{ name: "text", variadic: true, optional: true }] },
   } },
-  supersede: { description: "Replace a note", options: json, args: [{ name: "old-id" }, { name: "new-id" }], mutates: true },
-  rebuild: { description: "Rebuild the derived index", options: json, mutates: true },
-  dedupe: { description: "Preview duplicate reconciliation", options: { ...json, "--apply": flag("Append reconciliation operations") }, mutates: "apply" },
-  sync: { description: "Sync a private remote (--if-due: only when the schedule and the failure backoff allow it; --force ignores both)", options: { ...json, ...policy, "--remote": text("Private git URL"),
-    "--if-due": flag("Sync only when due (hourly after a success, 15 minutes doubling to a day after failures); stops after 30 seconds"), "--force": flag("With --if-due: ignore the schedule and the backoff"),
-    "--progress": { description: "Placement sync progress on stderr: auto (human lines when stderr is a terminal, otherwise none), human, json (one versioned event per line) or off; stdout is unchanged", value: ["auto", "human", "json", "off"] },
-    "--status": flag("Read-only: show recorded placement sync operations (running, finished or interrupted) and exit; opens no memory, takes no lock") }, mutates: true, policyFree: true },
-  machine: { description: "Show or label this machine", options: { ...json, "--label": text("Machine label") }, mutates: "label" },
-  import: { description: "Import external memory", options: { ...json, ...policy, "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor"), "--capture-days": text("Import recent claude-mem observations and summaries into capture") }, mutates: true, policyFree: true,
+  supersede: { group: "write", description: "Replace a note with a newer one", examples: ["amem supersede abcdef12 0123abcd"], options: json("the receipt"), args: [{ name: "old-id" }, { name: "new-id" }], mutates: true },
+  rebuild: { group: "maintenance", description: "Rebuild the derived index", examples: ["amem rebuild"], options: json("the rebuild receipt"), mutates: true },
+  dedupe: { group: "maintenance", description: "Preview duplicate reconciliation", examples: ["amem dedupe", "amem dedupe --apply"],
+    options: { ...json("the reconciliation preview"), "--apply": flag("Append reconciliation operations") }, mutates: "apply" },
+  sync: { group: "maintenance", description: "Sync with a private remote",
+    details: "--if-due syncs only when the schedule and the failure backoff allow it; --force ignores both.",
+    examples: ["amem sync", "amem sync --if-due"],
+    options: { ...json("the sync result"), ...policy, "--remote": text("Private git URL"),
+      "--if-due": flag("Sync only when due; stops after 30 seconds", "Due hourly after a success; after failures the wait starts at 15 minutes and doubles up to a day."),
+      "--force": flag("With --if-due: ignore the schedule and backoff"),
+      "--progress": { description: "Placement sync progress on stderr", value: ["auto", "human", "json", "off"],
+        details: "auto prints human lines when stderr is a terminal and nothing otherwise; json prints one versioned event per line. stdout is unchanged." },
+      "--status": flag("Show recorded placement sync operations", "Read-only: running, finished or interrupted operations. Opens no memory and takes no lock.") }, mutates: true, policyFree: true },
+  machine: { group: "maintenance", description: "Show or label this machine", examples: ["amem machine", "amem machine --label laptop"], options: { ...json("the machine"), "--label": text("Machine label") }, mutates: "label" },
+  import: { group: "write", description: "Import external memory", mutates: true, policyFree: true,
+    options: { ...json("the import receipt"), ...policy, "--db": path("SQLite database file"), "--limit": number("Maximum observations"), "--restart": flag("Restart the import cursor"),
+      "--capture-days": number("Also import recent days into capture") },
     commands: {
-      "claude-mem": { description: "Import claude-mem observations", options: { "--db": { description: "SQLite database file", value: "path" }, "--limit": text("Maximum observations"), "--restart": flag("Restart import cursor"), "--capture-days": text("Import recent observations and summaries into capture") } },
-      "claude-auto": { description: "Import Claude Code auto memory as review candidates; CLAUDE.md and AGENTS.md stay excluded", options: { "--from": { description: "Claude projects directory (default ~/.claude/projects)", value: "path" } } },
-      codex: { description: "Import Codex memories as review candidates; originals stay unchanged", options: { "--from": { description: "Codex memories directory (default ~/.codex/memories)", value: "path" } } },
+      "claude-mem": { description: "Import claude-mem observations", examples: ["amem import claude-mem", "amem import claude-mem --capture-days 7"],
+        options: { ...json("the import receipt"), ...policy, "--db": path("SQLite database file"), "--limit": number("Maximum observations"), "--restart": flag("Restart the import cursor"),
+          "--capture-days": number("Also import recent days into capture", "Imports recent claude-mem observations and summaries into capture.") } },
+      "claude-auto": { description: "Import Claude Code auto memory as candidates", details: "CLAUDE.md and AGENTS.md stay excluded.", examples: ["amem import claude-auto"],
+        options: { ...json("the import receipt"), ...policy, "--from": path("Claude projects directory (default ~/.claude/projects)"), ...claudeMemOnly } },
+      codex: { description: "Import Codex memories as review candidates", details: "The originals stay unchanged.", examples: ["amem import codex"],
+        options: { ...json("the import receipt"), ...policy, "--from": path("Codex memories directory (default ~/.codex/memories)"), ...claudeMemOnly } },
     } },
-  goal: { description: "Long-term goals", options: json, defaultCommand: "list", commands: {
-    list: { description: "List goals", options: { "--all": flag("Include completed goals") } },
-    show: { description: "Show a goal", args: [{ name: "id" }] },
-    new: { description: "Create a goal", options: { "--milestone": text("Milestone"), "--depends": text("Dependency goal ID"), "--shared": flag("Share across projects") }, args: [{ name: "title", variadic: true }], mutates: true },
-    link: { description: "Link a goal to a task of a host that has a task board (not available in amem alone)", args: [{ name: "id" }, { name: "task-id" }], mutates: true },
-    state: { description: "Set goal state", args: [{ name: "id" }, { name: "state", values: GOAL_STATES }], mutates: true },
-    done: { description: "Complete a goal", args: [{ name: "id" }], mutates: true },
-    take: { description: "Take a goal lease", options: { "--force": flag("Override the prior lease") }, args: [{ name: "id" }], mutates: true },
+  goal: { group: "write", description: "Track long-term goals", options: json("the goals"), defaultCommand: "list", commands: {
+    list: { description: "List goals", examples: ["amem goal list --all"], options: { ...json("the goals"), "--all": flag("Include completed goals") } },
+    show: { description: "Show a goal", examples: ["amem goal show abcdef12"], options: json("the goal"), args: [{ name: "id" }] },
+    new: { description: "Create a goal", examples: ["amem goal new Ship the sync checkpoint", "amem goal new --shared --milestone draft Write the spec"],
+      options: { "--milestone": text("Milestone (repeatable)"), "--depends": text("Dependency goal ID (repeatable)"), "--shared": flag("Share across projects") }, args: [{ name: "title", variadic: true }], mutates: true },
+    link: { description: "Link a goal to a host task board task", details: "Needs a host that has a task board; amem alone has none.", examples: ["amem goal link abcdef12 42"], args: [{ name: "id" }, { name: "task-id" }], mutates: true },
+    state: { description: "Set a goal's state", examples: ["amem goal state abcdef12 blocked"], args: [{ name: "id" }, { name: "state", values: GOAL_STATES }], mutates: true },
+    done: { description: "Complete a goal", examples: ["amem goal done abcdef12"], options: json("the promotion offer"), args: [{ name: "id" }], mutates: true },
+    take: { description: "Take a goal lease", examples: ["amem goal take abcdef12", "amem goal take abcdef12 --force"], options: { "--force": flag("Override the prior lease") }, args: [{ name: "id" }], mutates: true },
   } },
-  review: { description: "Review machine-local non-evidentiary candidates", options: json, defaultCommand: "list", commands: {
-    targets: { description: "List notes to re-check in deterministic priority order", options: { ...json, "--project": text("Current project or alias"), "--limit": text("Maximum targets (1..500, default 50)") } },
-    list: { description: "List review candidates", options: {
+  review: { group: "review", description: "Review machine-local memory candidates", options: json("the candidates"), defaultCommand: "list", commands: {
+    targets: { description: "List notes to re-check, in priority order", examples: ["amem review targets --limit 10"],
+      options: { ...json("the targets"), "--project": text("Current project or alias"), "--limit": number("Maximum targets (1..500, default 50)") } },
+    list: { description: "List review candidates", examples: ["amem review list --status all", "amem review list --kind fail --json"], options: { ...json("the candidates"),
       "--status": { description: "Candidate status", value: ["pending", "accepting", "accepted", "rejected", "all"] },
-      "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] }, "--limit": text("Maximum candidates (1..500)"),
+      "--kind": { description: "Candidate kind", value: CANDIDATE_KINDS }, "--limit": number("Maximum candidates (1..500)"),
     } },
-    accept: { description: "Accept one candidate through the current memory policy", options: { ...policy, "--kind": { description: "Require the selected candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
-    reject: { description: "Reject one candidate", args: [{ name: "full-candidate-id" }], mutates: true },
-    decide: { description: "Non-interactive review of one candidate: preview it (stamped shown) without --confirm; accept, reject or defer it with --confirm", options: { ...json, ...policy, "--confirm": flag("Apply the previewed decision") },
+    accept: { description: "Accept one candidate through the memory policy", examples: ["amem review accept <full-candidate-id>"],
+      options: { ...json("the accepted note"), ...policy, "--kind": { description: "Require the selected candidate kind", value: CANDIDATE_KINDS } }, args: [{ name: "full-candidate-id" }], mutates: true, policyFree: true },
+    reject: { description: "Reject one candidate", examples: ["amem review reject <full-candidate-id>"], options: json("the receipt"), args: [{ name: "full-candidate-id" }], mutates: true },
+    decide: { description: "Decide one candidate without a terminal",
+      details: "Without --confirm it previews the candidate (stamped shown); with --confirm it accepts, rejects or defers it.",
+      examples: ["amem review decide <full-candidate-id> accept", "amem review decide <full-candidate-id> reject --confirm"],
+      options: { ...json("the decision"), ...policy, "--confirm": flag("Apply the previewed decision") },
       args: [{ name: "full-candidate-id" }, { name: "decision", values: ["accept", "reject", "defer"] }], mutates: "confirm", policyFree: true },
-    walk: { description: "Walk the pending candidates one by one: accept, edit (as a new note), reject, skip or quit", mutates: true, options: { "--kind": { description: "Candidate kind", value: ["correction", "fail", "decay", "memory", "promotion", "consolidation", "model-answer"] } } },
+    walk: { description: "Walk the pending candidates one by one", details: "Accept, edit (as a new note), reject, skip or quit each one.", examples: ["amem review walk", "amem review walk --kind fail"], mutates: true,
+      options: { "--kind": { description: "Candidate kind", value: CANDIDATE_KINDS } } },
   } },
-  decay: { description: "Preview old live long-term notes unprotected by open goals; apply only with --apply --confirm", mutates: "apply", options: {
-    ...json, "--days": text("Age in whole days (default 90)"), "--propose": flag("Queue unused-injection candidates for review"), "--apply": flag("Preview exact revisions; combine with --confirm to apply"), "--confirm": flag("Apply the exact revision preview with --apply"), "--forget": flag("Explicitly forget instead of demoting; confirmation names this action") }, args: [{ name: "id", variadic: true }] },
-  migrate: { description: "Preview a generation migration; apply only with --apply, or deactivate it explicitly", mutates: "apply", options: {
-    ...json, "--apply": flag("Apply the previewed migration"), "--dry-run": flag("Read-only migration receipt (default; kept as an alias)"), "--generation": text("Explicit 32-hex generation ID"),
-    "--resume": flag("Resume the recorded migration"), "--deactivate": flag("Select shared v1 without deleting a generation"),
-    "--shards": flag("Migrate the curated home into project and user shards"),
-    "--public-prune-view": flag("Enable the forward-only v2 public prune view on an active split"),
-    "--sync-placement": flag("Forward-only placement activation on this memory home; preview by default, apply with --apply; no automatic migration or renewal"),
-    "--list-remote": flag("List remote placement project refs outside the active inventory by hash"),
-    "--abandon": flag("Discard an interrupted pre-commit sync-placement attempt; initial activation requires both markers to match their original v2 bytes, and realm admission requires --confirm"),
-    "--admit": text("Admit one curated project realm that appeared after activation into the same epoch; previews without --apply"),
-    "--from-remote": flag("Admit the named remote-only realm using the configured placement sync remote"),
-    "--confirm": flag("Confirm the previewed realm admission abandonment"),
-    "--checkpoint": flag("Person-reviewed placement checkpoint: preview by default, then --confirm --plan, --resume or --abandon"),
-    "--checkpoint-on-bound": { description: "Preview turning the home opt-in for a sync-run placement checkpoint on or off; --confirm writes it to amem.config.json", value: ["on", "off"] },
-    "--plan": { description: "Saved --checkpoint --json preview to confirm", value: "path" },
-    "--writer-root": { description: "Repeatable absolute amem install root in the complete local writer inventory", value: "path" },
+  decay: { group: "review", description: "Preview demoting old notes no open goal protects", details: "Old live long-term notes. Apply only with --apply --confirm.",
+    examples: ["amem decay", "amem decay --days 180 --apply --confirm"], mutates: "apply",
+    options: { ...json("the decay preview"), "--days": number("Age in whole days (default 90)"), "--propose": flag("Queue unused-injection candidates for review"),
+      "--apply": flag("Preview exact revisions", "Combine with --confirm to apply them."), "--confirm": flag("Apply the exact revision preview with --apply"),
+      "--forget": flag("Forget instead of demoting", "The confirmation names this action.") }, args: [{ name: "id", variadic: true, optional: true }] },
+  migrate: { group: "maintenance", description: "Preview or apply a memory home migration",
+    details: "Generation, shard, public prune view and sync placement migrations. Each previews by default and applies only with --apply; --deactivate selects shared v1 explicitly.",
+    examples: ["amem migrate --dry-run", "amem migrate --sync-placement --dry-run"], mutates: "apply",
+    options: { ...json("the migration receipt"), "--apply": flag("Apply the previewed migration"), "--dry-run": flag("Read-only receipt (default; kept as an alias)"), "--generation": text("Explicit 32-hex generation ID"),
+      "--resume": flag("Resume the recorded migration"), "--deactivate": flag("Select shared v1 without deleting a generation"),
+      "--shards": flag("Migrate the curated home into shards", "Project and user shards."),
+      "--public-prune-view": flag("Enable the v2 public prune view on a split", "Forward-only, on an active split."),
+      "--sync-placement": flag("Activate placement sync on this memory home", "Forward-only. Previews by default and applies with --apply; no automatic migration or renewal."),
+      "--list-remote": flag("List remote project refs outside the inventory", "By hash, outside the active inventory."),
+      "--abandon": flag("Discard an interrupted placement attempt", "Pre-commit only. Initial activation requires both markers to match their original v2 bytes; realm admission requires --confirm."),
+      "--admit": text("Admit one new curated project realm", "A realm that appeared after activation, into the same epoch. Previews without --apply."),
+      "--from-remote": flag("Admit the named remote-only realm", "Uses the configured placement sync remote."),
+      "--confirm": flag("Confirm the previewed abandonment or checkpoint"),
+      "--checkpoint": flag("Preview a placement checkpoint", "Person-reviewed: preview by default, then --confirm --plan, --resume or --abandon."),
+      "--checkpoint-on-bound": { description: "Preview the sync-run checkpoint opt-in", value: ["on", "off"], details: "Turns the home opt-in on or off; --confirm writes it to amem.config.json." },
+      "--plan": path("Saved --checkpoint --json preview to confirm"),
+      "--writer-root": path("Writer inventory install root (repeatable)", "An absolute amem install root; repeat it for the complete local writer inventory."),
+    } },
+  status: { group: "read", description: "Show the memory home, policy and migration state", examples: ["amem status", "amem status --verbose"],
+    options: { ...json("the status object"), "--verbose": flag("Show static notes and history lines (human output only)") } },
+  formats: { group: "maintenance", description: "Raise format floors in formats.json", commands: {
+    raise: { description: "Preview or append a format floor record",
+      details: "Previews the record and the writer inventory; appends it to formats.json only with --confirm. Refused while any known writer is below the floor.",
+      examples: ["amem formats raise home 0.30.0", "amem formats raise home 0.30.0 --confirm"], mutates: "confirm",
+      options: { ...json("the floor preview or record"), "--confirm": flag("Append the previewed record") },
+      args: [{ name: "surface", values: ["home", "curated", "capture", "hook-spool", "candidates", "work-lists", "sync"] }, { name: "min-reader" }] },
   } },
-  status: { description: "Report shard migration and pending old-layout appends", options: { ...json, "--verbose": flag("Show static notes and history lines (human output only)") } },
-  formats: { description: "Format floors in formats.json", commands: {
-    raise: { description: "Preview the record and the writer inventory; append it to formats.json only with --confirm, refused while any known writer is below the floor", mutates: "confirm",
-      options: { ...json, "--confirm": flag("Append the previewed record") }, args: [{ name: "surface", values: ["home", "curated", "capture", "hook-spool", "candidates", "work-lists", "sync"] }, { name: "min-reader" }] },
+  doctor: { group: "read", description: "Check this project's memory health, read-only",
+    details: "Duplicates and stale notes, pending candidates, capture freshness per CLI, the brief's token cost, index equals rebuild, reader leases, the policy in effect, and ingest and sync cadence.",
+    examples: ["amem doctor", "amem doctor --json"], options: { ...json("the doctor report"), "--verbose": flag("Show static notes and history lines (human output only)") } },
+  prune: { group: "maintenance", description: "Plan or apply exact-entry expiry in a generation", examples: ["amem prune --dry-run --cutoff 2026-01-01", "amem prune --apply --plan plan.json"], mutates: true,
+    options: { ...json("the prune plan or receipt"), "--cutoff": date("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),
+      "--user": flag("Select the user shard after a curated split", "Default: the current project."),
+      "--apply": flag("Apply the exact local plan"), "--plan": path("Sealed local plan JSON file") } },
+  capacity: { group: "maintenance", description: "Report capture use and propose capture bounds", examples: ["amem capacity", "amem capacity --disk-share 0.05"],
+    options: { ...json("the capacity report"), "--disk-share": number("Disk-share bound for the proposal (default 0.02)") }, commands: {
+      apply: { description: "Write the proposed capture bounds", details: "To the home capture config, or with --split each shard's share of the global budget.",
+        examples: ["amem capacity apply", "amem capacity apply --split --confirm"], mutates: true,
+        options: { ...json("the written bounds"), "--disk-share": number("Disk-share bound for the proposal (default 0.02)"),
+          "--cap-mb": number("Capture cap in MB"), "--retention-days": number("Capture retention in days"), "--confirm": flag("Write after the preview"),
+          "--split": flag("Write each shard's share of the global budget", "To each shard's own config.") } },
+    } },
+  alias: { group: "maintenance", description: "Map project keys onto a canonical key", options: json("the alias ops"), defaultCommand: "list", commands: {
+    list: { description: "List alias ops", examples: ["amem alias list --json"], options: json("the alias ops") },
+    add: { description: "Map one key onto its canonical key", details: "An append-only op.", examples: ["amem alias add old@1234abcd new@5678abcd"], options: json("the alias op"), args: [{ name: "from-key" }, { name: "to-key" }], mutates: true },
+    remove: { description: "Make an alias key resolve to itself again", details: "An append-only op; the latest op wins.", examples: ["amem alias remove old@1234abcd"], options: json("the alias op"), args: [{ name: "alias-key" }], mutates: true },
   } },
-  doctor: { description: "One read-only report (F15): duplicates and stale notes, pending candidates, capture freshness per CLI, the brief's token cost, index equals rebuild, reader leases, the policy in effect, ingest and sync cadence", options: { ...json, "--verbose": flag("Show static notes and history lines (human output only)") } },
-  prune: { description: "Plan or apply exact-entry durable expiry in a generation", mutates: true, options: {
-    ...json, "--cutoff": text("Canonical UTC expiry cutoff"), "--dry-run": flag("Print a local sealed plan without writes"),
-    "--user": flag("Select the user shard explicitly after a curated split (default: current project)"),
-    "--apply": flag("Apply the exact local plan"), "--plan": { description: "Sealed local plan JSON file", value: "path" },
-  } },
-  capacity: { description: "Report capture use and propose R6 bounds (R7)", options: { ...json, "--disk-share": text("Disk-share bound for the proposal (default 0.02)") }, commands: {
-    apply: { description: "Write the proposed (or given) bounds to the home capture config, or with --split each shard's share of the global budget", mutates: true, options: {
-      ...json, "--cap-mb": text("Capture cap in MB"), "--retention-days": text("Capture retention in days"), "--confirm": flag("Write after the preview"),
-      "--split": flag("Write the per-shard split of the global budget to each shard's own config") } },
-  } },
-  alias: { description: "Explicit project key aliases (#15 D2)", options: json, defaultCommand: "list", commands: {
-    list: { description: "List alias ops" },
-    add: { description: "Map one key onto its canonical key (append-only op)", args: [{ name: "from-key" }, { name: "to-key" }], mutates: true },
-    remove: { description: "Remove an alias so the key resolves to itself again (append-only op, the latest wins)", args: [{ name: "alias-key" }], mutates: true },
-  } },
-  completion: { description: "Print static shell completion", args: [{ name: "shell", values: ["zsh", "bash", "fish"] }] },
-  help: { description: "Show help" }, version: { description: "Show version" },
+  completion: { group: "setup", description: "Print static shell completion", examples: ["amem completion zsh"], args: [{ name: "shell", values: ["zsh", "bash", "fish"] }] },
+  help: { group: "setup", description: "Show help for a command", examples: ["amem help status"], args: [{ name: "command", variadic: true, optional: true }] },
+  version: { group: "setup", description: "Show the version" },
 };
 
 export interface CompletionDefinition { path: string[]; options: Record<string, OptionDefinition>; args: ArgumentDefinition[]; children: string[] }
 export function completionDefinitions(): CompletionDefinition[] {
   const rows: CompletionDefinition[] = [{ path: [], options: { ...GLOBAL_OPTIONS, ...ROOT_OPTIONS, ...COMMANDS.list!.options }, args: [], children: Object.keys(COMMANDS) }];
-  const walk = (commands: Record<string, CommandDefinition>, path: string[], inherited: Record<string, OptionDefinition>) => {
+  // #590 H5: a command accepts its own options and the global ones, never a parent's. A group invoked bare also takes its
+  // default child's options, because the parser runs that child. Every flag a handler reads is declared on its own entry.
+  const walk = (commands: Record<string, CommandDefinition>, path: string[]) => {
     for (const [name, command] of Object.entries(commands)) {
-      const next = [...path, name], ownOptions = { ...inherited, ...command.options };
-      const options = { ...ownOptions, ...(command.defaultCommand ? command.commands?.[command.defaultCommand]?.options : {}) };
+      const next = [...path, name];
+      const options = { ...GLOBAL_OPTIONS, ...command.options, ...(command.defaultCommand ? command.commands?.[command.defaultCommand]?.options : {}) };
       rows.push({ path: next, options, args: [...command.args ?? []], children: Object.keys(command.commands ?? {}) });
-      if (command.commands) walk(command.commands, next, ownOptions);
+      if (command.commands) walk(command.commands, next);
     }
   };
-  walk(COMMANDS, [], GLOBAL_OPTIONS); return rows;
+  walk(COMMANDS, []); return rows;
 }
 export interface ParsedCommand { path: string[]; definition: CommandDefinition; options: Record<string, string | boolean>; positionals: string[]; rawArgs: string[] }
 export class CommandUsageError extends Error { readonly exitCode = 2; }
@@ -237,16 +349,84 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   return { path, definition, options, positionals, rawArgs };
 }
 
-const optionLabel = (name: string, option: OptionDefinition) =>
-  `${name}${option.value === undefined ? "" : ` <${Array.isArray(option.value) ? option.value.join("|") : option.value}>`}`;
-const usageRow = (row: CompletionDefinition) =>
-  `${[...row.path, ...row.args.map(arg => `<${arg.name}>`)].join(" ")}${Object.entries(row.options).map(([name, option]) => ` [${optionLabel(name, option)}]`).join("")}`;
-const described = (rows: [string, string][]) => {
-  // Long enum labels (review --kind) would push every description far right; they overflow instead.
-  const width = Math.min(24, Math.max(...rows.map(([label]) => label.length)));
-  return rows.map(([label, description]) => `  ${label.padEnd(width)}  ${description}`);
+const valueLabel = (value: NonNullable<OptionDefinition["value"]>) => typeof value === "string" ? `<${value}>` : value.join("|");
+const optionLabel = (name: string, option: OptionDefinition) => `${name}${option.value === undefined ? "" : ` ${valueLabel(option.value)}`}`;
+const argLabel = (arg: ArgumentDefinition) => {
+  const body = arg.values && arg.values.length <= 4 ? arg.values.join("|") : `<${arg.name}>`;
+  const shown = arg.variadic ? `${body}...` : body;
+  return arg.optional ? `[${shown}]` : shown;
 };
+const own = (row: CompletionDefinition) => Object.entries(row.options).filter(([name]) => !Object.hasOwn(GLOBAL_OPTIONS, name));
+/** #590 H3: `amem <path> <required> [optional] [options]`; the flags are listed under `▸ Flags`, never inlined. */
+export function usageLine(path: readonly string[]): string {
+  const row = completionDefinitions().find(candidate => candidate.path.join(" ") === path.join(" "));
+  if (!row || !path.length) return "amem <command> [options]";
+  const command = lookupCommand(path)!;
+  const args = command.commands && !command.defaultCommand ? ["<command>"] : row.args.map(argLabel);
+  return ["amem", ...path, ...args, ...(own(row).length ? ["[options]"] : [])].join(" ");
+}
+export function lookupCommand(path: readonly string[]): CommandDefinition | undefined {
+  let commands: Record<string, CommandDefinition> | undefined = COMMANDS, command: CommandDefinition | undefined;
+  for (const name of path) { if (!commands || !Object.hasOwn(commands, name)) return undefined; command = commands[name]!; commands = command.commands; }
+  return command;
+}
+/** The longest prefix of `argv` that names a command path; an option's value is never a command name. */
+export function commandPath(argv: readonly string[]): string[] {
+  const path: string[] = [], rows = completionDefinitions();
+  let commands: Record<string, CommandDefinition> | undefined = COMMANDS, row = rows[0]!;
+  for (let i = 0; i < argv.length; i++) {
+    const token = argv[i]!;
+    if (token.startsWith("-")) { if (!token.includes("=") && row.options[token]?.value !== undefined) i++; continue; }
+    if (!commands || !Object.hasOwn(commands, token)) break;
+    path.push(token); commands = commands[token]!.commands;
+    row = rows.find(candidate => candidate.path.join(" ") === path.join(" "))!;
+  }
+  return path;
+}
 
+const HELP_WIDTH = 80, LABEL_WIDTH = 28;
+const section = (name: string, count?: number) => `\u25b8 ${name}${count === undefined ? "" : ` (${count})`}`;
+/** #590 H4: one line per row; a label wider than the column puts its text on the next line at the same column. */
+function described(rows: readonly (readonly [string, string])[]): string[] {
+  const width = Math.min(LABEL_WIDTH, Math.max(...rows.map(([label]) => cellWidth(label))));
+  return rows.flatMap(([label, description]) => cellWidth(label) > width
+    ? [`  ${label}`, `  ${" ".repeat(width)}  ${description}`]
+    : [`  ${label}${" ".repeat(width - cellWidth(label))}  ${description}`]);
+}
+const prose = (text: string) => wrap(text, HELP_WIDTH - 2, 0).map(line => `  ${line}`);
+const GLOBAL_LINE = "  Global: --help, --color auto|always|never, --ascii";
+const GROUP_TITLE: Record<CommandGroup, string> = { read: "Read", write: "Write", review: "Review", maintenance: "Maintenance", setup: "Setup" };
+
+/**
+ * #590 H2/H3: the grouped root overview, or one command's page (`▸ Usage`, `▸ Description`, `▸ Flags`, `▸ Commands`,
+ * `▸ Examples`, `▸ Details`). An argv that names no command gets the overview; `amem help <unknown>` refuses in cli.ts.
+ */
+export function commandHelp(argv: readonly string[] = []): string {
+  const words = argv.filter(word => word !== "--help" && word !== "-h");
+  const path = commandPath(words);
+  const command = path.length ? lookupCommand(path) : undefined;
+  if (command && path[0] !== "help") {
+    const row = completionDefinitions().find(candidate => candidate.path.join(" ") === path.join(" "))!;
+    const flags = own(row);
+    const lines = [section("Usage"), `  ${usageLine(path)}`, "", section("Description"), ...prose(command.description)];
+    if (flags.length) lines.push("", section("Flags", flags.length), ...described(flags.map(([name, option]) => [optionLabel(name, option), option.description])));
+    lines.push(GLOBAL_LINE);
+    if (command.commands) lines.push("", section("Commands", Object.keys(command.commands).length),
+      ...described(Object.entries(command.commands).map(([name, child]) => [name + (name === command.defaultCommand ? " (default)" : ""), child.description])));
+    if (command.examples?.length) lines.push("", section("Examples"), ...command.examples.map(example => `  ${example}`));
+    const details = [command.details, ...row.args.filter(arg => arg.values && arg.values.length > 4).map(arg => `<${arg.name}>: ${arg.values!.join(", ")}.`), ...flags.filter(([, option]) => option.details).map(([name, option]) => `${name}: ${option.details}`)].filter((item): item is string => !!item);
+    if (details.length) lines.push("", section("Details"), ...details.flatMap(prose));
+    return lines.join("\n");
+  }
+  const groups = (Object.keys(GROUP_TITLE) as CommandGroup[]).map(group => {
+    const entries = Object.entries(COMMANDS).filter(([, item]) => (item.group ?? "setup") === group);
+    return ["", section(GROUP_TITLE[group], entries.length), ...described(entries.map(([name, item]) => [name, item.description]))];
+  });
+  return [section("Usage"), "  amem <command> [options]", GLOBAL_LINE, "  Get started: amem status, then amem help <command>",
+    ...groups.flat(),
+    "", section("Details"),
+    ...prose("--policy-free is accepted and ignored; the configured privacy policy applies. Agent-marked reads use the MCP privacy ceiling. Apply and confirm need no terminal; review walk and the note editor stay interactive.")].join("\n");
+}
 /**
  * #590 AC9: true when `line` is one complete amem command that parses against `COMMANDS`. `<id>`-style placeholders are
  * accepted as an argument value. Shared with setup's next steps (#425) so every `->` row is checked the same way.
@@ -258,34 +438,3 @@ export function isAmemCommand(line: string): boolean {
   catch { return false; }
 }
 
-/** Full command list, or one command's help when argv names a command path (defaultCommand is not applied). */
-export function commandHelp(argv: readonly string[] = []): string {
-  const path: string[] = [], rows = completionDefinitions();
-  let commands: Record<string, CommandDefinition> | undefined = COMMANDS, command: CommandDefinition | undefined, row = rows[0]!;
-  for (let i = 0; i < argv.length; i++) {
-    const token = argv[i]!;
-    if (token.startsWith("--")) {
-      // An option's value is never a command name.
-      if (!token.includes("=") && row.options[token]?.value !== undefined) i++;
-      continue;
-    }
-    if (!commands || !Object.hasOwn(commands, token)) break;
-    command = commands[token]!; path.push(token); commands = command.commands;
-    row = rows.find(candidate => candidate.path.join(" ") === path.join(" "))!;
-  }
-  if (command && path[0] !== "help") {
-    const lines = [`usage: amem ${usageRow(row)}`, "", command.description, "", "options:", ...described(Object.entries(row.options).map(([name, option]) => [optionLabel(name, option), option.description]))];
-    if (command.commands) lines.push("", "commands:", ...described(Object.entries(command.commands).map(([name, child]) => [name, child.description])));
-    return wrapReport(lines.join("\n"), 80);
-  }
-  const overview = Object.entries(COMMANDS).map(([name, item]) => {
-    const description = item.description.split("\n")[0] ?? "";
-    const limit = 76 - name.length - Math.max(1, 20 - name.length);
-    const summary = description.length > limit ? `${description.slice(0, limit - 3).trimEnd()}...` : description;
-    return `  ${name.padEnd(20)}  ${summary}`;
-  });
-  return ["usage: amem <command> [options]", "  [--help] [--version] [--json]", "", "Commands:", ...overview,
-    "--policy-free is accepted and ignored; the configured privacy policy applies.",
-    "Agent-marked reads use the MCP privacy ceiling. Apply and confirm need no TTY;",
-    "review walk and the note editor remain interactive."].join("\n");
-}

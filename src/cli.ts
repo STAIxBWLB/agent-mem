@@ -40,7 +40,7 @@ import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelect
 import { capacityReport, capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity.ts";
 import { CaptureStore, readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
 
-import { COMMANDS, commandHelp, parseCommand } from "./commands-table.ts";
+import { COMMANDS, CommandUsageError, commandHelp, commandPath, parseCommand, usageLine } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
@@ -384,7 +384,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const safe = new DecayApplyError(error.report, undefined); safe.jsonOutput = error.jsonOutput; throw safe;
     }
     // Data-free errors (decided before any store or file is opened) keep their own message.
-    if (marked && (error instanceof AgentUsageError || error instanceof AgentReadFailure || error instanceof AgentReadAmbiguous)) throw error;
+    // #590 H7: a CommandUsageError is decided from argv words before any store access, so it stays a usage error.
+    if (marked && (error instanceof AgentUsageError || error instanceof CommandUsageError || error instanceof AgentReadFailure || error instanceof AgentReadAmbiguous)) throw error;
     if (marked && error instanceof RemoteRealmRefusal) throw error;
     // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
     if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
@@ -480,11 +481,18 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "version")) return `amem ${VERSION}`;
   if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "help")) return commandHelp();
   if (argv[0] === "--version" || argv[0] === "version") return `amem ${VERSION}`;
-  if (argv[0] === "help") return commandHelp(argv.slice(1));
+  if (argv[0] === "help") {
+    // #590 H7: `help <unknown>` is a usage error, not the overview.
+    const words = argv.slice(1).filter(word => !word.startsWith("-"));
+    if (words.length && commandPath(argv.slice(1)).length < words.length) throw new CommandUsageError(`unknown command ${words.join(" ")}`);
+    return commandHelp(argv.slice(1));
+  }
   if (argv[0] === "--help" || argv.includes("--help")) return commandHelp(argv);
   let parsed;
   try {
     parsed = parseCommand(argv);
+    // #590 H7: these groups do nothing bare (eval and capacity run their own report; spool and eval audit name their usage themselves).
+    if (["project", "skills", "formats", "note", "import"].includes(parsed.path.join(" "))) throw new CommandUsageError(`amem ${parsed.path.join(" ")} needs a command`);
     if (parsed.path[0] === "version") return `amem ${VERSION}`;
     if (parsed.path[0] === "manifest") return JSON.stringify(manifest(), null, parsed.options["--json"] === true ? undefined : 2);
     if (parsed.path[0] === "completion") {
@@ -1648,10 +1656,17 @@ export function ingestText(kind: IngestKind, result: IngestReceipt, s: Style = P
   return report.render(s.color).join("\n");
 }
 
-export function formatCliError(error: unknown, usage = false): string {
+/**
+ * #590 H7: a usage error prints its message, one usage line and the help page that explains it. A message that already
+ * is a `usage:` line stays the one usage line.
+ */
+export function formatCliError(error: unknown, usage = false, argv: readonly string[] = []): string {
   if (error instanceof DecayApplyError || error instanceof CliPartialApplyError) return error.render();
-  const message = errorLine("amem", String((error as Error).message), "", { tty: false })[0]!;
-  return usage || (error as { exitCode?: number }).exitCode === 2 ? `${message}\nUsage: amem <command> [options]\nRun 'amem --help' for details.` : message;
+  const raw = String((error as Error).message), message = errorLine("amem", raw, "", { tty: false })[0]!;
+  if (!usage && (error as { exitCode?: number }).exitCode !== 2) return message;
+  const path = commandPath(argv[0] === "help" ? [] : argv);
+  const help = `Run 'amem help${path.length ? ` ${path.join(" ")}` : ""}' for details.`;
+  return raw.startsWith("usage:") ? `${message}\n${help}` : `${message}\nUsage: ${usageLine(path)}\n${help}`;
 }
 
 /** A completed write means rendered output, never evidence of host delivery or citation. */
@@ -1673,7 +1688,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       prefix = `${paint([{ ...marker, text: markerCell("fail", ascii) }], !argv.includes("--json") && color === true)} `;
     }
     const code = (error as { exitCode?: number }).exitCode ?? ((error as Error).message.startsWith("usage:") ? EXIT.usage : EXIT.fail);
-    console.error(prefix + formatCliError(error, code === 2)); process.exitCode = code;
+    console.error(prefix + formatCliError(error, code === 2, argv)); process.exitCode = code;
   }
   if (personStop !== undefined) endLikeSignal(personStop);   // after the report, with amem's own handlers already removed
 }

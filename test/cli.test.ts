@@ -21,7 +21,7 @@ for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "
   for (const value of ["", "invalid marker", "1", "codex"]) {
     expect(agentMarked({ [key]: value })).toBe(true);
     const agent = { env: { [key]: value, AMEM_HOME: home }, stdinTTY: false, stdoutTTY: false };
-    for (const args of [["--help"], ["help"], ["--help", "--json"]]) expect(await runCli(args, agent)).toContain("usage: amem");
+    for (const args of [["--help"], ["help"], ["--help", "--json"]]) expect(await runCli(args, agent)).toContain("▸ Usage\n  amem ");
     for (const args of [["--version"], ["version"], ["--version", "--json"]]) expect(await runCli(args, agent)).toMatch(/^amem \d/);
     expect(await runCli(["completion", "bash"], agent)).toContain("_amem_candidates");
     for (const args of [["list", "--history"], ["search", "fixture", "--as-of", "2026-01-01T00:00:00.000Z"]]) expect(await runCli(args, agent), args.join(" ")).toContain("retained memory as of");
@@ -62,7 +62,7 @@ test("bin refuses Node before TS and an agent history read runs (#431)", () => {
   expect(node.exitCode).toBe(1); expect(node.stderr.toString()).toContain("Bun >=1.4.2 is required");
   const home = temp(), env = { PATH: process.env.PATH, HOME: home, AMEM_HOME: join(home, "memory"), AGENTHUB_PEER_ID: "codex" };
   const help = Bun.spawnSync([process.execPath, bin, "--help"], { env, stdout: "pipe", stderr: "pipe" });
-  expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("usage: amem");
+  expect(help.exitCode).toBe(0); expect(help.stdout.toString()).toContain("▸ Usage\n  amem ");
   const version = Bun.spawnSync([process.execPath, bin, "--version"], { env, stdout: "pipe", stderr: "pipe" });
   expect(version.exitCode).toBe(0); expect(version.stdout.toString()).toMatch(/^amem \d/);
   const child = Bun.spawnSync([process.execPath, bin, "list", "--history"], { env, stdout: "pipe", stderr: "pipe" });
@@ -73,7 +73,7 @@ test("help and version work without opening a store", async () => {
   const home = join(temp(), "must-not-open"); process.env.AMEM_HOME = home;
   const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
   expect(await runCli(["--version"], { env: {} })).toBe(`amem ${version}`);
-  expect(await runCli(["--help"], { env: {} })).toContain("usage: amem");
+  expect(await runCli(["--help"], { env: {} })).toContain("▸ Usage\n  amem ");
   expect(await runCli(["import", "claude-mem", "--help"], { env: {} })).toContain("--capture-days"); expect(existsSync(home)).toBe(false);
 });
 

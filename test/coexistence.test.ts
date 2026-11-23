@@ -36,7 +36,7 @@ test("manifest --json lists the package, the MCP tools with their read-only clai
   expect(printed.commands).toEqual(Object.keys(COMMANDS)); expect(printed.commands).toContain("manifest");
   // An agent-marked shell reads it too: it carries no memory data.
   expect(JSON.parse(await runCli(["manifest", "--json"], { env: { ...process.env, AGENTHUB_PEER_ID: "codex" } }))).toEqual(printed);
-  expect(commandHelp(["manifest"])).toContain("manifest [--help]");
+  expect(commandHelp(["manifest"])).toContain("amem manifest [options]");
   expect(completionScript("zsh")).toContain("manifest");
 });
 
