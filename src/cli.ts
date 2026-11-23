@@ -490,8 +490,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   let parsed;
   try {
     parsed = parseCommand(argv);
-    // #590 H7: these groups do nothing bare (eval and capacity run their own report; spool names its usage itself).
-    if (["project", "skills", "formats", "note", "import", "eval audit"].includes(parsed.path.join(" "))) throw new CommandUsageError(`amem ${parsed.path.join(" ")} needs a command`);
+    // #590 H7: these groups do nothing bare (eval and capacity run their own report; spool and eval audit name their usage themselves).
+    if (["project", "skills", "formats", "note", "import"].includes(parsed.path.join(" "))) throw new CommandUsageError(`amem ${parsed.path.join(" ")} needs a command`);
     if (parsed.path[0] === "version") return `amem ${VERSION}`;
     if (parsed.path[0] === "manifest") return JSON.stringify(manifest(), null, parsed.options["--json"] === true ? undefined : 2);
     if (parsed.path[0] === "completion") {
