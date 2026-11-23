@@ -1,0 +1,20 @@
+ amem Migration  preview, nothing written
+
+> Profile
+  Kind:       shared-v1
+  Home:       /h/memory
+  Directory:  /h/memory
+
+> Rows
+  Valid:       1088
+  Skipped:     2
+  Expired:     14
+  Eligible:    1074
+  Operations:  add 1000, supersede 74
+  Tiers:       long 900, short 174
+
+> Effect
+  applies a new generation; the shared v1 log stays as it is
+
+> Next
+    -> amem migrate --apply

@@ -1,0 +1,18 @@
+ amem Prune  preview, nothing written
+  project repo@1234abcd, cutoff 326 d ago
+
+> Selection
+  Eligible:  3
+  Selected:  1
+  Local:     1
+  Synced:    0
+  More eligible entries remain beyond this plan.
+
+> Targets (1)
+  PLACEMENT  ENTRY                             EXPIRED
+  local      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  357 d ago
+
+> Next
+  This preview is not the sealed plan. Save the plan with --json, then apply it
+  (keep --user if you used it):
+    -> amem prune --apply --plan <file>

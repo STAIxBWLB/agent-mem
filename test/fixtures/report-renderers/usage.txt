@@ -1,0 +1,11 @@
+ amem Usage  2 project shards
+
+> Totals
+  Capture:  4212 rows, 411.3 KiB
+  Curated:  80 entries
+  Disk:     9.0 MiB
+
+> Largest (2)
+  KEY                        DISK      CAPTURE
+  agent-mem@1234abcd         9.0 MiB   4200 rows
+  notes@5678abcd (archived)  39.1 KiB  12 rows

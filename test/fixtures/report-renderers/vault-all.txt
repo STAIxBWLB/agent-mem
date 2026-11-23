@@ -1,0 +1,11 @@
+ amem Vault candidates  2 candidates, across projects
+
+> Candidates (2)
+  PROJECT             ID        KIND      TITLE
+  agent-mem@1234abcd  dddddddd  decision  Release gate reuses the identical tree
+  agent-mem@1234abcd  eeeeeeee  contract  Sync lock is one per home
+
+> Next
+  Open the candidate's source repository, then review it before recording it in
+  your vault:
+    -> amem show <id>

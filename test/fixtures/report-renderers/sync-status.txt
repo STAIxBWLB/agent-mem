@@ -1,0 +1,6 @@
+ amem Sync status  1 operation, 1 interrupted
+
+> Operations (1)
+  !  op-1: interrupted in publish; elapsed 42s; owner gone 60s ago; not a
+     successful sync
+  1 unreadable status file ignored

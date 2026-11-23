@@ -1,0 +1,20 @@
+ amem Spool replay  preview, nothing written
+  plan 0123456789ab; no record bodies shown
+
+> Records
+  Native:   1
+  Summary:  1
+
+> Mappings (2)
+  DIRECTORY   PROJECT        RECORDS
+  /w/repo     repo@1234abcd  native 1
+  /w/other    (unresolved)   summary 1
+
+> Attention (1)
+  !  /w/other -> other@5678abcd: 1 record; this boot cannot prove the original
+     identity
+
+> Next
+  Save the preview first: amem spool replay --json > plan.json
+    -> amem spool replay --apply --plan plan.json
+    -> amem spool replay --apply --plan plan.json --confirm-unverifiable

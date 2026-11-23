@@ -1,0 +1,20 @@
+ amem Shard migration  needs attention
+  generation abcdef01
+
+> Attention (2)
+  !  one row names a project outside the inventory
+  !  1 row refused
+
+> Rows
+  Rows:              1200
+  User:              40
+  Legacy:            1160
+  Legacy local:      12
+  Legacy main:       1148
+  Prune:             3
+  Translated prune:  3
+  Shards:            2
+  Projects:          1
+
+> Effect
+  splits the curated home into project and user shards

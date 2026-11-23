@@ -482,27 +482,27 @@ test("generation/prune CLI keeps sealed JSON artifacts and a readable apply rece
   const h = home(), store = new MemoryStore({ memoryDir: h.memory, deferPromotions: true, now: () => Date.now() - 20000 }), project = memoryProjectKey(h.cwd);
   try { store.note({ op: "note", project, scope: "project", tier: "short", kind: "finding", peer: "person", text: "synthetic expiry fixture", about: [], expires: new Date(Date.now() - 10000).toISOString(), source: "person" }); }
   finally { store.close(); }
-  expect(await readableCommand(h, ["migrate", "--dry-run"])).toStartWith("amem migrate: preview\n");
+  expect(await readableCommand(h, ["migrate", "--dry-run"])).toStartWith(" amem Migration  preview, nothing written\n");
   const migrated = await readableCommand(h, ["migrate", "--generation", "a".repeat(32), "--apply", "--json"], true);
   expect(migrated).toBe(JSON.stringify(JSON.parse(migrated), null, 2)); expect(migrated).not.toMatch(ANSI);
   const selectedPreview = await readableCommand(h, ["migrate"]);
-  expect(selectedPreview).toContain("profile generation"); expect(selectedPreview).toContain("Next action: none");
+  expect(selectedPreview).toMatch(/^  Kind: +generation$/m); expect(selectedPreview).not.toContain("> Next");
   const args = ["prune", "--dry-run", "--cutoff", new Date().toISOString()];
-  expect(await readableCommand(h, args)).toStartWith("amem prune: preview\n");
+  expect(await readableCommand(h, args)).toStartWith(" amem Prune  ");
   const plan = await readableCommand(h, [...args, "--json"], true);
   expect(plan).toBe(JSON.stringify(JSON.parse(plan), null, 2));
   const file = join(h.root, "prune.json"); writeFileSync(file, plan, { mode: 0o600 });
-  expect(await readableCommand(h, ["prune", "--apply", "--plan", file])).toStartWith("amem prune: complete\n");
+  expect(await readableCommand(h, ["prune", "--apply", "--plan", file])).toMatch(/^ amem Prune  (done|nothing to apply)\n?/);
 }, 30_000);
 
 test("vault and migration previews remain available without person/TTY gates", async () => {
   const h = home();
-  expect(await readableCommand(h, ["vault-candidates"])).toStartWith("amem vault-candidates: complete\n");
+  expect(await readableCommand(h, ["vault-candidates"])).toBe(" amem Vault candidates  none");
   expect(await readableCommand(h, ["vault-candidates", "--json"], true)).toBe("[]");
   await readableCommand(h, ["migrate", "--apply"], false);
   const previews: [string[], string][] = [
-    [["migrate", "--dry-run"], "amem migrate: preview\n"],
-    [["prune", "--dry-run", "--cutoff", "2026-10-28T00:00:00.000Z"], "amem prune: preview\n"],
+    [["migrate", "--dry-run"], " amem Migration  "],
+    [["prune", "--dry-run", "--cutoff", "2026-10-28T00:00:00.000Z"], " amem Prune  "],
   ];
   for (const [args, prefix] of previews) {
     expect(await readableCommand(h, args, false, { CODEX_THREAD_ID: "agent" })).toStartWith(prefix);
