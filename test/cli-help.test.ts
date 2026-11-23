@@ -81,13 +81,18 @@ function invokeCli(argv: string[], context: typeof person) {
 }
 
 test("formats raise reports missing and excess arguments in both sessions", () => {
-  const missing = "amem: usage: amem formats raise <surface> <min-reader> [--confirm] [--json]";
-  const excess = "amem: too many arguments for formats raise\nUsage: amem formats raise <surface> <min-reader> [options]";
+  const help = invokeCli(["help", "formats", "raise"], person);
+  expect(help.exitCode).toBe(0);
+  const synopsis = help.stdout.toString().split("\n").find(line => line.trimStart().startsWith("amem formats raise "))?.trim();
+  expect(synopsis).toBeDefined();
   for (const args of [[], ["home"], ["home", "0.38.0", "extra"]]) {
     for (const context of [person, agent]) {
       const result = invokeCli(["formats", "raise", ...args], context);
       expect(result.exitCode).toBe(2);
-      expect(result.stderr.toString()).toBe(`${args.length > 2 ? excess : missing}\nRun 'amem help formats raise' for details.\n`);
+      const error = result.stderr.toString();
+      expect(error.split("\n").filter(line => line.startsWith("Usage:"))).toEqual([`Usage: ${synopsis}`]);
+      expect(error).toContain("Run 'amem help formats raise' for details.");
+      expect(error).not.toMatch(/read_failed|Memory operation unavailable/);
       expect(result.stdout.toString()).toBe("");
     }
   }

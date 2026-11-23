@@ -767,7 +767,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const { planFormatRaise, applyFormatRaise, formatRaiseRefusal, installVersion, runningAmemRoots } = await import("./memory/formats-raise.ts");
     const { readSetupWriterRoots } = await import("./setup.ts"), { readEffectiveSyncPlacementWriterRoots } = await import("./memory/sync-placement-effective-writers.ts");
     const [surface, minReader] = parsed.positionals;
-    if (!surface || !minReader || parsed.positionals.length !== 2) throw new CommandUsageError("usage: amem formats raise <surface> <min-reader> [--confirm] [--json]");
+    if (!surface || !minReader || parsed.positionals.length !== 2) throw new CommandUsageError("formats raise requires a surface and minimum reader version");
     const home = realPath(memoryHome()), own = realPath(fileURLToPath(new URL("..", import.meta.url)));
     const inventory = (): import("./memory/formats-raise.ts").FormatWriterInventory => {
       const writers: import("./memory/formats-raise.ts").FormatWriter[] = [], incomplete: string[] = [], seen = new Set<string>();
