@@ -26,7 +26,7 @@ import { withPlacementCheckpointFences } from "./sync-placement-activation-locks
 import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
 import { initialPlacementWriterContext } from "../sync-placement-writer-context.ts";
-import { readSetupWriterRoots, SetupWriterRootsError } from "../setup.ts";
+import { readSetupWriterRoots, SetupWriterRootsError } from "../setup-writer-roots.ts";
 import { checkpointProspective, type CheckpointProspective } from "./sync-placement-checkpoint-prospective.ts";
 import { ShardHistoryError, type ShardHistoryCause } from "./shard-sync-history.ts";
 

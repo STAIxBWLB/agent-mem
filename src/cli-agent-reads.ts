@@ -1,7 +1,8 @@
 import { noteDisplayActor } from "./memory/cli-attribution.ts";
 import { memoryDetailText, memoryRecordText, memoryScoresText, memoryTableText, PLAIN, type HumanMemoryRow, type Style } from "./memory/style.ts";
 import type { View } from "./memory/store.ts";
-import { capacityText, type CapacityReport } from "./memory/capacity.ts";
+import { type CapacityReport } from "./memory/capacity.ts";
+import { capacityText } from "./memory/capacity-text.ts";
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
 import { memoryHome } from "./memory/home.ts";

@@ -3,7 +3,7 @@ import { types } from "node:util";
 import { fileURLToPath } from "node:url";
 import { canonicalPath, realPath } from "./memory/platform.ts";
 import { canonicalJSON } from "./memory/generation.ts";
-import { readSetupWriterRoots, SETUP_TARGETS, setupReceiptRemedy, SetupWriterRootsError, type SetupTarget } from "./setup.ts";
+import { readSetupWriterRoots, SETUP_TARGETS, setupReceiptRemedy, SetupWriterRootsError, type SetupTarget } from "./setup-writer-roots.ts";
 import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { measureSyncPlacementWriters, extractSyncPlacementWriterFailure, type SyncPlacementWriterFailureDetail, type SyncPlacementWriterMeasurement } from "./memory/sync-placement-writers.ts";
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
