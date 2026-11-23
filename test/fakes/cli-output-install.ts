@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 export function installCliOutputFixture(installRoot: string): void {
   const entry = fileURLToPath(import.meta.resolve("@staix/cli-output")), packageRoot = dirname(dirname(entry));
   const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { name?: string; version?: string };
-  if (manifest.name !== "@staix/cli-output" || manifest.version !== "0.1.1") throw new Error("fixture requires the pinned cli-output 0.1.1 package");
+  if (manifest.name !== "@staix/cli-output" || manifest.version !== "0.1.3") throw new Error("fixture requires the pinned cli-output 0.1.3 package");
   const target = join(installRoot, "node_modules", "@staix", "cli-output");
   mkdirSync(join(target, "src"), { recursive: true, mode: 0o755 });
   copyFileSync(join(packageRoot, "package.json"), join(target, "package.json"));
