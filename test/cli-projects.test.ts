@@ -65,7 +65,7 @@ test("usage totals the shards and names the largest, as text and JSON", async ()
   const report = await json(["usage", "--json", "--limit", "1"], person);
   expect(report.totals).toMatchObject({ shards: 2, captureRows: 4 });
   expect(report.largest.map((p: { key: string }) => p.key)).toEqual([B]);
-  expect(await runCli(["usage"], person)).toContain("2 project shard(s)");
+  expect(await runCli(["usage"], person)).toStartWith(" amem Usage  2 project shards\n");
   await expect(runCli(["usage", "--limit", "0"], person)).rejects.toThrow(/1 to 100/);
 });
 
@@ -199,14 +199,14 @@ test("curated counts are unavailable on an unsplit home, never 0: projects, usag
   const rows = await json(["projects", "--json"], person);
   expect(rows[0].curatedAvailable === false || rows[0].curatedEntries === 0).toBe(true);     // the catalog's own field is a lower bound on an unsplit home
   const text = await runCli(["projects"], person);
-  expect(text).toContain("curated unavailable (home not split)"); expect(text).not.toMatch(/curated 0\b/);
+  expect(text).toContain("Curated counts are per project only after amem migrate --shards."); expect(text).toMatch(/^  KEY +STATE +CAPTURE +DISK +LAST$/m);
   const usage = await json(["usage", "--json"], person);
   expect(usage.curatedSplit).toBe(false); expect(usage.totals.curatedEntries).toBeNull();
-  expect(await runCli(["usage"], person)).toContain("home not split into shards");
+  expect(await runCli(["usage"], person)).toContain("Curated:  unavailable until amem migrate --shards");
   expect((await runCli(["project", "forget", A], person)).replace(/\s+/g, " ")).toContain("curated unavailable (home not split)");
   const { migrateShards } = await import("../src/memory/shard-migration.ts");
   await migrateShards({ memoryDir: join(dir, "memory"), mode: "apply", authorizedPerson: true, tty: true });
-  expect(await runCli(["projects"], person)).toMatch(/curated 1\b/);
+  expect(await runCli(["projects"], person)).toMatch(/^  KEY +STATE +CAPTURE +CURATED +DISK +LAST\n  \S+ +active +\d+ rows +1 /m);
   expect((await json(["usage", "--json"], person)).totals.curatedEntries).toBe(1);
 });
 

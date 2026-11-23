@@ -53,6 +53,7 @@ import { readCatalogFresh } from "./memory/catalog.ts";
 import { appendLifecycle, assertProjectActive, projectState } from "./memory/lifecycle.ts";
 import { gcText, runGc } from "./memory/gc.ts";
 import { usageReport, usageText } from "./memory/usage.ts";
+import * as reports from "./memory/report-text.ts";
 import { exportProject, type ProjectExportFormat } from "./memory/project-export.ts";
 import { importProject } from "./memory/project-import.ts";
 import { importExternalMemory, type ExternalMemorySource } from "./memory/external-import.ts";
@@ -737,12 +738,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (mode === "deactivate") throw new Error("--deactivate is not a shard migration mode");
       if (actor === "agent" && mode !== "dry-run") administrative(await migrateShards({ ...common, mode: "dry-run" }));
       const result = await migrateShards({ ...common, mode });
-      return options["--json"] ? JSON.stringify(result, null, 2) : shardMigrationText(result, outputStyle(context, options));
+      return options["--json"] ? JSON.stringify(result, null, 2) : screenedLegacy(shardMigrationText(result, outputStyle(context, options)), reports.shardMigrateReportText(result, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
     }
     if (actor === "agent" && mode === "deactivate") administrative({ target: common.memoryDir, selector: readSelector(common.memoryDir), mode });
     else if (actor === "agent" && mode !== "dry-run") administrative(await migrate({ ...common, mode: "dry-run" }));
     const result = await migrate({ ...common, mode });
-    return options["--json"] ? JSON.stringify(result, null, 2) : migrationText(result, outputStyle(context, options));
+    return options["--json"] ? JSON.stringify(result, null, 2) : screenedLegacy(migrationText(result, outputStyle(context, options)), reports.migrateReportText(result, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
   }
   if (sub === "status") {
     // F1: say where the memory lives and which configuration is in effect. The migration fields keep their names and shape; `home` and `config` are added.
@@ -839,7 +840,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         administrative(port.snapshot().rows.filter(source => ids.has(source.row.id)).map(source => source.row));
       }
       const result = applying ? applyPrune(port, input, auth) : plan;
-      return options["--json"] ? JSON.stringify(result, null, 2) : pruneText(result, outputStyle(context, options));
+      return options["--json"] ? JSON.stringify(result, null, 2) : screenedLegacy(pruneText(result, outputStyle(context, options)), reports.pruneReportText(result, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
     } finally { store.close(); }
   }
   if (sub === "decay") {
@@ -871,12 +872,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const preview = administrative(decayPreview(store, project, current)), action = options["--forget"] === true ? "FORGET" : "demote";
       const display = [`${action} preview: ${preview.entries.length} notes older than ${days} days; citation history unknown (${preview.citedExemptions ?? "unknown"} observed retained-positive exemptions)${preview.truncated ? "; truncated" : ""}`,
         ...preview.entries.map(entry => `${entry.target.id}  revision ${entry.target.revision}  ${entry.view.at}  ${entry.view.kind}: ${terminalSafe(entry.view.title ?? entry.view.text)}`)].join("\n");
-      if (!applying) return options["--json"] ? JSON.stringify(preview, null, 2) : display;
-      if (!preview.entries.length) return options["--json"] ? JSON.stringify({ action, ids: [] }) : "no eligible notes to apply";
+      if (!applying) return options["--json"] ? JSON.stringify(preview, null, 2) : screenedLegacy(display, reports.decayReportText({ kind: "preview", plan: preview, action }, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
+      if (!preview.entries.length) return options["--json"] ? JSON.stringify({ action, ids: [] }) : screenedLegacy("no eligible notes to apply", reports.decayReportText({ kind: "empty" }, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
       if (options["--forget"] === true) assertExactDecayForget(store, preview.entries.map(entry => entry.target.id), project);
       assertCurrent();
       const result = applyDecay(store, preview, { ...current, actor, confirmed: true, forget: options["--forget"] === true });
-      return options["--json"] ? JSON.stringify(result, null, 2) : `${result.action}: ${result.ids.length} entries${result.expiresAt ? `; expires ${result.expiresAt}` : ""}`;
+      return options["--json"] ? JSON.stringify(result, null, 2) : screenedLegacy(`${result.action}: ${result.ids.length} entries${result.expiresAt ? `; expires ${result.expiresAt}` : ""}`, reports.decayReportText({ kind: "applied", ...result }, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
     } catch (error) { if (error instanceof DecayApplyError) error.jsonOutput = options["--json"] === true; throw error; }
     finally { store.close(); }
   }
@@ -1125,13 +1126,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (sub === "vault-candidates" && (options["--all-projects"] === true || options["--project"] !== undefined)) {
     if (options["--all-projects"] === true && options["--project"] !== undefined) throw new Error("choose either --all-projects or --project <key>, not both");
     const result = await vaultCandidatesAll(memoryHome(), { policy: policyOf(), ...(options["--project"] !== undefined ? { project: resolveAlias(memoryHome(), String(options["--project"])) } : {}), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
-    return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesAllText(result, outputStyle(context, options));
+    return options["--json"] ? JSON.stringify(result, null, 2) : screenedLegacy(vaultCandidatesAllText(result, outputStyle(context, options)), reports.vaultReportText(result.projects, result.crossedProjects, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
   }
   if (sub === "vault-candidates") {
     const project = boundProject(), store = curatedStore(project, { deferPromotions: true });
     try {
       const result = await vaultCandidates(store, { project, policy: policyOf(), ...(options["--limit"] ? { limit: Number(options["--limit"]) } : {}) });
-      return options["--json"] ? JSON.stringify(result, null, 2) : vaultCandidatesText(result, outputStyle(context, options));
+      return options["--json"] ? JSON.stringify(result, null, 2) : screenedLegacy(vaultCandidatesText(result, outputStyle(context, options)), reports.vaultReportText(result.length ? [{ project: result[0]!.project, candidates: result }] : [], false, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
     } finally { store.close(); }
   }
   if (sub === "eval") {
@@ -1190,7 +1191,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const replay = await import("./hook-spool-replay.ts");
     if (!apply) {
       const plan = administrative(await replay.planHookSpoolReplay({ base: memoryHome(), ...(typeof source === "string" ? { source } : {}) }));
-      return options["--json"] === true ? JSON.stringify(plan, null, 2) : replayPreviewText(plan);
+      return options["--json"] === true ? JSON.stringify(plan, null, 2) : screenedLegacy(replayPreviewText(plan), reports.spoolReplayReportText(plan, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
     }
     let saved: unknown;
     try { saved = JSON.parse(readFileSync(planFile as string, "utf8")); }
@@ -1244,16 +1245,17 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     // Archived projects stay listed (the person must see what is cold); a forgotten one is out of the default view, and --all brings it back with its state.
     const rows = readCatalogFresh(memoryHome()).filter(project => options["--all"] === true || project.state !== "forgotten");
     if (options["--json"]) return JSON.stringify(rows, null, 2);
-    if (!rows.length) return "no project shards yet";
+    if (!rows.length) return screenedLegacy("no project shards yet", reports.projectsReportText(rows, false, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
     const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB`;
     // Per-project curated counts exist only after the split; before it every note is in one shared store, so the honest figure is unavailable, never 0.
     const split = shardStatePresent();
-    return rows.map(p => `${p.key}  ${p.state}${p.local ? "  local-only key" : ""}${p.aliases.length ? `  aliases: ${p.aliases.join(", ")}` : ""}  capture ${p.captureRows} rows ${mb(p.captureBytes)}  curated ${split ? p.curatedEntries ?? "unavailable" : "unavailable (home not split)"}  disk ${mb(p.diskBytes)}  last ${p.captureLastAt ?? "never"}`).join("\n");
+    const legacy = rows.map(p => `${p.key}  ${p.state}${p.local ? "  local-only key" : ""}${p.aliases.length ? `  aliases: ${p.aliases.join(", ")}` : ""}  capture ${p.captureRows} rows ${mb(p.captureBytes)}  curated ${split ? p.curatedEntries ?? "unavailable" : "unavailable (home not split)"}  disk ${mb(p.diskBytes)}  last ${p.captureLastAt ?? "never"}`).join("\n");
+    return screenedLegacy(legacy, reports.projectsReportText(rows, split, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
   }
   if (sub === "usage") {
     const limit = options["--limit"] === undefined ? undefined : Number(options["--limit"]);
     const report = usageReport(memoryHome(), { ...(limit !== undefined ? { limit } : {}), includeForgotten: options["--all"] === true });
-    return options["--json"] ? JSON.stringify(report, null, 2) : usageText(report);
+    return options["--json"] ? JSON.stringify(report, null, 2) : screenedLegacy(usageText(report), reports.usageReportText(report, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
   }
   if (sub === "gc") {
     // A preview reads; only explicit --confirm evicts, after the administrative preflight.
@@ -1369,8 +1371,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const scoped = repoReadPolicy(root);
     const read = "reason" in scoped ? undefined : await readRepoScope(root, scoped.policy);
     const status = { root, file: repoLogPath(root), state: read?.state ?? "unavailable", entries: read?.views.length ?? 0, skipped: read?.skipped ?? null, ...(read?.reason ? { reason: read.reason } : {}), ...("reason" in scoped ? { reason: scoped.reason } : {}) };
-    return options["--json"] ? JSON.stringify(status, null, 2) : [`repo scope of ${project}: ${status.state}`, `file: ${status.file}`, `entries: ${status.entries}${read ? ` (skipped: ${read.skipped.malformed} malformed, ${read.skipped.mismatched} id mismatch, ${read.skipped.duplicate} duplicate, ${read.skipped.withheld} withheld by the screen)` : ""}`,
-      ...(status.reason ? [`unavailable: ${status.reason}`] : [])].join("\n");
+    if (options["--json"]) return JSON.stringify(status, null, 2);
+    return screenedLegacy([`repo scope of ${project}: ${status.state}`, `file: ${status.file}`, `entries: ${status.entries}${read ? ` (skipped: ${read.skipped.malformed} malformed, ${read.skipped.mismatched} id mismatch, ${read.skipped.duplicate} duplicate, ${read.skipped.withheld} withheld by the screen)` : ""}`,
+      ...(status.reason ? [`unavailable: ${status.reason}`] : [])].join("\n"), reports.repoStatusReportText(status, project, outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
   }
   if (sub === "promote" && options["--to"] === undefined && (options["--confirm"] !== undefined || options["--confirm-public"] !== undefined)) throw new Error("--confirm and --confirm-public only apply with --to repo");
   if (sub === "promote" && options["--to"] !== undefined) {
@@ -1503,7 +1506,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     // #418: read-only status from the telemetry sidecars; no realm, lock, proof, journal or schedule is touched.
     if (Object.keys(options).some(name => name !== "--status" && name !== "--json")) throw new Error("sync --status takes only --json");
     const { readSyncStatus, renderSyncStatus } = await import("./memory/sync-progress.ts"), report = readSyncStatus(syncHome);
-    return options["--json"] ? JSON.stringify(report, null, 2) : renderSyncStatus(report);
+    return options["--json"] ? JSON.stringify(report, null, 2) : screenedLegacy(renderSyncStatus(report), reports.syncStatusReportText(report, context.now?.() ?? Date.now(), outputStyle(context, options), { columns: reportWidth(context) ?? 80 }));
   }
   if (sub === "sync") { assertFormatFloor(syncHome, "sync"); const refusal = placementRuntimeRefusal(syncHome); if (refusal) throw new Error("amem sync: " + refusal); }
   if (ifDue) {

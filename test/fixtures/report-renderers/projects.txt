@@ -1,0 +1,9 @@
+ amem Projects  2 project shards
+
+> Shards (2)
+  KEY                     STATE     CAPTURE    CURATED  DISK      LAST
+  agent-mem@1234abcd +1   active    4200 rows  40       9.0 MiB   2026-11-22
+  notes@5678abcd (local)  archived  12 rows    40       39.1 KiB  2026-11-22
+
+> Aliases
+  agent-mem@1234abcd:  old@00000000

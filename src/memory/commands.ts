@@ -2,6 +2,7 @@ import { cliAttribution, noteDisplayActor } from "./cli-attribution.ts";
 import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "./store.ts";
 import { syncMemory, type SyncOptions } from "./sync.ts";
 import { importClaudeMem, type ImportResult, type WorkStateImportResult, type CaptureImportResult } from "./import.ts";
+import { syncReportText } from "./report-text.ts";
 import { CLI_MEMORY_RENDER, facts, label, memoryDetailText, memoryScoresText, memoryTableText, PLAIN, relativeTime, singleLine, type HumanMemoryRender, type Style } from "./style.ts";
 import { Report } from "@staix/cli-output";
 import { memoryProjectKey, projectChain } from "./project.ts";
@@ -262,11 +263,13 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         // #578 Q2: one counts-only line when this sync ran a placement checkpoint.
         const checkpointLine = r.checkpoint ? `\nplacement checkpoint: window ${r.checkpoint.window}, objects ${r.checkpoint.objectsBefore} -> ${r.checkpoint.objectsAfter}` : "";
         if (!r.ok) fail(`${names.memory} sync: ${r.error}${checkpointLine}${realmLines}`);
+        // #590 (task 429): the CLI renders the success report; hosts keep the legacy line below byte for byte.
+        const cliSync = (legacy: string) => internal ? rendered(legacy, syncReportText(r, internal.render.style ?? PLAIN, { columns: internal.render.columns ?? 80 })) : legacy;
         if (r.pruneApplication) {
           const a = r.pruneApplication;
-          return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries transported; ${a.proofComplete} prune proofs complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native prunes applied, ${a.held} held${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${realmLines}`;
+          return cliSync(`synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries transported; ${a.proofComplete} prune proofs complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native prunes applied, ${a.held} held${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${realmLines}`);
         }
-        return `synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${checkpointLine}${realmLines}`;
+        return cliSync(`synced${r.pushed ? " and pushed" : ""}: ${r.entries} long-term entries visible here${placementText}${r.warning ? `\nnote: ${r.warning}` : ""}${checkpointLine}${realmLines}`);
       }
       case "dedupe": {
         const apply = rest.includes("--apply");

@@ -1,0 +1,11 @@
+ amem Sync  synced and pushed
+
+> Result
+  Visible here:  1088 long-term entries
+  Placement:     committed, 12 exported, 1 withheld
+  Checkpoint:    window 3, objects 900 -> 120
+
+> Realms (2)
+  REALM             OUTCOME     PUBLICATION
+  user              committed   4
+  ffffffffffffffff  not-needed  

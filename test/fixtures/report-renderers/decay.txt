@@ -1,0 +1,17 @@
+ amem Decay  preview, nothing written
+  2 notes older than 90 days would be demoted
+
+> Selection
+  Notes:             2
+  Withheld:          1
+  Cited, kept:       unknown
+  Citation history:  unknown
+
+> Notes (2)
+  ID        REVISION  KIND      TITLE
+  bbbbbbbb  2         decision  Old lock rule
+  cccccccc  1         decision  한글 제목이 아주 길게 이어지는 오래된 결정
+                                노트입니다 넓은 글자
+
+> Next
+    -> amem decay --days 90 --apply --confirm

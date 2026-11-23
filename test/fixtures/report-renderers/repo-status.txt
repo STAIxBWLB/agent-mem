@@ -1,0 +1,8 @@
+ amem Repository log  7 entries
+  project repo@1234abcd
+
+> Log
+  File:     /w/repo/.amem/log.jsonl
+  State:    ok
+  Entries:  7
+  Skipped:  1 malformed, 2 withheld by the screen

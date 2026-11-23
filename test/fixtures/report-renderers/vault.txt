@@ -1,0 +1,10 @@
+ amem Vault candidates  2 candidates
+
+> Candidates (2)
+  ID        KIND      TITLE
+  dddddddd  decision  Release gate reuses the identical tree
+  eeeeeeee  contract  Sync lock is one per home
+
+> Next
+  Review a candidate before recording it in your vault:
+    -> amem show <id>
