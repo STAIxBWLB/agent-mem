@@ -72,3 +72,39 @@ test("agent-marked sessions get the same H7 usage errors, not a read failure", a
     expect(marked.text).toContain("Run 'amem help");
   }
 });
+
+function invokeCli(argv: string[], context: typeof person) {
+  return Bun.spawnSync([process.execPath, import.meta.resolveSync("../bin/amem.js"), ...argv], {
+    env: { AGENTHUB_HOME: process.env.AGENTHUB_HOME, ...context.env },
+    stdout: "pipe", stderr: "pipe",
+  });
+}
+
+test("formats raise reports missing and excess arguments in both sessions", () => {
+  const missing = "amem: usage: amem formats raise <surface> <min-reader> [--confirm] [--json]";
+  const excess = "amem: too many arguments for formats raise\nUsage: amem formats raise <surface> <min-reader> [options]";
+  for (const args of [[], ["home"], ["home", "0.38.0", "extra"]]) {
+    for (const context of [person, agent]) {
+      const result = invokeCli(["formats", "raise", ...args], context);
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr.toString()).toBe(`${args.length > 2 ? excess : missing}\nRun 'amem help formats raise' for details.\n`);
+      expect(result.stdout.toString()).toBe("");
+    }
+  }
+});
+
+test.each([
+  ["completion", "amem completion zsh|bash|fish"],
+  ["skills export", "amem skills export <dir> [--json]"],
+  ["setup", "amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo]"],
+  ["brief", "amem brief --for <intent> [--paths <path>] [--symbols <symbol>] [--bytes N] [--json]"],
+  ["eval audit", "amem eval audit sample --seed <s> [--n <n>] [--project <key>] | amem eval audit score <sheet>"],
+  ["eval audit score", "amem eval audit score <sheet> (the file `amem eval audit sample` wrote)"],
+  ["search --all-projects", "amem search --all-projects <words> [--limit N] [--include-archived] [--json]"],
+  ["promote --to repo", "amem promote <id> --to repo --policy-free [--confirm [--confirm-public <entry id prefix>]]"],
+])("%s preserves its argument-only usage error in a marked session", (command, usage) => {
+  const result = invokeCli(command.split(" "), agent);
+  const help = command.split(" --")[0];
+  expect(result.exitCode).toBe(2);
+  expect(result.stderr.toString()).toBe(`amem: usage: ${usage}\nRun 'amem help ${help}' for details.\n`);
+});

@@ -497,7 +497,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (parsed.path[0] === "version") return `amem ${VERSION}`;
     if (parsed.path[0] === "manifest") return JSON.stringify(manifest(), null, parsed.options["--json"] === true ? undefined : 2);
     if (parsed.path[0] === "completion") {
-      if (parsed.positionals.length !== 1) throw new Error("usage: amem completion zsh|bash|fish");
+      if (parsed.positionals.length !== 1) throw new CommandUsageError("usage: amem completion zsh|bash|fish");
       return completionScript(parsed.positionals[0]!);
     }
   } catch (error) {
@@ -535,7 +535,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     throw new AgentUsageError("--writer-root, --abandon, --admit, --list-remote, --from-remote, --checkpoint and --plan apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "skills" && parsed.path[1] === "export") {
-    if (parsed.positionals.length !== 1) throw new Error("usage: amem skills export <dir> [--json]");
+    if (parsed.positionals.length !== 1) throw new CommandUsageError("usage: amem skills export <dir> [--json]");
     const { exportSkills } = await import("./skills-install.ts");
     const destination = parsed.positionals[0]!;
     const report = exportSkills(destination.trim() ? resolve(context.cwd ?? process.cwd(), destination) : destination, { env: context.env ?? process.env });
@@ -545,7 +545,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if (parsed.path[0] === "setup") {
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
-      || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo]");
+      || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new CommandUsageError("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo]");
     if (parsed.positionals[0] === "console") {
       const { consoleSetup, consoleSetupText } = await import("./setup-console.ts");
       const mode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview";
@@ -627,7 +627,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     } finally { candidates?.close(); store.close(); }
   }
   if (sub === "brief") {
-    const intent = options["--for"]; if (typeof intent !== "string" || !intent.trim() || intent.length > 1000 || parsed.positionals.length) throw Error("usage: amem brief --for <intent> [--paths <path>] [--symbols <symbol>] [--bytes N] [--json]");
+    const intent = options["--for"]; if (typeof intent !== "string" || !intent.trim() || intent.length > 1000 || parsed.positionals.length) throw new CommandUsageError("usage: amem brief --for <intent> [--paths <path>] [--symbols <symbol>] [--bytes N] [--json]");
     const rawBytes = options["--bytes"];
     if (rawBytes !== undefined && !/^[1-9][0-9]*$/.test(String(rawBytes))) throw Error("brief bytes must be a positive decimal integer");
     const maxBytes = rawBytes === undefined ? 2048 : Number(rawBytes); if (!Number.isSafeInteger(maxBytes) || maxBytes > 8192) throw Error("brief bytes must be 1..8192");
@@ -767,7 +767,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const { planFormatRaise, applyFormatRaise, formatRaiseRefusal, installVersion, runningAmemRoots } = await import("./memory/formats-raise.ts");
     const { readSetupWriterRoots } = await import("./setup.ts"), { readEffectiveSyncPlacementWriterRoots } = await import("./memory/sync-placement-effective-writers.ts");
     const [surface, minReader] = parsed.positionals;
-    if (!surface || !minReader || parsed.positionals.length !== 2) throw new Error("usage: amem formats raise <surface> <min-reader> [--confirm] [--json]");
+    if (!surface || !minReader || parsed.positionals.length !== 2) throw new CommandUsageError("usage: amem formats raise <surface> <min-reader> [--confirm] [--json]");
     const home = realPath(memoryHome()), own = realPath(fileURLToPath(new URL("..", import.meta.url)));
     const inventory = (): import("./memory/formats-raise.ts").FormatWriterInventory => {
       const writers: import("./memory/formats-raise.ts").FormatWriter[] = [], incomplete: string[] = [], seen = new Set<string>();
@@ -1168,11 +1168,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       }
       if (parsed.path[2] === "score") {
         const [sheet] = parsed.positionals;
-        if (!sheet) throw new Error("usage: amem eval audit score <sheet> (the file `amem eval audit sample` wrote)");
+        if (!sheet) throw new CommandUsageError("usage: amem eval audit score <sheet> (the file `amem eval audit sample` wrote)");
         const score = audit.auditScore(audit.readAuditSheet(sheet));
         return options["--json"] === true ? JSON.stringify(score, null, 2) : screenedLegacy(audit.auditScoreText(score), audit.auditScoreText(score, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }));
       }
-      throw new Error("usage: amem eval audit sample --seed <s> [--n <n>] [--project <key>] | amem eval audit score <sheet>");
+      throw new CommandUsageError("usage: amem eval audit sample --seed <s> [--n <n>] [--project <key>] | amem eval audit score <sheet>");
     }
     const ks = parseKs(typeof options["--k"] === "string" ? options["--k"] : undefined);
     const file = typeof options["--set"] === "string" ? options["--set"] : undefined;
@@ -1323,7 +1323,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (options["--explain"] === true) throw new Error("--explain applies to current-project ranked search, not --all-projects");
     if (options["--filter"] === true) throw new Error("--filter applies to project-local search, not --all-projects");
     const words = parsed.positionals.join(" ");
-    if (!words.trim()) throw new Error("usage: amem search --all-projects <words> [--limit N] [--include-archived] [--json]");
+    if (!words.trim()) throw new CommandUsageError("usage: amem search --all-projects <words> [--limit N] [--include-archived] [--json]");
     const result = searchAllProjects(memoryHome(), words, { ...(options["--limit"] !== undefined ? { limit: Number(options["--limit"]) } : {}), includeArchived: options["--include-archived"] === true });
     if (options["--json"]) return JSON.stringify(result, null, 2);
     const one = (hit: (typeof result.hits)[number]) => hit.view ? `${hit.project}  ${hit.view.id.slice(0, 8)}  ${hit.view.kind}  ${(hit.view.title ?? hit.view.text).split("\n")[0]!.slice(0, 100)}` : `${hit.project}  capture ${hit.capture!.id}  ${hit.capture!.event}${hit.capture!.subagent ? "  subagent" : ""}  ${hit.capture!.event === "Record" ? captureSearchText(hit.capture!) : hit.capture!.excerpt.split("\n")[0]!.slice(0, 100)}`;
@@ -1381,7 +1381,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (sub === "promote" && options["--to"] === undefined && (options["--confirm"] !== undefined || options["--confirm-public"] !== undefined)) throw new Error("--confirm and --confirm-public only apply with --to repo");
   if (sub === "promote" && options["--to"] !== undefined) {
     const idText = parsed.positionals[0];
-    if (!idText || parsed.positionals.length !== 1) throw new Error("usage: amem promote <id> --to repo --policy-free [--confirm [--confirm-public <entry id prefix>]]");
+    if (!idText || parsed.positionals.length !== 1) throw new CommandUsageError("usage: amem promote <id> --to repo --policy-free [--confirm [--confirm-public <entry id prefix>]]");
     const project = boundProject(), root = boundRepoRoot(repoCwd, memoryHome(), project);
     if (!root) throw new Error("repo scope needs the working tree of the repository that is this project: run it from inside that repository");
     const store = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
