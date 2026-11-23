@@ -70,7 +70,7 @@ import { runEditor } from "./memory/editor.ts";
 import { doctorReport, doctorText } from "./memory/doctor.ts";
 import { statusText, type StatusView } from "./memory/status-text.ts";
 import { asciiMarkers, errorLine, errorSpans, EXIT, markerCell, paint, resolveColor, streamEnv } from "@staix/cli-output";
-import { style, wrapReport, facts, label, PLAIN, type Style } from "./memory/style.ts";
+import { style, facts, label, PLAIN, type Style } from "./memory/style.ts";
 import { endLikeSignal, nextSyncAt, readSyncState, recordSyncAttempt, remoteConfigured, syncDue, stopSignal, syncOutcome, usableState, SYNC_IF_DUE_DEADLINE_MS, type StopCause } from "./memory/sync-cadence.ts";
 
 const VERSION = (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
@@ -410,7 +410,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     try {
       const parsed = parseCommand(argv);
       if (parsed.options["--json"] === true) return JSON.stringify(JSON.parse(output), null, 2);
-      if (parsed.path[0] === "status" || parsed.path[0] === "doctor") return wrapReport(output, reportWidth(context));
+      // #590: status and doctor wrap through the Report builder at the same width, so a continuation aligns under its value.
     } catch { /* Help and non-JSON special commands keep their existing output. */ }
     return output;
   });
@@ -726,7 +726,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (summary === null) return { unavailable: "candidates.db exists but cannot be read" };
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
       ...shardMigrationStatus(where.home) };
-    return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context, options));
+    return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context, options), reportOptions(context, options));
   }
   if (parsed.path[0] === "formats" && parsed.path[1] === "raise") {
     const { planFormatRaise, applyFormatRaise, formatRaiseRefusal, installVersion, runningAmemRoots } = await import("./memory/formats-raise.ts");
@@ -769,7 +769,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const where = resolveMemoryHome(), project = boundProject();
     const report = await doctorReport({ home: where.home, homeSource: where.source, cwd: policyCwd, project, aliases: aliasedKeys(where.home, project), now: Date.now(),
       openCurated: base => curatedStoreAt(base, project, { deferPromotions: true }) });
-    return options["--json"] ? JSON.stringify(report, null, 2) : doctorText(report, outputStyle(context, options));
+    return options["--json"] ? JSON.stringify(report, null, 2) : doctorText(report, outputStyle(context, options), reportOptions(context, options));
   }
   if (sub === "prune") {
     const applying = options["--apply"] === true;
@@ -1540,6 +1540,10 @@ function outputStyle(context: CliContext, options: Record<string, string | boole
   const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv((context.stdoutTTY ?? process.stdout.isTTY) === true, context.env ?? process.env), "amem");
   if (color instanceof Error) throw color;
   return style(options["--json"] !== true && color, asciiMarkers(context.env ?? process.env, options["--ascii"] === true));
+}
+function reportOptions(context: CliContext, options: Record<string, string | boolean>): { verbose: boolean; version: string; columns?: number } {
+  const columns = reportWidth(context);
+  return { verbose: options["--verbose"] === true, version: VERSION, ...(columns !== undefined ? { columns } : {}) };
 }
 function reportWidth(context: CliContext): number | undefined {
   const env = context.env ?? process.env, configured = Number(env.COLUMNS);

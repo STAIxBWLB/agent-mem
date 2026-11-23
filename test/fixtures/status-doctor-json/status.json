@@ -1,0 +1,41 @@
+{
+  "home": {
+    "path": "<home>",
+    "source": "AMEM_HOME"
+  },
+  "config": {
+    "machine": null,
+    "repo": null,
+    "denyPaths": 0,
+    "piiPatterns": 0
+  },
+  "candidates": {
+    "count": 0,
+    "oldestExpiresInDays": null,
+    "dueWithin7Days": 0,
+    "unshown": 0
+  },
+  "active": false,
+  "pending": {
+    "rows": 0,
+    "skippedRows": 0,
+    "byShard": {},
+    "userRows": 0,
+    "byProject": {},
+    "tailBytes": 0,
+    "legacyRows": 0,
+    "generationRows": 0,
+    "generationLocalRows": 0,
+    "pruneRows": 0,
+    "translatedPruneRows": 0,
+    "refusedRows": 0,
+    "sharedSupersededByPrivate": 0,
+    "sharedSupersededByPrivateIds": [],
+    "crossPrivateReplacement": 0,
+    "crossPrivateReplacementIds": [],
+    "danglingRows": 0,
+    "danglingIds": [],
+    "legacyLocalRows": 0,
+    "legacyMainRows": 0
+  }
+}

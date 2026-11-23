@@ -1,0 +1,172 @@
+{
+  "schema": "amem.doctor/v1",
+  "status": "ok",
+  "home": {
+    "path": "<home>",
+    "source": "AMEM_HOME"
+  },
+  "project": "<project>",
+  "sections": {
+    "duplicates": {
+      "status": "skipped",
+      "reason": "no curated notes for this project yet"
+    },
+    "stale": {
+      "status": "skipped",
+      "reason": "no curated notes for this project yet"
+    },
+    "candidates": {
+      "status": "ok",
+      "count": 0,
+      "oldestExpiresInDays": null,
+      "dueWithin7Days": 0,
+      "unshown": 0
+    },
+    "capture": {
+      "status": "ok",
+      "clis": {
+        "claude": {
+          "hook": "manual",
+          "capture": "never",
+          "lastCaptureAt": null,
+          "rows": 0,
+          "machineCapture": "unknown",
+          "machineLastCaptureAt": null,
+          "machineRows": 0,
+          "hint": "run amem setup claude --apply to register the capture hooks"
+        },
+        "codex": {
+          "hook": "manual",
+          "capture": "never",
+          "lastCaptureAt": null,
+          "rows": 0,
+          "machineCapture": "unknown",
+          "machineLastCaptureAt": null,
+          "machineRows": 0,
+          "hint": "run amem setup codex --apply, or amem ingest codex by hand"
+        },
+        "kimi": {
+          "hook": "manual",
+          "capture": "never",
+          "lastCaptureAt": null,
+          "rows": 0,
+          "machineCapture": "unknown",
+          "machineLastCaptureAt": null,
+          "machineRows": 0,
+          "hint": "run amem setup kimi --apply, or amem ingest kimi by hand"
+        },
+        "pi": {
+          "hook": "manual",
+          "capture": "never",
+          "lastCaptureAt": null,
+          "rows": 0,
+          "machineCapture": "unknown",
+          "machineLastCaptureAt": null,
+          "machineRows": 0,
+          "hint": "run amem setup pi --apply, or amem ingest pi by hand"
+        },
+        "qwen": {
+          "hook": "manual",
+          "capture": "never",
+          "lastCaptureAt": null,
+          "rows": 0,
+          "machineCapture": "unknown",
+          "machineLastCaptureAt": null,
+          "machineRows": 0,
+          "hint": "run amem setup qwen --apply, or amem ingest qwen by hand"
+        }
+      }
+    },
+    "brief": {
+      "status": "ok",
+      "tokens": 108,
+      "budget": 1200,
+      "coverage": {
+        "work": "complete",
+        "curated": "complete",
+        "capture": "complete"
+      }
+    },
+    "index": {
+      "status": "skipped",
+      "reason": "no curated notes for this project yet"
+    },
+    "readers": {
+      "status": "ok",
+      "live": 0,
+      "stale": 0,
+      "unreadable": 0
+    },
+    "policy": {
+      "status": "ok",
+      "machine": null,
+      "repo": null,
+      "denyPaths": 0,
+      "piiPatterns": 0
+    },
+    "cadence": {
+      "status": "ok",
+      "ingest": {
+        "claude": "manual",
+        "codex": "manual",
+        "kimi": "manual",
+        "pi": "manual",
+        "qwen": "manual"
+      },
+      "manual": [
+        "claude",
+        "codex",
+        "kimi",
+        "pi",
+        "qwen"
+      ],
+      "sync": {
+        "remote": "none",
+        "lastAttemptAt": null,
+        "lastOkAt": null,
+        "failures": 0,
+        "nextAttemptAt": null,
+        "due": false
+      }
+    },
+    "drops": {
+      "status": "ok",
+      "window": "recent metrics tail",
+      "total": 0,
+      "counts": {}
+    },
+    "spool": {
+      "active": {
+        "files": 0,
+        "bytes": 0,
+        "maxFiles": 256,
+        "maxBytes": 2097152
+      },
+      "reserve": {
+        "files": 0,
+        "bytes": 0,
+        "maxFiles": 32,
+        "maxBytes": 262144
+      },
+      "claimed": 0,
+      "oldestAt": null,
+      "complete": true,
+      "kinds": {
+        "native": 0,
+        "summaries": 0,
+        "unclassified": 0,
+        "complete": true
+      },
+      "status": "ok",
+      "coverage": "complete",
+      "classificationCoverage": "complete",
+      "fill": "empty"
+    },
+    "setup": {
+      "status": "skipped",
+      "checked": 0,
+      "entries": [],
+      "reason": "no applied setup receipts found"
+    }
+  }
+}

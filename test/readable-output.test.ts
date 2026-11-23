@@ -47,29 +47,29 @@ function report(overrides: Partial<DoctorReport["sections"]> = {}, clis = 4): Do
   return { schema: DOCTOR_SCHEMA, status: statuses.includes("attention") ? "attention" : statuses.includes("unavailable") ? "unavailable" : "ok", home: { path: "/h/memory", source: "AMEM_HOME" }, project: "p", sections };
 }
 
-test("doctor healthy: concise overall state, labelled rows, no raw JSON, no next action", () => {
-  const text = doctorText(report());
-  expect(text.split("\n")[0]).toBe(" amem Doctor: ok  (all 10 checks ok)");
-  expect(text).not.toMatch(ANSI); expect(text).not.toContain("{\"");
-  for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence"]) expect(text).toMatch(new RegExp(`^  ok OK +${name}:`, "m"));
-  expect(text).toContain("Next actions: none");
-  expect(text).toMatch(/claude +hook registered, capture fresh/);
+test("doctor healthy: one header and context line, worded rows, no raw JSON, no next action", () => {
+  const text = doctorText(report(), PLAIN, { now: Date.parse("2026-10-27T03:00:00.000Z") });
+  expect(text.split("\n").slice(0, 3)).toEqual([" amem doctor  ok", "  home /h/memory (AMEM_HOME)", "  project p"]);
+  expect(text).not.toMatch(ANSI); expect(text).not.toContain("{\""); expect(text).not.toContain("Attention"); expect(text).not.toContain("Next action");
+  for (const name of ["duplicates", "stale", "candidates", "capture", "brief", "index", "readers", "policy", "cadence"]) expect(text).toMatch(new RegExp(`^  ok ok +${name}: `, "m"));
+  expect(text).toContain("claude hook registered, capture fresh 3 h ago, 12 rows");
+  expect(text.split("\n").at(-1)).toBe("ok 10 ok");
 });
 
-test("doctor attention, skipped and unavailable are distinct labels; registered hooks and never capture stay separate facts", () => {
+test("doctor attention, skipped and unavailable are distinct state words; each finding is a warn row with complete commands", () => {
   const r = report({
-    capture: { status: "attention", clis: { claude: { hook: "registered", hookEvidence: "setup receipt", capture: "never", lastCaptureAt: null, rows: 0, hint: "the claude hook is registered but its capture is never: open a session" },
+    capture: { status: "attention", clis: { claude: { hook: "registered", hookEvidence: "setup receipt", capture: "never", lastCaptureAt: null, rows: 0, hint: "the claude hook is registered but its capture is never on this machine (all projects): open a session" },
       codex: { hook: "manual", capture: "never", lastCaptureAt: null, rows: 0, hint: "run amem setup codex --apply, or amem ingest codex by hand" } } },
     stale: { status: "skipped", reason: "run doctor from inside this project's repository" },
     index: { status: "unavailable", reason: "copy failed" },
   });
   for (const s of [PLAIN, COLOR]) {
     const text = strip(doctorText(r, s));
-    expect(text.split("\n")[0]).toBe(" amem Doctor: attention  (attention 1, unavailable 1, skipped 1)");
-    expect(text).toMatch(/^  !  ATTENTION +capture:/m); expect(text).toMatch(/^  -  SKIPPED +stale:/m); expect(text).toMatch(/^  [?]  UNAVAILABLE +index:/m);
-    expect(text).toMatch(/claude +hook registered, capture never, 0 rows/); expect(text).toMatch(/codex +hook manual, capture never/);
-    expect(text).toContain("reason: copy failed");
-    expect(text).toContain("  -> capture claude: the claude hook is registered but its capture is never");
+    expect(text.split("\n")[0]).toBe(" amem doctor  warning");
+    expect(text).toMatch(/^  !  warning +capture:/m); expect(text).toMatch(/^  -  skipped +stale:/m); expect(text).toMatch(/^  [?]  unknown +index: +copy failed$/m);
+    expect(text).toMatch(/claude hook registered, capture never, 0 rows/); expect(text).toMatch(/codex hook manual, capture never/);
+    expect(text).toContain("> Attention (2)\n  !  claude: capture is never on this machine; open a session\n  !  codex: capture is not set up\n    -> amem setup codex --apply\n    -> amem ingest codex");
+    expect(text.split("\n").at(-1)).toBe("! 1 warning  ? 1 unknown  ok 7 ok");
   }
   expect(doctorText(r, COLOR)).toMatch(ANSI);
   expect(doctorText(r, PLAIN)).not.toMatch(ANSI);
@@ -77,37 +77,38 @@ test("doctor attention, skipped and unavailable are distinct labels; registered 
 
 test("doctor large output keeps one bounded row per fact", () => {
   const examples = Array.from({ length: 5 }, (_, i) => [`aaaaaaa${i}`, `bbbbbbb${i}`]);
-  const text = doctorText(report({ duplicates: { status: "attention", notes: 100000, identicalGroups: 5000, importedGroups: 0, examples, truncated: "only the newest 100000 notes were read", hint: "amem dedupe previews" } }));
-  expect(text).toContain("examples aaaaaaa0=bbbbbbb0");
-  for (const line of text.split("\n")) if (!line.includes("/h/memory")) expect(line.length).toBeLessThanOrEqual(WIDTH);
+  const text = doctorText(report({ duplicates: { status: "attention", notes: 100000, identicalGroups: 5000, importedGroups: 0, examples, truncated: "only the newest 100000 notes were read", hint: "amem dedupe previews" } }), PLAIN, { columns: 80 });
+  expect(text).toContain("examples aaaaaaa0 = bbbbbbb0");
+  // An unmapped hint is a finding without a command, never raw text with an embedded command.
+  expect(text).toContain("  !  duplicate notes: needs a look"); expect(text).not.toMatch(/^ *-> amem dedupe previews/m);
+  for (const line of text.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 });
 
 const status = (overrides: Partial<StatusView> = {}): StatusView => ({ home: { path: "/h/memory", source: "default" }, config: { machine: null, repo: null, denyPaths: 0, piiPatterns: 0 },
   candidates: { count: 0, oldestExpiresInDays: null, dueWithin7Days: 0, unshown: 0 }, active: false, pending: { rows: 0, skippedRows: 0, byShard: {}, danglingIds: [] }, ...overrides });
 
-test("status empty: home, policy and summarized zero counters, nothing to do", () => {
+test("status empty: header, context, policy and summarized zero counters, nothing to do", () => {
   const text = statusText(status());
-  expect(text.split("\n")[0]).toBe(" amem Status: ok");
-  expect(text).toContain("home:  /h/memory (default)");
-  expect(text).toMatch(/^  ok OK +policy: machine none \(defaults\), repo none; 0 deny paths, 0 PII patterns$/m);
-  expect(text).toMatch(/^  ok OK +candidates: none pending$/m);
+  expect(text.split("\n").slice(0, 2)).toEqual([" amem status  ok", "  home /h/memory (default)"]);
+  expect(text).toMatch(/^  ok ok +policy: +machine none \(defaults\), repo none, 0 deny paths, 0 PII patterns$/m);
+  expect(text).toMatch(/^  ok ok +candidates: +none pending$/m);
   expect(text).toContain("no pending old-layout appends");
-  expect(text).not.toContain("skippedRows"); expect(text).toContain("Next actions: none"); expect(text).not.toMatch(ANSI);
+  expect(text).not.toContain("skipped rows"); expect(text).not.toContain("Next action"); expect(text).not.toContain("Full report"); expect(text).not.toMatch(ANSI);
 });
 
-test("status attention and error surface warnings and actions with text labels", () => {
+test("status attention and error surface findings with their commands and text state words", () => {
   const due = statusText(status({ candidates: { count: 3, oldestExpiresInDays: 2, dueWithin7Days: 1, unshown: 1, warning: "1 candidate within 7 days of expiry: run `amem review walk`" },
     pending: { rows: 7, skippedRows: 0, byShard: { p: 7 } }, refusals: ["dangling prune"] }), COLOR);
   const plain = strip(due);
-  expect(plain.split("\n")[0]).toBe(" amem Status: attention");
-  expect(plain).toMatch(/^  !  ATTENTION +candidates: 3 pending \(1 never shown\), oldest expires in 2 days$/m);
-  expect(plain).toMatch(/^  !  ATTENTION +layout: single home; pending rows 7, byShard \{"p":7\}$/m);
-  expect(plain).toContain("> Attention\n  !  migration refusal: dangling prune");
-  expect(plain).toContain("  -> 1 candidate within 7 days of expiry");
+  expect(plain.split("\n")[0]).toBe(" amem status  warning");
+  expect(plain).toMatch(/^  !  warning +candidates: +3 pending, 1 never shown, oldest expires in 2 d$/m);
+  expect(plain).toMatch(/^  !  warning +layout: +single home; pending rows 7, 1 shard$/m);
+  expect(plain).toContain("> Attention (3)\n  !  1 candidate expire within 7 days\n    -> amem review walk\n  !  migration refusal: dangling prune\n");
+  expect(plain).not.toContain("`");
   expect(due).toMatch(ANSI);
   const broken = statusText(status({ candidates: { unavailable: "candidates.db exists but cannot be read" } }));
-  expect(broken.split("\n")[0]).toBe(" amem Status: unavailable");
-  expect(broken).toMatch(/^  [?]  UNAVAILABLE +candidates: candidates.db exists but cannot be read$/m);
+  expect(broken.split("\n")[0]).toBe(" amem status  unknown");
+  expect(broken).toMatch(/^  [?]  unknown +candidates: +candidates.db exists but cannot be read$/m);
 });
 
 function plan(mode: SetupPlan["mode"], count = 2): SetupPlan {
@@ -171,7 +172,7 @@ test("status and doctor: TTY colors, plain stays plain, --json never carries ANS
     expect(await run([command], { NO_COLOR: "1" }, true)).not.toMatch(ANSI);
     expect(await run([command], { TERM: "dumb" }, true)).not.toMatch(ANSI);
     const plain = await run([command], {}, false);
-    expect(plain).not.toMatch(ANSI); expect(plain).toStartWith(command === "status" ? " amem Status: " : " amem Doctor: ");
+    expect(plain).not.toMatch(ANSI); expect(plain).toStartWith(` amem ${command}  `);
     const json = await run([command, "--json"], {}, true);
     expect(json).not.toMatch(ANSI); expect(() => JSON.parse(json)).not.toThrow();
   }
@@ -209,15 +210,15 @@ test("undo of an uninstalled client with a receipt still shows its files and res
 
 test("status flags a shard migration stopped after capture with the resume action", () => {
   const text = statusText(status({ active: false, phase: "captured", generation: "0123456789abcdef" }));
-  expect(text.split("\n")[0]).toBe(" amem Status: attention");
-  expect(text).toMatch(/^  !  ATTENTION +layout: shard migration captured, not active; no pending old-layout appends$/m);
-  expect(text).toContain("amem migrate --shards --resume");
-  expect(text).not.toContain("Next actions: none");
+  expect(text.split("\n")[0]).toBe(" amem status  warning");
+  expect(text).toMatch(/^  !  warning +layout: +shard migration captured, not active; no pending old-layout appends$/m);
+  expect(text).toContain("    -> amem migrate --shards --resume");
+  expect(text).not.toContain("Next action");
 });
 
 test("pending old-layout rows point to the resume that carries them", () => {
   const text = statusText(status({ pending: { rows: 4, byShard: { p: 4 } } }));
-  expect(text).toContain("4 old-layout rows wait for the shard migration: amem migrate --shards --resume carries them");
+  expect(text).toContain("  !  4 old-layout rows wait for the shard migration\n    -> amem migrate --shards --dry-run\n    -> amem migrate --shards --resume");
 });
 
 test("undo of a target without a receipt says there is nothing to restore", () => {
@@ -426,9 +427,9 @@ test("explicit color options override environment without coloring JSON", async 
   expect(await readableCommand(h, ["status"], false, { FORCE_COLOR: "1" })).toMatch(ANSI);
   expect(await readableCommand(h, ["status"], true, { NO_COLOR: "1", FORCE_COLOR: "1" })).not.toMatch(ANSI);
   expect(await readableCommand(h, ["status", "--json", "--color=always"], false)).not.toMatch(ANSI);
-  expect(await readableCommand(h, ["status"], false, { LANG: "C" })).toContain("  ok OK");
-  expect(await readableCommand(h, ["status"], false, { LANG: "en_US.UTF-8" })).toContain("  ✓  OK");
-  expect(await readableCommand(h, ["status", "--ascii"], false, { LANG: "en_US.UTF-8" })).toContain("  ok OK");
+  expect(await readableCommand(h, ["status"], false, { LANG: "C" })).toContain("  ok ok");
+  expect(await readableCommand(h, ["status"], false, { LANG: "en_US.UTF-8" })).toContain("  ✓  ok");
+  expect(await readableCommand(h, ["status", "--ascii"], false, { LANG: "en_US.UTF-8" })).toContain("  ok ok");
   for (const args of [["status", "--color=never"], ["status", "--color=always"]]) {
     const report = await readableCommand(h, args, false, { COLUMNS: "80", LANG: "C" });
     for (const line of report.split("\n")) expect(Bun.stringWidth(strip(line), { ambiguousIsNarrow: true })).toBeLessThanOrEqual(80);

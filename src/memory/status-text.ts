@@ -1,5 +1,5 @@
-import { markerCell, paint } from "@staix/cli-output";
-import { facts, label, section, PLAIN, type Style } from "./style.ts";
+import { MARKER_COLUMN, MARKERS, Report, markerCell, wrap } from "@staix/cli-output";
+import { humanBytes, singleLine, wordedKey, PLAIN, type Style } from "./style.ts";
 
 /** The `amem status` object as the CLI builds it; `amem status --json` prints it unchanged. */
 export interface StatusView {
@@ -11,38 +11,81 @@ export interface StatusView {
   deadLeasesRemoved?: { lease: string; at: string }[]; refusals?: string[];
 }
 
-/** Person-facing `amem status` (#125): overall state, the effective home and policy, the counts that matter, then next actions. Zero counters are summarized, never listed. */
-export function statusText(status: StatusView, s: Style = PLAIN): string {
-  const actions: string[] = [], warnings: string[] = [];
+/** Human rendering options (#590): `--verbose` history lines, the wrap width and the version in the context line. */
+export interface ReportTextOptions { verbose?: boolean; columns?: number; version?: string }
+
+/** One `⚠` finding and the complete commands that act on it (#590 C4); a finding without a known fix has none. */
+export interface Finding { text: string; next: readonly string[] }
+
+type State = "ok" | "attention" | "unavailable";
+// #590 S2: one word per state in the header, the rows and the summary line (`⚠ 2 warnings  ? 1 unknown  ✓ 8 ok`).
+export const STATE_WORD: Record<State, string> = { ok: "ok", attention: "warning", unavailable: "unknown" };
+const MARKER: Record<State, "ok" | "warn" | "unknown"> = { ok: "ok", attention: "warn", unavailable: "unknown" };
+
+/** Shared report frame for status and doctor: one header line with the state, one context line, then sections. */
+export function reportFrame(s: Style, name: string, state: string, opts: ReportTextOptions, home: { path: string; source: string }): Report {
+  const report = new Report(opts.columns, s.ascii, { sanitize: singleLine });
+  report.header("amem", name, state);
+  report.note(`${opts.version ? `amem ${opts.version}, ` : ""}home ${home.path} (${home.source})`);
+  return report;
+}
+/** `⚠` rows, each followed by its `→` commands. */
+export function attention(report: Report, findings: readonly Finding[]): void {
+  if (!findings.length) return;
+  report.section("Attention", String(findings.length));
+  for (const finding of findings) { report.bullet("warn", finding.text); for (const command of finding.next) report.next(command); }
+}
+/** A state row: marker, padded state word, padded name, then the fact; a wrapped fact continues under itself (#590 S1, S2). */
+export function stateRows(report: Report, rows: readonly { state: State | "skipped"; name: string; fact: string }[], s: Style): void {
+  const words = rows.map(row => row.state === "skipped" ? "skipped" : STATE_WORD[row.state]);
+  const wordWidth = Math.max(...words.map(word => word.length)), nameWidth = Math.max(...rows.map(row => row.name.length + 1));
+  const lead = 2 + MARKER_COLUMN + 1 + wordWidth + 2 + nameWidth + 2;
+  rows.forEach((row, index) => {
+    const marker = row.state === "skipped" ? "absent" : MARKER[row.state];
+    const lines = wrap(singleLine(row.fact), report.columns === undefined ? undefined : Math.max(10, report.columns - lead), 0);
+    report.append([[{ text: "  " }, { text: markerCell(marker, s.ascii), role: MARKERS[marker].role }, { text: " " },
+      { text: words[index]!.padEnd(wordWidth), role: MARKERS[marker].role }, { text: "  " }, { text: `${row.name}:`.padEnd(nameWidth), role: "key" }, { text: "  " }, { text: lines[0] ?? "" }],
+      ...lines.slice(1).map(line => [{ text: " ".repeat(lead) + line }])]);
+  });
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** Person-facing `amem status` (#125, #590): overall state, findings with their commands, then the memory facts. */
+export function statusText(status: StatusView, s: Style = PLAIN, opts: ReportTextOptions = {}): string {
+  const findings: Finding[] = [];
   const candidates = status.candidates;
-  let candidateLine: string, candidateState: "ok" | "attention" | "unavailable";
-  if ("unavailable" in candidates) { candidateState = "unavailable"; candidateLine = candidates.unavailable; warnings.push(candidates.unavailable); }
+  let candidateFact: string, candidateState: State;
+  if ("unavailable" in candidates) { candidateState = "unavailable"; candidateFact = candidates.unavailable; }
   else {
     candidateState = candidates.dueWithin7Days ? "attention" : "ok";
-    candidateLine = candidates.count ? `${candidates.count} pending${candidates.unshown ? ` (${candidates.unshown} never shown)` : ""}${candidates.oldestExpiresInDays !== null ? `, oldest expires in ${candidates.oldestExpiresInDays} days` : ""}` : "none pending";
-    if (candidates.warning) actions.push(candidates.warning);
-    else if (candidates.count) actions.push("review pending candidates: amem review walk");
+    candidateFact = candidates.count ? `${candidates.count} pending${candidates.unshown ? `, ${candidates.unshown} never shown` : ""}${candidates.oldestExpiresInDays !== null ? `, oldest expires in ${candidates.oldestExpiresInDays} d` : ""}` : "none pending";
+    if (candidates.dueWithin7Days) findings.push({ text: `${plural(candidates.dueWithin7Days, "candidate")} expire within 7 days`, next: ["amem review walk"] });
   }
   const refusals = status.refusals ?? [];
   const interrupted = status.phase === "captured" && !status.active;   // authoring refuses until activation (generation-index.ts)
-  const migrationState: "ok" | "attention" = refusals.length || status.pending.rows || interrupted ? "attention" : "ok";
-  if (interrupted) actions.push("a shard migration stopped after capture and authoring is refused until it activates: amem migrate --shards --resume");
-  if (refusals.length) warnings.push(...refusals.map(reason => `migration refusal: ${reason}`));
-  if (status.pending.rows && !interrupted) actions.push(`${status.pending.rows} old-layout rows wait for the shard migration: amem migrate --shards --resume carries them (amem migrate --shards --dry-run previews first)`);
-  const overall = candidateState === "unavailable" ? "unavailable" : candidateState === "attention" || migrationState === "attention" ? "attention" : "ok";
+  const migrationState: State = refusals.length || status.pending.rows || interrupted ? "attention" : "ok";
+  if (interrupted) findings.push({ text: "a shard migration stopped after capture; authoring is refused until it activates", next: ["amem migrate --shards --resume"] });
+  for (const reason of refusals) findings.push({ text: `migration refusal: ${reason}`, next: [] });
+  if (status.pending.rows && !interrupted) findings.push({ text: `${plural(status.pending.rows, "old-layout row")} wait for the shard migration`, next: ["amem migrate --shards --dry-run", "amem migrate --shards --resume"] });
+  const overall: State = candidateState === "unavailable" ? "unavailable" : candidateState === "attention" || migrationState === "attention" ? "attention" : "ok";
   const { machine, repo, denyPaths, piiPatterns, ...limits } = status.config;
-  const pendingCounts = facts(Object.fromEntries(Object.entries(status.pending).filter(([key]) => !key.endsWith("Ids"))));
-  const lines = [
-    `${paint([{ role: "header", text: " amem Status" }], s.color)}: ${overall === "ok" ? s.ok(overall) : overall === "attention" ? s.attention(overall) : s.error(overall)}`,
-    ...(warnings.length || actions.length ? ["", section(s, "Attention"), ...warnings.map(warning => `  ${s.attention(markerCell("warn", s.ascii))} ${warning}`), ...actions.map(action => `  ${paint([{ role: "accent", text: markerCell("next", s.ascii) }], s.color)} ${action}`)] : []),
-    "", section(s, "Memory"),
-    `  home:  ${status.home.path} ${s.dim(`(${status.home.source})`)}`,
-    `${label(s, "ok")} policy: machine ${machine ?? "none (defaults)"}, repo ${repo ?? "none"}; ${denyPaths} deny paths, ${piiPatterns} PII patterns${facts(limits) ? `; ${facts(limits)}` : ""}`,
-    `${label(s, candidateState)} candidates: ${candidateLine}`,
-    `${label(s, migrationState)} layout: ${status.active ? `shards active${status.generation ? ` (generation ${status.generation.slice(0, 8)})` : ""}` : status.phase ? `shard migration ${status.phase}${interrupted ? ", not active" : ""}` : "single home"}; ${pendingCounts ? `pending ${pendingCounts}` : "no pending old-layout appends"}`,
-    ...(status.deadLeasesRemoved?.length ? [`            ${s.dim(`${status.deadLeasesRemoved.length} dead reader leases removed`)}`] : []),
-    "", actions.length ? "Next actions: see Attention" : "Next actions: none",
-    s.dim("Full report: amem status --json; health checks: amem doctor"),
-  ];
-  return lines.join("\n");
+  const limitFacts = Object.entries(limits).filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => typeof value === "number" && key.endsWith("Bytes") ? `${wordedKey(key)} ${humanBytes(value)}`
+      : typeof value === "object" ? `${wordedKey(key)} ${Array.isArray(value) ? value.length : Object.keys(value as object).length} set` : `${wordedKey(key)} ${String(value)}`);
+  const pendingFacts = Object.entries(status.pending).filter(([key, value]) => !key.endsWith("Ids") && value !== 0 && value !== undefined && value !== null)
+    .map(([key, value]) => typeof value === "object" ? plural(Object.keys(value as object).length, wordedKey(key).replace(/^by /, "")) : key.endsWith("Bytes") && typeof value === "number" ? `${wordedKey(key)} ${humanBytes(value)}` : `${wordedKey(key)} ${String(value)}`)
+    .filter(fact => !/^0 /.test(fact));
+  const layout = status.active ? `shards active${status.generation ? `, generation ${status.generation.slice(0, 8)}` : ""}` : status.phase ? `shard migration ${status.phase}${interrupted ? ", not active" : ""}` : "single home";
+
+  const report = reportFrame(s, "status", STATE_WORD[overall], opts, status.home);
+  attention(report, findings);
+  report.section("Memory");
+  stateRows(report, [
+    { state: "ok", name: "policy", fact: `machine ${machine ?? "none (defaults)"}, repo ${repo ?? "none"}, ${plural(denyPaths, "deny path")}, ${plural(piiPatterns, "PII pattern")}${limitFacts.length ? `, ${limitFacts.join(", ")}` : ""}` },
+    { state: candidateState, name: "candidates", fact: candidateFact },
+    { state: migrationState, name: "layout", fact: `${layout}; ${pendingFacts.length ? `pending ${pendingFacts.join(", ")}` : "no pending old-layout appends"}` },
+  ], s);
+  if (opts.verbose && status.deadLeasesRemoved?.length) report.note(`${status.deadLeasesRemoved.length} dead reader leases removed during the last migration`);
+  return report.render(s.color).join("\n");
 }

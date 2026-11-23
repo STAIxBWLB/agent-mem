@@ -116,6 +116,6 @@ test("doctor adds an informational masked row only when forget ops exist, and ne
   expect(after.sections.masked).toEqual({ status: "ok", forgets: 1, prunes: 0, note: "masked entries stay in the local log and in sync history; see docs/purge.md" });
   expect(after.status).toBe(before.status);
   const text = await r.cli(["doctor"]);
-  expect(text).toContain("masked: forgotten or pruned entries (informational)"); expect(text).toContain("docs/purge.md"); expect(text).not.toContain(LEAK);
+  expect(text).toMatch(/^  ok ok +masked: +\d+ forgotten, \d+ pruned; see docs\/purge.md$/m); expect(text).toContain("docs/purge.md"); expect(text).not.toContain(LEAK);
   for (const key of Object.keys(before.sections)) expect(Object.keys(after.sections)).toContain(key);
 });
