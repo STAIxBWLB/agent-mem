@@ -206,7 +206,11 @@ test("marked and unmarked recall respects screening, cell width and JSON boundar
     }
     expect(await runCli(["show", hidden], person)).toContain(marker);
     expect(await runCli(["show", hidden], marked)).not.toContain(marker);
-    expect(await runCli(["search", "needle", "--all-projects"], marked)).toStartWith("crossed projects:");
+    expect(await runCli(["show", visible], marked)).toMatch(/Actor:\s+agent/);
+    for (const args of [["list", "--history"], ["search", "needle", "--filter"], ["search", "제주한라대학교인공지능", "--all-projects"]]) {
+      for (const context of [person, marked]) expect(await runCli(args, context)).toContain("> Entries");
+    }
+    await expect(runCli(["search", "needle", "--all-projects"], marked)).rejects.toThrow("policy_withheld");
     const mcp = createMemoryMcp({ cwd: f.root, base: join(f.root, "memory") });
     try {
       expect(await runCli(["list", "--json"], marked)).toBe(JSON.stringify(await mcp.tools.amem_timeline({}), null, 2));
@@ -216,5 +220,23 @@ test("marked and unmarked recall respects screening, cell width and JSON boundar
       expect(JSON.parse(await runCli(["show", hidden, "--json"], marked))).toBeNull();
       expect(JSON.parse(await runCli(["show", hidden, "--json"], person)).text).toContain(marker);
     } finally { mcp.close(); }
+  } finally { f.store.close(); }
+});
+
+test("marked fallback reads screen both legacy and formatted output", async () => {
+  const f = fixture();
+  try {
+    f.note("screencheck public");
+    const home = join(f.root, "memory"), env = { HOME: f.root, AGENTHUB_HOME: f.root, AMEM_HOME: home, COLUMNS: "80", NO_COLOR: "1" };
+    const marked = { cwd: f.root, env: { ...env, CODEX_THREAD_ID: "fixture" }, stdinTTY: false };
+    for (const [args, pattern] of [
+      [["list", "--history"], "retained memory as of 20"],
+      [["search", "screencheck", "--filter"], "memory for "],
+      [["search", "screencheck", "--all-projects"], "crossed projects:"],
+      [["list", "--history"], "Entries"],
+    ] as const) {
+      writeFileSync(join(home, "amem.config.json"), JSON.stringify({ piiPatterns: [pattern] }));
+      await expect(runCli([...args], marked)).rejects.toThrow("policy_withheld");
+    }
   } finally { f.store.close(); }
 });

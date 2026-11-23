@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rawMemoryCommand } from "../src/memory/commands.ts";
@@ -41,23 +41,15 @@ test("host recall without render retains the main 7cb641fc text bytes", async ()
   const memory = join(root, "memory"), project = "github.com/example/amem-parity";
   cpSync(join(import.meta.dir, "fixtures", "parity", "memory"), memory, { recursive: true });
   const options = { project, open: () => new MemoryStore({ memoryDir: memory, deferPromotions: true }), readable: <T>(rows: T[]) => rows, importPolicy: () => () => false };
-  const header = "memory for github.com/example/amem-parity on machine fixture-machine: 2 long-term, 1 short-term";
-  const finding = "c5f94e3f  2026-10-01 00:03  short finding  codex    Fixture finding: A synthetic short-term finding.";
-  const failure = "c12d2fc1  2026-10-01 00:02  long  fail     codex    Fixture fail: Keep the failed approach visible.";
-  const contract = "26a604d2  2026-10-01 00:01  long  contract codex    Fixture contract: Preserve the append-only contract.";
-  expect(await rawMemoryCommand(["list"], root, options)).toBe([header, finding, failure, contract].join("\n"));
-  expect(await rawMemoryCommand(["search", "contract"], root, options)).toBe([header, contract].join("\n"));
-  expect(await rawMemoryCommand(["show", "26a604d279d68185bbbf4159f60e7dc6"], root, options)).toBe([
-    "26a604d279d68185bbbf4159f60e7dc6  contract, long-term, project",
-    "by codex on machine 0123456789abcdef, 2026-10-01T00:01:00.000Z, project github.com/example/amem-parity",
-    "about: path:src/example.ts", "", "Fixture contract", "Preserve the append-only contract.",
-  ].join("\n"));
+  const golden = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "cli-output-main-7cb641fc", "host.json"), "utf8")) as Record<string, string>;
+  expect(await rawMemoryCommand(["list"], root, options)).toBe(golden.list!);
+  expect(await rawMemoryCommand(["search", "contract"], root, options)).toBe(golden.search!);
+  expect(await rawMemoryCommand(["show", "26a604d279d68185bbbf4159f60e7dc6"], root, options)).toBe(golden.show!);
 });
 
 test("every MCP tool returns the main 7cb641fc result text", () => {
   const root = mkdtempSync(join(tmpdir(), "amem-mcp-output-parity-")); roots.push(root);
   const program = join(root, "compare.ts"), fixture = join(import.meta.dir, "fixtures", "parity", "memory");
-  const baseline = join(import.meta.dir, "fakes", "mcp-memory-main-7cb641fc.ts");
   const current = join(import.meta.dir, "../src/mcp-memory.ts"), transport = join(import.meta.dir, "../src/mcp.ts");
   const capacity = join(import.meta.dir, "../src/memory/capacity.ts");
   // The child process confines clock, entropy and system-reading substitutions to this test.
@@ -69,10 +61,11 @@ import { Readable, Writable } from "node:stream";
 setSystemTime(new Date("2026-11-23T00:00:00.000Z"));
 const crypto = await import("node:crypto");
 mock.module("node:crypto", () => ({ ...crypto, randomBytes: (size: number) => Buffer.alloc(size, 7) }));
+const os = await import("node:os");
+mock.module("node:os", () => ({ ...os, totalmem: () => 68719476736 }));
 const originalCapacity = await import(${JSON.stringify(capacity)});
 const capacityReport = originalCapacity.capacityReport;
 mock.module(${JSON.stringify(capacity)}, () => ({ ...originalCapacity, capacityReport: (options: Record<string, unknown>) => capacityReport({ ...options, inject: { disk: { freeBytes: 900000000, totalBytes: 1000000000 }, memoryPressure: "fixture", metrics: [] } }) }));
-const { createMemoryMcp: baseline } = await import(${JSON.stringify(baseline)});
 const { createMemoryMcp: current } = await import(${JSON.stringify(current)});
 const { serveMcp } = await import(${JSON.stringify(transport)});
 const root = ${JSON.stringify(root)}, fixture = ${JSON.stringify(fixture)}, project = "github.com/example/amem-parity";
@@ -107,14 +100,15 @@ async function call(factory: typeof current, base: string, name: string, args: R
 }
 mkdirSync(join(root, "runs"));
 const results = [];
-for (const [name, args] of cases) results.push({ name, baseline: await call(baseline, join(root, "runs", name + "-baseline"), name, args), current: await call(current, join(root, "runs", name + "-current"), name, args) });
+for (const [name, args] of cases) results.push({ name, current: await call(current, join(root, "runs", name + "-current"), name, args) });
 console.log(JSON.stringify(results));
 `);
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, AMEM_HOME: join(root, "unused-memory"), AGENTHUB_HOME: join(root, "unused-hub") };
   for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "PI_SESSION_ID"]) delete env[key];
   const child = Bun.spawnSync([process.execPath, program], { cwd: root, env, stdout: "pipe", stderr: "pipe", timeout: 60_000 });
   expect(child.exitCode, child.stderr.toString()).toBe(0);
-  const results = JSON.parse(child.stdout.toString()) as { name: string; baseline: string; current: string }[];
+  const results = JSON.parse(child.stdout.toString()) as { name: string; current: string }[];
   expect(results.map(row => row.name)).toEqual(["amem_search", "amem_evidence", "amem_show", "amem_timeline", "amem_brief", "amem_graph", "amem_work_state_read", "amem_work_state_write", "amem_remember", "amem_correct", "amem_vault_candidates", "amem_capacity"]);
-  for (const result of results) expect(result.current, result.name).toBe(result.baseline);
+  const golden = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "cli-output-main-7cb641fc", "mcp.json"), "utf8")) as Record<string, string>;
+  for (const result of results) expect(result.current, result.name).toBe(golden[result.name]!);
 }, 70_000);

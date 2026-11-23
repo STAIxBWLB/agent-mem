@@ -1,0 +1,5 @@
+{
+  "list": "memory for github.com/example/amem-parity on machine fixture-machine: 2 long-term, 1 short-term\nc5f94e3f  2026-10-01 00:03  short finding  codex    Fixture finding: A synthetic short-term finding.\nc12d2fc1  2026-10-01 00:02  long  fail     codex    Fixture fail: Keep the failed approach visible.\n26a604d2  2026-10-01 00:01  long  contract codex    Fixture contract: Preserve the append-only contract.",
+  "search": "memory for github.com/example/amem-parity on machine fixture-machine: 2 long-term, 1 short-term\n26a604d2  2026-10-01 00:01  long  contract codex    Fixture contract: Preserve the append-only contract.",
+  "show": "26a604d279d68185bbbf4159f60e7dc6  contract, long-term, project\nby codex on machine 0123456789abcdef, 2026-10-01T00:01:00.000Z, project github.com/example/amem-parity\nabout: path:src/example.ts\n\nFixture contract\nPreserve the append-only contract."
+}

@@ -565,6 +565,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const administrative = <T>(value: T): T => { assertAgentAdministrative(value, policyOf()); return value; };
   // Reformat only after the prior human receipt passes the same whole-output screen.
   const screenedLegacy = (legacy: string, formatted: string): string => actor === "agent" && !policyOf().screenStandalone(legacy) ? legacy : formatted;
+  const screenedReadPair = (legacy: string, formatted: string): string => {
+    if (actor === "agent" && (!policyOf().screenStandalone(legacy) || !policyOf().screenStandalone(formatted))) throw new ReadPolicyWithheld();
+    return formatted;
+  };
   let canonicalProject: string | undefined;
   const boundProject = () => canonicalProject ??= resolveAlias(memoryHome(), memoryProjectKey(context.cwd ?? process.cwd()));
   const commandBinding = (home: string, project: string): (() => void) => {
@@ -1307,15 +1311,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (!words.trim()) throw new Error("usage: amem search --all-projects <words> [--limit N] [--include-archived] [--json]");
     const result = searchAllProjects(memoryHome(), words, { ...(options["--limit"] !== undefined ? { limit: Number(options["--limit"]) } : {}), includeArchived: options["--include-archived"] === true });
     if (options["--json"]) return JSON.stringify(result, null, 2);
-    // The MCP handler does not serve this cross-project mode; keep its existing marked-session output.
-    if (actor === "agent") {
-      const one = (hit: (typeof result.hits)[number]) => hit.view ? `${hit.project}  ${hit.view.id.slice(0, 8)}  ${hit.view.kind}  ${(hit.view.title ?? hit.view.text).split("\n")[0]!.slice(0, 100)}` : `${hit.project}  capture ${hit.capture!.id}  ${hit.capture!.event}${hit.capture!.subagent ? "  subagent" : ""}  ${hit.capture!.event === "Record" ? captureSearchText(hit.capture!) : hit.capture!.excerpt.split("\n")[0]!.slice(0, 100)}`;
-      return [`crossed projects: searched ${result.projects.length} (${result.projects.join(", ")})`, ...(result.hits.length ? result.hits.map(one) : ["(nothing)"])].join("\n");
-    }
+    const one = (hit: (typeof result.hits)[number]) => hit.view ? `${hit.project}  ${hit.view.id.slice(0, 8)}  ${hit.view.kind}  ${(hit.view.title ?? hit.view.text).split("\n")[0]!.slice(0, 100)}` : `${hit.project}  capture ${hit.capture!.id}  ${hit.capture!.event}${hit.capture!.subagent ? "  subagent" : ""}  ${hit.capture!.event === "Record" ? captureSearchText(hit.capture!) : hit.capture!.excerpt.split("\n")[0]!.slice(0, 100)}`;
+    const legacy = [`crossed projects: searched ${result.projects.length} (${result.projects.join(", ")})`, ...(result.hits.length ? result.hits.map(one) : ["(nothing)"])].join("\n");
     const rows = result.hits.map(hit => hit.view ? { project: hit.project, id: hit.view.id, kind: hit.view.kind, tier: hit.view.tier, peer: hit.view.peer, scope: hit.view.scope, at: hit.view.at, text: `${hit.view.title ? `${hit.view.title}: ` : ""}${hit.view.text}` } : { project: hit.project, id: `capture:${hit.capture!.id}`, kind: "capture", peer: hit.capture!.agent, at: hit.capture!.at, text: `${hit.capture!.event}${hit.capture!.subagent ? " subagent" : ""}: ${captureSearchText(hit.capture!)}` });
     const width = reportWidth(context) ?? 80, displayStyle = outputStyle(context, options), projects = new Report(width, displayStyle.ascii, { sanitize: singleLine });
     projects.section("Projects", String(result.projects.length)); projects.line(result.projects.join(", ") || "None.");
-    return `${memoryTableText(rows, "Cross-project search", { columns: width, style: displayStyle, ...(context.now ? { now: context.now() } : {}) })}\n\n${projects.render(displayStyle.color).join("\n")}`;
+    return screenedReadPair(legacy, `${memoryTableText(rows, "Cross-project search", { columns: width, style: displayStyle, ...(context.now ? { now: context.now() } : {}) })}\n\n${projects.render(displayStyle.color).join("\n")}`);
   }
   if (sub === "search" && options["--include-archived"] === true) throw new Error("--include-archived only applies with --all-projects");
   if (sub === "search" && options["--explain"] === true) {
@@ -1392,9 +1393,16 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     administrative({ path: plan.path, line: plan.line });
     const preview = [`the exact line that would be appended to ${plan.path}:`, plan.text, ...(plan.droppedNodes.length ? [`(left out, private references: ${plan.droppedNodes.join(", ")})`] : []),
       `repository visibility: ${seen.state}${seen.remotes.length ? ` (${[...new Set(seen.remotes.map(r => `${r.name}${r.kind === "push" ? " (push)" : ""} ${r.visibility}`))].join(", ")})` : " (no remote)"}`];
-    if (plan.alreadyPresent) return [...preview, "already in the file: nothing to write"].join("\n");
     const entryPrefix = plan.line.id.slice(0, 8);
-    if (options["--confirm"] !== true) return [...preview, seen.state === "private" ? "nothing written; add --confirm to append it" : `NOT a verified private repository: add --confirm --confirm-public ${entryPrefix} to append this entry (per entry, never blanket)`].join("\n");
+    if (plan.alreadyPresent || options["--confirm"] !== true) {
+      const s = outputStyle(context, options), report = new Report(reportWidth(context) ?? 80, s.ascii, { sanitize: singleLine, keepTokensWhole: true });
+      report.header("amem", "Repository promotion"); report.section("Preview");
+      report.kv([["Scope", "repo"], ["Kind", plan.line.kind], ["Target", plan.path], ["Visibility", seen.state]]);
+      if (plan.droppedNodes.length) report.line(`Private references omitted: ${plan.droppedNodes.join(", ")}`);
+      report.line(plan.alreadyPresent ? "already in the file: nothing to write" : seen.state === "private" ? "Nothing written; add --confirm to append it." : `NOT a verified private repository: add --confirm --confirm-public ${entryPrefix} to append this entry (per entry, never blanket).`);
+      // AC8 exception: the canonical line must be shown verbatim before appending to a shared repository.
+      return `${report.render(s.color).join("\n")}\nLine to append:\n${plan.text}`;
+    }
     if (seen.state !== "private") {
       const given = options["--confirm-public"];
       if (typeof given !== "string" || given.length < 8 || !/^[a-f0-9]+$/.test(given) || !plan.line.id.startsWith(given)) throw new Error(`the repository is ${seen.state === "public" ? "public" : "not verified private"}: repo scope needs your confirmation of this entry: --confirm-public ${entryPrefix} (the first 8 characters of the id in the line above)`);
@@ -1423,6 +1431,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (actor === "agent" && options["--json"] !== true) return [`repo:${row.id}  ${row.kind}, repo scope, ${row.at}`, ...(row.about.length ? [`about: ${row.about.join(", ")}`] : []), "", ...(row.title ? [row.title] : []), row.text].join("\n");
     return options["--json"] ? JSON.stringify(row, null, 2) : memoryRecordText({ id: `repo:${row.id}`, kind: row.kind, at: row.at, text: `${row.title ? `${row.title}\n` : ""}${row.text}` }, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, [["Scope", "repo"], ...(row.about.length ? [["About", row.about.join(", ")] as [string, string]] : [])]);
   }
+  let priorRead: string | undefined;
   // Recall (D4): the current project plus, when the repository IS this project, that repository's `.amem/`. Never another project's.
   const withRepoRows = async (output: string): Promise<string> => {
     if (options["--history"] === true || options["--as-of"] !== undefined) return output;
@@ -1440,15 +1449,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const repoDetails = explainSearch ? rows.map(row => ({ ...row, scoreDetails: unrankedScoreDetails("repo", null) })) : rows;
     if (options["--json"]) { try { const base = JSON.parse(output) as unknown[]; return JSON.stringify([...base, ...repoDetails], null, 2); } catch { return output; } }
     const note = read.state === "unsafe" ? [`(repo scope unavailable: ${read.reason})`] : read.skipped.malformed + read.skipped.mismatched + read.skipped.withheld ? [`(${read.skipped.malformed + read.skipped.mismatched} repo lines skipped as invalid, ${read.skipped.withheld} withheld by the screen)`] : [];
-    if (actor === "agent") {
-      const line = (row: (typeof rows)[number]) => `repo:${row.id.slice(0, 8)}  ${row.at.slice(0, 16).replace("T", " ")}  repo  ${row.kind.padEnd(8)} ${`${row.title ? `${row.title}: ` : ""}${row.text}`.replace(/\s+/g, " ").slice(0, 100)}`;
-      const lines = explainSearch ? rows.flatMap(row => [line(row), `score: ${JSON.stringify(unrankedScoreDetails("repo", null))}`]) : rows.map(line);
-      return [output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", ...lines] : []), ...note].join("\n");
-    }
+    const line = (row: (typeof rows)[number]) => `repo:${row.id.slice(0, 8)}  ${row.at.slice(0, 16).replace("T", " ")}  repo  ${row.kind.padEnd(8)} ${`${row.title ? `${row.title}: ` : ""}${row.text}`.replace(/\s+/g, " ").slice(0, 100)}`;
+    const lines = explainSearch ? rows.flatMap(row => [line(row), `score: ${JSON.stringify(unrankedScoreDetails("repo", null))}`]) : rows.map(line);
+    const legacy = [priorRead ?? output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", ...lines] : []), ...note].join("\n");
     const render = { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) };
     const table = rows.length ? memoryTableText(rows.map(row => ({ id: `repo:${row.id}`, kind: row.kind, at: row.at, text: `${row.title ? `${row.title}: ` : ""}${row.text}` })), "Repository", render) : "";
     const scores = explainSearch ? memoryScoresText(rows.map(row => ({ id: `repo:${row.id}`, details: unrankedScoreDetails("repo", null) as unknown as Record<string, unknown> })), render) : "";
-    return [output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", table] : []), ...(scores ? ["", scores] : []), ...note].join("\n");
+    return screenedReadPair(legacy, [output, ...(rows.length ? ["repo scope (.amem/log.jsonl):", table] : []), ...(scores ? ["", scores] : []), ...note].join("\n"));
   };
   const crosses = definition.policyFree === true;
   const cwd = context.cwd ?? process.cwd();
@@ -1536,7 +1543,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const markers = readPlacementRuntimeMarkers(syncHome);
       if (!readActivePlacementBinding(syncHome, markers.profile, markers.shards)) throw Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
     }
-    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), ...(options["--json"] !== true && identity.actor !== "agent" ? { render: { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) } } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), ...(options["--json"] !== true ? { render: { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, ...(actor === "agent" ? { renderLegacy: (legacy: string, formatted: string) => { priorRead = legacy; return screenedReadPair(legacy, formatted); } } : {}) } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       // #578 Q2: the CLI sync (also --if-due) is eligible; the home opt-in still decides whether a checkpoint can run.
       sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest, placementCheckpoint: true } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },

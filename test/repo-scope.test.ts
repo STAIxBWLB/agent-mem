@@ -59,13 +59,13 @@ const policy = createStandalonePolicy();
 
 for (const key of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"]) test(`a marked CLI (${key}) receives the screened repo-scope preview without TTY`, async () => {
   const r = rig(); const id = r.note("we chose sqlite");
-  for (const value of ["", "1", "codex"]) expect(await runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, env: { [key]: value }, stdinTTY: false })).toContain("the exact line that would be appended");
+  for (const value of ["", "1", "codex"]) expect(await runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, env: { [key]: value }, stdinTTY: false })).toContain("Line to append:");
   expect(existsSync(join(r.repo, ".amem"))).toBe(false);
 });
 
 test("promote --to repo previews without TTY and confirmed agent writes retain the released line actor", async () => {
   const r = rig(); const id = r.note("we chose sqlite");
-  expect(await runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, stdinTTY: false })).toContain("the exact line that would be appended");
+  expect(await runCli(["promote", id, "--to", "repo", "--policy-free"], { ...r.person, stdinTTY: false })).toContain("Line to append:");
   expect(await runCli(["promote", id, "--to", "repo", "--policy-free", "--confirm"], { ...r.person, env: { CLAUDECODE: "fixture" }, stdinTTY: false })).toContain("appended");
   const line = readFileSync(r.logPath, "utf8").trim().split("\n").map(value => JSON.parse(value) as RepoLine).at(-1)!;
   expect(line).toMatchObject({ actor: "person", text: "we chose sqlite" }); // released repo-line actor stays readable by older readers
@@ -174,9 +174,9 @@ test("a note of another project cannot be promoted into this repository", async 
 test("private references (task, goal, memory links and absolute or escaping paths) never reach the committed line", async () => {
   const r = rig(); const id = r.note("the cache is per shard", { about: ["path:src/cache.ts", "symbol:open@src/cache.ts", "task:github.com/o/a#7@123", "mem:abcdef012345", "path:/etc/hosts", "path:../../outside.ts", "issue:o/a#12"] });
   const out = await promote(r, id);
-  const line = JSON.parse(out.split("\n")[1]!) as RepoLine;
+  const line = JSON.parse(out.split("\n").at(-1)!) as RepoLine;
   expect(line.about).toEqual(["path:src/cache.ts", "symbol:open@src/cache.ts", "issue:o/a#12"]);
-  expect(out).toContain("left out, private references");
+  expect(out).toContain("Private references omitted:");
   expect(r.log()).toBe("");
   await promote(r, id, "--confirm");
   expect(r.log()).not.toMatch(/task:|mem:|\/etc\/hosts|\.\.\//);
@@ -193,12 +193,14 @@ test("the committed line carries no machine, peer, task, project or source-entry
 
 // ---- the exact line, and the public-repository guard (AC6)
 
-test("the preview prints the exact line and writes nothing; --confirm appends exactly that line", async () => {
+test("AC8 exception: repo preview prints the exact unwrapped line and --confirm appends it", async () => {
   const r = rig(); const id = r.note("we chose sqlite for the index");
   const preview = await promote(r, id);
-  const shown = preview.split("\n")[1]!;
+  const shown = preview.split("\n").at(-1)!;
+  expect(preview).toContain("Line to append:\n" + shown);
+  expect(preview.split("\n").filter(line => line !== shown).every(line => Bun.stringWidth(line) <= 80)).toBe(true);
   expect(JSON.parse(shown).text).toBe("we chose sqlite for the index");
-  expect(preview).toContain("nothing written");
+  expect(preview.toLowerCase()).toContain("nothing written");
   expect(existsSync(join(r.repo, ".amem"))).toBe(false);
   const done = await promote(r, id, "--confirm");
   expect(done).toContain("amem does not commit or push");
@@ -225,7 +227,7 @@ for (const [label, remote, visibility] of notPrivate) test(`in a ${label} reposi
   const r = rig(remote); r.person.visibility = visibility;
   const id = r.note("we chose sqlite for the index"), other = r.note("a second public-safe decision");
   const preview = await promote(r, id);
-  const prefix = (JSON.parse(preview.split("\n")[1]!) as RepoLine).id.slice(0, 8);
+  const prefix = (JSON.parse(preview.split("\n").at(-1)!) as RepoLine).id.slice(0, 8);
   expect(preview).toContain(`--confirm-public ${prefix}`);
   expect(await refusal(promote(r, id, "--confirm"))).toContain(`--confirm-public ${prefix}`);
   expect(await refusal(promote(r, id, "--confirm", "--confirm-public", "deadbeef"))).toContain("confirmation of this entry");
@@ -234,7 +236,7 @@ for (const [label, remote, visibility] of notPrivate) test(`in a ${label} reposi
   expect(r.log()).toBe("");
   expect(await promote(r, id, "--confirm", "--confirm-public", prefix)).toContain("appended");
   // Per entry: the first entry's prefix does not confirm a second one.
-  const secondPrefix = (JSON.parse((await promote(r, other)).split("\n")[1]!) as RepoLine).id.slice(0, 8);
+  const secondPrefix = (JSON.parse((await promote(r, other)).split("\n").at(-1)!) as RepoLine).id.slice(0, 8);
   expect(await refusal(promote(r, other, "--confirm", "--confirm-public", prefix))).toContain("confirmation of this entry");
   expect(r.log().trim().split("\n")).toHaveLength(1);
   expect(await promote(r, other, "--confirm", "--confirm-public", secondPrefix)).toContain("appended");
@@ -594,7 +596,7 @@ test("promoting into a repository that git ignores says so, because git status w
 
 test("a git worktree of the repository (same project key) reads its own checkout of .amem, and concurrent promotions of different entries append intact lines", async () => {
   const r = rig(); const ids = [1, 2, 3, 4, 5, 6].map(i => r.note(`concurrent decision number ${i}`));
-  const prefixes = await Promise.all(ids.map(async id => (JSON.parse((await promote(r, id)).split("\n")[1]!) as RepoLine).id.slice(0, 8)));
+  const prefixes = await Promise.all(ids.map(async id => (JSON.parse((await promote(r, id)).split("\n").at(-1)!) as RepoLine).id.slice(0, 8)));
   await Promise.all(ids.map((id, i) => promote(r, id, "--confirm", "--confirm-public", prefixes[i]!)));
   const lines = r.log().trim().split("\n");
   expect(lines).toHaveLength(6); for (const line of lines) expect(parseRepoLine(line)).toHaveProperty("view");
