@@ -61,3 +61,14 @@ test("help <unknown> is a usage error and every usage error names its help page 
     expect(text).toContain(`Run 'amem help ${argv.join(" ")}' for details.`);
   }
 });
+
+test("agent-marked sessions get the same H7 usage errors, not a read failure", async () => {
+  const { formatCliError } = await import("../src/cli.ts");
+  for (const argv of [["help", "nosuch"], ["note"], ["project"], ["skills"], ["formats"], ["import"]]) {
+    const seen = (context: typeof person) => runCli(argv, context).then(() => { throw new Error("accepted"); }, (error: Error & { exitCode?: number }) => ({ code: error.exitCode, text: formatCliError(error, true, argv) }));
+    const marked = await seen(agent), unmarked = await seen(person);
+    expect(marked.code, argv.join(" ")).toBe(2);
+    expect(marked.text, argv.join(" ")).toBe(unmarked.text);
+    expect(marked.text).toContain("Run 'amem help");
+  }
+});

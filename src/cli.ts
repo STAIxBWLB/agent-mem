@@ -384,7 +384,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       const safe = new DecayApplyError(error.report, undefined); safe.jsonOutput = error.jsonOutput; throw safe;
     }
     // Data-free errors (decided before any store or file is opened) keep their own message.
-    if (marked && (error instanceof AgentUsageError || error instanceof AgentReadFailure || error instanceof AgentReadAmbiguous)) throw error;
+    // #590 H7: a CommandUsageError is decided from argv words before any store access, so it stays a usage error.
+    if (marked && (error instanceof AgentUsageError || error instanceof CommandUsageError || error instanceof AgentReadFailure || error instanceof AgentReadAmbiguous)) throw error;
     if (marked && error instanceof RemoteRealmRefusal) throw error;
     // The checkpoint pending message is a fixed data-free remedy shared by journal and writer guards.
     if (marked && error instanceof Error && error.message === PLACEMENT_CHECKPOINT_PENDING_MESSAGE) throw new Error(PLACEMENT_CHECKPOINT_PENDING_MESSAGE);
