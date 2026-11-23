@@ -4,7 +4,7 @@ import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, ren
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenerationIndex } from "../src/memory/generation-index.ts";
-import { indexFileName } from "../src/memory/index-file.ts";
+import { INDEX_VERSION, indexFileName } from "../src/memory/index-file.ts";
 import { buildPublicPruneIndex, entryId, machineId, MemoryStore, openShardStore, type Entry, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
@@ -125,7 +125,7 @@ test("#466 AC3: a reopened v2 shard proves its stored foreign stamp instead of r
   } finally { GenerationIndex.prototype.rebuild = rebuild; }
 });
 
-test("#466: opening a v2 shard builds i5 without changing the old i4 index", async () => {
+test("#466: opening a v2 shard builds the current index without changing the old i4 index", async () => {
   const f = await home(true), old = join(f.profile.dir, indexFileName(true, 4)), current = join(f.profile.dir, indexFileName(true));
   for (const suffix of ["", "-wal", "-shm"]) rmSync(current + suffix, { force: true });
   const legacy = new Database(old, { create: true });
@@ -138,7 +138,7 @@ test("#466: opening a v2 shard builds i5 without changing the old i4 index", asy
   expect(readFileSync(old)).toEqual(before);
   const built = new Database(current, { readonly: true });
   try {
-    expect((built.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(5);
+    expect((built.query("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(INDEX_VERSION);
     expect((built.query("SELECT value FROM generation_state WHERE key='foreignStamp'").get() as { value: string } | null)?.value).toBe(f.initial!);
   } finally { built.close(); }
 });

@@ -15,10 +15,11 @@ const userVersion = (file: string) => { const db = new Database(file, { readonly
 const note = (text: string) => ({ op: "note" as const, project: "p", scope: "project" as const, tier: "long" as const, kind: "finding" as const, peer: "person", text, about: [], source: "person" as const });
 
 test("each index version has its own file; version 3 keeps the released names", () => {
-  expect(INDEX_VERSION).toBe(5);
-  expect([indexFileName(false), indexFileName(true)]).toEqual(["index-v5.db", "index-v2-i5.db"]);
+  expect(INDEX_VERSION).toBe(6);
+  expect([indexFileName(false), indexFileName(true)]).toEqual(["index-v6.db", "index-v2-i6.db"]);
+  expect([indexFileName(false, 5), indexFileName(true, 5)]).toEqual(["index-v5.db", "index-v2-i5.db"]);
   expect([indexFileName(false, 3), indexFileName(true, 3)]).toEqual(["index.db", "index-v2.db"]);
-  const names = [false, true].flatMap(foreign => [3, 4, 5].map(version => indexFileName(foreign, version)));
+  const names = [false, true].flatMap(foreign => [3, 4, 5, 6].map(version => indexFileName(foreign, version)));
   expect(new Set(names).size).toBe(names.length);
   expect(indexFileName(false, 4)).toBe("index-v4.db"); expect(indexFileName(true, 4)).toBe("index-v2-i4.db");
 });
@@ -39,13 +40,12 @@ test("a newer version's index beside this one is neither opened nor dropped, and
   expect(userVersion(future)).toBe(INDEX_VERSION + 1); expect(readFileSync(future).length).toBeGreaterThanOrEqual(futureBytes.length);
 });
 
-test("this release keeps its version-5 index beside 0.18.0's version-3 file, and neither drops the other", async () => {
+test("this release keeps its index beside 0.18.0's version-3 file, and neither drops the other", async () => {
   const home = mkdtempSync(join(tmpdir(), "amem-index-v018-")); roots.push(home);
   const v018 = pathToFileURL(resolve(import.meta.dir, "../node_modules/@staix/agent-mem-v018/src/memory/store.ts")).href;
   const run = (code: string) => { const result = Bun.spawnSync([process.execPath, "-e", code], { env: { ...process.env, AMEM_HOME: home }, stdout: "pipe", stderr: "pipe" });
     expect(result.stderr.toString()).toBe(""); expect(result.exitCode).toBe(0); return result.stdout.toString(); };
   run(`const { MemoryStore } = await import(${JSON.stringify(v018)}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(home)}, screen: () => "keep" }); s.note(${JSON.stringify(note("shared by 0.18.0"))}); s.close();`);
-  // 0.18.0 keeps `index.db`; this release builds `index-v5.db`. Neither opens or deletes the other's file.
   const theirs = join(home, indexFileName(false, 3)), ours = join(home, indexFileName(false)), theirSchema = schemaVersion(theirs);
   const mine = new MemoryStore({ memoryDir: home, screen: () => "keep" }); try { mine.note(note("shared by this release")); } finally { mine.close(); }
   expect(schemaVersion(theirs)).toBe(theirSchema); expect(userVersion(theirs)).toBe(3); expect(userVersion(ours)).toBe(INDEX_VERSION);

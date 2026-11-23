@@ -25,6 +25,7 @@ function bytes(store: MemoryStore) { return Object.fromEntries(["log", "local"].
 test("generation settle promotes only generation-born held notes and preserves the bridged projection", async () => {
   const { store, decision, finding } = await fixture(), beforeDecision = store.get(decision), beforeFinding = store.get(finding);
   const own = store.note(input("generation held decision"));
+  expect(store.unsettledTaskKeys("agent-hub")).toEqual({ keys: [TASK] });
   expect(store.settle(TASK, "person")).toBe(1);
   expect(store.get(decision)).toEqual(beforeDecision);
   expect(store.get(finding)).toEqual(beforeFinding);
@@ -47,6 +48,7 @@ test("legacy settlement is opt-in for reconciliation and does not settle generat
   expect(store.settled(TASK)).toBe(false);
   expect(store.settled(TASK, { includeLegacy: true })).toBe(true);
   expect(store.settled("unknown", { includeLegacy: true })).toBe(false);
+  expect(store.unsettledTaskKeys("agent-hub")).toEqual({ keys: [] });
   expect(bytes(store)).toEqual(before);
 
   const own = store.note(input("new generation held decision"));
@@ -62,4 +64,5 @@ test("legacy settlement is opt-in for reconciliation and does not settle generat
   store.rebuild();
   expect(store.derivedTables()).toEqual(projection);
   expect(store.settled(TASK, { includeLegacy: true })).toBe(true);
+  expect(store.unsettledTaskKeys("agent-hub")).toEqual({ keys: [] });
 });

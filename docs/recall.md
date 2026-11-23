@@ -24,7 +24,7 @@ Agents use `amem_evidence` with a question to get cited, live curated entries, n
 
 ### Public prune view and v2 sync (opt-in)
 
-On an active curated split, the person can preview and enable the forward-only v2 reader floor. This keeps the receiving generation and native logs/seals, builds a separate `index-v2-i5.db`, and preserves every native/local mask. Once activated, explicit sync uses the v2 transport and can install complete generation-neutral public-prune proof; historical hold receipts alone never authorize a mask.
+On an active curated split, the person can preview and enable the forward-only v2 reader floor. This keeps the receiving generation and native logs/seals, builds a separate `index-v2-i6.db`, and preserves every native/local mask. Once activated, explicit sync uses the v2 transport and can install complete generation-neutral public-prune proof; historical hold receipts alone never authorize a mask.
 
 ```sh
 AMEM_HOME=/path/to/synthetic-memory amem migrate --public-prune-view --dry-run

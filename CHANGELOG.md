@@ -4,6 +4,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+### Added
+
+- Hosts can page task keys awaiting settlement with `MemoryStore.unsettledTaskKeys(project, { after, limit })` (Refs #610). Host API v1 callers can feature-detect the method. Each populated profile rebuilds a separate v6 derived index on first open and uses additional disk while the v5 index used by 0.38.0 remains alongside it. Both versions share the existing logs and storage formats.
+
 ### Fixed
 
 - Invalid arguments to `amem formats raise` and other commands with argument-only usage checks now show usage and exit 2 in agent-marked sessions. Refs #596.

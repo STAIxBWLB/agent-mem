@@ -1738,6 +1738,13 @@
           "constructors": [],
           "type": "(id: string, actor: string, opts?: { force?: boolean | undefined; ms?: number | undefined; }) => { ok: true; until: string; } | { ok: false; holder: string; until: string; }"
         },
+        "unsettledTaskKeys": {
+          "calls": [
+            "(project: string, options?: { after?: string | undefined; limit?: number | undefined; }): { keys: string[]; next?: string | undefined; }"
+          ],
+          "constructors": [],
+          "type": "(project: string, options?: { after?: string | undefined; limit?: number | undefined; }) => { keys: string[]; next?: string | undefined; }"
+        },
         "vaultEntries": {
           "calls": [
             "(project: string): VaultEntry[]"
