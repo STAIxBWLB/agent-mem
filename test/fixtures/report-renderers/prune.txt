@@ -1,5 +1,5 @@
  amem Prune  preview, nothing written
-  project repo@1234abcd, cutoff 2026-01-01T00:00:00.000Z
+  project repo@1234abcd, cutoff 326 d ago
 
 > Selection
   Eligible:  3
@@ -10,7 +10,7 @@
 
 > Targets (1)
   PLACEMENT  ENTRY                             EXPIRED
-  local      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  2025-12-01T00:00:00.000Z
+  local      aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  357 d ago
 
 > Next
   This preview is not the sealed plan. Save the plan with --json, then apply it

@@ -8,14 +8,14 @@ import type { View } from "./store.ts";
 import type { SyncResult } from "./sync.ts";
 import { renderSyncProgress, type SyncStatusReport } from "./sync-progress.ts";
 import type { UsageReport } from "./usage.ts";
-import { humanBytes, PLAIN, singleLine, wordedKey, type Style } from "./style.ts";
+import { humanBytes, PLAIN, relativeTime, singleLine, wordedKey, type Style } from "./style.ts";
 
 /**
  * CLI-only #590 renderers for the report families outside status, doctor, setup and the memory reads (task 429).
  * Never re-exported from `src/index.ts`: the exported renderers they replace on the CLI (migrationText, pruneText, usageText,
  * vaultCandidatesText, renderSyncStatus, ...) stay byte-identical for hosts. Every `→` line is a complete amem command.
  */
-export interface RenderOptions { columns?: number }
+export interface RenderOptions { columns?: number; now?: number }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const frame = (s: Style, name: string, state: string, opts: RenderOptions): Report =>
@@ -77,12 +77,13 @@ export function pruneReportText(result: PrunePlan | { completed: string[] }, s: 
   }
   const targets = result.rows.flatMap(row => row.payload.targets.map(target => ({ placement: row.placement, ...target })));
   const report = frame(s, "Prune", targets.length ? "preview, nothing written" : "nothing eligible", opts);
-  report.note(`project ${result.project}${result.rows.length ? `, cutoff ${result.rows[0]!.payload.cutoff}` : ""}`);
+  const now = opts.now ?? Date.now();
+  report.note(`project ${result.project}${result.rows.length ? `, cutoff ${relativeTime(result.rows[0]!.payload.cutoff, now)}` : ""}`);
   report.section("Selection").kv([["Eligible", result.counts.eligible], ["Selected", result.counts.selected], ["Local", result.counts.local], ["Synced", result.counts.synced]]);
   if (result.hasMore) report.note("More eligible entries remain beyond this plan.");
   if (targets.length) {
     report.section("Targets", String(targets.length));
-    report.table(["Placement", "Entry", "Expired"], targets.map(t => [t.placement, t.id, t.expiredAt]), 1);
+    report.table(["Placement", "Entry", "Expired"], targets.map(t => [t.placement, t.id, relativeTime(t.expiredAt, now)]), 1);
     report.section("Next");
     report.note("This preview is not the sealed plan. Save the plan with --json, then apply it (keep --user if you used it):");
     report.next("amem prune --apply --plan <file>");
@@ -96,7 +97,7 @@ export function decayReportText(input: { kind: "preview"; plan: DecayPlan; actio
   if (input.kind === "empty") return done(frame(s, "Decay", "nothing eligible to apply", opts), s);
   if (input.kind === "applied") {
     const report = frame(s, "Decay", `${input.action === "forget" ? "forgotten" : "demoted"} ${plural(input.ids.length, "note")}`, opts);
-    if (input.expiresAt) report.section("Details").kv([["Expires", input.expiresAt]]);
+    if (input.expiresAt) report.section("Details").kv([["Expires", relativeTime(input.expiresAt, opts.now ?? Date.now())]]);
     return done(report, s);
   }
   const { plan, action } = input, verb = action === "FORGET" ? "forget" : "demote";
@@ -148,7 +149,7 @@ export function syncReportText(r: SyncResult, s: Style = PLAIN, opts: RenderOpti
   if (p) rows.push(["Placement", `${p.outcome}, ${p.exported} exported, ${p.withheld} withheld`]);
   if (r.checkpoint) rows.push(["Checkpoint", `window ${r.checkpoint.window}, objects ${r.checkpoint.objectsBefore} -> ${r.checkpoint.objectsAfter}`]);
   const a = r.pruneApplication;
-  if (a) rows.push(["Prune proofs", `${a.proofComplete} complete, ${a.projectionActive ?? "pending"} projections active, ${a.held} held`]);
+  if (a) rows.push(["Prune proofs", `${a.proofComplete} complete, ${a.projectionActive ?? "pending"} foreign projections active, ${a.nativeApplied ?? "pending"} native applied, ${a.held} held`]);
   report.section("Result").kv(rows);
   if (r.placementRealms?.length) {
     report.section("Realms", String(r.placementRealms.length));
@@ -178,13 +179,13 @@ export function syncStatusReportText(status: SyncStatusReport, now: number, s: S
 
 /** `amem projects`. */
 export function projectsReportText(rows: readonly CatalogProject[], split: boolean, s: Style = PLAIN, opts: RenderOptions = {}): string {
-  const report = frame(s, "Projects", rows.length ? plural(rows.length, "project shard") : "no project shards yet", opts);
+  const report = frame(s, "Projects", rows.length ? plural(rows.length, "project shard") : "none", opts);
   if (!rows.length) return done(report, s);
   if (!split) report.note("Curated counts are per project only after amem migrate --shards.");
   report.section("Shards", String(rows.length));
   report.table(["Key", "State", "Capture", "Curated", "Disk", "Last"], rows.map(p => [
     `${p.key}${p.local ? " (local)" : ""}${p.aliases.length ? ` +${p.aliases.length}` : ""}`, p.state, `${p.captureRows} rows`,
-    split ? p.curatedEntries === null ? "?" : String(p.curatedEntries) : "-", humanBytes(p.diskBytes), p.captureLastAt ? p.captureLastAt.slice(0, 10) : "never"]), 0);
+    split ? p.curatedEntries === null ? "?" : String(p.curatedEntries) : "-", humanBytes(p.diskBytes), relativeTime(p.captureLastAt, opts.now ?? Date.now())]), 0);
   const aliased = rows.filter(p => p.aliases.length);
   if (aliased.length) { report.section("Aliases"); report.kv(aliased.map(p => [p.key, p.aliases.join(", ")])); }
   return done(report, s);

@@ -11,7 +11,7 @@ import { vaultCandidatesText } from "../src/memory/vault.ts";
 import * as f from "./report-renderers-fixtures.ts";
 
 // #590 task 429: color-off 80-column ASCII goldens for every remaining report family (AC8), and the content rules (AC9).
-const o = { columns: 80 }, ASCII = style(false, true);
+const o = { columns: 80, now: f.NOW }, ASCII = style(false, true);
 const families = (s = PLAIN): Record<string, string> => ({
   migrate: r.migrateReportText(f.migration, s, o), "migrate-shards": r.shardMigrateReportText(f.shardMigration, s, o),
   prune: r.pruneReportText(f.prune, s, o), "prune-applied": r.pruneReportText({ completed: ["a".repeat(32)] }, s, o),
@@ -40,6 +40,7 @@ test("#590 task 429: content rules hold for every family, glyph and ASCII", () =
       expect(line, `${name}: JSON`).not.toMatch(/[{}]|":/);
       expect(line, `${name}: Next action`).not.toMatch(/Next actions?:/);
       expect(line, `${name}: backtick`).not.toContain("`");
+      expect(line, `${name}: ISO time`).not.toMatch(/\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?/);
     }
     for (const line of lines.filter(line => /^ +(->|→) /.test(line))) expect(isAmemCommand(line.replace(/^ +(->|→) +/, "")), `${name}: ${line}`).toBe(true);
   }
@@ -57,7 +58,7 @@ test("#590 task 429: exported host renderers stay byte-identical", () => {
   expect(index).not.toContain("report-text");
 });
 
-test("#590 task 429: marked sessions screen the previous text first, then show the same report as a person", async () => {
+test("#590 task 429: marked reads screen the previous and the new text and refuse a denial of either", async () => {
   const { mkdtempSync, mkdirSync, rmSync } = await import("node:fs"), { tmpdir } = await import("node:os"), { execFileSync } = await import("node:child_process");
   const { runCli } = await import("../src/cli.ts");
   const root = mkdtempSync(join(tmpdir(), "amem-429-")), repo = join(root, "repo"), home = join(root, "memory");
@@ -65,30 +66,46 @@ test("#590 task 429: marked sessions screen the previous text first, then show t
   const before = process.env.AMEM_HOME; process.env.AMEM_HOME = home;
   const env = { HOME: root, AGENTHUB_HOME: root, AMEM_HOME: home, NO_COLOR: "1" };
   const person = { cwd: repo, env, stdinTTY: false }, agent = { cwd: repo, env: { ...env, CODEX_THREAD_ID: "fixture" }, stdinTTY: false };
+  const deny = (pattern?: string) => { mkdirSync(home, { recursive: true }); writeFileSync(join(home, "amem.config.json"), JSON.stringify(pattern ? { piiPatterns: [pattern] } : {})); };
   try {
-    // Each family that runs on a fresh home: the legacy text names a token the new report does not print.
-    const cases: [string[], string, string][] = [[["projects"], "no project shards yet", " amem Projects"], [["usage"], "project shard(s):", " amem Usage"],
-      [["repo", "status"], "repo scope of", " amem Repository log"], [["sync", "--status"], "no placement sync operation recorded", " amem Sync status"]];
-    for (const [args, legacyToken, header] of cases) {
-      rmSync(join(home, "amem.config.json"), { force: true });
+    // [args, a token only the previous text prints, a token only the new report prints, the new report's header]
+    const cases: [string[], string, string, string][] = [
+      [["projects"], "no project shards yet", "Projects", " amem Projects"],
+      [["usage"], "project shard(s):", "Totals", " amem Usage"],
+      [["repo", "status"], "repo scope of", "Repository log", " amem Repository log"],
+      [["sync", "--status"], "no placement sync operation recorded", "Sync status", " amem Sync status"],
+    ];
+    for (const [args, legacyOnly, formattedOnly, header] of cases) {
+      const name = args.join(" ");
+      deny();
       const shown = await runCli(args, person);
-      expect(shown, args.join(" ")).toStartWith(header);
-      expect(await runCli(args, agent), args.join(" ")).toBe(shown);
-      // A denial on the previous text keeps the previous (withheld) path: the new report is never shown.
-      mkdirSync(home, { recursive: true });
-      writeFileSync(join(home, "amem.config.json"), JSON.stringify({ piiPatterns: [legacyToken] }));
-      const marked = await runCli(args, agent).catch((error: Error) => `refused: ${error.message}`);
-      expect(marked, args.join(" ")).not.toStartWith(header);
-      expect(await runCli(args, person), args.join(" ")).toStartWith(header);
+      expect(shown, name).toStartWith(header); expect(shown, name).not.toContain(legacyOnly);
+      expect(await runCli(args, agent), name).toBe(shown);
+      for (const pattern of [legacyOnly, formattedOnly]) {
+        deny(pattern);
+        // A fixed refusal that names neither text: policy_withheld for reads, the generic refusal where the command is not a read (sync).
+        const refused = await runCli(args, agent).then(text => `shown: ${text}`, (error: Error) => error.message);
+        expect(refused, `${name} denied by ${pattern}`).toMatch(/policy_withheld|^Memory operation unavailable or refused; no partial result is shown\.$/);
+        expect(refused).not.toContain(pattern);
+        expect(await runCli(args, person), name).toStartWith(header);
+      }
     }
   } finally { if (before === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = before; rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#590 task 429: the sync report keeps the native prune count, pending when unknown", () => {
+  const base = { ok: true, pushed: false, entries: 2 } as const;
+  const proof = (nativeApplied: number | null) => ({ transport: "durable", proofComplete: 1, projectionActive: 2, nativeApplied, held: 0, phase: "preflight" });
+  expect(r.syncReportText({ ...base, pruneApplication: proof(3) } as never, PLAIN, o)).toContain("2 foreign projections active, 3 native applied");
+  expect(r.syncReportText({ ...base, pruneApplication: proof(null) } as never, PLAIN, o)).toMatch(/pending native\s+applied/);
 });
 
 test("#590 task 429: every CLI call of a new renderer goes through the two-step marked screen", () => {
   const cli = readFileSync(join(import.meta.dir, "../src/cli.ts"), "utf8"), commands = readFileSync(join(import.meta.dir, "../src/memory/commands.ts"), "utf8");
   const calls = [...cli.matchAll(/reports\.(\w+)\(/g)];
   expect(new Set(calls.map(call => call[1])).size).toBe(10);
-  for (const call of calls) expect(cli.slice(Math.max(0, call.index! - 400), call.index!), call[1]).toMatch(/screenedLegacy\((?:(?!screenedLegacy\()[\s\S])*$/);
+  for (const call of calls) expect(cli.slice(Math.max(0, call.index! - 400), call.index!), call[1]).toMatch(/(?:screenedReadPair|screenedReceipt)\)?\((?:(?!screenedLegacy\()[\s\S])*$/);
+  expect(cli.slice(cli.indexOf("reports."), cli.lastIndexOf("reports.")).match(/screenedLegacy\([^)]*reports\./g)).toBeNull();
   // rawMemoryCommand sync renders only for the CLI, through the private render hook and its renderLegacy screen.
   expect(commands).toMatch(/internal \? rendered\(legacy, syncReportText\(/);
 });
