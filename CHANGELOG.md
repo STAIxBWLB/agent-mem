@@ -2,6 +2,19 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## 0.37.0
+
+### Changed
+
+- Human CLI output uses the shared output standard package `@staix/cli-output`, exact-pinned at 0.1.3, for color resolution, markers, painted spans and error lines. It is amem's first and only runtime dependency; the boundary check rejects any other runtime, optional or peer dependency. Color precedence, locale selection, marker cells, the colored two-cell TTY error marker, usage text, report layout, `--json` output and exit codes are unchanged. Painted text and ordinary error messages now remove terminal escape sequences and C0/C1 control characters, with complete and incomplete CSI sequences removed as a unit; a bare CR becomes LF and CRLF still becomes one LF; an empty colored span no longer emits an SGR pair. The report layout grammar for every human report is #590. Refs #576 (PRs #591, #593, #594; tasks 421, 422, 424).
+
+### Compatibility with N-1 (0.36.0)
+
+- Installation: an install, including a host's exact-pinned copy, now resolves `@staix/cli-output` 0.1.3 next to amem; an offline mirror needs both packages. The dependency has no dependencies of its own and declares Bun 1.4.2 or later, so the Bun floor stays 1.4.2.
+- Writer pins: sync placement writer measurements cover amem's own runtime files and do not attest the dependency's bytes; whether they should is #592.
+- Human output: a script that parses human output sees the sanitizing differences above. Scripts should use `--json`, which is unchanged.
+- Unchanged: storage formats, curated and capture logs, entry ids and hashing, the index version, schema strings, sync transport and placement records, configuration keys, library exports and `HOST_API_VERSION` 1. No floor is raised, and 0.36.0 and 0.37.0 share a home without restriction.
+
 ## 0.36.0
 
 ### Added

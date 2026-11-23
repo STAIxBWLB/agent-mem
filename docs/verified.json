@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "6932a6293847e97a5d206b4e4875169181382a5e",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "package.json",
         ".bun-version",
@@ -16,7 +16,7 @@
       ]
     },
     "docs/contracts.md": {
-      "verifiedAgainst": "6932a6293847e97a5d206b4e4875169181382a5e",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "package.json",
         "bin/",
@@ -30,7 +30,7 @@
       ]
     },
     "docs/purge.md": {
-      "verifiedAgainst": "8fed2366c36217293c8fa5f45e7bbcc918afb96f",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "src/memory/forget-nearby.ts",
         "src/memory/commands.ts",
@@ -48,7 +48,7 @@
       ]
     },
     "docs/curated-shard-migration.md": {
-      "verifiedAgainst": "8fed2366c36217293c8fa5f45e7bbcc918afb96f",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "src/memory/shard-migration.ts",
         "src/memory/migrate.ts",
@@ -105,7 +105,7 @@
       ]
     },
     "docs/antigravity.md": {
-      "verifiedAgainst": "b5ba1a4448d73e57bf3bfb3418f819e525bbb1b1",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "src/setup-agy.ts",
         "src/setup-json.ts",
@@ -114,7 +114,7 @@
       ]
     },
     "docs/setup.md": {
-      "verifiedAgainst": "6932a6293847e97a5d206b4e4875169181382a5e",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "package.json",
         ".bun-version",
@@ -128,7 +128,7 @@
       ]
     },
     "docs/cli.md": {
-      "verifiedAgainst": "6932a6293847e97a5d206b4e4875169181382a5e",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "package.json",
         ".bun-version",
@@ -142,7 +142,7 @@
       ]
     },
     "docs/sync.md": {
-      "verifiedAgainst": "6932a6293847e97a5d206b4e4875169181382a5e",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "package.json",
         ".bun-version",
@@ -156,7 +156,7 @@
       ]
     },
     "docs/development.md": {
-      "verifiedAgainst": "6932a6293847e97a5d206b4e4875169181382a5e",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "package.json",
         ".bun-version",
@@ -170,7 +170,7 @@
       ]
     },
     "docs/recall.md": {
-      "verifiedAgainst": "6932a6293847e97a5d206b4e4875169181382a5e",
+      "verifiedAgainst": "f854e5b3f631e8800bea5b556efc01b3fa8f618e",
       "paths": [
         "package.json",
         ".bun-version",
