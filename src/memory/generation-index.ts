@@ -351,7 +351,7 @@ export class GenerationIndex {
     finally { this.fullCapture = false; }
     const committed = this.options.db.transaction(() => {
       if (this.frontier() !== before) return false;
-      for (const table of ["entries", "ops", "edges", "goals", "segments", "heads", ...GENERATION_TABLES, ...(this.profile.foreignPruneFormat ? FOREIGN_TABLES : [])]) this.options.db.run(`DELETE FROM ${table}`);
+      for (const table of ["entries", "ops", "edges", "goals", "segments", "heads", "unsettled_tasks", ...GENERATION_TABLES, ...(this.profile.foreignPruneFormat ? FOREIGN_TABLES : [])]) this.options.db.run(`DELETE FROM ${table}`);
       // The stamp described the tables just deleted, so the rebuild below proves them again instead of trusting it.
       this.foreignStamp = undefined;
       this.index(input); return true;

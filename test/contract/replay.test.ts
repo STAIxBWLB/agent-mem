@@ -72,11 +72,11 @@ for (const [index, order] of orders.entries()) test(`v1 replay semantic truth an
       // A byte-for-byte repeated event must not duplicate any semantic row; offsets and heads still advance.
       const before = derivedTables(replay.store.dir);
       replay.append(GOLDEN_FIXTURES[item]!); const after = replay.verify();
-      for (const table of ["edges", "entries", "goals", "ops"]) expect(after[table]).toEqual(before[table]);
+      for (const table of ["edges", "entries", "goals", "ops", "unsettled_tasks"]) expect(after[table]).toEqual(before[table]);
     }
     semanticTruth(replay);
     const tables = replay.verify();
-    expect(Object.keys(tables)).toEqual(["edges", "entries", "goals", "heads", "ops", "segments"]);
+    expect(Object.keys(tables)).toEqual(["edges", "entries", "goals", "heads", "ops", "segments", "unsettled_tasks"]);
     expect(tables.entries!.length).toBe(5); expect(tables.goals!.length).toBe(1); expect(tables.ops!.length).toBe(13);
     for (const [path, bytes] of Object.entries(authoredLogs(replay.store.dir))) {
       expect(tables.segments!.find(row => row.file === path)?.offset).toBe(Buffer.byteLength(bytes));

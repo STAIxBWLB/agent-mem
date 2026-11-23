@@ -31,6 +31,8 @@ test("host API version range and v1 export signatures remain compatible", () => 
   expect(root.HOST_API_MIN).toBeGreaterThan(0);
   expect(root.HOST_API_VERSION).toBeGreaterThanOrEqual(root.HOST_API_MIN);
   expect(root.HOST_API_VERSION).toBe(1); // A new API version also needs its own frozen fixture.
+  // #610: hosts spanning releases within API v1 feature-detect task discovery.
+  expect(typeof root.MemoryStore.prototype.unsettledTaskKeys).toBe("function");
   for (const name of rootValues) expect(name in root, `root ${name}`).toBe(true);
   for (const name of platformValues) expect(name in platform, `platform ${name}`).toBe(true);
   compare(fingerprint(join(import.meta.dir, "../src/index.ts"), rootValues, rootTypes), expected.root, "root");

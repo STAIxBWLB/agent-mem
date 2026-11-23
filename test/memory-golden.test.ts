@@ -52,7 +52,8 @@ for (const order of [[0, 1, 2, 3], [3, 2, 1, 0], [1, 3, 0, 2]]) test(`golden ful
       expect(tables(store.dir)).toEqual(incremental);
     }
     const beforeReads = tables(store.dir);
-    expect(Object.keys(beforeReads)).toEqual(["edges", "entries", "goals", "heads", "ops", "segments"]);
+    expect(Object.keys(beforeReads)).toEqual(["edges", "entries", "goals", "heads", "ops", "segments", "unsettled_tasks"]);
+    expect(beforeReads.unsettled_tasks).toEqual([]);
     expect(beforeReads.entries).toHaveLength(5);
     expect(beforeReads.ops).toHaveLength(10);
     expect(beforeReads.goals).toHaveLength(1);

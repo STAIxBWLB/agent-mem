@@ -167,12 +167,18 @@ await stageHookCapture("PostToolUse", { tool_name: "Read", tool_response: "old p
     const note = (text: string) => ({ op: "note", project: "p", scope: "project", tier: "long", kind: "finding", peer: "person", text, about: [], source: "person" });
     const prevStore = (body: string) => run(f, `const { MemoryStore } = await import(${JSON.stringify(prev("src/memory/store.ts"))}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)}, screen: () => "keep" }); ${body} s.close();`);
     prevStore(`s.note(${JSON.stringify(note("by previous"))});`);
-    const ours = join(f.base, indexFileName(false));
+    const theirs = join(f.base, run(f, `const { indexFileName } = await import(${JSON.stringify(prev("src/memory/index-file.ts"))}); console.log(indexFileName(false));`));
+    const ours = join(f.base, indexFileName(false)), oldBytes = readFileSync(theirs);
     const mine = new MemoryStore({ memoryDir: f.base, screen: () => "keep" }); try { mine.note(note("by this build") as never); } finally { mine.close(); }
+    if (theirs !== ours) expect(readFileSync(theirs)).toEqual(oldBytes);
     const files = readdirSync(f.base).filter(name => /^index.*\.db$/.test(name)).sort(), before = Object.fromEntries(files.map(name => [name, schema(join(f.base, name))]));
     expect(existsSync(ours)).toBe(true);
-    expect(prevStore(`console.log(s.list({ project: "p" }).length);`)).toBe("2");
-    const again = new MemoryStore({ memoryDir: f.base, screen: () => "keep" }); try { expect(again.list({ project: "p" })).toHaveLength(2); } finally { again.close(); }
+    const newBytes = readFileSync(ours);
+    expect(prevStore(`console.log(s.list({ project: "p" }).length); s.note(${JSON.stringify(note("by previous after reopen"))});`)).toBe("2");
+    if (theirs !== ours) expect(readFileSync(ours)).toEqual(newBytes);
+    const again = new MemoryStore({ memoryDir: f.base, screen: () => "keep" });
+    try { expect(again.list({ project: "p" }).map(row => row.text).sort()).toEqual(["by previous", "by previous after reopen", "by this build"]); }
+    finally { again.close(); }
     // The same index files, each at the schema it had: no rebuild, rename or drop in either direction.
     expect(readdirSync(f.base).filter(name => /^index.*\.db$/.test(name)).sort()).toEqual(files);
     for (const name of files) expect(schema(join(f.base, name)), name).toBe(before[name]!);

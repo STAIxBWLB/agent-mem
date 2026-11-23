@@ -143,6 +143,11 @@ const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim().slice
 
 /** A board task's key in hub memory: unique across `ahub reset --all`, which restarts the ids. */
 export const taskKey = (project: string, task: { id: number; created: number }): string => `${project}#${task.id}@${task.created}`;
+/** The board namespace in a task key can itself contain '#'. */
+function taskProject(task: string): string | null {
+  const separator = task.lastIndexOf("#");
+  return separator > 0 ? task.slice(0, separator) : null;
+}
 
 /** A person's name for this machine, shown beside its id. */
 export function setMachineLabel(dir: string, label: string): Machine {
@@ -297,7 +302,7 @@ export class MemoryStore {
       db.run(`PRAGMA busy_timeout = ${MEMORY_DB_BUSY_TIMEOUT_MS}`);
       db.run("PRAGMA journal_mode = WAL");
       if ((db.query("PRAGMA user_version").get() as { user_version: number }).user_version !== INDEX_VERSION) {
-        for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) db.run(`DROP TABLE IF EXISTS ${t}`);
+        for (const t of ["segments", "heads", "entries", "ops", "edges", "goals", "unsettled_tasks"]) db.run(`DROP TABLE IF EXISTS ${t}`);
         db.run(`PRAGMA user_version = ${INDEX_VERSION}`);
       }
       db.run("CREATE TABLE IF NOT EXISTS segments (file TEXT PRIMARY KEY, offset INTEGER NOT NULL)");
@@ -309,6 +314,9 @@ export class MemoryStore {
       db.run("CREATE TABLE IF NOT EXISTS ops (id TEXT PRIMARY KEY, op TEXT NOT NULL, at TEXT NOT NULL, machine TEXT NOT NULL, target TEXT NOT NULL, by TEXT, actor TEXT NOT NULL)");
       db.run("CREATE TABLE IF NOT EXISTS edges (src TEXT NOT NULL, dst TEXT NOT NULL, PRIMARY KEY (src, dst))");
       db.run("CREATE INDEX IF NOT EXISTS edges_dst ON edges (dst)");
+      db.run("CREATE TABLE IF NOT EXISTS unsettled_tasks (project TEXT NOT NULL, task TEXT NOT NULL, PRIMARY KEY(project, task)) WITHOUT ROWID");
+      db.run("CREATE INDEX IF NOT EXISTS entries_task ON entries(task) WHERE task IS NOT NULL");
+      db.run("CREATE INDEX IF NOT EXISTS ops_settlement ON ops(target) WHERE op = 'settle'");
       this.db = db;
       this.mutationDb = openedMutation = mutationDatabase(this.dir);
       // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
@@ -931,6 +939,37 @@ export class MemoryStore {
   }
   /** Whether any entry was saved against the task. */
   hasTask(task: string): boolean { this.ensureFresh(); return this.readRows("SELECT 1 FROM entries WHERE task = ?", task).length > 0; }
+  /** A live page of task keys in this exact namespace without any visible settlement, including legacy. */
+  unsettledTaskKeys(project: string, options: { after?: string; limit?: number } = {}): { keys: string[]; next?: string } {
+    const { after, limit = 64 } = options;
+    if (typeof project !== "string" || !project.trim()) throw Error("Task discovery requires a non-empty project. Pass the board's project key.");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) throw Error("Task discovery limit must be an integer from 1 to 256. Omit limit to use 64.");
+    if (after !== undefined && (typeof after !== "string" || taskProject(after) !== project))
+      throw Error("Invalid task discovery cursor. Use the next cursor returned for the same project, or omit after to start a new sweep.");
+    this.withDeferredPromotions(() => this.ensureFresh());
+    const stores = this.readStores(), candidates = new Set<string>();
+    for (const store of stores) {
+      if (store.stale) throw Error("Task discovery could not refresh a readable store. Another process may hold its index lock, or a segment may be unreadable. Retry the sweep later. If this persists, run amem doctor.");
+      const rows = store.db.query("SELECT task FROM unsettled_tasks WHERE project = ? AND task > ? ORDER BY task LIMIT ?")
+        .all(project, after ?? "", limit + 1) as { task: string }[];
+      for (const row of rows) candidates.add(row.task);
+    }
+    // SQLite BINARY orders UTF-8 bytes. Keep exactly that order when merging store frontiers.
+    const ordered = [...candidates].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+    const examined = ordered.slice(0, limit);
+    const next = ordered.length > limit ? examined[limit - 1] : undefined;
+    if (stores.length === 1 || !examined.length) return { keys: examined, ...(next ? { next } : {}) };
+
+    // A settlement may live only in another readable store. One indexed existence probe per key
+    // and store suffices, even if many settle rows name the same key. Advance past keys settled in other stores too.
+    const visibleSettlements = new Set<string>(), batch = JSON.stringify(examined);
+    for (const store of stores) {
+      const rows = store.db.query(`SELECT value AS task FROM json_each(?) AS candidate
+        WHERE EXISTS (SELECT 1 FROM ops WHERE op = 'settle' AND target = candidate.value)`).all(batch) as { task: string }[];
+      for (const row of rows) visibleSettlements.add(row.task);
+    }
+    return { keys: examined.filter(key => !visibleSettlements.has(key)), ...(next ? { next } : {}) };
+  }
   private promoting = false;
   private readonly screen?: PromotionScreen;
   /**
@@ -1024,7 +1063,7 @@ export class MemoryStore {
     // One transaction: no reader sees the index empty, and no other process commits an offset in between.
     this.rebuildingSearch = true;
     try {
-      this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
+      this.db.transaction(() => { for (const t of ["segments", "heads", "entries", "ops", "edges", "goals", "unsettled_tasks"]) this.db.run(`DELETE FROM ${t}`); this.refresh(); }).immediate();
     } finally { this.rebuildingSearch = false; }
     this.syncSearchIndex(); // one batched derived write, not one search.db transaction per rebuilt entry
   }
@@ -1053,6 +1092,14 @@ export class MemoryStore {
       const inserted = this.db.query(`INSERT OR IGNORE INTO entries (id, at, machine, project, scope, tier, kind, peer, title, text, task, about, supersedes, promoted_from, source, expires)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, e.at, e.machine, e.project, e.scope === "shared" ? "shared" : "project", e.tier === "long" ? "long" : "short",
         e.kind, e.peer, e.title ?? null, e.text, e.task ?? null, JSON.stringify(e.about.map(String)), e.supersedes ?? null, e.promotedFrom ?? null, e.source ?? "hub", typeof e.expires === "string" ? e.expires : null).changes;
+      // The board namespace belongs to the task key, independently of the note's owning project.
+      // INSERT OR IGNORE makes duplicate replay idempotent, and the indexed probe handles settle-before-note.
+      if (e.task) {
+        const project = taskProject(e.task);
+        if (project !== null) this.db.query(`INSERT OR IGNORE INTO unsettled_tasks(project, task)
+          SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM ops WHERE op = 'settle' AND target = ?)`)
+          .run(project, e.task, e.task);
+      }
       this.rememberCuratedRelation(id, [e.supersedes, e.promotedFrom].filter((value): value is string => !!value));
       // The FTS copy follows the committed row. `changes` is only a hint here (bun:sqlite misreports it for ignored
       // inserts inside a transaction): addCurated is idempotent by entry id, and a missed hint becomes a count drift
@@ -1068,6 +1115,8 @@ export class MemoryStore {
       const dated = !["demote", "settle", "lease", "lease_force"].includes(e.op) || (typeof e.by === "string" && !Number.isNaN(Date.parse(e.by)));
       if (!str(e.target, 400) || !opt(e.by) || !opt(e.actor) || !dated) { this.log(`memory segment ${segment}: a malformed entry was skipped`); return; }
       this.db.query("INSERT OR IGNORE INTO ops (id, op, at, machine, target, by, actor) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id, e.op, e.at, e.machine, e.target, e.by ?? null, e.actor ?? "");
+      if (e.op === "settle") this.db.query("DELETE FROM unsettled_tasks WHERE project = ? AND task = ?")
+        .run(taskProject(e.target), e.target);
       if (e.op === "supersede" && e.by) this.rememberCuratedRelation(e.target, [e.by]);
     }
   }
@@ -1256,7 +1305,14 @@ export class MemoryStore {
     const gone = new Set<string>();
     for (const v of expired) for (let id: string | undefined = v.id; id && !gone.has(id); id = parent.get(id)) gone.add(id);
     if (!gone.size) return 0;
-    this.db.transaction(() => { for (const id of gone) { this.db.query("DELETE FROM entries WHERE id = ?").run(id); this.db.query("DELETE FROM edges WHERE src = ?").run(id); } }).immediate();
+    this.db.transaction(() => {
+      for (const id of gone) {
+        const row = this.db.query("DELETE FROM entries WHERE id = ? RETURNING task").get(id) as { task: string | null } | null;
+        if (row?.task) this.db.query(`DELETE FROM unsettled_tasks WHERE project = ? AND task = ?
+          AND NOT EXISTS (SELECT 1 FROM entries WHERE task = ?)`).run(taskProject(row.task), row.task, row.task);
+        this.db.query("DELETE FROM edges WHERE src = ?").run(id);
+      }
+    }).immediate();
     this.searchIndex.markDirty(); // FTS cannot subtract rows incrementally: the next search resyncs it
     return gone.size;
   }
