@@ -30,6 +30,7 @@ import { fileURLToPath } from "node:url";
 import { captureSessionKey } from "./memory/capture-input.ts";
 import { originLine, originRecheck } from "./memory/candidate-origin.ts";
 import { MemoryStore, looksSecret, machineId, openShardStore, type StoreOptions } from "./memory/store.ts";
+import { CLI_MEMORY_RENDER } from "./memory/style.ts";
 import { rawMemoryCommand, rawGoalCommand, claudeMemImportText } from "./memory/commands.ts";
 import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, candidateInputId, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
@@ -317,7 +318,7 @@ class ReadPolicyWithheld extends Error {
 function receiptText(output: string, parsed: ReturnType<typeof parseCommand>, context: CliContext): string {
   const command = parsed.path.join(" ");
   const receipts = new Set(["note", "note add", "confirm", "reject", "promote", "demote", "forget", "supersede", "rebuild", "dedupe", "consolidate", "review accept", "review reject", "review decide", "project export", "project import", "project archive", "project unarchive", "project forget", "alias add", "alias remove", "goal new", "goal state", "goal done", "goal take", "import claude-mem", "import claude-auto", "import codex", "repo attributes"]);
-  if (!receipts.has(command) || !output || command === "import claude-mem" || output === "Operation completed; receipt withheld by policy." || output === "Operation did not complete; receipt withheld by policy. Inspect state before retrying." || command === "promote" && parsed.options["--to"] === "repo") return output;
+  if (!receipts.has(command) || !output || command === "import claude-mem" || output === "Operation completed; receipt withheld by policy. Run amem status to inspect state." || output === "Operation did not complete; receipt withheld by policy. Inspect state before retrying." || command === "promote" && parsed.options["--to"] === "repo") return output;
   const preview = /^preview\b/i.test(output) || command === "review decide" && parsed.options["--confirm"] !== true || command === "dedupe" && parsed.options["--apply"] !== true;
   const s = outputStyle(context, parsed.options), lines = (command === "alias add" && !s.ascii ? output.replace(" -> ", " → ") : output).split("\n"), out = new Report(reportWidth(context) ?? 80, s.ascii, { sanitize: singleLine, keepTokensWhole: true });
   out.bullet(preview ? "pending" : "ok", lines[0]!);
@@ -369,7 +370,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
           // The command returned successfully: withholding its receipt cannot undo its effects.
           const failed = receipt !== null && typeof receipt === "object" && "ok" in receipt && receipt.ok === false;
           return parsed.options["--json"] === true ? JSON.stringify({ ok: !failed, completed: !failed, receiptWithheld: true })
-            : failed ? "Operation did not complete; receipt withheld by policy. Inspect state before retrying." : "Operation completed; receipt withheld by policy.";
+            : failed ? "Operation did not complete; receipt withheld by policy. Inspect state before retrying." : "Operation completed; receipt withheld by policy. Run amem status to inspect state.";
         }
       }
     }
@@ -421,10 +422,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // Preserve the value and the policy-screened result; only the JSON presentation changes.
     try {
       const parsed = parseCommand(argv);
+      if (parsed.options["--help"] === true || argv.includes("--help")) return output;
       if (parsed.options["--json"] === true) return JSON.stringify(JSON.parse(output), null, 2);
       // #590: status and doctor wrap through the Report builder at the same width, so a continuation aligns under its value.
       const rendered = receiptText(output, parsed, context);
-      if (marked && rendered !== output && !configuredPolicy(memoryHome(), context.cwd ?? process.cwd()).screenStandalone(rendered)) return "Operation completed; receipt withheld by policy.";
+      if (marked && rendered !== output && !configuredPolicy(memoryHome(), context.cwd ?? process.cwd()).screenStandalone(rendered)) return "Operation completed; receipt withheld by policy. Run amem status to inspect state.";
       return rendered;
     } catch { /* Help and non-JSON special commands keep their existing output. */ }
     return output;
@@ -1315,7 +1317,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const legacy = [`crossed projects: searched ${result.projects.length} (${result.projects.join(", ")})`, ...(result.hits.length ? result.hits.map(one) : ["(nothing)"])].join("\n");
     const rows = result.hits.map(hit => hit.view ? { project: hit.project, id: hit.view.id, kind: hit.view.kind, tier: hit.view.tier, peer: hit.view.peer, scope: hit.view.scope, at: hit.view.at, text: `${hit.view.title ? `${hit.view.title}: ` : ""}${hit.view.text}` } : { project: hit.project, id: `capture:${hit.capture!.id}`, kind: "capture", peer: hit.capture!.agent, at: hit.capture!.at, text: `${hit.capture!.event}${hit.capture!.subagent ? " subagent" : ""}: ${captureSearchText(hit.capture!)}` });
     const width = reportWidth(context) ?? 80, displayStyle = outputStyle(context, options), projects = new Report(width, displayStyle.ascii, { sanitize: singleLine });
-    projects.section("Projects", String(result.projects.length)); projects.line(result.projects.join(", ") || "None.");
+    projects.section("Projects", String(result.projects.length)); projects.line(`Crossed projects: ${result.projects.join(", ") || "none"}.`);
     return screenedReadPair(legacy, `${memoryTableText(rows, "Cross-project search", { columns: width, style: displayStyle, ...(context.now ? { now: context.now() } : {}) })}\n\n${projects.render(displayStyle.color).join("\n")}`);
   }
   if (sub === "search" && options["--include-archived"] === true) throw new Error("--include-archived only applies with --all-projects");
@@ -1397,7 +1399,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (plan.alreadyPresent || options["--confirm"] !== true) {
       const s = outputStyle(context, options), report = new Report(reportWidth(context) ?? 80, s.ascii, { sanitize: singleLine, keepTokensWhole: true });
       report.header("amem", "Repository promotion"); report.section("Preview");
-      report.kv([["Scope", "repo"], ["Kind", plan.line.kind], ["Target", plan.path], ["Visibility", seen.state]]);
+      const targetParts = Array.from(plan.path), target = targetParts.length > 25 ? `${targetParts.slice(0, 10).join("")}...${targetParts.slice(-12).join("")}` : plan.path;
+      report.kv([["Scope", "repo"], ["Kind", plan.line.kind], ["Target", target], ["Visibility", seen.state]]);
       if (plan.droppedNodes.length) report.line(`Private references omitted: ${plan.droppedNodes.join(", ")}`);
       report.line(plan.alreadyPresent ? "already in the file: nothing to write" : seen.state === "private" ? "Nothing written; add --confirm to append it." : `NOT a verified private repository: add --confirm --confirm-public ${entryPrefix} to append this entry (per entry, never blanket).`);
       // AC8 exception: the canonical line must be shown verbatim before appending to a shared repository.
@@ -1419,7 +1422,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const shown = await memory.tools.amem_show({ id: parsed.positionals[0]! }) as { capture?: import("./memory/capture.ts").CaptureRow } | null;
       const row = shown?.capture; if (!row) throw new Error(`no capture row ${parsed.positionals[0]} in this project (capture is machine-local and expires; inspect the current project timeline and retention)`);
       return options["--json"] === true ? JSON.stringify(row, null, 2)
-        : memoryRecordText({ id: `capture:${row.id}`, kind: row.event, at: row.at, text: row.excerpt }, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, [["Agent", row.agent], ["Session", row.session ?? "unavailable"], ...(row.tool ? [["Tool", row.tool] as [string, string]] : []), ...(row.paths.length ? [["Paths", row.paths.join(", ")] as [string, string]] : []), ...(row.subagent ? [["Subagent", "yes"] as [string, string]] : [])]);
+        : memoryRecordText({ id: `capture:${row.id}`, kind: row.event, at: row.at, text: row.excerpt }, { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, [["Recorded at", row.at], ["Agent", row.agent], ["Session", row.session ?? "unavailable"], ...(row.tool ? [["Tool", row.tool] as [string, string]] : []), ...(row.paths.length ? [["Paths", row.paths.join(", ")] as [string, string]] : []), ...(row.subagent ? [["Subagent", "yes"] as [string, string]] : [])]);
     } finally { memory.close(); }
   }
   if (sub === "show" && /^repo:/.test(parsed.positionals[0] ?? "")) {
@@ -1543,7 +1546,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const markers = readPlacementRuntimeMarkers(syncHome);
       if (!readActivePlacementBinding(syncHome, markers.profile, markers.shards)) throw Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
     }
-    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), ...(options["--json"] !== true ? { render: { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, ...(actor === "agent" ? { renderLegacy: (legacy: string, formatted: string) => { priorRead = legacy; return screenedReadPair(legacy, formatted); } } : {}) } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
+    output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), ...(options["--json"] !== true ? { [CLI_MEMORY_RENDER]: { render: { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, ...(actor === "agent" ? { renderLegacy: (legacy: string, formatted: string) => { priorRead = legacy; return screenedReadPair(legacy, formatted); } } : {}) } } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       // #578 Q2: the CLI sync (also --if-due) is eligible; the home opt-in still decides whether a checkpoint can run.
       sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest, placementCheckpoint: true } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },

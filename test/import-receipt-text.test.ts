@@ -163,6 +163,6 @@ test("marked claude-mem receipt policy withholds details without denying a compl
   const store = new ImportReceiptMemoryStore({ memoryDir: h.memory });
   try { expect(store.list({ project: importReceiptProjectKey(h.cwd) })[0]).toMatchObject({ peer: "original-source-peer", source: "claude-mem", title: "import title", text: "imported public source body" }); }
   finally { store.close(); }
-  expect(await runImportReceipt(h, [], marked, false, false)).toBe("Operation completed; receipt withheld by policy.");
+  expect(await runImportReceipt(h, [], marked, false, false)).toBe("Operation completed; receipt withheld by policy. Run amem status to inspect state.");
   expect(importReceiptFs.readFileSync(h.file)).toEqual(before);
 });

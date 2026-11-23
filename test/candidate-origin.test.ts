@@ -139,7 +139,7 @@ test("#323 item 3: amem show capture:<id> prints a capture row's session and row
   const id = "id" in appended ? appended.id : 0; expect(id).toBeGreaterThan(0);
   const shown = await runCli(["show", `capture:${id}`], { cwd: f.root, env: {}, stdinTTY: false });
   const row = JSON.parse(await runCli(["show", `capture:${id}`, "--json"], { cwd: f.root, env: {}, stdinTTY: false }));
-  expect(row.session).toMatch(/^[a-f0-9]{16}$/); expect(shown).toContain(`session ${row.session}`); expect(row.session).toBe("0011223344556677"); expect(shown).toContain(row.at); expect(shown).toContain("PostToolUse");
+  expect(row.session).toMatch(/^[a-f0-9]{16}$/); expect(shown).toContain("Session:"); expect(shown).toContain(row.session); expect(row.session).toBe("0011223344556677"); expect(shown).toContain(row.at); expect(shown).toContain("PostToolUse");
 });
 
 test("#323 item 4: only a confirmed absence is an expired origin; unreadable, unsupported or withheld capture is unavailable", () => {
@@ -163,7 +163,7 @@ test("#323 item 4: review decide shows the re-check state from retained capture"
   const ctx = { cwd: f.root, env: {}, stdinTTY: false, stdoutTTY: false };
   expect(JSON.parse(await runCli(["review", "decide", kept, "accept", "--json"], ctx)).originRecheck).toBe("available");
   expect(JSON.parse(await runCli(["review", "decide", gone, "accept", "--json"], ctx)).originRecheck).toBe("origin expired");
-  expect(await runCli(["review", "decide", gone, "accept"], ctx)).toContain("(recheck: origin expired)");
+  expect((await runCli(["review", "decide", gone, "accept"], ctx)).replace(/\s+/g, " ")).toContain("(recheck: origin expired)");
   // A retained row the configured policy withholds is neither disclosed as present nor claimed expired.
   capture.append({ project, agent: "codex", event: "PostToolUse", excerpt: "WITHHELD_MARKER turn", session: "aaaaaaaaaaaaaaaa" });
   const hidden = f.candidates.put({ project, kind: "memory", text: "withheld origin" } as CandidateInput, "public", { session: "aaaaaaaaaaaaaaaa" });

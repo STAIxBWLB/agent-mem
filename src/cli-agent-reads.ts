@@ -56,6 +56,7 @@ function screenedDetail(value: unknown, columns: number, style: Style, now?: num
   const row = screenedRow(value), capture = object(outer.capture), record = capture ?? view ?? {};
   const fields: [string, string][] = [];
   if (typeof outer.evidence === "boolean") fields.push(["Evidence", outer.evidence ? "yes" : "no"]);
+  if (capture && typeof capture.at === "string") fields.push(["Recorded at", capture.at]);
   if (capture?.subagent === true) fields.push(["Subagent", "yes"]);
   for (const [label, key] of [["Agent", "agent"], ["Session", "session"], ["Scope", "scope"]] as const) if (typeof record[key] === "string") fields.push([label, record[key] as string]);
   if (Array.isArray(record.paths)) fields.push(["Paths", record.paths.filter((item): item is string => typeof item === "string").join(", ")]);

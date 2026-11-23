@@ -2,7 +2,7 @@ import { cliAttribution, noteDisplayActor } from "./cli-attribution.ts";
 import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "./store.ts";
 import { syncMemory, type SyncOptions } from "./sync.ts";
 import { importClaudeMem, type ImportResult, type WorkStateImportResult, type CaptureImportResult } from "./import.ts";
-import { facts, label, memoryDetailText, memoryScoresText, memoryTableText, PLAIN, relativeTime, singleLine, type HumanMemoryRender, type Style } from "./style.ts";
+import { CLI_MEMORY_RENDER, facts, label, memoryDetailText, memoryScoresText, memoryTableText, PLAIN, relativeTime, singleLine, type HumanMemoryRender, type Style } from "./style.ts";
 import { Report } from "@staix/cli-output";
 import { memoryProjectKey, projectChain } from "./project.ts";
 import { recallForViews, recallGraph, recallRows, recallShow } from "./recall.ts";
@@ -20,9 +20,6 @@ import type { ForgetNearby } from "./forget-nearby.ts";
 import { forgetNearbyText } from "./forget-nearby.ts";
 import { groupByTask } from "./task-group.ts";
 export interface MemoryCommandOptions {
-  /** Standalone CLI human presentation; hosts that omit this retain their existing text. */
-  render?: HumanMemoryRender;
-  renderLegacy?: (legacy: string, formatted: string) => string;
   /** Host-authenticated person intent. Never accept this from model arguments. Required for retained history/as-of. */
   person?: boolean;
   /** Standalone person CLI opt-in. Hosts omit this to retain their screened substring recall. */
@@ -122,6 +119,8 @@ function detail(v: View): string[] {
 }
 
 export async function rawMemoryCommand(args: string[], cwd: string, opts: MemoryCommandOptions): Promise<string> {
+  // CLI-only presentation options do not extend the exported host API.
+  const internal = (opts as MemoryCommandOptions & { [CLI_MEMORY_RENDER]?: { render: HumanMemoryRender; renderLegacy?: (legacy: string, formatted: string) => string } })[CLI_MEMORY_RENDER];
   const json = args.includes("--json");
   const rest = args.filter((a) => a !== "--json");
   const flag = (name: string) => { const i = rest.indexOf(name); if (i < 0) return undefined; const v = rest[i + 1] ?? fail(`${name} needs a value`); rest.splice(i, 2); return v; };
@@ -158,7 +157,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   };
   const staleDetail = (view: View): string[] => { const marker = staleMarker(view).trimEnd(); return marker ? [marker] : []; };
   const ready = (rows: readonly View[]) => { try { opts.outputReady?.(rows); } catch { /* optional output metadata cannot fail recall */ } };
-  const rendered = (legacy: string, formatted: string) => opts.renderLegacy ? opts.renderLegacy(legacy, formatted) : formatted;
+  const rendered = (legacy: string, formatted: string) => internal?.renderLegacy ? internal.renderLegacy(legacy, formatted) : formatted;
   const decorated = (view: View) => { const info = staleInfo(view); return { ...view, ...(info.stale ? { stale: true, ...(info.reason ? { staleReason: info.reason } : {}) } : {}) }; };
   if (!["list", "search", "show", "graph"].includes(sub) && (rest.includes("--history") || rest.includes("--as-of"))) fail("history/as-of apply only to memory reads");
   try {
@@ -195,7 +194,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           const forgotten = allForgotten.slice(0, Math.max(0, (limit ? Math.floor(Number(limit)) : 50) - rows.length));
           const result = { at: state.at, entries: rows.map(decorated), forgotten, relations: state.relations.filter(edge => publicIds.has(edge.from) && publicIds.has(edge.to)), incomplete: emitted.incomplete || readable.length > rows.length || forgotten.length < allForgotten.length, notices: emitted.notices };
           const legacy = [`retained memory as of ${state.at}`, ...result.notices, ...rows.map(view => `${staleMarker(view)}${one(view)}${view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ` (expired at ${view.expiresAt})` : ""}`), ...forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(result.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
-          if (!json && opts.render) return rendered(legacy, [memoryTableText([...rows.map(view => { const marker = staleMarker(view); return { id: view.id, kind: view.kind, tier: view.tier, peer: view.peer, scope: view.scope, at: view.at, text: `${view.title ? `${view.title}: ` : ""}${view.text}`, flags: [...(view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ["(expired)"] : []), ...(marker ? [marker.trim()] : []), ...(view.supersededBy ? [`superseded by ${view.supersededBy.slice(0, 8)}`] : [])] }; }), ...forgotten.map(row => ({ id: row.id, kind: "forgotten", at: row.at, text: "No retained text" }))], "Retained memory", opts.render, `retained memory as of ${relativeTime(state.at, opts.render.now ?? Date.now())}.`), ...result.notices.map(singleLine), ...(result.incomplete ? ["Retained state is incomplete."] : [])].join("\n"));
+          if (!json && internal?.render) return rendered(legacy, [memoryTableText([...rows.map(view => { const marker = staleMarker(view); return { id: view.id, kind: view.kind, tier: view.tier, peer: view.peer, scope: view.scope, at: view.at, text: `${view.title ? `${view.title}: ` : ""}${view.text}`, flags: [...(view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ["(expired)"] : []), ...(marker ? [marker.trim()] : []), ...(view.supersededBy ? [`superseded by ${view.supersededBy.slice(0, 8)}`] : [])] }; }), ...forgotten.map(row => ({ id: row.id, kind: "forgotten", at: row.at, text: "No retained text" }))], "Retained memory", internal?.render, `retained memory as of ${relativeTime(state.at, internal?.render.now ?? Date.now())}.`), ...result.notices.map(singleLine), ...(result.incomplete ? ["Retained state is incomplete."] : [])].join("\n"));
           return json ? JSON.stringify(result, null, 2) : legacy;
         }
         if (json) return JSON.stringify(rows.map(view => ({ ...view, ...(folded.has(view.id) ? { folded: folded.get(view.id) } : {}), ...(opts.explainSearch && scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })), null, 2);
@@ -205,10 +204,10 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           ? rows.flatMap(view => [`${staleMarker(view)}${one(view)}${foldNote(view)}`, ...(scoreDetails?.has(view.id) ? [`score: ${JSON.stringify(scoreDetails.get(view.id))}`] : [])])
           : rows.map(view => `${staleMarker(view)}${one(view)}${foldNote(view)}`) : ["(nothing)"]),
           ...(withheld ? [`(${withheld} withheld: they match a PII pattern; the dashboard shows them)`] : [])].join("\n");
-        if (opts.render) {
-          const table = memoryTableText(rows.map(view => { const marker = staleMarker(view); return { id: view.id, kind: view.kind, tier: view.tier, peer: view.peer, scope: view.scope, at: view.at, text: `${view.title ? `${view.title}: ` : ""}${view.text}`, flags: [...(marker ? [marker.trim()] : []), ...(folded.has(view.id) ? [`+${folded.get(view.id)} same task`] : []), ...(view.supersededBy ? [`superseded by ${view.supersededBy.slice(0, 8)}`] : [])] }; }), sub === "search" ? "Search" : "Memory", opts.render, `Project ${project}; machine ${store.machine.label}; ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term.`);
-          const scores = opts.explainSearch ? memoryScoresText(rows.flatMap(view => scoreDetails?.has(view.id) ? [{ id: view.id, details: scoreDetails.get(view.id)! as unknown as Record<string, unknown> }] : []), opts.render) : "";
-          return rendered(legacy, [table, scores, ...(withheld ? [`${withheld} entries withheld by policy.`] : [])].filter(Boolean).join("\n\n"));
+        if (internal?.render) {
+          const table = memoryTableText(rows.map(view => { const marker = staleMarker(view); return { id: view.id, kind: view.kind, tier: view.tier, peer: view.peer, scope: view.scope, at: view.at, text: `${view.title ? `${view.title}: ` : ""}${view.text}`, flags: [...(marker ? [marker.trim()] : []), ...(folded.has(view.id) ? [`+${folded.get(view.id)} same task`] : []), ...(view.supersededBy ? [`superseded by ${view.supersededBy.slice(0, 8)}`] : [])] }; }), sub === "search" ? "Search" : "Memory", internal?.render, `Project ${project}; machine ${store.machine.label}; ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term.`);
+          const scores = opts.explainSearch ? memoryScoresText(rows.flatMap(view => scoreDetails?.has(view.id) ? [{ id: view.id, details: scoreDetails.get(view.id)! as unknown as Record<string, unknown> }] : []), internal?.render) : "";
+          return rendered(legacy, [table, scores, ...(withheld ? [`${withheld} entries withheld by policy; review them in the dashboard.`] : [])].filter(Boolean).join("\n\n"));
         }
         return legacy;
       }
@@ -221,11 +220,11 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           const rows = opts.readable(shown.state.views), ids = new Set(rows.map(view => view.id)); ready(rows);
           const state = { ...recallForViews(shown.state, rows), views: rows.map(decorated), relations: shown.state.relations.filter(edge => ids.has(edge.from) && ids.has(edge.to)) };
           const legacy = [`retained memory as of ${state.at}`, ...state.notices, ...rows.flatMap(view => [...staleDetail(view), ...detail(view)]), ...state.forgotten.map(row => `forgotten ${row.id} at ${row.at} (no retained text shown)`), ...(state.incomplete ? ["(retained state is incomplete)"] : [])].join("\n");
-          if (!json && opts.render) return rendered(legacy, [...state.notices.map(singleLine), ...rows.map(view => memoryDetailText(view, { ...opts.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) })), ...state.forgotten.map(row => `Forgotten ${singleLine(row.id)}; no retained text.`), ...(state.incomplete ? ["Retained state is incomplete."] : [])].join("\n"));
+          if (!json && internal?.render) return rendered(legacy, [...state.notices.map(singleLine), ...rows.map(view => memoryDetailText(view, { ...internal?.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) })), ...state.forgotten.map(row => `Forgotten ${singleLine(row.id)}; no retained text.`), ...(state.incomplete ? ["Retained state is incomplete."] : [])].join("\n"));
           return json ? JSON.stringify(state, null, 2) : legacy;
         }
         const view = need(shown.entry, id); if (!opts.readable([view]).length) fail(`${view.id.slice(0, 8)} is withheld: it matches a PII pattern (the dashboard shows it)`);
-        ready([view]); return json ? JSON.stringify(view, null, 2) : opts.render ? rendered([...staleDetail(view), ...detail(view)].join("\n"), [ ...staleDetail(view), memoryDetailText(view, { ...opts.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) }) ].join("\n")) : [...staleDetail(view), ...detail(view)].join("\n");
+        ready([view]); return json ? JSON.stringify(view, null, 2) : internal?.render ? rendered([...staleDetail(view), ...detail(view)].join("\n"), [ ...staleDetail(view), memoryDetailText(view, { ...internal?.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) }) ].join("\n")) : [...staleDetail(view), ...detail(view)].join("\n");
       }
       case "graph": {
         const hops = Number(flag("--hops") ?? 1);

@@ -139,7 +139,7 @@ test("amem capacity reports, previews, and applies only with --confirm from a ma
   const context = { cwd: dir, env: {}, stdinTTY: true };
   const agent = { cwd: dir, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: false };
   const text = await runCli(["capacity"], context);
-  expect(text).toContain("capture:"); expect(text).toContain("proposal:");
+  expect(text).toContain("> Capture"); expect(text).toContain("> Proposal");
   const report = JSON.parse(await runCli(["capacity", "--json"], context)) as { proposal: { capMb: number } };
   // Reanchored for agent-mem#152: the proposal grows with the real disk this test reads, so it is above the 512 MB default, not equal to it.
   expect(report.proposal.capMb).toBeGreaterThan(0);

@@ -104,6 +104,7 @@ export function facts(values: Record<string, unknown>): string {
     .map(([key, value]) => `${key} ${typeof value === "object" ? Array.isArray(value) ? value.join(", ") : JSON.stringify(value) : String(value)}`).join(", ");
 }
 
+export const CLI_MEMORY_RENDER = Symbol("cli-memory-render");
 export interface HumanMemoryRow { id: string; kind: string; at: string; text: string; project?: string; tier?: string; peer?: string; scope?: string; flags?: readonly string[] }
 export interface HumanMemoryRender { columns?: number; style?: Style; now?: number; actor?: "person" | "agent" }
 type HumanRender = HumanMemoryRender;
