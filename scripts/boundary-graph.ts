@@ -8,10 +8,15 @@ import ts from "typescript";
  * directly or through other src/ modules. Roots come from what a module does, so a new writer is covered without a list.
  */
 const SOURCE = [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"];
-/** A root calls one of these filesystem mutations, hashes, or opens SQLite in its own source. */
-export const WRITE_SIGNAL = /\b(?:writeFileSync|appendFileSync|openSync|writeSync|renameSync|ftruncateSync|truncateSync|mkdirSync|linkSync|symlinkSync|copyFileSync|rmSync|unlinkSync|rmdirSync|chmodSync|createWriteStream|createHash)\s*\(/;
-/** Modules that decide what a writer may publish without writing themselves: the policy screen and writer identity. */
-export const DECIDING = /^memory\/(?:policy|screen|sync-screen|sync-policy-inspection|sync-placement-writer[\w-]*)\.ts$/;
+/**
+ * A root can change bytes on disk or decide what is published. Detection is by capability, not by call name, so an
+ * aliased import (`writeFileSync as write`), `new Database(...)` or a namespace import cannot hide a writer: any runtime
+ * import of a write-capable built-in makes the module a root, as does `Bun.write`/`Bun.spawn` in its own source.
+ */
+export const WRITE_CAPABLE = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises", "bun:sqlite", "crypto", "node:crypto", "child_process", "node:child_process"]);
+export const WRITE_SIGNAL = /\bBun\s*\.\s*(?:write|spawn|spawnSync|file)\b/;
+/** Modules that decide what a writer may publish without writing themselves: the policy screen and writer identity, in either directory. */
+export const DECIDING = /^(?:memory\/)?(?:policy|screen|sync-screen|sync-policy-inspection|sync-placement-writer[\w-]*)\.ts$/;
 
 interface Edge { target: string; typeOnly: boolean }
 function edges(path: string, text: string): Edge[] {
@@ -52,7 +57,11 @@ const rel = (srcRoot: string, path: string) => relative(srcRoot, path).split("\\
 /** Where the write path lives (#592): the memory modules and the placement sync entry points. Person-facing entry points (cli, setup, ui) are reached only through these. */
 export const WRITE_PATH_SCOPE = /^(?:memory\/[^/]+|sync-placement-[^/]+)\.ts$/;
 export function writePathRoots(srcRoot: string, sources: ReadonlyMap<string, string>): string[] {
-  return [...sources].filter(([path, text]) => { const name = rel(srcRoot, path); return WRITE_PATH_SCOPE.test(name) && (WRITE_SIGNAL.test(text) || DECIDING.test(name)); }).map(([path]) => path);
+  return [...sources].filter(([path, text]) => {
+    const name = rel(srcRoot, path);
+    if (!WRITE_PATH_SCOPE.test(name)) return false;
+    return DECIDING.test(name) || WRITE_SIGNAL.test(text) || edges(path, text).some(edge => !edge.typeOnly && WRITE_CAPABLE.has(edge.target));
+  }).map(([path]) => path);
 }
 
 /** Each root that reaches a non-built-in package through runtime imports, with the shortest chain (breadth first). */

@@ -58,6 +58,29 @@ describe("write-path dependency reach (#592)", () => {
     expect(dependencyReach(src)).toEqual({ roots: 1, failures: [], chains: [] });
   });
 
+  test.each([
+    ["memory/pending.ts", 'import { Database } from "bun:sqlite";\nexport const open = (p: string) => new Database(p).run("UPDATE t SET shown_at = 1");\n'],
+    ["memory/aliased.ts", 'import { writeFileSync as write } from "node:fs";\nexport const save = () => write("x", "y");\n'],
+    ["memory/namespace.ts", 'import * as fs from "node:fs/promises";\nexport const save = () => fs.writeFile("x", "y");\n'],
+    ["memory/bunwrite.ts", 'export const save = () => Bun.write("x", "y");\n'],
+    ["sync-placement-writer-context.ts", 'export const decide = () => true;\n'],
+  ])("%s is a write-path root however it writes or decides", (name, body) => {
+    const src = tree({ [name]: `import { Report } from "@staix/cli-output";\n${body}export const r = Report;\n` });
+    const reach = dependencyReach(src);
+    expect(reach.roots).toBe(1);
+    expect(reach.chains).toEqual([[name, "@staix/cli-output"]]);
+  });
+
+  test.each([
+    ["memory/pure.ts", 'import { join } from "node:path";\nexport const at = join("a", "b");\n'],
+    ["memory/typed.ts", 'import type { Stats } from "node:fs";\nimport type { Database } from "bun:sqlite";\nexport type T = Stats | Database;\n'],
+    ["sync-placement-progress.ts", 'export const step = 1;\n'],
+    ["cli-writer.ts", 'import { writeFileSync } from "node:fs";\nexport const save = () => writeFileSync("x", "y");\n'],
+  ])("%s is not a root and may import the package", (name, body) => {
+    const src = tree({ [name]: `import { Report } from "@staix/cli-output";\n${body}export const r = Report;\n` });
+    expect(dependencyReach(src)).toEqual({ roots: 0, failures: [], chains: [] });
+  });
+
   test("the real source tree keeps every write-path root off runtime dependencies", () => {
     const reach = dependencyReach(realPath(resolve(import.meta.dir, "../src")));
     expect(reach.roots).toBeGreaterThan(50);
