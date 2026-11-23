@@ -20,7 +20,7 @@ export function section(s: Style, name: string): string {
 }
 
 /** Wrap report prose at a stream's requested width; a pipe without COLUMNS remains unwrapped. */
-// cli-output#6: the shared wrapper cannot preserve existing unindented ANSI-styled lines.
+// ponytail: lineSpans strips SGR, so styled reports keep this wrapper; switch to span-aware wrapping when cli-output#22 lands.
 export function wrapReport(text: string, width: number | undefined): string {
   if (!Number.isSafeInteger(width) || width === undefined || width < 20) return text;
   const ansi = new RegExp(`${SGR_RESET[0]}\\[[0-9;]*m`, "g");
