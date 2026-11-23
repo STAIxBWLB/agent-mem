@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- Invalid arguments to `amem formats raise` and other commands with argument-only usage checks now show usage and exit 2 in agent-marked sessions. Refs #596.
+
 ## 0.38.0
 
 ### Changed
