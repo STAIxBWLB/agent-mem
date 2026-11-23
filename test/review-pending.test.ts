@@ -494,8 +494,8 @@ test("#431: review decide previews and stamps shown, then applies exactly the na
   expect(accepted.noteId).toMatch(/^[a-f0-9]{32}$/);
   const notes = new MemoryStore({ memoryDir: r.memory, screen: () => "keep" });
   try { expect(notes.get(accepted.noteId, r.project)).toMatchObject({ peer: "claude", source: "person" }); } finally { notes.close(); }
-  expect(await cli(r, ["review", "decide", b, "reject", "--confirm"], agent)).toBe(`rejected candidate ${b}`);
-  expect(await cli(r, ["review", "decide", c, "defer", "--confirm"], agent)).toContain("stays pending");
+  expect((await cli(r, ["review", "decide", b, "reject", "--confirm", "--ascii"], agent)).replace(/\s+/g, " ").trim()).toBe(`ok rejected candidate ${b}`);
+  expect((await cli(r, ["review", "decide", c, "defer", "--confirm"], agent)).replace(/\s+/g, " ")).toContain("stays pending");
   store = check();
   try { expect(store.get(a, r.project)!.status).toBe("accepted"); expect(store.get(b, r.project)!.status).toBe("rejected"); expect(store.get(c, r.project)!.status).toBe("pending"); } finally { store.close(); }
   await expect(cli(r, ["review", "decide", b, "accept", "--confirm"], agent)).rejects.toThrow();

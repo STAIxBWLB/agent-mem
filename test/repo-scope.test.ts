@@ -385,9 +385,10 @@ test("list and search on the CLI include this repository's entries, labelled rep
   const r = rig(); r.note("we chose sqlite for the index");
   writeLog(r, [repoLine("a shared sqlite decision for the team", { title: "storage" })]);
   const listed = await runCli(["list"], r.person), searched = await runCli(["search", "sqlite"], r.person);
-  for (const out of [listed, searched]) { expect(out).toContain("we chose sqlite"); expect(out).toContain("repo scope (.amem/log.jsonl):"); expect(out).toMatch(/repo:[a-f0-9]{8}\s.*storage: a shared sqlite decision/); }
+  for (const out of [listed, searched]) { expect(out).toContain("we chose sqlite"); expect(out).toContain("repo scope (.amem/log.jsonl):"); expect(out).toMatch(/repo:[a-f0-9]{8,}\s.*storage:/); expect(out).toContain("..."); }
   const json = JSON.parse(await runCli(["search", "sqlite", "--json"], r.person)) as { scope?: string; source?: string }[];
   expect(json.filter(row => row.scope === "repo")).toHaveLength(1);
+  expect(json.find(row => row.scope === "repo")).toMatchObject({ text: "a shared sqlite decision for the team" });
   const miss = await runCli(["search", "nonexistentword"], r.person);
   expect(miss).not.toContain("repo scope (.amem/log.jsonl):");
 });
@@ -396,7 +397,7 @@ test("amem show repo:<id> reads one entry, an unknown or ambiguous one is refuse
   const r = rig(); const line = repoLine("a shared sqlite decision for the team");
   writeLog(r, [line]);
   expect(await runCli(["show", `repo:${line.id}`], r.person)).toContain("a shared sqlite decision");
-  expect(await runCli(["show", `repo:${line.id.slice(0, 8)}`], r.person)).toContain("repo scope");
+  expect(await runCli(["show", `repo:${line.id.slice(0, 8)}`], r.person)).toMatch(/Scope:\s+repo/);
   await expect(runCli(["show", "repo:ffffffffffffffffffffffffffffffff"], r.person)).rejects.toThrow("no repo entry");
 });
 
@@ -427,7 +428,7 @@ test("AC3: project B never sees repository A's entries, by default, through the 
 test("--all-projects keeps saying it crossed projects and adds no repository rows", async () => {
   const r = rig(); r.note("we chose sqlite for the index"); writeLog(r, [repoLine("a shared sqlite decision for the team")]);
   const out = await runCli(["search", "--all-projects", "sqlite"], r.person);
-  expect(out).toContain("crossed projects");
+  expect(out).toContain("Cross-project search");
   expect(out).not.toContain("repo scope (.amem/log.jsonl):");
 });
 

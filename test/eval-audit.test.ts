@@ -11,6 +11,7 @@ import { auditAsOf, auditSample, auditScore, auditScoreText, parseAuditSheet, re
 import { memoryProjectKey } from "../src/memory/project.ts";
 import { realPath } from "../src/memory/platform.ts";
 import { MemoryStore, type Kind, type View } from "../src/memory/store.ts";
+import { isAmemCommand } from "../src/commands-table.ts";
 
 // agent-mem#326: a correctness audit that leaves judging outside amem. No model and no network here: the only outside read is the project's own git history.
 const roots: string[] = [];
@@ -396,7 +397,12 @@ test("#326: `amem eval audit sample` writes the private sheet and prints a conte
   expect(existsSync(json.file)).toBe(true); expect(statSync(json.file).mode & 0o777).toBe(0o600);
   expect(json.file.startsWith(join(r.memory, "eval"))).toBe(true);
   const text = await cli(r, ["eval", "audit", "sample", "--seed", "cli-2", "--n", "2"]);
-  expect(text).toContain("audit sample: 2 of 2"); expect(text).toContain("(0600, local only"); expect(text).not.toContain("parcel router");
+  expect(text).toContain("amem Audit sample"); expect(text).toContain("2 of 2"); expect(text).toContain("mode 0600, local only"); expect(text).not.toContain("parcel router");
+  const next = text.replace(/\\\n\s+/g, " ").split("\n").find(line => line.trimStart().startsWith("-> amem eval audit score"));
+  expect(next).toBeDefined();
+  const args = Bun.spawnSync(["sh", "-c", `set -- ${next!.trim().slice("-> amem ".length)}; printf '%s\\n' "$@"`]);
+  expect(args.exitCode).toBe(0);
+  expect(isAmemCommand(`amem ${args.stdout.toString().trimEnd().split("\n").map(arg => arg.startsWith("/") ? "<path>" : arg).join(" ")}`)).toBe(true);
   // The same seed draws the same notes from the same store: a second sample of a fresh file repeats the ids.
   const sheet = readAuditSheet(json.file), second = JSON.parse(await cli(r, ["eval", "audit", "sample", "--seed", "cli", "--n", "2", "--out", join(r.root, "again.json"), "--json"])) as { file: string };
   expect(readAuditSheet(second.file).notes.map(note => note.id)).toEqual(sheet.notes.map(note => note.id));
@@ -405,7 +411,8 @@ test("#326: `amem eval audit sample` writes the private sheet and prints a conte
   const scored = JSON.parse(await cli(r, ["eval", "audit", "score", join(r.root, "filled.json"), "--json"])) as { byLabel: Record<string, number>; agreement: { pairs: number; agreed: number; kappa: number | null } };
   expect(scored.byLabel).toEqual({ correct: 1, stale: 1, wrong: 0, unverifiable: 0 });
   expect(scored.agreement).toEqual({ pairs: 2, agreed: 1, kappa: 0 });
-  expect(await cli(r, ["eval", "audit", "score", join(r.root, "filled.json")])).toContain("kappa 0.000 over 2");
+  const scoreText = await cli(r, ["eval", "audit", "score", join(r.root, "filled.json")]);
+  expect(scoreText).toContain("Kappa:"); expect(scoreText).toContain("0.000"); expect(scoreText).toContain("Judge pairs:");
 }, 60_000);
 
 test("#326: `eval audit sample --project` refuses a project the cwd's work tree does not own, naming the checkout to run from", async () => {
@@ -498,3 +505,12 @@ test("#326: a marked session's audit output is screened by the configured policy
   // The sheet is on disk all the same, and a person can read and score it: withholding the summary hides no effect, it reports one.
   expect(readAuditSheet(join(r.root, "screened-sample.json")).seed).toBe("never_public_seed");
 }, 60_000);
+
+test("marked audit score screens its original timestamp before human formatting", async () => {
+  const r = rig(), store = seeded(r, [{ text: "a public audit note" }]);
+  let sheet: AuditSheet;
+  try { sheet = auditSample({ store, project: r.project, n: 1, seed: "public", root: r.repo, asOf: NOW }); } finally { store.close(); }
+  const file = writeAuditSheet(join(r.root, "screened-time.json"), sheet);
+  writeFileSync(join(r.memory, "amem.config.json"), JSON.stringify({ piiPatterns: ["2026-02-01T00:00:00"] }));
+  await expect(cli(r, ["eval", "audit", "score", file], { CODEX_THREAD_ID: "fixture" })).rejects.toThrow(AUDIT_SCORE_REFUSED);
+});

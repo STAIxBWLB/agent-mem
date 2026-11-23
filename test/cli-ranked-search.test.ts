@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
@@ -19,13 +19,13 @@ afterEach(() => {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "amem-ranked-cli-")); roots.push(root);
   process.env.AMEM_HOME = join(root, "memory");
-  const project = memoryProjectKey(root); let at = Date.now() - 120000;
+  const project = memoryProjectKey(root), displayNow = Date.now(); let at = displayNow - 120000;
   const store = new MemoryStore({ home: root, now: () => at, screen: () => "keep" });
-  const note = (text: string, fields: Partial<Pick<View, "kind" | "peer" | "tier">> = {}) => {
+  const note = (text: string, fields: Partial<Pick<View, "kind" | "peer" | "tier" | "about">> & { task?: string } = {}) => {
     at += 1000;
     return store.note({ op: "note", project, scope: "project", tier: "long", kind: "finding", peer: "writer", text, about: [], source: "person", ...fields }, fields.tier === "short");
   };
-  const context = { cwd: root, env: {}, stdinTTY: false };
+  const context = { cwd: root, env: {}, stdinTTY: false, now: () => displayNow };
   const search = async (...args: string[]) => JSON.parse(await runCli(["search", ...args, "--json"], context)) as View[];
   return { root, project, store, note, context, search };
 }
@@ -45,13 +45,33 @@ test("person CLI uses curated store.search ranking and keeps the legacy --filter
     expect(repeatedExplain.map(row => row.id)).toEqual(explained.map(row => row.id));
     expect(repeatedExplain.every(row => "scoreDetails" in row)).toBe(true);
     const plainText = await runCli(["search", "needle"], f.context), explainedText = await runCli(["search", "needle", "--explain"], f.context);
-    expect(plainText).not.toContain("score:"); expect(explainedText).toContain("score:");
-    expect(explainedText.split("\n").filter(line => !line.startsWith("score: ")).join("\n")).toBe(plainText);
+    expect(plainText).not.toContain("Scores"); expect(explainedText).toContain("Scores");
+    expect(explainedText.split("\n\n> Scores")[0]).toBe(plainText);
     expect((await f.search("needle", "--filter")).map(row => row.id)).toEqual([recent, strong]);
     expect((await f.search("needle", "--filter", "--filter")).map(row => row.id)).toEqual([recent, strong]);
     f.note("lighthouse"); f.note("beacon");
     expect((await f.search("lighthouse", "beacon")).length).toBe(2);
     expect(await f.search("lighthouse", "beacon", "--filter")).toEqual([]);
+  } finally { f.store.close(); }
+});
+
+test("long folded hits keep their count and screened capture is marked not evidence", async () => {
+  const f = fixture();
+  try {
+    f.note(`foldmarker ${"long text ".repeat(30)}`, { task: "fixture-task", about: ["path:missing-fixture.ts"] });
+    f.note(`foldmarker ${"another text ".repeat(30)}`, { task: "fixture-task", about: ["path:missing-fixture.ts"] });
+    const capture = new CaptureStore({ memoryDir: join(f.root, "memory"), project: f.project });
+    let id: number;
+    try { const row = capture.append({ project: f.project, agent: "codex", event: "Stop", excerpt: "capturemarker public", paths: [], subagent: true }); if (!("id" in row)) throw Error("fixture capture was spooled"); id = row.id; } finally { capture.close(); }
+    const marked = { cwd: f.root, env: { CODEX_THREAD_ID: "fixture", AMEM_HOME: join(f.root, "memory"), COLUMNS: "80" }, stdinTTY: false };
+    for (const context of [f.context, marked]) {
+      const output = await runCli(["search", "foldmarker"], context);
+      expect(output).toContain("+1 same task");
+    }
+    const captured = await runCli(["search", "capturemarker"], marked);
+    expect(captured).toContain("not evidence"); expect(captured).toContain("subagent");
+    const shown = await runCli(["show", `capture:${id}`], marked);
+    expect(shown).toMatch(/Evidence:\s+no/); expect(shown).toMatch(/Subagent:\s+yes/);
   } finally { f.store.close(); }
 });
 
@@ -156,4 +176,45 @@ test("person search keeps cross-project validation and ranked-explanation restri
     await expect(runCli(["search", ...(args.length ? ["needle"] : []), "--explain", ...args], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--explain");
   }
   await expect(runCli(["search", "--explain"], { cwd: root, env: {}, stdinTTY: false })).rejects.toThrow("--explain");
+});
+
+test("marked and unmarked recall respects screening, cell width and JSON boundaries", async () => {
+  const f = fixture(), marker = "WITHHELD_CANARY", content = `needle ${"제주한라대학교인공지능".repeat(10)} end`;
+  try {
+    const visible = f.note(content), hidden = f.note(`needle ${marker} private row`);
+    writeFileSync(join(f.root, "memory", "amem.config.json"), JSON.stringify({ piiPatterns: [marker] }));
+    const env = { HOME: f.root, AGENTHUB_HOME: f.root, AMEM_HOME: join(f.root, "memory"), COLUMNS: "80", NO_COLOR: "1", TERM: "dumb" };
+    const person = { cwd: f.root, env, stdinTTY: false }, marked = { ...person, env: { ...env, CODEX_THREAD_ID: "fixture" } };
+    for (const command of [["list"], ["search", "needle"]]) {
+      const ordinary = await runCli(command, person), screened = await runCli(command, marked);
+      expect(ordinary).toContain("WITHHELD");
+      expect(screened).not.toContain("WITHHELD");
+      for (const output of [ordinary, screened]) {
+        expect(output.split("\n").every(line => Bun.stringWidth(line, { ambiguousIsNarrow: true }) <= 80)).toBe(true);
+        expect(output.match(/amem show <id>/g)).toHaveLength(1);
+        const visibleRow = output.split("\n").find(line => line.includes(visible.slice(0, 12)));
+        expect(visibleRow).toBeDefined();
+        expect(visibleRow).toContain("...");
+      }
+    }
+    for (const context of [person, marked]) {
+      const shown = await runCli(["show", visible], context);
+      expect(shown.replace(/\s+/g, "")).toContain(content.replace(/\s+/g, ""));
+      expect(shown).not.toContain(marker);
+      const indents = shown.split("\n").flatMap(line => { const match = line.match(/^  (?:ID|Kind|Tier|When|Peer|Scope|Project|Machine|Actor): +/); return match ? [match[0].length] : []; });
+      expect(new Set(indents).size).toBe(1);
+    }
+    expect(await runCli(["show", hidden], person)).toContain(marker);
+    expect(await runCli(["show", hidden], marked)).not.toContain(marker);
+    expect(await runCli(["search", "needle", "--all-projects"], marked)).toStartWith("crossed projects:");
+    const mcp = createMemoryMcp({ cwd: f.root, base: join(f.root, "memory") });
+    try {
+      expect(await runCli(["list", "--json"], marked)).toBe(JSON.stringify(await mcp.tools.amem_timeline({}), null, 2));
+      const noMatch = { query: "nonexistentfixturexyz" };
+      expect(await runCli(["search", noMatch.query, "--json"], marked)).toBe(JSON.stringify(await mcp.tools.amem_search(noMatch), null, 2));
+      expect(await runCli(["show", visible, "--json"], marked)).toBe(JSON.stringify(await mcp.tools.amem_show({ id: visible }), null, 2));
+      expect(JSON.parse(await runCli(["show", hidden, "--json"], marked))).toBeNull();
+      expect(JSON.parse(await runCli(["show", hidden, "--json"], person)).text).toContain(marker);
+    } finally { mcp.close(); }
+  } finally { f.store.close(); }
 });

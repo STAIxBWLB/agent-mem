@@ -55,6 +55,8 @@ for (const mode of ["legacy", "generation", "shards"] as const) {
     for (const id of [old, expired]) { await expect(f.cli(["show", id, "--json"])).rejects.toThrow("no memory entry"); expect(await session.tools.amem_show({ id })).toBeNull(); }
     const hits = await session.tools.amem_search({ query: "recallboundary", includeCapture: false }) as { hits: Array<{ view: { id: string } }> }; expect(hits.hits.map(hit => hit.view.id)).toEqual([replacement]);
     const history = JSON.parse(await f.cli(["search", "recallboundary", "--history", "--json"])); expect(history.entries.map((row: any) => row.id).sort()).toEqual([old, replacement, expired].sort());
+    const humanHistory = await f.cli(["search", "recallboundary", "--history"]);
+    expect(humanHistory).toContain("(expired)"); expect(humanHistory).toContain("superseded by");
     const chain = JSON.parse(await f.cli(["show", old, "--history", "--json"])); expect(chain.views.map((row: any) => row.id).sort()).toEqual([old, replacement].sort());
     const asOf = JSON.parse(await f.cli(["search", "recallboundary", "--as-of", past, "--json"])); expect(asOf.entries.map((row: any) => row.id)).toEqual([old]);
     // #431: an agent-marked history read returns the same retained rows the person read above returns.

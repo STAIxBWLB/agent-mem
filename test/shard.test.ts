@@ -142,7 +142,7 @@ test("amem alias add accepts a marked nonTTY writer and keeps peer actor attribu
   process.env.AMEM_HOME = join(dir, "memory");
   cleanup.push(() => { delete process.env.AMEM_HOME; });
   const context = { cwd: dir, env: {}, stdinTTY: true };
-  expect(await runCli(["alias", "add", "old-key", "new-key"], { ...context, env: { AGENTHUB_PEER_ID: "kimi" }, stdinTTY: false })).toBe("alias old-key -> new-key");
+  expect(await runCli(["alias", "add", "old-key", "new-key", "--ascii"], { ...context, env: { AGENTHUB_PEER_ID: "kimi" }, stdinTTY: false })).toBe("  ok alias old-key -> new-key");
   expect(listAliases(join(dir, "memory"))).toMatchObject([{ alias: "old-key", key: "new-key", actor: "agent" }]);
   expect(await runCli(["alias"], context)).toContain("old-key -> new-key");
   const ops = JSON.parse(await runCli(["alias", "list", "--json"], context)) as { alias: string; key: string; actor: string }[];

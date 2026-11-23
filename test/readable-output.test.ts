@@ -8,6 +8,7 @@ import { migrationText, type MigrationResult } from "../src/memory/migrate.ts";
 import { shardMigrationText, type ShardMigrationResult } from "../src/memory/shard-migration.ts";
 import { pruneText, type PrunePlan } from "../src/memory/prune.ts";
 import { capacityApplyText, capacitySplitText } from "../src/memory/capacity.ts";
+import { gcText } from "../src/memory/gc.ts";
 import { vaultCandidatesText, vaultCandidatesAllText } from "../src/memory/vault.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
@@ -338,15 +339,16 @@ const pruneView = (): PrunePlan => ({ schema: "agent-mem.prune-plan/v1", generat
 const capacityView = () => ({ preview: { file: "/h/memory/capture-config.json", current: { capMb: 512, retentionDays: 90 }, target: { capMb: 256, retentionDays: 30 }, reason: "observed resource bound" }, confirm: "re-run with --confirm to write" });
 
 test("ingest receipts distinguish complete, remaining, spooled, errors and no source", () => {
-  expect(ingestText("codex", emptyIngest)).toStartWith("amem ingest codex: skipped\n");
+  expect(ingestText("codex", emptyIngest)).toContain("State:      skipped");
   const complete = { ...emptyIngest, files: 1, read: 3, imported: 2, skipped: 1 };
-  expect(ingestText("kimi", complete)).toStartWith("amem ingest kimi: complete\n");
+  expect(ingestText("kimi", complete)).toContain("State:      complete");
+  expect(ingestText("kimi", complete)).not.toContain("Next action: none");
   expect(ingestText("pi", { ...complete, remaining: true })).toContain("run the same ingest command again");
   const spooled = ingestText("qwen", { ...complete, spooled: 1 });
   expect(spooled).toContain("the next capture write replays"); expect(spooled).not.toContain("amem doctor");
   for (const reason of ["source_bound", "source_unavailable", "schema_or_time", "cursor_busy", "scope_changed"] as const) {
     const text = ingestText("codex", { ...emptyIngest, errors: 1, reason });
-    expect(text).toStartWith("amem ingest codex: attention\n"); expect(text).toContain("reason: " + reason); expect(text).toContain("Next action:");
+    expect(text).toContain("State:      attention"); expect(text).toContain(reason.replace(/_/g, " ")); expect(text).toContain("> Attention");
   }
 });
 
@@ -397,6 +399,29 @@ test("capacity text keeps confirmation arguments and visible shard skips", () =>
   expect(JSON.stringify(preview)).toBe(before);
 });
 
+test("standalone ingest and capacity reports use 80-column rows and valid next commands", () => {
+  const next = "amem capacity apply --cap-mb 256 --retention-days 30 --confirm";
+  for (const output of [ingestText("codex", { ...emptyIngest, remaining: true }, PLAIN, 80), capacityApplyText(capacityView(), PLAIN, { columns: 80, next })]) {
+    expect(output.split("\n").every(line => Bun.stringWidth(line, { ambiguousIsNarrow: true }) <= 80)).toBe(true);
+    expect(output).not.toContain("Next action: none");
+    const lines = output.split("\n").filter(line => /^\s*-> /.test(line));
+    expect(lines).toHaveLength(1);
+    expect(isAmemCommand(lines[0]!.replace(/^\s*->\s*/, ""))).toBe(true);
+  }
+  const applied = capacityApplyText({ preview: capacityView().preview, written: { cap_mb: 256, retention_days: 30 } }, PLAIN, { columns: 80, next });
+  expect(applied).not.toContain("->"); expect(applied).not.toContain("Next action: none");
+});
+
+test("gc human preview uses a preview marker and a complete confirmation command", () => {
+  const output = gcText({ dryRun: true, shards: [{ key: "fixture", expired: 2, trimmed: 0, batches: 0, remainingOverCap: true }], skipped: [] }, { columns: 80, style: PLAIN, next: "amem gc --confirm --batches 2" });
+  expect(output).toContain("~"); expect(output).toContain("EXPIRED");
+  const next = output.split("\n").find(line => /^\s*-> /.test(line));
+  expect(next).toBeDefined(); expect(isAmemCommand(next!.replace(/^\s*->\s*/, ""))).toBe(true);
+  expect(output.split("\n").every(line => Bun.stringWidth(line, { ambiguousIsNarrow: true }) <= 80)).toBe(true);
+  const clean = gcText({ dryRun: true, shards: [{ key: "fixture", expired: 0, trimmed: 0, batches: 0, remainingOverCap: false }], skipped: [] }, { columns: 80, style: PLAIN, next: "amem gc --confirm" });
+  expect(clean).not.toContain("->");
+});
+
 test("vault text bounds metadata and never emits note bodies or data terminal controls", () => {
   const h = home(), store = new MemoryStore({ memoryDir: h.memory, deferPromotions: true });
   try {
@@ -418,13 +443,21 @@ async function readableCommand(h: ReturnType<typeof home>, args: string[], stdou
   finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }
 
+test("alias receipts use the selected marker and arrow", async () => {
+  const h = home();
+  const unicode = await readableCommand(h, ["alias", "add", "old-key", "new-key"], false, { LANG: "en_US.UTF-8" });
+  expect(unicode).toContain("✓"); expect(unicode).toContain("old-key → new-key");
+  const ascii = await readableCommand(h, ["alias", "add", "old-two", "new-two", "--ascii"], false, { LANG: "en_US.UTF-8" });
+  expect(ascii).toContain("ok"); expect(ascii).toContain("old-two -> new-two");
+});
+
 test("ingest JSON keeps exact indented bytes and agent capture entry remains allowed", async () => {
   const h = home(), saved = process.env.CODEX_HOME; process.env.CODEX_HOME = join(h.root, "native-codex"); mkdirSync(join(process.env.CODEX_HOME, "sessions"), { recursive: true });
   try {
     const nonTTY = await readableCommand(h, ["ingest", "codex"]);
-    expect(nonTTY).toStartWith("amem ingest codex: skipped\n"); expect(nonTTY).not.toMatch(ANSI);
+    expect(nonTTY).toStartWith(" amem Ingest codex\n"); expect(nonTTY).toContain("State:      skipped"); expect(nonTTY).not.toMatch(ANSI);
     const plain = await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "1" });
-    expect(plain).toStartWith("amem ingest codex: skipped\n"); expect(plain).not.toMatch(ANSI);
+    expect(plain).toStartWith(" amem Ingest codex\n"); expect(plain).not.toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true)).toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true, { NO_COLOR: "" })).toMatch(ANSI);
     expect(await readableCommand(h, ["ingest", "codex"], true, { TERM: "dumb" })).toBe(plain);
@@ -437,7 +470,7 @@ test("ingest JSON keeps exact indented bytes and agent capture entry remains all
 test("capacity apply CLI has readable two-step plans and indented JSON", async () => {
   const h = home(), args = ["capacity", "apply", "--cap-mb", "64", "--retention-days", "7"];
   const human = await readableCommand(h, args);
-  expect(human).toStartWith("amem capacity apply: preview\n"); expect(human).toContain("keeping all other arguments"); expect(human).not.toMatch(ANSI);
+  expect(human).toStartWith(" amem Capacity apply\n"); expect(human).toContain("amem capacity apply --cap-mb 64 --retention-days 7 --confirm"); expect(human).not.toMatch(ANSI);
   expect(await readableCommand(h, args, true)).toMatch(ANSI);
   const json = await readableCommand(h, [...args, "--json"], true), preview = JSON.parse(readFileSync(join(h.memory, "capture-config.preview.json"), "utf8"));
   expect(json).toBe(JSON.stringify({ preview, confirm: "re-run with --confirm to write" }, null, 2));
@@ -483,14 +516,14 @@ test("split capacity CLI previews in text and confirms the same JSON plan", asyn
   try { capture.append({ project, agent: "fixture", event: "message", excerpt: "synthetic capture", paths: [] }); } finally { capture.close(); }
   const args = ["capacity", "apply", "--split"];
   const human = await readableCommand(h, args);
-  expect(human).toStartWith("amem capacity apply --split: preview\n");
-  expect(human).toContain("--split command with --confirm, keeping all other arguments");
+  expect(human).toStartWith(" amem Capacity split\n");
+  expect(human).toContain("amem capacity apply --split --confirm");
   const json = await readableCommand(h, [...args, "--json"], true);
   const saved = JSON.parse(readFileSync(join(h.memory, "capacity-split.preview.json"), "utf8"));
   expect(json).toBe(JSON.stringify({ ...saved, confirm: "re-run with --confirm to write each shard's share" }, null, 2));
   expect(json).not.toMatch(ANSI);
   const confirmed = await readableCommand(h, [...args, "--confirm"]);
-  expect(confirmed).toStartWith("amem capacity apply --split: complete\n"); expect(confirmed).toContain("Next action: none");
+  expect(confirmed).toStartWith(" amem Capacity split\n"); expect(confirmed).not.toContain("Next action: none");
 }, 30_000);
 
 test("all new human renderers use the shared color contract without mutating their result objects", () => {
@@ -508,7 +541,8 @@ test("all new human renderers use the shared color contract without mutating the
     expect(render(PLAIN)).not.toMatch(ANSI);
     expect(render(COLOR)).toMatch(ANSI);
     expect(strip(render(COLOR))).toBe(render(PLAIN));
-    expect(render(PLAIN)).toContain("Next action:");
+    if (render(PLAIN).startsWith(" amem Ingest")) expect(render(PLAIN)).toContain("-> amem ingest codex");
+    else expect(render(PLAIN)).toContain("Next action:");
   }
   expect(JSON.stringify([migration, shards, plan, capacity])).toBe(before);
 });
