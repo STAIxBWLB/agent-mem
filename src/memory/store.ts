@@ -941,15 +941,17 @@ export class MemoryStore {
   hasTask(task: string): boolean { this.ensureFresh(); return this.readRows("SELECT 1 FROM entries WHERE task = ?", task).length > 0; }
   /** A live page of task keys in this exact namespace without any visible settlement, including legacy. */
   unsettledTaskKeys(project: string, options: { after?: string; limit?: number } = {}): { keys: string[]; next?: string } {
-    const { after = "", limit = 64 } = options;
-    if (!project.trim() || !Number.isSafeInteger(limit) || limit < 1 || limit > 256
-      || (after && taskProject(after) !== project)) throw Error("invalid task discovery project, cursor or limit");
+    const { after, limit = 64 } = options;
+    if (typeof project !== "string" || !project.trim()) throw Error("Task discovery requires a non-empty project. Pass the board's project key.");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) throw Error("Task discovery limit must be an integer from 1 to 256. Omit limit to use 64.");
+    if (after !== undefined && (typeof after !== "string" || taskProject(after) !== project))
+      throw Error("Invalid task discovery cursor. Use the next cursor returned for the same project, or omit after to start a new sweep.");
     this.withDeferredPromotions(() => this.ensureFresh());
     const stores = this.readStores(), candidates = new Set<string>();
     for (const store of stores) {
-      if (store.stale) throw Error("task discovery index is not current");
+      if (store.stale) throw Error("Task discovery could not refresh a readable store. Another process may hold its index lock, or a segment may be unreadable. Retry the sweep later. If this persists, run amem doctor.");
       const rows = store.db.query("SELECT task FROM unsettled_tasks WHERE project = ? AND task > ? ORDER BY task LIMIT ?")
-        .all(project, after, limit + 1) as { task: string }[];
+        .all(project, after ?? "", limit + 1) as { task: string }[];
       for (const row of rows) candidates.add(row.task);
     }
     // SQLite BINARY orders UTF-8 bytes. Keep exactly that order when merging store frontiers.

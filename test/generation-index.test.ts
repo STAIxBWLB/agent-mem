@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GenerationIndex } from "../src/memory/generation-index.ts";
 import { INDEX_VERSION, indexFileName } from "../src/memory/index-file.ts";
-import { buildPublicPruneIndex, entryId, machineId, MemoryStore, openShardStore, type Entry, type NoteInput } from "../src/memory/store.ts";
+import { buildPublicPruneIndex, entryId, machineId, MEMORY_SCHEMA, MemoryStore, openShardStore, type Entry, type NoteInput } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { activatePublicPruneView } from "../src/memory/public-prune-activation.ts";
 import { advancePublicPruneView } from "../src/memory/public-prune-advance.ts";
@@ -321,6 +321,23 @@ test("#466 AC3: the witness stamp never moves the activation source hash", async
   try { expect((probe.query("SELECT value FROM generation_state WHERE key='foreignStamp'").get() as { value: string } | null)?.value).toBeString(); }
   finally { probe.close(); }
 });
+
+test("task discovery reports a stale user overlay and catches up after its index lock is released", async () => {
+  const f = await home(false), store = open(f.memoryDir);
+  try {
+    const overlay = store.openedSyncTargets().find(target => target.profile.shardUser)!;
+    const task = `${PROJECT}#2@1`;
+    const row = { ...note("arrived during lock", "shared"), schema: MEMORY_SCHEMA, machine: overlay.machine.id,
+      at: new Date(NOW).toISOString(), tier: "long", task } as const;
+    const lock = new Database(join(overlay.dir, indexFileName(false)));
+    try {
+      lock.run("BEGIN IMMEDIATE");
+      appendFileSync(join(overlay.dir, "log", overlay.machine.id + ".jsonl"), JSON.stringify({ ...row, id: entryId(row) }) + "\n");
+      expect(() => store.unsettledTaskKeys(PROJECT)).toThrow("Task discovery could not refresh a readable store. Another process may hold its index lock, or a segment may be unreadable. Retry the sweep later. If this persists, run amem doctor.");
+    } finally { lock.close(); }
+    expect(store.unsettledTaskKeys(PROJECT).keys).toContain(task);
+  } finally { store.close(); }
+}, 20_000);
 
 test("#466 AC2: a held writer does not fail or empty a read, and the read marks itself stale as the legacy path does", async () => {
   const f = await home(true);

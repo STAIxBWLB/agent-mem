@@ -107,9 +107,12 @@ test("warm discovery seeks outstanding keys and agrees with a full point-predica
 
 test("the page limit is bounded and cursors stay in their project", () => {
   const { store } = fixture();
-  for (const limit of [0, 1.5, 257]) expect(() => store.unsettledTaskKeys(project, { limit })).toThrow();
+  expect(() => store.unsettledTaskKeys("  ")).toThrow("Task discovery requires a non-empty project. Pass the board's project key.");
+  for (const limit of [0, 1.5, 257]) expect(() => store.unsettledTaskKeys(project, { limit }))
+    .toThrow("Task discovery limit must be an integer from 1 to 256. Omit limit to use 64.");
   expect(store.unsettledTaskKeys(project, { limit: 256 })).toEqual({ keys: [] });
-  expect(() => store.unsettledTaskKeys(project, { after: key(1, "another") })).toThrow();
+  for (const after of ["", key(1, "another")]) expect(() => store.unsettledTaskKeys(project, { after }))
+    .toThrow("Invalid task discovery cursor. Use the next cursor returned for the same project, or omit after to start a new sweep.");
 });
 
 test("a later pass includes writes behind the cursor, and discovery refreshes without promoting", () => {
