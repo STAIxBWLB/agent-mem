@@ -8,7 +8,7 @@ import { realPath } from "../src/memory/platform.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
-import { parseCommand } from "../src/commands-table.ts";
+import { isAmemCommand, parseCommand } from "../src/commands-table.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -197,6 +197,8 @@ test("#551 AC2: setup warns when the root it would register is outside the place
     expect(split.exitCode).toBe(0);
     const args = split.stdout.toString().trimEnd().split("\n");
     expect(parseCommand(args).path).toEqual(["migrate"]);
+    // The shared checker accepts placeholders rather than shell-quoted paths; shell splitting above checks the actual arguments.
+    expect(isAmemCommand(`amem ${args.map(arg => arg.startsWith("/") ? "<path>" : arg).join(" ")}`)).toBe(true);
     expect(args).toContain(realPath(outside));
     expect(args).toContain(realPath(activationOwnRoot));
   }

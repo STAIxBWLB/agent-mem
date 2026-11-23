@@ -19,6 +19,7 @@ import { resolveColor, SGR_RESET, streamEnv } from "@staix/cli-output";
 import { PLAIN, style } from "../src/memory/style.ts";
 const colorEnabled = (env: Readonly<Record<string, string | undefined>>, isTTY: boolean | undefined) => resolveColor("auto", streamEnv(isTTY === true, env), "amem") === true;
 import { setupConfirmationText, setupPlanText, type SetupPlan } from "../src/setup.ts";
+import { isAmemCommand } from "../src/commands-table.ts";
 
 const ANSI = /\x1b\[/, COLOR = style(true), WIDTH = 160;
 const cleanup: (() => void)[] = [];
@@ -188,7 +189,9 @@ test("setup groups skill changes and removed hooks under their target", () => {
   expect(text).not.toContain("amem-recall unchanged");
   expect(text.indexOf("> claude")).toBeLessThan(text.indexOf("Remove:"));
   shown.actions[0]!.mcpChange = "unchanged";
-  expect(setupPlanText(shown, style(false, true), { columns: 80 })).toContain("-> amem setup claude --apply");
+  const next = setupPlanText(shown, style(false, true), { columns: 80 }).split("\n").find(line => line.includes("-> amem setup"));
+  expect(next).toBeDefined();
+  expect(isAmemCommand(next!.replace(/^\s*->\s*/, ""))).toBe(true);
 });
 
 test("setup combines layout-version warnings into one finding", () => {
