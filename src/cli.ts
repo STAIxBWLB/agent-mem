@@ -9,6 +9,7 @@ import { cliAttribution, withCliAttribution } from "./memory/cli-attribution.ts"
 import { createHash, randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import { buildIntentBrief } from "./memory/intent-brief.ts";
+import { prepareWorkBriefCache } from "./work-brief-preparation.ts";
 import { proposeConsolidation } from "./memory/consolidate.ts";
 import { recordCaptureLookup, recordSourceCheck, recordWindow } from "./memory/record-candidates.ts";
 import { createIntentBriefSource, recallViewIsLive } from "./memory/recall.ts";
@@ -647,13 +648,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const settings = () => configuredPolicyOptions(base, policyCwd), policyKey = () => hashJSON(settings()), revision = policyKey(), snapshot = createStandalonePolicy(settings());
       const policy = () => snapshot, policyVersion = () => policyKey();
       if (policyVersion() !== revision) throw Error("brief policy changed before read");
+      await prepareWorkBriefCache(base, project, policyCwd);
       const result = await buildIntentBrief(createIntentBriefSource(store, project),
         { project, cwd: root, repo: project, intent, paths, symbols, maxBytes, policy, policyVersion, assertCurrent, now: () => store.readNow(), stale: createRecallStalenessProbe({ cwd: root, rootConfirmed, policy }) });
       assertCurrent(); outputReady(result.items.map(view => view.id), project);
       store.prepareCuratedBriefs([project]);
-      const { prepareWorkBriefCache } = await import("./memory/work-lists.ts");
-      await prepareWorkBriefCache(base, project, policyCwd);
-      assertCurrent();
       return options["--json"] ? JSON.stringify({ brief: result.text, bytes: result.bytes, truncated: result.truncated, state: result.state }, null, 2) : result.text;
     } finally { store.close(); }
   }

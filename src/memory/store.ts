@@ -436,7 +436,7 @@ export class MemoryStore {
     finally { release(); }
   }
 
-  private deferCuratedPublication(): () => void {
+  private deferCuratedPublication(recover = true): () => void {
     const home = this.profile.home;
     curatedDepth.set(home, (curatedDepth.get(home) ?? 0) + 1);
     return () => {
@@ -451,7 +451,7 @@ export class MemoryStore {
       // #466: a project's own handle publishes its brief instead of a second handle indexing the same shard.
       try {
         for (const [store, projects] of pending ?? []) store.publishCurated(projects, store, true);
-        if (recovery?.length) {
+        if (recover && recovery?.length) {
           try {
             const aliases = effectiveAliases(home);
             const touched = new Set(Array.from(pending?.values() ?? []).flatMap(projects => [...projects].map(project => aliases.get(project) ?? project)));
@@ -461,7 +461,7 @@ export class MemoryStore {
             // Resume after the previous warm cohort. Reusing the removed set would always pick the same projects.
             const start = candidates.findLastIndex(candidate => candidate.warm) + 1;
             const additional = [...candidates.slice(start), ...candidates.slice(0, start)].slice(0, CURATED_RECOVERY_LIMIT);
-            this.publishCurated(new Set(additional.map(candidate => candidate.project)));
+            if (additional.length) this.publishCurated(new Set(additional.map(candidate => candidate.project)));
           } catch { recordBriefPublicationFailure(home, "curated", "source_unavailable"); }
         }
       } finally { publishingCurated = false; }
@@ -953,7 +953,7 @@ export class MemoryStore {
     // #466: the settle rows and every promotion they release land before one publication runs, and `promoting` covers
     // this handle, its user overlay and its alias shards for the whole call.
     return this.withDeferredPromotions(() => {
-      const release = this.deferCuratedPublication();
+      const release = this.deferCuratedPublication(false);
       try {
         const entry = { op: "settle", target: task, actor, by: this.until() } as const;
         const at = new Date(this.now()).toISOString();
