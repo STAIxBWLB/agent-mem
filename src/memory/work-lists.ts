@@ -10,6 +10,7 @@ import { canonicalPath } from "./platform.ts";
 import { looksSecret } from "./screen.ts";
 import { stripPrivateDeep, stripPrivateSpans } from "./private-spans.ts";
 import { ensureShardDescriptor, resolveAlias, shardDir } from "./shard.ts";
+import { recordBriefPublicationFailure } from "./metrics.ts";
 import { machineId } from "./machine.ts";
 import type { WorkBrief, WorkBriefBinding, WorkSegment } from "../brief-work.ts";
 import { WORK_BRIEF_BYTES, WORK_BRIEF_VIEWS, pruneWorkBriefs, readWorkBrief, reserveWorkBriefSlot, workLogSegments, workPolicyRevision, writeWorkBrief } from "../brief-work.ts";
@@ -437,7 +438,7 @@ export class WorkListStore {
         const revision = workPolicyRevision(effective);
         if (revision !== workPolicyRevision(home)) await this.publishPolicyBrief(effective, revision, row, frame);
       }
-    } catch { /* A later write retries. */ }
+    } catch { recordBriefPublicationFailure(this.base, "work", "write_failed"); }
   }
 
   private async publishPolicyBrief(options: StandalonePolicyOptions, revision: string | undefined, row?: WorkRow, frame?: WriteFrame): Promise<void> {
@@ -451,7 +452,7 @@ export class WorkListStore {
     this.briefRetryWrites.delete(key);
     const standalone = createStandalonePolicy({ denyPaths: options.denyPaths, piiPatterns: options.piiPatterns });
     const segments = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
-    if (!segments) return;
+    if (!segments) return recordBriefPublicationFailure(this.base, "work", "source_unavailable");
     const binding = { base: this.base, project: this.project, machine: this.machine, ...(revision ? { revision } : {}) };
     const policy = workPolicyRevision(options);
     if (row && frame?.prior && frame.ordered) {
@@ -466,8 +467,8 @@ export class WorkListStore {
     }
     const views = await this.read(undefined, true, input => standalone.screenStandalone(input));
     const rest = workLogSegments(this.base, this.project, this.aliased.map(store => store.project));
-    if (!rest || JSON.stringify(segments) !== JSON.stringify(rest)) return;
-    if (revision && (!this.briefPolicyOptions || workPolicyRevision(this.briefPolicyOptions()) !== revision)) return;
+    if (!rest || JSON.stringify(segments) !== JSON.stringify(rest)) return recordBriefPublicationFailure(this.base, "work", "frontier_changed");
+    if (revision && (!this.briefPolicyOptions || workPolicyRevision(this.briefPolicyOptions()) !== revision)) return recordBriefPublicationFailure(this.base, "work", "binding_changed");
     this.publish(binding, { schema: "agent-mem.brief-work/v1", project: this.project, segments, policy,
       rows: views.slice(0, WORK_BRIEF_VIEWS).map(source => ({ source })), truncated: views.length > WORK_BRIEF_VIEWS }, key, shrinkRetry);
   }
@@ -481,6 +482,7 @@ export class WorkListStore {
       return ok;
     });
     if (!written) {
+      recordBriefPublicationFailure(this.base, "work", "byte_bound");
       this.briefRetryWrites.set(key, { remaining: 1024, shrinkCooldown: shrinkRetry ? 128 : 0 });
       if (this.briefRetryWrites.size > 5) this.briefRetryWrites.delete(this.briefRetryWrites.keys().next().value!);
     }
