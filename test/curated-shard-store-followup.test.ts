@@ -122,18 +122,20 @@ test("#15 unreadable curated index storage fails catalog derivation instead of r
   expect(() => rebuildCatalog({ home: dir })).toThrow();
 });
 
-test("#424 sharded: a project-realm write keeps the other project's prebuilt curated brief; a user-realm write invalidates every project", async () => {
+test("#424 sharded: a project-realm write keeps the other project's prebuilt curated brief; a user-realm write also refreshes the other project within the recovery cap", async () => {
   const dir = home(); legacy(dir); await migrate(dir);
   const { readBriefCache } = await import("../src/brief-cache.ts"), { captureShardDir } = await import("../src/memory/shard.ts"), { machineId } = await import("../src/memory/store.ts");
   const base = join(dir, "memory"), cache = (key: string) => readBriefCache({ directory: captureShardDir(base, key, machineId(base).id), project: key, section: "curated" });
   const a = project(dir, A), b = project(dir, B);
   a.prepareCuratedBriefs([A]); b.prepareCuratedBriefs([B]);
-  expect(cache(A)).toBeDefined(); expect(cache(B)).toBeDefined();
+  const otherBefore = cache(B);
+  expect(cache(A)).toBeDefined(); expect(otherBefore).toBeDefined();
   a.note(note(A, "alpha project-realm change"));
-  expect(cache(B)).toBeDefined();
+  expect(cache(B)).toEqual(otherBefore);
   expect(JSON.stringify(cache(A)?.rows)).toContain("alpha project-realm change");
   a.note(note(A, "user realm change reaches every brief", true));
-  expect(cache(B)).toBeUndefined();
+  expect(cache(B)?.rows).toEqual(otherBefore?.rows);
+  expect(cache(B)?.builtThrough).toBeGreaterThan(otherBefore!.builtThrough);
 });
 
 test("#424 sharded: a same-project promotion keeps the other project's curated cache", async () => {

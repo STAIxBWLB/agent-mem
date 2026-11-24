@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBriefCache } from "../src/brief-cache.ts";
@@ -7,8 +7,11 @@ import { sessionStartBrief } from "../src/session-brief.ts";
 import { curatedProfileBinding } from "../src/memory/curated-cache-state.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
-import { shardDir, shardMachineDir } from "../src/memory/shard.ts";
+import { aliasedKeys, appendAlias, shardDir, shardMachineDir } from "../src/memory/shard.ts";
 import { machineId, MemoryStore, openShardStore } from "../src/memory/store.ts";
+import { readMetrics } from "../src/memory/metrics.ts";
+import { processSignature } from "../src/memory/platform.ts";
+import { WorkListStore } from "../src/memory/work-lists.ts";
 import { prepareCuratedBriefCache } from "../src/index.ts";
 
 const roots: string[] = [];
@@ -131,4 +134,87 @@ test("ordinary library brief may initialize a v1 project cache and include share
   expect(existsSync(join(f.directory(), "brief-curated.json"))).toBe(true);
   expect(f.texts()).toContain("v1 shared user source");
   expect(sourceSegmentBytes(f.base)).toEqual(sourceBefore);
+});
+
+test("writes publish both native caches in an aliased generation without explicit preparation", async () => {
+  const f = fixture(), alias = "former-project-key";
+  seed(f.home, f.project, "project", "initial generation source");
+  await migrateShards({ memoryDir: f.base, mode: "apply", ...authorized });
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "0.24.0", since: "fixture" }]));
+  appendAlias(f.base, { alias, key: f.project, actor: "person", machine: machineId(f.base).id });
+  const aliases = aliasedKeys(f.base, f.project);
+  const store = openShardStore({ memoryDir: f.base, project: f.project, reconcile: { canonical: f.project, aliases }, deferPromotions: true });
+  try {
+    store.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person",
+      source: "person", text: "fresh curated marker", about: [] });
+  } finally { store.close(); }
+  const work = new WorkListStore({ base: f.base, project: alias, aliases, policy: () => true });
+  try { await work.write("queue", { task: "fresh work marker", status: "doing" }); }
+  finally { work.close(); }
+
+  const result = await sessionStartBrief({ cwd: f.home, base: f.base, project: alias,
+    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 1000 });
+  expect(result.coverage).toMatchObject({ curated: "complete", work: "complete" });
+  expect(result.context).toContain("fresh curated marker");
+  expect(result.context).toContain("fresh work marker");
+  expect(result.context).not.toContain("curated cache missing");
+  expect(result.context).not.toContain("work cache missing");
+});
+
+test("shared mutations rotate the two recovery slots across warm and cold projects", async () => {
+  const f = fixture(), extra = Array.from({ length: 5 }, (_, index) => `recovery-project-${index}`);
+  for (const project of [f.project, ...extra]) seed(f.home, project, "project", "project note");
+  await migrateShards({ memoryDir: f.base, mode: "apply", ...authorized });
+  const machine = machineId(f.base).id;
+  const binding = (project: string) => ({ directory: shardMachineDir(f.base, project, machine), project, section: "curated" as const });
+  for (const project of [f.project, ...extra]) prepareCuratedBriefCache(f.base, project);
+
+  const recovered = new Set<string>();
+  for (let iteration = 0; iteration < Math.ceil(extra.length / 2); iteration++) {
+    // Repeat with a fresh handle so recovery cannot depend on the writer retaining a cursor.
+    const store = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
+    try {
+      store.note({ op: "note", project: f.project, scope: "shared", tier: "long", kind: "decision", peer: "person",
+        source: "person", text: `shared mutation ${iteration}`, about: [] });
+    } finally { store.close(); }
+    expect(f.cache()).toBeDefined();
+    const warm = extra.filter(project => readBriefCache(binding(project)) !== undefined);
+    expect(warm).toHaveLength(2);
+    for (const project of warm) recovered.add(project);
+  }
+  expect(recovered.size).toBe(extra.length);
+});
+
+test("failed publication records fixed reasons after the source writes commit", async () => {
+  const f = fixture();
+  seed(f.home, f.project, "project", "initial source");
+  await migrateShards({ memoryDir: f.base, mode: "apply", ...authorized });
+  // The source shard is writable while the machine-local cache directory is obstructed.
+  const directory = f.directory();
+  mkdirSync(join(directory, ".."), { recursive: true });
+  rmSync(directory, { recursive: true, force: true });
+  writeFileSync(directory, "cache obstruction");
+  const curated = openShardStore({ memoryDir: f.base, project: f.project, deferPromotions: true });
+  const text = "publication private fixture marker";
+  try {
+    const id = curated.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision",
+      peer: "person", source: "person", text, about: [] });
+    expect(curated.get(id)?.text).toBe(text);
+  } finally { curated.close(); }
+  const work = new WorkListStore({ base: f.base, project: f.project, policy: () => true });
+  try {
+    await work.write("queue", { task: text, status: "doing" });
+    expect((await work.read())[0]?.items[0]?.task).toBe(text);
+  } finally { work.close(); }
+
+  const samples = () => readMetrics(f.base).filter(sample => sample.kind === "brief-publication");
+  const deadline = performance.now() + 1000;
+  while (samples().length < 2 && performance.now() < deadline) await Bun.sleep(10);
+  expect(samples().map(sample => sample.briefPublication)).toEqual([
+    { section: "curated", reason: "write_failed" }, { section: "work", reason: "write_failed" },
+  ]);
+  expect(JSON.stringify(samples())).not.toContain(text);
+  expect(samples().map(sample => Object.keys(sample).sort())).toEqual([
+    ["at", "briefPublication", "kind"], ["at", "briefPublication", "kind"],
+  ]);
 });

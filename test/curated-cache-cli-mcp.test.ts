@@ -1,13 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
 import { briefCacheFile, readBriefCache, writeBriefCache } from "../src/brief-cache.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { memoryProjectKey } from "../src/memory/project.ts";
-import { shardMachineDir } from "../src/memory/shard.ts";
+import { appendAlias, shardMachineDir } from "../src/memory/shard.ts";
 import { machineId, MemoryStore } from "../src/memory/store.ts";
+import { workBriefFile, workPolicyRevision } from "../src/brief-work.ts";
+import { configuredPolicyOptions } from "../src/memory/config.ts";
+import { migrateShards } from "../src/memory/shard-migration.ts";
+import { processSignature } from "../src/memory/platform.ts";
+import { WorkListStore } from "../src/memory/work-lists.ts";
+import { sessionStartBrief } from "../src/session-brief.ts";
 
 interface QuietBrief { brief: string; bytes: number; truncated: boolean; state: string }
 const roots: string[] = [];
@@ -77,4 +83,40 @@ test("direct MCP amem_brief neither creates a missing cache nor overwrites an ex
     expect(readFileSync(f.file)).toEqual(before);
     expect(f.cache()?.curated?.binding).toBe("fixture-sentinel-binding");
   } finally { session.close(); }
+});
+
+test("CLI brief backfills native work from existing aliased generation logs under the repository policy", async () => {
+  const f = fixture(), alias = "work-history-alias", machine = machineId(f.base).id;
+  const seed = new MemoryStore({ memoryDir: f.base, deferPromotions: true });
+  try {
+    seed.note({ op: "note", project: f.project, scope: "project", tier: "long", kind: "decision", peer: "person",
+      source: "person", text: "generation note marker", about: [] });
+  } finally { seed.close(); }
+  await migrateShards({ memoryDir: f.base, mode: "apply", authorizedPerson: true, tty: true });
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "0.24.0", since: "fixture" }]));
+  const work = new WorkListStore({ base: f.base, project: alias, exact: true, policy: () => true });
+  try {
+    await work.write("old queue", { task: "historical work marker", status: "doing" });
+    await work.write("private queue", { task: "repository-hidden marker", status: "doing" });
+  } finally { work.close(); }
+  // Simulate logs from before work snapshot publication existed.
+  rmSync(workBriefFile({ base: f.base, project: alias, machine }));
+  appendAlias(f.base, { alias, key: f.project, actor: "person", machine });
+  mkdirSync(join(f.root, ".git"));
+  mkdirSync(join(f.root, ".amem"));
+  writeFileSync(join(f.root, ".amem", "config"), JSON.stringify({ piiPatterns: ["repository-hidden"] }));
+  const revision = workPolicyRevision(configuredPolicyOptions(f.base, f.root));
+  expect(revision).not.toBe(workPolicyRevision(configuredPolicyOptions(f.base)));
+  const scoped = workBriefFile({ base: f.base, project: f.project, machine, revision });
+  const native = () => sessionStartBrief({ cwd: f.root, base: f.base, project: alias,
+    nativeSession: { signature: processSignature(process.pid)! }, timeRemaining: () => 1000 });
+  expect((await native()).context).toContain("work cache missing");
+  await withFakeHome(f, () => runCli(["brief", "--for", "quiet context", "--json"], { cwd: f.root, env: {} }));
+  expect(existsSync(scoped)).toBe(true);
+  const result = await native();
+  expect(result.context).toContain("historical work marker");
+  expect(result.context).toContain("generation note marker");
+  expect(result.context).not.toContain("repository-hidden marker");
+  expect(result.context).not.toContain("work cache missing");
+  expect(result.context).not.toContain("curated cache missing");
 });

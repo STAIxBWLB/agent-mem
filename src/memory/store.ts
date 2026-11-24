@@ -1,7 +1,7 @@
 import { RECAP_SCRATCH } from "./recap-scratch.ts";
 import { buildCuratedBriefCache, buildPreferenceBriefCache } from "../brief-curated.ts";
 import { PREFERENCE_SLOT } from "./preference-brief.ts";
-import { curatedProfileBinding, invalidateCuratedCaches } from "./curated-cache-state.ts";
+import { curatedProfileBinding, invalidateCuratedCaches, type CuratedCacheCandidate } from "./curated-cache-state.ts";
 import { assertPlacementRuntime, placementSelectorRefusal, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertFormatFloor, floorRaiseHint, formatFloorAtLeast, PREFERENCE_MIN_READER } from "./formats.ts";
 import { readPublicPruneView } from "./public-prune-view.ts";
@@ -18,12 +18,12 @@ import { looksSecret } from "./screen.ts";
 import { mutationDatabase } from "./mutation.ts";
 import { memoryHome } from "./home.ts";
 import { machineId, type Machine } from "./machine.ts";
-import { assertProjectActive } from "./lifecycle.ts";
+import { assertProjectActive, lifecycleResolver } from "./lifecycle.ts";
 export { machineId, type Machine } from "./machine.ts";
 import { rankedScore, rankedScoreDetails, unrankedScoreDetails, type SearchScoreDetails } from "./search-score.ts";
 export type { SearchScoreDetails } from "./search-score.ts";
 import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
-import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
+import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, effectiveAliases, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
 import { generationDescriptor, generationDir, fsyncDirectory, canonicalJSON, hashJSON, readProfileJSON, resolveProfile, writeProfileJSON, readSelector, type BoundProfile, type ProfileInput, validateVaultLinkRow, vaultLinkId, type VaultLink, type VaultLinkRow, rebindPublicPruneProfile } from "./generation.ts";
@@ -33,6 +33,7 @@ import { readMigrationSources } from "./migrate.ts";
 import type { PruneSourceRow, PruneStorePort } from "./prune.ts";
 import { isDeepStrictEqual } from "node:util";
 import { registerReaderLease, type ReaderLease } from "./reader-lease.ts";
+import { recordBriefPublicationFailure } from "./metrics.ts";
 import { groupByTask, taskGroupKey } from "./task-group.ts";
 
 /**
@@ -227,6 +228,9 @@ interface BootstrapBinding { token: typeof MIGRATION_BOOTSTRAP; profile: BoundPr
 // Defer publication until the outermost source fence in this process has released.
 const curatedDepth = new Map<string, number>();
 const curatedPending = new Map<string, Map<MemoryStore, Set<string>>>();
+const curatedRecovery = new Map<string, CuratedCacheCandidate[]>();
+// ponytail: two extra project preparations per fence release. An explicit bulk maintenance command is the upgrade for a large cold home.
+const CURATED_RECOVERY_LIMIT = 2;
 /** #424: a project-scope, non-preference row appears only in its own project's prebuilt curated brief (the preference slot also reads shared rows). */
 const curatedLocal = (row: { scope?: string; kind?: string }): boolean => row.scope === "project" && row.kind !== "preference";
 let publishingCurated = false;
@@ -327,7 +331,7 @@ export class MemoryStore {
         apply: (line, source) => this.apply(line, source), withMutation: work => this.withMutation(work), beforeCuratedWrite: targets => {
           const rows = this.db.query("SELECT project, scope, kind FROM entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(targets)) as { project: string; scope: string; kind: string }[];
           // #424: only the touched projects' prebuilt briefs; a shared or preference row (or an unknown target) can reach every project's slot.
-          invalidateCuratedCaches(this.profile.home, rows.length === targets.length && rows.every(row => curatedLocal(row)) && rows.every(row => this.curatedChangeLocal(row.project, targets)) ? rows.map(row => row.project) : undefined);
+          this.invalidateCuratedForPublication(rows.length === targets.length && rows.every(row => curatedLocal(row)) && rows.every(row => this.curatedChangeLocal(row.project, targets)) ? rows.map(row => row.project) : undefined);
           this.queueCuratedProjects(rows.map(row => row.project));
         },
         ...(bootstrap ? { limits: bootstrap.limits } : {}), ...(bootstrap?.commit ? { commit: bootstrap.commit } : {}) });
@@ -441,11 +445,26 @@ export class MemoryStore {
       curatedDepth.delete(home);
       if (publishingCurated) return;
       const pending = curatedPending.get(home); curatedPending.delete(home);
-      if (!pending) return;
+      const recovery = curatedRecovery.get(home); curatedRecovery.delete(home);
+      if (!pending && !recovery) return;
       publishingCurated = true;
       // #466: a project's own handle publishes its brief instead of a second handle indexing the same shard.
-      try { for (const [store, projects] of pending) store.publishCurated(projects, store, true); }
-      finally { publishingCurated = false; }
+      try {
+        for (const [store, projects] of pending ?? []) store.publishCurated(projects, store, true);
+        if (recovery?.length) {
+          try {
+            const aliases = effectiveAliases(home);
+            const touched = new Set(Array.from(pending?.values() ?? []).flatMap(projects => [...projects].map(project => aliases.get(project) ?? project)));
+            const state = lifecycleResolver(home);
+            const candidates = recovery.filter(({ project }) => !touched.has(project) && !aliases.has(project) && state(project) === "active")
+              .sort((a, b) => b.activity - a.activity || a.project.localeCompare(b.project));
+            // Resume after the previous warm cohort. Reusing the removed set would always pick the same projects.
+            const start = candidates.findLastIndex(candidate => candidate.warm) + 1;
+            const additional = [...candidates.slice(start), ...candidates.slice(0, start)].slice(0, CURATED_RECOVERY_LIMIT);
+            this.publishCurated(new Set(additional.map(candidate => candidate.project)));
+          } catch { recordBriefPublicationFailure(home, "curated", "source_unavailable"); }
+        }
+      } finally { publishingCurated = false; }
     };
   }
 
@@ -498,10 +517,23 @@ export class MemoryStore {
     if (this.curatedRelations.size > 8192) this.curatedRelations = null;
   }
 
+  private invalidateCuratedForPublication(projects?: readonly string[]): void {
+    const home = this.profile.home;
+    if (projects || !this.profile.sharded || publishingCurated || curatedRecovery.has(home)) {
+      invalidateCuratedCaches(home, projects);
+      return;
+    }
+    const candidates: CuratedCacheCandidate[] = [];
+    invalidateCuratedCaches(home, undefined, {
+      machine: this.machine.id, now: Date.now(), candidate: candidate => candidates.push(candidate),
+    });
+    curatedRecovery.set(home, candidates);
+  }
+
   /** #424: `local` means the change is visible only in `project`'s prebuilt brief; otherwise every project's cache is invalidated. */
   private markCuratedChange(project?: string, local = false): void {
     if (this.bootstrapOnly) return;
-    invalidateCuratedCaches(this.profile.home, project && local ? [project] : undefined);
+    this.invalidateCuratedForPublication(project && local ? [project] : undefined);
     this.queueCuratedProjects(project ? [project] : []);
   }
 
@@ -530,7 +562,7 @@ export class MemoryStore {
   beginCuratedCacheUpdate(): () => void {
     const release = this.deferCuratedPublication();
     let before: Map<string, string>;
-    try { before = this.curatedProjectRevisions(); invalidateCuratedCaches(this.profile.home); }
+    try { before = this.curatedProjectRevisions(); this.invalidateCuratedForPublication(); }
     catch (error) { release(); throw error; }
     return () => {
       try {
@@ -545,7 +577,7 @@ export class MemoryStore {
   /** Off-hook preparation; callers never invoke this from native SessionStart. */
   prepareCuratedBriefs(projects?: readonly string[]): void {
     try { this.curatedRebuildAll = projects === undefined; this.publishCurated(new Set(projects ?? []), projects?.length === 1 ? this : undefined); }
-    catch { /* An off-hook read still succeeds when its optional derived cache cannot be prepared. */ }
+    catch { recordBriefPublicationFailure(this.profile.home, "curated", "source_unavailable"); }
   }
 
   private publishCurated(input: ReadonlySet<string>, opened?: MemoryStore, openOnMiss = false): void {
@@ -558,6 +590,7 @@ export class MemoryStore {
     }
     for (const raw of projects) {
       let view: MemoryStore | undefined;
+      let failure: "source_unavailable" | "binding_changed" | "write_failed" = "source_unavailable";
       try {
         const project = resolveAlias(this.profile.home, raw), aliases = aliasedKeys(this.profile.home, project);
         const common = { memoryDir: this.profile.home, deferPromotions: true, now: this.now, ...(aliases.length ? { reconcile: { canonical: project, aliases } } : {}) };
@@ -578,6 +611,7 @@ export class MemoryStore {
         view.curatedPublication = true;
         try {
           view.withStoreFences(() => {
+            failure = "binding_changed";
             const selected = readSelector(this.profile.home);
             const shards = sharded ? readShardedSelection(this.profile.home) : null;
             if (view!.profile.selectorRevision !== selected.revision || view!.profile.kind !== (shards ? "generation" : selected.selector?.kind ?? "shared-v1")
@@ -589,15 +623,20 @@ export class MemoryStore {
             }
             // Stamp the source handle's inputs, never a newer metadata read that it did not open.
             const binding = JSON.stringify({ selector: selected.revision, shards, aliases });
+            failure = "write_failed";
             ensureShardDescriptor(this.profile.home, project);
             const directory = shardMachineDir(this.profile.home, project, machineId(this.profile.home).id);
             mkdirSync(directory, { recursive: true, mode: 0o700 });
             buildCuratedBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
             buildPreferenceBriefCache(view!, { base: this.profile.home, project, directory, binding, now: this.now });
-            if (curatedProfileBinding(this.profile.home, project) !== binding) for (const name of ["brief-curated.json", "brief-preferences.json"]) rmSync(join(directory, name), { force: true });
+            failure = "binding_changed";
+            if (curatedProfileBinding(this.profile.home, project) !== binding) {
+              for (const name of ["brief-curated.json", "brief-preferences.json"]) rmSync(join(directory, name), { force: true });
+              recordBriefPublicationFailure(this.profile.home, "curated", failure);
+            }
           });
         } finally { view.curatedPublication = false; }
-      } catch { /* Failed derived publication leaves the invalidated cache unavailable; a later mutation retries. */ }
+      } catch { recordBriefPublicationFailure(this.profile.home, "curated", failure); }
       finally { try { if (view !== opened) view?.close(); } catch { /* Preserve the authoritative mutation result. */ } }
     }
   }

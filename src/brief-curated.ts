@@ -6,6 +6,8 @@ import { BRIEF_CACHE_BYTES, writeBriefCache, type BriefCacheRow } from "./brief-
 import { PREFERENCE_SLOT } from "./memory/preference-brief.ts";
 import { taskGroupKey } from "./memory/task-group.ts";
 
+// The longest serialized Date.parse result (or null) fits this reservation.
+const EXPIRY_RESERVATION = -8_640_000_000_000_000;
 const PAGE_ROWS = 32, MAX_PAGES = 4, SECTION_RECORDS = 4, RECORD_BYTES = 768, MAX_AGE = 24 * 60 * 60 * 1000;
 
 /** Canonical curated display shared by the library brief and snapshot writer. */
@@ -54,8 +56,9 @@ export function buildPreferenceBriefCache(store: Pick<MemoryStore, "readPreferen
   options: { base: string; project: string; directory: string; binding: string; cwd?: string; now?: () => number; policy?: StandalonePolicyOptions }): void {
   if (options.policy?.host) throw new Error("prebuilt preference brief requires synchronous standalone policy; remove host policy or use the async session brief");
   const now = (options.now ?? Date.now)(), policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
+  const builtThrough = Math.max(1, now);
   const rows: BriefCacheRow[] = [], expires: number[] = [];
-  let partial = false, bytes = Buffer.byteLength(JSON.stringify({ schema: "agent-mem.brief-cache/v1", project: options.project, section: "preferences", builtThrough: 1, partial: false, rows: [], preferences: { builtAt: now, binding: options.binding, expiresAt: null } })) + 1;
+  let partial = false, bytes = Buffer.byteLength(JSON.stringify({ schema: "agent-mem.brief-cache/v1", project: options.project, section: "preferences", builtThrough, partial: false, rows: [], preferences: { builtAt: now, binding: options.binding, expiresAt: EXPIRY_RESERVATION } })) + 1;
   store.withDeferredPromotions(() => {
     // Newest first with no paging: the slot must not hide an old preference behind newer notes of other kinds.
     const page = store.readPreferences(options.project, PREFERENCE_SLOT);
@@ -76,7 +79,7 @@ export function buildPreferenceBriefCache(store: Pick<MemoryStore, "readPreferen
   });
   const expiresAt = expires.length ? Math.min(...expires) : null;
   writeBriefCache({ directory: options.directory, project: options.project, section: "preferences" }, {
-    schema: "agent-mem.brief-cache/v1", project: options.project, section: "preferences", builtThrough: Math.max(1, now), partial, rows,
+    schema: "agent-mem.brief-cache/v1", project: options.project, section: "preferences", builtThrough, partial, rows,
     preferences: { builtAt: now, binding: options.binding, expiresAt },
   });
 }
@@ -85,10 +88,11 @@ export function buildCuratedBriefCache(store: Pick<MemoryStore, "readPage" | "wi
   options: { base: string; project: string; directory: string; binding: string; cwd?: string; now?: () => number; policy?: StandalonePolicyOptions }): void {
   if (options.policy?.host) throw new Error("prebuilt curated brief requires synchronous standalone policy; remove host policy or use the async session brief");
   const now = (options.now ?? Date.now)(), policy = createStandalonePolicy(configuredPolicyOptions(options.base, options.cwd, options.policy));
+  const builtThrough = Math.max(1, now);
   const rows: BriefCacheRow[] = [], expires: number[] = [];
   let partial = false, after: { position: number; id: string } | undefined, complete = false;
   const tasks = new Set<string>(); // #423: one row per task, the first in page order; later same-task rows take no slot
-  let bytes = Buffer.byteLength(JSON.stringify({ schema: "agent-mem.brief-cache/v1", project: options.project, section: "curated", builtThrough: 1, partial: false, rows: [], curated: { builtAt: now, binding: options.binding, expiresAt: null } })) + 1;
+  let bytes = Buffer.byteLength(JSON.stringify({ schema: "agent-mem.brief-cache/v1", project: options.project, section: "curated", builtThrough, partial: false, rows: [], curated: { builtAt: now, binding: options.binding, expiresAt: EXPIRY_RESERVATION } })) + 1;
   store.withDeferredPromotions(() => {
     for (let pageNo = 0; pageNo < MAX_PAGES; pageNo++) {
       const page = store.readPage({ project: options.project, limit: PAGE_ROWS, after });
@@ -117,7 +121,7 @@ export function buildCuratedBriefCache(store: Pick<MemoryStore, "readPage" | "wi
   });
   const expiresAt = expires.length ? Math.min(...expires) : null;
   writeBriefCache({ directory: options.directory, project: options.project, section: "curated" }, {
-    schema: "agent-mem.brief-cache/v1", project: options.project, section: "curated", builtThrough: Math.max(1, now), partial, rows,
+    schema: "agent-mem.brief-cache/v1", project: options.project, section: "curated", builtThrough, partial, rows,
     curated: { builtAt: now, binding: options.binding, expiresAt },
   });
 }

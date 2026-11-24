@@ -651,6 +651,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         { project, cwd: root, repo: project, intent, paths, symbols, maxBytes, policy, policyVersion, assertCurrent, now: () => store.readNow(), stale: createRecallStalenessProbe({ cwd: root, rootConfirmed, policy }) });
       assertCurrent(); outputReady(result.items.map(view => view.id), project);
       store.prepareCuratedBriefs([project]);
+      const { prepareWorkBriefCache } = await import("./memory/work-lists.ts");
+      await prepareWorkBriefCache(base, project, policyCwd);
+      assertCurrent();
       return options["--json"] ? JSON.stringify({ brief: result.text, bytes: result.bytes, truncated: result.truncated, state: result.state }, null, 2) : result.text;
     } finally { store.close(); }
   }

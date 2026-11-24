@@ -55,7 +55,13 @@ export interface RecordVariantMetric {
 /** All marks are process-local performance.now() milliseconds since the process time origin. */
 export interface JcodeJournalTiming { scanStartMs?: number; scanEndMs?: number; workStartMs?: number; publishStartMs?: number; publishEndMs?: number; publishTotalMs?: number; workerSpawnStartMs?: number; workerSpawnEndMs?: number; cursorCloseStartMs?: number; cursorCloseEndMs?: number; metricSampleAtMs?: number }
 export interface TranscriptTiming { killAtMs?: number; reapAtMs?: number; metricSampleAtMs: number }
-export interface MetricSample extends RecordVariantMetric { jcodeJournalTiming?: JcodeJournalTiming; transcriptTiming?: TranscriptTiming; at: string; kind: "hook" | "search" | "mcp-phase"; /** #485: the read tool that completed, so a peak can be attributed; never its arguments or result. */ tool?: string; /** #485: the process peak after this call was higher than after any sample before it. */ peakRaised?: boolean; shared?: boolean; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
+export type BriefPublicationFailureReason = "source_unavailable" | "binding_changed" | "frontier_changed" | "byte_bound" | "write_failed";
+
+export function recordBriefPublicationFailure(base: string, section: "curated" | "work", reason: BriefPublicationFailureReason): void {
+  appendMetricsLater(base, [{ at: new Date().toISOString(), kind: "brief-publication", briefPublication: { section, reason } }]);
+}
+
+export interface MetricSample extends RecordVariantMetric { jcodeJournalTiming?: JcodeJournalTiming; transcriptTiming?: TranscriptTiming; at: string; kind: "hook" | "search" | "mcp-phase" | "brief-publication"; briefPublication?: { section: "curated" | "work"; reason: BriefPublicationFailureReason }; /** #485: the read tool that completed, so a peak can be attributed; never its arguments or result. */ tool?: string; /** #485: the process peak after this call was higher than after any sample before it. */ peakRaised?: boolean; shared?: boolean; brief?: BriefObservation; wallMs?: number; rssMB?: number; rawRssMB?: number; rssSources?: HookRssSources; rssScope?: "owned-images"; transcriptOffset?: number; transcriptStopReason?: HookTranscriptStopReason; /** #226: owned children killed but still alive when the hook returned (bounded reap). */ abandonedChildren?: number; /** #226: a killed worker skipped this call's drain; staged records stay pending (not a capture drop). */ drainSkipped?: number; /** #226: when the worker drain started (ms after hook start) and how many records it committed. */ drainStartMs?: number; drained?: number; idleMB?: number; recordInstructionBytes?: number; recordInstructionEstimatedTokens?: number; captureDrops?: number; captureDropReason?: CaptureDropReason }
 const METRICS_MAX_BYTES = 128 * 1024, METRICS_KEEP = 200, MCP_PHASE_KEEP = 32;
 // ponytail: reserve 17 KiB for future appends; upgrade to separate bounded files if these windows need larger guarantees.
 const HOOK_BYTES = 74 * 1024, SEARCH_BYTES = 30 * 1024, PHASE_BYTES = 6 * 1024, OTHER_BYTES = 1024;
@@ -200,14 +206,16 @@ function trimMetrics(file: string): void {
  * is refused before a byte is written. One worker drains the hand-offs in call order, so the file keeps the order the
  * calls completed in; a sample still in flight when the process exits is simply lost.
  */
-const pending: { base: string; samples: MetricSample[]; phase: boolean }[] = [];
-let draining = false, pendingPhases = 0;
+const pending: { base: string; samples: MetricSample[]; boundedKind?: "mcp-phase" | "brief-publication" }[] = [];
+let draining = false;
+const pendingCounts = { "mcp-phase": 0, "brief-publication": 0 };
 export function appendMetricsLater(base: string, samples: MetricSample[]): void {
-  const phase = samples.length > 0 && samples.every(sample => sample.kind === "mcp-phase");
-  // ponytail: at most 32 outstanding phase writes; a bounded worker queue with per-kind fairness is the upgrade.
-  if (phase && pendingPhases >= MCP_PHASE_KEEP) return;
-  if (phase) pendingPhases++;
-  pending.push({ base, samples, phase });
+  const kind = samples[0]?.kind;
+  const boundedKind = (kind === "mcp-phase" || kind === "brief-publication") && samples.every(sample => sample.kind === kind) ? kind : undefined;
+  // ponytail: at most 32 outstanding writes per metered kind; a worker queue with per-kind fairness is the upgrade.
+  if (boundedKind && pendingCounts[boundedKind] >= MCP_PHASE_KEEP) return;
+  if (boundedKind) pendingCounts[boundedKind]++;
+  pending.push({ base, samples, boundedKind });
   if (draining) return;
   draining = true;
   setImmediate(() => { void drainPending(); });
@@ -217,7 +225,7 @@ async function drainPending(): Promise<void> {
   while (pending.length) {
     const next = pending.shift()!;
     try { await writeSamplesLater(next.base, next.samples); } catch { /* a lost sample is never a failed call */ }
-    finally { if (next.phase) pendingPhases--; }
+    finally { if (next.boundedKind) pendingCounts[next.boundedKind]--; }
   }
   draining = false;
 }
@@ -261,7 +269,7 @@ export function readMetrics(base: string, limit = METRICS_KEEP): MetricSample[] 
     if (!line) continue;
     try {
       const s = JSON.parse(line) as MetricSample;
-      if ((s?.kind === "hook" || s?.kind === "search" || s?.kind === "mcp-phase") && typeof s.at === "string") parsed.push(s);
+      if ((s?.kind === "hook" || s?.kind === "search" || s?.kind === "mcp-phase" || s?.kind === "brief-publication") && typeof s.at === "string") parsed.push(s);
     } catch { /* a malformed line is skipped */ }
   }
   return newestPerKind(parsed, limit, sample => sample.kind);

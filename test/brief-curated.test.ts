@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCuratedBriefCache, curatedCacheFresh, noteDisplay, validCachedCurated } from "../src/brief-curated.ts";
+import { buildCuratedBriefCache, buildPreferenceBriefCache, curatedCacheFresh, noteDisplay, validCachedCurated } from "../src/brief-curated.ts";
 import { readBriefCache, writeBriefCache } from "../src/brief-cache.ts";
 import { migrate } from "../src/memory/migrate.ts";
 import { MemoryStore, type View } from "../src/memory/store.ts";
@@ -93,4 +93,27 @@ test("cache selection and earliest expiry match the real MemoryStore readPage", 
     expect(cache.rows.map(row => (row.source as View).id)).toEqual(expected.map(item => item.id));
     expect(cache.curated?.expiresAt).toBe(Math.min(...expected.flatMap(item => item.expiresAt ? [Date.parse(item.expiresAt)] : [])));
   } finally { store.close(); }
+});
+
+for (const section of ["curated", "preferences"] as const) test(`${section} byte budget includes the real watermark and expiry`, () => {
+  const root = mkdtempSync(join(tmpdir(), "amem-curated-envelope-")); roots.push(root);
+  const now = 1_800_000_000_000, expiresAt = new Date(now + 1000).toISOString();
+  const metadata = { builtAt: now, binding: "generation", expiresAt: null };
+  const field = section === "curated" ? "curated" : "preferences";
+  const large = view("visible excerpt", { kind: section === "curated" ? "decision" : "preference",
+    expiresAt, about: ["a".repeat(12_000), "b".repeat(12_000), ""] });
+  const small = view("fallback row", { id: "b".repeat(32), kind: large.kind });
+  const oldBudget = { schema: "agent-mem.brief-cache/v1", project: "p", section, builtThrough: 1,
+    partial: false, rows: [{ source: large, ...noteDisplay(large) }], [field]: metadata };
+  large.about[2] = "c".repeat(BRIEF_CACHE_BYTES - Buffer.byteLength(JSON.stringify(oldBudget)) - 1);
+  const rows = [large, small];
+  const store = { withDeferredPromotions: <T>(work: () => T) => work(), readPage: () => ({ rows }),
+    readPreferences: () => ({ rows, truncated: false }) };
+  const options = { base: root, project: "p", directory: root, binding: metadata.binding, now: () => now };
+  if (section === "curated") buildCuratedBriefCache(store, options);
+  else buildPreferenceBriefCache(store, options);
+  const cache = readBriefCache({ directory: root, project: "p", section });
+  expect(cache?.builtThrough).toBe(now);
+  expect(cache?.partial).toBe(true);
+  expect(cache?.rows.map(row => (row.source as View).id)).toEqual([small.id]);
 });
