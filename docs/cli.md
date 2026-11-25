@@ -219,8 +219,8 @@ A writer-context refusal is also `amem sync`'s own result (#551). A human run pr
 Moving an install root on a placement home has an order. Writer verification compares the running install and every applied setup receipt against the active inventory, so a root the inventory does not hold stops sync as a `missing` entry: `running CLI` for the install running the command, `setup receipt` for one a receipt names. Renew the inventory first, then move the setup receipts to the new root. Renew through the checkpoint first (#624). It excludes placement writers only, so agent sessions, hub peers and their `amem mcp` servers keep running:
 
 ```
-amem migrate --sync-placement --checkpoint --writer-root <new root> --writer-root <other roots>
-amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> --writer-root <new root> --writer-root <other roots>
+(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <new root> --writer-root <other roots> --json > checkpoint-plan.json)
+amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json --writer-root <new root> --writer-root <other roots>
 amem setup <target> --apply
 ```
 

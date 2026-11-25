@@ -6,7 +6,7 @@ import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-plac
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { syncMemory } from "../src/memory/sync.ts";
-import { activePlacementWriterContext } from "../src/sync-placement-writer-context.ts";
+import { activePlacementWriterContext, PlacementWriterContextError } from "../src/sync-placement-writer-context.ts";
 import { readPlacementJournal, releasePlacementStorageCaches } from "../src/memory/sync-placement-journal-storage.ts";
 import { resolvePlacementWindow, PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "../src/memory/sync-placement-checkpoint-storage.ts";
 import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-effective-writers.ts";
@@ -284,4 +284,22 @@ test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed m
   });
   expect(placementSyncBoundMessage({ phase: "publication-plan", kind: "journal-objects", limit: 256, observed: 280 })).toContain("amem migrate --sync-placement --checkpoint --writer-root");
   expect(placementSyncBoundMessage({ phase: "publication-plan", kind: "journal-records", limit: 20000, observed: 20001 })).not.toContain("--checkpoint");
+}, 240_000);
+
+// #624: the remedy the writer-proof refusal prints runs as printed: its saving preview yields the plan file confirm reads.
+test("#624: the printed saving checkpoint preview produces a plan that --confirm --plan accepts", async () => {
+  const f = await fixture(); expect((await f.sync()).ok).toBe(true);
+  const message = new PlacementWriterContextError("running CLI", "missing").message;
+  const saving = /\(umask 077; set -C; amem (migrate .+?) > (checkpoint-plan\.json)\)/.exec(message)!;
+  const confirm = /run amem (migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan\.json) with the same --writer-root list/.exec(message)!;
+  expect(saving).not.toBeNull(); expect(confirm).not.toBeNull();
+  const fill = (argv: string) => argv.split(" ").map(arg => arg === "<install" ? activationOwnRoot : arg).filter(arg => arg !== "root>");
+  const previewArgv = fill(saving[1]!), file = join(f.root, saving[2]!);
+  expect(previewArgv).toEqual(["migrate", "--sync-placement", "--checkpoint", "--writer-root", activationOwnRoot, "--json"]);
+  await withHome(f.base, async () => {
+    // The redirect target is what the parentheses write: the preview's --json stdout, in a new 0600 file.
+    writeFileSync(file, await runCli(previewArgv, { cwd: f.root, env: {}, stdinTTY: false }), { mode: 0o600, flag: "wx" });
+    const done = JSON.parse(await runCli([...confirm[1]!.split(" ").map(arg => arg === "checkpoint-plan.json" ? file : arg), "--writer-root", activationOwnRoot, "--json"], { cwd: f.root, env: {}, stdinTTY: false }));
+    expect(done).toMatchObject({ renewed: true, window: 1 });
+  });
 }, 240_000);
