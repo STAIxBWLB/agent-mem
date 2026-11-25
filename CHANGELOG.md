@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.39.0
 
 ### Added
 
@@ -12,9 +12,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - Sync status and doctor cadence retain the fixed cause and root category for writer-proof refusals, so writer renewal can be distinguished from generic failures. Refs #613.
 - Placement sync reports the measured bound and checkpoint recovery steps in marked terminal sessions, including cadence sync. Refs #617.
-
 - Native SessionStart retains near-limit curated briefs. Shared writes can rebuild up to two additional projects after invalidation, and `amem brief` can rebuild a work cache from existing logs. Publication failures record fixed reason codes. Refs #614.
-
 - Invalid arguments to `amem formats raise` and other commands with argument-only usage checks now show usage and exit 2 in agent-marked sessions. Refs #596.
 
 ### Changed
@@ -22,6 +20,17 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - A placement sync with nothing to publish skips policy evaluation for each publication whose captured, journal and freshly read remote inputs match its last `not-needed` run, and reports the same receipt and counts. The derived cache `sync-noop-cache/` in the memory home is safe to delete and is never read for publication. Writer and remote verification still run for every publication. Refs #612.
 
 - Runtime dependencies stay off the write path: the human renderers that use `@staix/cli-output` moved into presentation modules (`doctorText`, `migrationText`, `shardMigrationText`, `pruneText`, `capacityText`, `capacityApplyText`, `capacitySplitText`, `gcText` keep their package exports and bytes), and `bun scripts/check-boundary.ts` now fails when any write-path module (one that imports a write-capable built-in such as `node:fs`, `bun:sqlite` or `node:crypto`, or screens policy) imports a runtime dependency, directly or through other modules. Writer pins keep covering only amem's own files. Refs #592.
+
+### Compatibility with N-1 (0.38.0)
+
+- Derived curated index (#610): 0.39.0 builds a separate v6 index from existing rows on first open of each populated profile. The rebuild takes time and adds disk usage. 0.38.0 keeps using its v5 index alongside v6 when both releases share a home.
+- Host API (#610): `MemoryStore.unsettledTaskKeys` is additive. Hosts can feature-detect it before calling it. `HOST_API_VERSION` stays at 1.
+- Sync status (#613): a failed v1 sidecar can include optional `writerRefusal`, which 0.38.0 ignores. The existing cause and category retain their meanings and allowed values.
+- No-op placement cache (#612): `sync-noop-cache/` is derived, machine-local and safe to delete. 0.38.0 ignores it. Writer and remote verification still run for each publication.
+- SessionStart brief caches (#614): existing curated, preference and work cache schemas and bounds remain compatible. Curated preparation accounts for the full envelope, shared writes can recover up to two additional projects and `amem brief` can prepare work snapshots from existing logs.
+- Metrics (#614): 0.38.0 readers ignore the new `brief-publication` kind, whose samples carry fixed section and failure-reason codes.
+- CLI output (#613, #617): human sync failures include measured bounds and checkpoint steps, and sync status and doctor cadence identify writer refusals. Existing JSON fields and sync exit codes are retained. Sync status and doctor cadence can add optional `writerRefusal` under their respective operation and cadence sync records. Malformed command arguments now return usage and exit 2 in affected agent-marked sessions (#596).
+- Authoritative data and tooling: storage formats, entry ids and hashing, existing schema identifiers, sync transport and placement records, writer-pin rules, writer-pin input scope, MCP tool names and format floors remain unchanged. Writer fingerprints still reflect the measured install, so normal writer verification and renewal rules apply when upgrading. The exact `@staix/cli-output` pin stays at 0.1.3.
 
 ## 0.38.0
 
