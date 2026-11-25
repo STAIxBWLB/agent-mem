@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as setup from "../src/setup.ts";
 import { realPath } from "../src/memory/platform.ts";
-import { initialPlacementWriterContext, markedSetupReceiptRefusal, placementSyncFailure, placementWriterRefusalText, PlacementWriterContextError, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
+import { initialPlacementWriterContext, markedSetupReceiptRefusal, placementSyncFailure, placementWriterRefusalDetail, placementWriterRefusalText, PlacementWriterContextError, type PlacementWriterRootCategory } from "../src/sync-placement-writer-context.ts";
+import { PLACEMENT_CHECKPOINT_BUSY_MESSAGE, PlacementInventoryFenceError } from "../src/memory/sync-placement-activation-locks.ts";
 import { SharedWriterRevisionError } from "../src/memory/sync-placement-writer-revision-format.ts";
 
 const cleanup:(()=>void)[]=[];
@@ -93,7 +94,13 @@ test("the later sync failure keeps the mapped target through its wrapper, withou
 
 test("active diagnostics keep restore-or-renew and locator recovery never invents a backup",()=>{
   for(const category of ["running CLI","setup receipt","declared writer"] as PlacementWriterRootCategory[]){
-    const error=new PlacementWriterContextError(category,"changed");expect(error.message).toContain("restore the inventoried install");expect(error.message).toContain("amem migrate --sync-placement --dry-run");
+    const error=new PlacementWriterContextError(category,"changed");
+    if(category==="setup receipt")continue;   // #520: a receipt without a target keeps its own sentence below
+    // #624 AC1: the exact active sentence, checkpoint first, then the apply fallback with its all-sessions-closed condition.
+    expect(error.message).toBe(`Sync placement writer proof is changed (${category} category); restore the inventoried install, or renew it through the checkpoint while sessions keep running: preview amem migrate --sync-placement --checkpoint --writer-root <install root> for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> with the same --writer-root list. Only if the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0), close every amem session (agent sessions, hub peers and their amem mcp servers), then, if needed, preview amem formats raise home 0.22.0 and add --confirm after the exact command is approved; then run amem migrate --sync-placement --dry-run with the complete --writer-root inventory, and run --apply after the exact apply command is approved.`);
+    expect(error.message.indexOf("--checkpoint --writer-root")).toBeLessThan(error.message.indexOf("--dry-run"));
+    expect(error.category).toBe(category);expect(error.causeClass).toBe("changed");expect(error.phase).toBe("active");
+    expect(placementWriterRefusalDetail(error)).toEqual({causeClass:"changed",rootCategory:category});
   }
   const locator=new PlacementWriterContextError("active locator","unavailable");
   expect(locator.message).toContain("inspect sync-placement-writer-roots.json");expect(locator.message).toContain("compatible recovery release");expect(locator.message).not.toContain("backup");
@@ -210,4 +217,25 @@ test("active writer remediation retains preview and approval without actor gatin
   expect(text).toContain("amem migrate --sync-placement --dry-run"); expect(text).toContain("--writer-root");
   expect(text).toContain("amem formats raise home 0.22.0"); expect(text).toContain("--confirm");
   expect(text).toContain("exact apply command is approved"); expect(text).not.toMatch(/have the person/i);
+});
+
+// #624 AC1: the marked surface (rebuilt from fixed fields) and a later sync failure that carries the refusal print the same checkpoint-first sentence.
+test("#624 AC1: marked and unmarked writer-proof refusals name the checkpoint preview and confirm before the apply fallback", () => {
+  const refusal = new PlacementWriterContextError("running CLI", "missing");
+  const later = placementSyncFailure(refusal, Error("transport refused"));
+  expect(placementWriterRefusalText(later)).toBe(refusal.message);
+  expect(placementWriterRefusalText(refusal)).toBe(refusal.message);
+  expect(refusal.message).toContain("amem migrate --sync-placement --checkpoint --writer-root <install root> for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> with the same --writer-root list. Only if the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0), close every amem session");
+  expect(placementWriterRefusalDetail(later)).toEqual({ causeClass: "missing", rootCategory: "running CLI" });
+});
+
+test("#624 AC2: a renewal readers refusal names the checkpoint continuation; activation, admission and busy texts are unchanged", () => {
+  const base = "Sync placement migration is readers; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.";
+  expect(new PlacementInventoryFenceError("readers", false, true).message).toBe(`${base} To renew writers while sessions keep running, use the checkpoint instead, which does not wait for readers: preview amem migrate --sync-placement --checkpoint --writer-root <install root> for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> with the same --writer-root list.`);
+  // initial activation and realm admission pass no renewal flag: today's text, no checkpoint sentence
+  expect(new PlacementInventoryFenceError("readers").message).toBe(base);
+  expect(new PlacementInventoryFenceError("readers").message).not.toContain("checkpoint");
+  expect(new PlacementInventoryFenceError("busy", false, true).message).toBe("Sync placement migration is busy; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.");
+  expect(new PlacementInventoryFenceError("busy", true).message).toBe(PLACEMENT_CHECKPOINT_BUSY_MESSAGE);
+  expect(new PlacementInventoryFenceError("readers", false, true).causeClass).toBe("readers");
 });

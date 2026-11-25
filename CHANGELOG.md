@@ -12,6 +12,9 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - `amem project export` leaves capture rows out by default. A default bundle holds curated notes, goals and work lists and opens no capture database. `--include-capture` restores the previous bundle, screened as before. The receipt and `--json` report each count, the withheld count and `capture: included|excluded`. Leaving capture out is not redaction. #582.
 
+### Fixed
+
+- After an upgrade, the placement writer-proof refusal and the doctor `writers` finding name the checkpoint renewal first (`amem migrate --sync-placement --checkpoint --writer-root ...`, then `--checkpoint --confirm --plan <saved preview JSON>`), which runs while sessions stay open. The dry-run/apply renewal is named only as the fallback and requires every amem session to be closed. A renewal `--apply` refused for live readers names the same checkpoint continuation. Categories, cause classes and status fields are unchanged. #624.
 
 ## 0.39.0
 

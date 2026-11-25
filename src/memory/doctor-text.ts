@@ -59,7 +59,8 @@ export function hintFinding(name: string, hint: string, section: Record<string, 
 /** #590 C6: a writer refusal is one finding; each command it names is one `→` line. The fixed refusal text stays in `--json`. */
 export function writerFinding(section: Record<string, unknown>): Finding {
   const reason = String(section.reason ?? "");
-  const commands = [...reason.matchAll(/amem (?:migrate --sync-placement --(?:dry-run|resume|abandon)|formats raise home [0-9.]+|setup [a-z]+ --(?:apply|undo))/g)].map(match => match[0]);
+  // #624: the checkpoint renewal comes first; its confirm step carries a <saved preview JSON> placeholder, so only the preview's command is a next-step line.
+  const commands = [...reason.matchAll(/amem (?:migrate --sync-placement --(?:checkpoint|dry-run|resume|abandon)|formats raise home [0-9.]+|setup [a-z]+ --(?:apply|undo))/g)].map(match => match[0]);
   return { text: `placement writer proof is ${section.cause ?? "unverified"} (${section.category ?? "unknown"} category)`, next: [...new Set(commands)] };
 }
 

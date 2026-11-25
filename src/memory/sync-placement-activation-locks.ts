@@ -8,12 +8,14 @@ import { assertNoLiveReaders } from "./reader-lease.ts";
 import { createPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 /** #578 Q1: a checkpoint fence never refuses for readers; its `busy` means a placement sync, admission or renewal holds a lock. */
 export const PLACEMENT_CHECKPOINT_BUSY_MESSAGE = "Sync placement checkpoint is busy: a placement sync, admission or renewal holds its lock; wait for it to finish (amem sync --status shows recorded operations), then rerun the same checkpoint command.";
+/** #624: only a writer renewal on an active inventory can continue through the checkpoint, which never waits for readers. */
+export const PLACEMENT_RENEWAL_READERS_CONTINUATION = " To renew writers while sessions keep running, use the checkpoint instead, which does not wait for readers: %s.".replace("%s", "preview amem migrate --sync-placement --checkpoint --writer-root <install root> for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> with the same --writer-root list");
 export class PlacementInventoryFenceError extends Error{
-  constructor(readonly causeClass:"readers"|"busy",checkpoint=false){super(checkpoint&&causeClass==="busy"?PLACEMENT_CHECKPOINT_BUSY_MESSAGE:`Sync placement migration is ${causeClass}; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.`);this.name="PlacementInventoryFenceError";}
+  constructor(readonly causeClass:"readers"|"busy",checkpoint=false,renewal=false){super(checkpoint&&causeClass==="busy"?PLACEMENT_CHECKPOINT_BUSY_MESSAGE:`Sync placement migration is ${causeClass}; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.${renewal&&causeClass==="readers"?PLACEMENT_RENEWAL_READERS_CONTINUATION:""}`);this.name="PlacementInventoryFenceError";}
 }
 type FenceWork<T>=(mutation:MutationHandle,owner:ReturnType<typeof createPlacementActivationOwner>)=>Promise<T>;
-async function withFences<T>(home:string,directories:readonly string[],options:{readers:boolean},work:FenceWork<T>):Promise<T> {
-  const fail=(cause:"readers"|"busy"):never=>{throw new PlacementInventoryFenceError(cause,!options.readers);};
+async function withFences<T>(home:string,directories:readonly string[],options:{readers:boolean;renewal?:boolean},work:FenceWork<T>):Promise<T> {
+  const fail=(cause:"readers"|"busy"):never=>{throw new PlacementInventoryFenceError(cause,!options.readers,options.renewal===true);};
   return withProfileLock(home,async()=>{
     const releases:(()=>void)[]=[];
     try {
@@ -30,8 +32,8 @@ async function withFences<T>(home:string,directories:readonly string[],options:{
   });
 }
 /** Activation, renewal and admission: every live reader lease refuses, as before. */
-export function withPlacementActivationFences<T>(home:string,directories:readonly string[],work:FenceWork<T>):Promise<T> {
-  return withFences(home,directories,{readers:true},work);
+export function withPlacementActivationFences<T>(home:string,directories:readonly string[],work:FenceWork<T>,options:{renewal?:boolean}={}):Promise<T> {
+  return withFences(home,directories,{readers:true,renewal:options.renewal===true},work);
 }
 /**
  * #578 Q1: checkpoint confirm, resume and abandon exclude placement writers only (profile lock, every mutation and sync

@@ -32,7 +32,7 @@ function doctorReport(sections: Partial<DoctorReport["sections"]> = {}): DoctorR
   return { schema: DOCTOR_SCHEMA, status: statuses.includes("attention") ? "attention" : statuses.includes("unavailable") ? "unavailable" : "ok", home: { path: "/h/memory", source: "AMEM_HOME" }, project: "repo@1234abcd", sections: all };
 }
 const writersRefusal = { status: "attention" as const, category: "declared writer", cause: "missing", phase: "active",
-  reason: "Sync placement writer proof is missing (declared writer category); restore the inventoried install, or renew it: if needed, preview amem formats raise home 0.22.0 and add --confirm after the exact command is approved; then run amem migrate --sync-placement --dry-run with the complete --writer-root inventory, and run --apply after the exact apply command is approved." };
+  reason: "Sync placement writer proof is missing (declared writer category); restore the inventoried install, or renew it through the checkpoint while sessions keep running: preview amem migrate --sync-placement --checkpoint --writer-root <install root> for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> with the same --writer-root list. Only if the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0), close every amem session (agent sessions, hub peers and their amem mcp servers), then, if needed, preview amem formats raise home 0.22.0 and add --confirm after the exact command is approved; then run amem migrate --sync-placement --dry-run with the complete --writer-root inventory, and run --apply after the exact apply command is approved." };
 
 /** AC8/AC9 rules every human line of these two reports keeps. */
 function conforms(text: string): void {
@@ -85,6 +85,7 @@ test("#590: doctor golden at 80 columns, color off, with a writer refusal", () =
     "",
     "▸ Attention (1)",
     "  ⚠  placement writer proof is missing (declared writer category)",
+    "    →  amem migrate --sync-placement --checkpoint",
     "    →  amem formats raise home 0.22.0",
     "    →  amem migrate --sync-placement --dry-run",
     "",

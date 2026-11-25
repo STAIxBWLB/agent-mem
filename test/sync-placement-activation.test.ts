@@ -156,6 +156,8 @@ test("live reader and person refusal never publish an activation intent",async()
   try{
     let error:unknown;try{await activateSyncPlacement(f.options("apply"));}catch(caught){error=caught;}
     expect(error).toBeInstanceOf(PlacementActivationError);expect((error as PlacementActivationError).causeClass).toBe("readers");expect((error as Error).message).toContain("--dry-run before retrying apply");
+    // #624: initial activation has no active inventory to checkpoint, so its readers refusal never names the checkpoint.
+    expect((error as Error).message).not.toContain("checkpoint");
   }finally{store.close();}
   expect(existsSync(join(f.base,"sync-placement-activation.json"))).toBe(false);
   const options=f.options("apply");options.authorize=()=>false;

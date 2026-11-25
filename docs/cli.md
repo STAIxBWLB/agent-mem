@@ -216,13 +216,22 @@ Intake runs at the end of each Codex, Kimi, Pi and Qwen session once `amem setup
 
 A writer-context refusal is also `amem sync`'s own result (#551). A human run prints that fixed sentence and exits 1. With `--json` the run returns `{"ok": false, "pushed": false, "entries": 0, "failure": {"cause": "refusal"}, "error": <fixed sentence>}` instead of a single masked line, so a marked session reads the category, the cause class and the remedy; like every other failed `--json` sync that result exits 0, and the attempt is still recorded so `--if-due` backs off. A `setup receipt` refusal whose recorded install is gone prints one sentence too: the fixed category and cause class in front of the receipt's own cause marker (`setup_receipt_missing_install`), its target and both remedies, so a marked and an unmarked run read the same text. Every other refusal keeps the anonymous masked message.
 
-Moving an install root on a placement home has an order. Writer verification compares the running install and every applied setup receipt against the active inventory, so a root the inventory does not hold stops sync as a `missing` entry: `running CLI` for the install running the command, `setup receipt` for one a receipt names. Renew the inventory first, or checkpoint the epoch with `amem migrate --sync-placement --checkpoint`, and move the setup receipts to the new root afterwards:
+Moving an install root on a placement home has an order. Writer verification compares the running install and every applied setup receipt against the active inventory, so a root the inventory does not hold stops sync as a `missing` entry: `running CLI` for the install running the command, `setup receipt` for one a receipt names. Renew the inventory first, then move the setup receipts to the new root. Renew through the checkpoint first (#624). It excludes placement writers only, so agent sessions, hub peers and their `amem mcp` servers keep running:
+
+```
+amem migrate --sync-placement --checkpoint --writer-root <new root> --writer-root <other roots>
+amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> --writer-root <new root> --writer-root <other roots>
+amem setup <target> --apply
+```
+
+Fall back to the dry-run and apply renewal only when the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0). That path refuses while any reader lease is live, so close every amem session first:
 
 ```
 amem migrate --sync-placement --dry-run --writer-root <new root> --writer-root <other roots>
 amem migrate --sync-placement --apply --writer-root <new root> --writer-root <other roots>
-amem setup <target> --apply
 ```
+
+The writer-proof refusal, the doctor `writers` finding and a renewal `--apply` refused for live readers all name the checkpoint path in this order.
 
 After a writer root changes, an opted-in sync-run checkpoint (`amem migrate --sync-placement --checkpoint-on-bound on --confirm`, see [sync](sync.md)) refuses with `checkpoint-refused` until this renewal is applied, because it runs only with identical writer pins.
 
