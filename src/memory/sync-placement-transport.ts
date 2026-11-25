@@ -4,6 +4,7 @@ import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, open
 import { join } from "node:path";
 import { canonicalJSON, hashJSON, readSelector } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
+import { placementAdvertisement } from "./sync-placement-advertisement.ts";
 import { generationSyncGit, generationSyncGitBytes, remoteVisibility, type SyncFailureCause, type SyncOptions, type SyncResult } from "./sync.ts";
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { isLocalKey, localKeyOptInMessage, PlacementRealmRefusal, resolveShardProfile } from "./shard.ts";
@@ -401,7 +402,7 @@ class PlacementTransport {
    * made, so each target still proves its tip against it; a ref this run's push moved is dropped from it (see finish).
    */
   async advertisement(): Promise<ReadonlyMap<string, string>> {
-    const shared = this.opts.placementAdvertisement;
+    const shared = placementAdvertisement(this.opts);
     const cached = shared?.get(this.url);
     if (cached) return cached;
     const result = await this.call(() => generationSyncGitBytes(this.root, this.args(["ls-remote", "--refs", "origin", "refs/heads/amem/u", "refs/heads/amem/p/*"]), this.opts.signal, undefined, REMOTE_REALM_ADVERTISEMENT_BYTES));
@@ -828,7 +829,7 @@ class PlacementTransport {
       const participating=material.bundle.root.targets.map((target,index)=>({target,index})).filter(item=>item.target.publish);
       this.attempted=participating.length>0;
       // #626: a push moves advertised refs, so no later publication of this run may reuse the advertisement read before it.
-      if(this.attempted)this.opts.placementAdvertisement?.delete(this.url);
+      if(this.attempted)placementAdvertisement(this.opts)?.delete(this.url);
       const sent=participating.length?await generationSyncGit(this.root,this.args(["push","--atomic","--no-follow-tags","-q",...participating.map(({target,index})=>`--force-with-lease=${shardSyncRef(this.targets[index]!.realm)}:${target.expectedRemoteHead??""}`),"origin",...participating.map(({target,index})=>`${target.commit}:${shardSyncRef(this.targets[index]!.realm)}`)]),this.opts.signal):{code:0};
       this.accepted=sent.code===0;await this.observe("cas-returned");
       if(!this.accepted)return this.result(false,"unknown","The placement publication outcome is unknown; retained receipts may have published. Recheck this exact attempt before retrying.");
