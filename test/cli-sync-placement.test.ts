@@ -9,6 +9,7 @@ import { MemoryStore, openShardStore } from "../src/memory/store.ts";
 import { migrateShards } from "../src/memory/shard-migration.ts";
 import { COMMANDS, commandHelp, parseCommand } from "../src/commands-table.ts";
 import { completionScript } from "../src/completion.ts";
+import { readSyncStatus } from "../src/memory/sync-progress.ts";
 import { readSyncState, nextSyncAt, SYNC_BACKOFF_BASE_MS } from "../src/memory/sync-cadence.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { resolveSetupPaths } from "../src/setup-paths.ts";
@@ -270,6 +271,8 @@ test("#520: a marked session keeps the target and remedy for a later attestation
   expect(receipt.error).not.toContain(install); expect(later.stdout.toString()).not.toContain(install);
   expect(text).not.toContain("Memory operation unavailable or refused"); expect(text).not.toContain(install);
   expect(readSyncState(f.base).failures).toBe(1);
+  expect(readSyncStatus(f.base).operations[0]).toMatchObject({ state: "failed", cause: "unavailable",
+    writerRefusal: { causeClass: "unavailable", rootCategory: "setup receipt" } });
 },120_000);
 
 test("#449/#450: an unlisted cwd selects no realm; placement sync covers the activated inventory and leaves the cwd shard unopened", async () => {
@@ -339,11 +342,28 @@ test("#551 AC1: a running-CLI refusal reaches both surfaces, and any other failu
   expect(person.exitCode).toBe(0); expect(JSON.parse(person.stdout.toString()).error).toBe(marked.error);
   const human=runWriterContext(f,["sync"],true,own);
   expect(human.exitCode).not.toBe(0); expect(human.stderr.toString()).toContain("(running CLI category)"); expect(human.stderr.toString()).not.toContain(other);
+  const status = success(run(f, ["sync", "--status", "--json"]));
+  const first = (status.operations as { writerRefusal?: unknown }[])[0];
+  expect(first).toMatchObject({ state: "failed", cause: "unavailable", phase: "writer-verification",
+    writerRefusal: { causeClass: "missing", rootCategory: "running CLI" } });
+  const formatted = run(f, ["sync", "--status"]);
+  expect(formatted.exitCode).toBe(0);
+  expect(formatted.stdout.toString()).toContain("writer renewal needed (running CLI, missing)");
+  const doctor = run(f, ["doctor"]);
+  expect(doctor.exitCode).toBe(0);
+  expect(doctor.stdout.toString()).toContain("last failure: writer renewal needed (running CLI, missing)");
   // A different failure on the same path is not a writer refusal: marked output is the masked line, with no path or message.
   const masked=runWriterContext(f,["sync","--json"],true,`()=>{throw new Error("transport refused at ${join(f.base,"private")}")}`);
   expect(masked.exitCode).not.toBe(0);
   expect(masked.stderr.toString()).toContain("Memory operation unavailable or refused; no partial result is shown.");
   expect(masked.stderr.toString()).not.toContain(f.base); expect(masked.stdout.toString()).toBe("");
+  const generic = readSyncStatus(f.base).operations[0];
+  expect(generic).toMatchObject({ state: "failed", cause: "unavailable", phase: "writer-verification" });
+  expect(generic).not.toHaveProperty("writerRefusal");
+  expect(generic).not.toHaveProperty("category");
+  const laterDoctor = run(f, ["doctor"]);
+  expect(laterDoctor.exitCode).toBe(0);
+  expect(laterDoctor.stdout.toString()).not.toContain("last failure: writer renewal needed");
   // #551 AC1: the same masking holds for a refusal carried as `placementRefusal` behind a throwing proxy - the run ends in
   // the anonymous line with no trap text, no category and no target. This arm pins that outcome; the adapter's own order is
   // pinned by the unit test, because a trap that fires there is still masked by this catch and would show the same line.

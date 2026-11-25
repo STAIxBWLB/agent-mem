@@ -10,6 +10,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- Sync status and doctor cadence retain the fixed cause and root category for writer-proof refusals, so writer renewal can be distinguished from generic failures. Refs #613.
+
 - Native SessionStart retains near-limit curated briefs. Shared writes can rebuild up to two additional projects after invalidation, and `amem brief` can rebuild a work cache from existing logs. Publication failures record fixed reason codes. Refs #614.
 
 - Invalid arguments to `amem formats raise` and other commands with argument-only usage checks now show usage and exit 2 in agent-marked sessions. Refs #596.
