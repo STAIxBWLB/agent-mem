@@ -116,7 +116,7 @@ test("project export writes the bundle for one project, refuses to overwrite, an
   const { dir, person } = rig();
   capture(dir, A, ["alpha one", "alpha two"]); capture(dir, B, ["beta"]);
   const to = join(dir, "a.json");
-  const result = await json(["project", "export", A, "--to", to, "--json"], { ...person, stdinTTY: false });   // export reads; a terminal is not required
+  const result = await json(["project", "export", A, "--to", to, "--include-capture", "--json"], { ...person, stdinTTY: false });   // export reads; a terminal is not required
   // The reply names the real path (a temp dir can sit behind a symlink, /var -> /private/var on macOS): compare resolved paths, not spellings.
   expect(result).toMatchObject({ project: A, withheld: 0 });
   expect(realpathSync(result.file)).toBe(realpathSync(to));
@@ -126,7 +126,7 @@ test("project export writes the bundle for one project, refuses to overwrite, an
   await expect(runCli(["project", "export", A], person)).rejects.toThrow(/--to/);
   // #431 AC1: an agent-marked session exports like a person, through the same policy screen; its errors keep the uniform marked message.
   const agentTo = join(dir, "agent.json"), agent = { ...person, env: { ...person.env, CLAUDECODE: "1" }, stdinTTY: false };
-  expect(await json(["project", "export", A, "--to", agentTo, "--json"], agent)).toMatchObject({ project: A, withheld: 0, counts: { capture: 2 } });
+  expect(await json(["project", "export", A, "--to", agentTo, "--include-capture", "--json"], agent)).toMatchObject({ project: A, withheld: 0, counts: { capture: 2 }, capture: "included" });
   expect(readFileSync(agentTo, "utf8")).toContain("alpha one"); expect(readFileSync(agentTo, "utf8")).not.toContain("beta");
   await expect(runCli(["project", "export", A, "--to", to], agent)).rejects.toThrow("Memory operation unavailable or refused; no partial result is shown.");
 });

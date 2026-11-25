@@ -29,7 +29,9 @@ export const EXPORT_SCHEMA = "agent-mem.project-export/v1";
 export const exportHooks: { afterCheck?: (file: string) => void } = {};
 export type ProjectExportFormat = "json" | "jsonl" | "markdown";
 export interface ExportCounts { capture: number; curated: number; goals: number; workLists: number }
-export interface ExportResult { file: string; project: string; format: ProjectExportFormat; counts: ExportCounts; withheld: number }
+export interface ExportResult { file: string; project: string; format: ProjectExportFormat; counts: ExportCounts; withheld: number;
+  /** #582: capture rows leave the home only with `--include-capture`; `counts.capture` is 0 when excluded. */
+  capture: "included" | "excluded" }
 type ExportSection = keyof ExportCounts;
 const PAGE = 500;
 
@@ -65,7 +67,8 @@ function markdownRecord(section: ExportSection, value: unknown): string {
   return `${lines.join("\n")}\n`;
 }
 
-export async function exportProject(base: string, key: string, opts: { to: string; policy?: MemoryPolicy; format?: ProjectExportFormat }): Promise<ExportResult> {
+export async function exportProject(base: string, key: string, opts: { to: string; policy?: MemoryPolicy; format?: ProjectExportFormat; includeCapture?: boolean }): Promise<ExportResult> {
+  const includeCapture = opts.includeCapture === true;
   const project = requireShard(base, key), format = opts.format ?? "json";
   if (!["json", "jsonl", "markdown"].includes(format)) throw new Error("export format must be json, jsonl or markdown");
   if (projectState(base, project) === "forgotten") throw new Error(`project ${project} is forgotten: it cannot be exported`);
@@ -96,7 +99,9 @@ export async function exportProject(base: string, key: string, opts: { to: strin
     if (format === "jsonl") out(`${JSON.stringify({ schema: EXPORT_SCHEMA, project, exportedAt, type: "header", aliases: aliasedKeys(base, project) })}\n`);
     else if (format === "markdown") out(`# Project export ${markdownInline(JSON.stringify(project))}\n\nExported at ${exportedAt}\n`);
     begin(`{"schema":${JSON.stringify(EXPORT_SCHEMA)},"project":${JSON.stringify(project)},"exportedAt":${JSON.stringify(exportedAt)},"capture":[`, "capture", "Capture");
-    const shard = walkShards(base).find(candidate => candidate.key === project);
+    // #582: capture is opt-in. Without it no capture database is opened at all; the section stays, empty.
+    if (!includeCapture && format === "markdown") out("excluded; add --include-capture to export capture rows\n");
+    const shard = includeCapture ? walkShards(base).find(candidate => candidate.key === project) : undefined;
     for (const dir of shard?.machineDirs ?? []) {
       const dbFile = join(dir, "capture.db");
       if (!existsSync(dbFile)) continue;
@@ -153,5 +158,5 @@ export async function exportProject(base: string, key: string, opts: { to: strin
     for (const store of stores) { try { store.close(); } catch { /* best effort */ } }
   }
   closeSync(fd);
-  return { file, project, format, counts, withheld };
+  return { file, project, format, counts, withheld, capture: includeCapture ? "included" : "excluded" };
 }
