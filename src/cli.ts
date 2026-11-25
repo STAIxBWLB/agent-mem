@@ -777,9 +777,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         if (summary === null) return { unavailable: "candidates.db exists but cannot be read" };
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
       ...shardMigrationStatus(where.home),
-      // #581: read-only; the SessionStart hook is the only writer of roots.jsonl.
-      projectTransition: (() => { try { const t = projectTransition(where.home, policyCwd, memoryProjectKey(policyCwd), key => curatedCount(where.home, key, shardDir));
-        return t ? { previousKey: t.previousKey, key: t.key, previousCuratedNotes: t.previousCuratedNotes, aliasCommand: t.aliasCommand, keepCommand: t.keepCommand } : null; } catch { return null; } })() };
+      // #581: read-only (the SessionStart hook is the only writer of roots.jsonl); present only during a transition, so the default shape is unchanged.
+      ...(() => { try { const t = projectTransition(where.home, policyCwd, memoryProjectKey(policyCwd), key => curatedCount(where.home, key, shardDir));
+        return t ? { projectTransition: { previousKey: t.previousKey, key: t.key, previousCuratedNotes: t.previousCuratedNotes, aliasCommand: t.aliasCommand, keepCommand: t.keepCommand } } : {}; } catch { return {}; } })() };
     return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context, options), reportOptions(context, options));
   }
   if (parsed.path[0] === "formats" && parsed.path[1] === "raise") {

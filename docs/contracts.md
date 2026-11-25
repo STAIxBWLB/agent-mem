@@ -265,7 +265,7 @@ A root is in `project_transition` when its latest line names a key other than th
 
 `amem: project key changed for this directory: was <old> (<n> curated notes), now <new>. Join: amem alias add <old> <new>  Keep apart: amem project keep-separate`
 
-The count is omitted when the old key's index cannot be read without waiting. `amem status --json` carries `projectTransition: null | {previousKey, key, previousCuratedNotes, aliasCommand, keepCommand}`, and `amem doctor` adds an attention section `transition` with the same fields. Nothing joins keys automatically. Joining stays the person's `amem alias add`. Not covered: a directory moved to a new path has a new root hash and is not recognised, and a second machine keeps its own record.
+The count is omitted when the old key's index cannot be read without waiting. `amem status --json` carries `projectTransition: {previousKey, key, previousCuratedNotes, aliasCommand, keepCommand}` only during a transition (absent otherwise, so the default output is unchanged), and `amem doctor` adds an attention section `transition` with the same fields. Nothing joins keys automatically. Joining stays the person's `amem alias add`. Not covered: a directory moved to a new path has a new root hash and is not recognised, and a second machine keeps its own record.
 
 ### Hook upgrade regression (#13, task #327)
 

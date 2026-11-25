@@ -9,8 +9,8 @@ export interface StatusView {
   active: boolean; generation?: string; phase?: string;
   pending: Record<string, unknown> & { rows: number };
   deadLeasesRemoved?: { lease: string; at: string }[]; refusals?: string[];
-  /** #581: null unless this working root last resolved to a different, unjoined key. */
-  projectTransition?: { previousKey: string; key: string; previousCuratedNotes: number | null; aliasCommand: string; keepCommand: string } | null;
+  /** #581: present only while this working root last resolved to a different, unjoined key. */
+  projectTransition?: { previousKey: string; key: string; previousCuratedNotes: number | null; aliasCommand: string; keepCommand: string };
 }
 
 /** Human rendering options (#590): `--verbose` history lines, the wrap width and the version in the context line. */

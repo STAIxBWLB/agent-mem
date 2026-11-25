@@ -33,7 +33,7 @@ function fixture() {
   };
   return { ...f, git, start, brief, cli, note };
 }
-const status = async (f: ReturnType<typeof fixture>) => JSON.parse(await f.cli("status", "--json")).projectTransition;
+const status = async (f: ReturnType<typeof fixture>) => JSON.parse(await f.cli("status", "--json")).projectTransition ?? null;
 
 test("AC1: after a remote is added, the brief and amem status name both keys and print a runnable alias command", async () => {
   const f = fixture();

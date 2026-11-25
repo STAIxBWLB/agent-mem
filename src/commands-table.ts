@@ -135,7 +135,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       options: json("the unarchive receipt"), args: [{ name: "key" }], mutates: true },
     forget: { description: "Forget one project for good", details: "An append-only op; previews without --confirm.", examples: ["amem project forget repo@1234abcd", "amem project forget repo@1234abcd --confirm"],
       options: { ...json("the forget receipt"), "--confirm": flag("Record the forget after the preview") }, args: [{ name: "key" }], mutates: "confirm" },
-    "keep-separate": { description: "Keep this directory's new project key apart from its previous one", details: "Ends a project key transition without joining; previews without --confirm.",
+    "keep-separate": { description: "Keep this directory's new project key apart", details: "Ends a project key transition without joining; previews without --confirm.",
       examples: ["amem project keep-separate", "amem project keep-separate --confirm"],
       options: { ...json("the keep-separate preview or receipt"), "--confirm": flag("Record the choice after the preview") }, mutates: "confirm" },
   } },
