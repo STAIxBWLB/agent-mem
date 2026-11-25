@@ -181,7 +181,8 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   const warning = plan.placementWriter!;
   expect(warning).toContain("outside the active placement writer inventory");
   // AC2: the suggested argument is shell-quoted, so the space in this root never splits it into two arguments.
-  expect(warning).toContain(`amem migrate --sync-placement --dry-run --writer-root ${quote(outside)}`);
+  // #624: the exact remedy, checkpoint first, then the dry-run/apply fallback with its all-sessions-closed condition.
+  expect(warning).toBe(`WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory first with the person, through the checkpoint while sessions keep running - preview amem migrate --sync-placement --checkpoint --writer-root ${quote(outside)} with every other install root, then amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> with the same --writer-root list; only if the checkpoint preview refuses, close every amem session and run amem migrate --sync-placement --dry-run --writer-root ${quote(outside)}, then --apply - and rerun setup after that. Setup writes no inventory entry and never refuses on this alone.`);
   expect(warning).not.toContain(`--writer-root ${outside}`);
   expect(warning).toContain("never refuses on this alone");
   expect(plan.notes).toContain(warning);
@@ -189,10 +190,14 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   expect(preview).toContain("> Attention"); expect(preview).toContain(`--writer-root ${quote(outside)}`);
   const narrow = await runSetup("kimi", "preview", { ...options(outside), json: false, columns: 80 } as SetupContext & { columns: number });
   const commands = narrow.replace(/\\\n\s+/g, " ").split("\n").filter(line => line.trimStart().startsWith("-> amem migrate "));
-  expect(commands).toHaveLength(2);
+  // #624: checkpoint preview first, then the dry-run/apply fallback.
+  expect(commands).toHaveLength(4);
+  expect(commands.map(line => line.trim().split(/\s+/).slice(0, 6).join(" "))).toEqual(["-> amem migrate --sync-placement --checkpoint --writer-root", "-> amem migrate --sync-placement --checkpoint --confirm", "-> amem migrate --sync-placement --dry-run --writer-root", "-> amem migrate --sync-placement --apply --writer-root"]);
+  expect(commands[1]!.replace(/\s+/g, " ")).toContain("--checkpoint --confirm --plan <saved preview JSON> --writer-root");
   for (const line of commands) {
     // Fixture roots are controlled; ask the shell to split the displayed, quoted arguments without running amem.
-    const command = line.trim().slice("-> amem ".length);
+    // The confirm line's one placeholder is the person's own saved preview; stand in a file name before shell splitting.
+    const command = line.trim().slice("-> amem ".length).replace(/<saved\s+preview\s+JSON>/, "preview.json");
     const split = Bun.spawnSync(["sh", "-c", `set -- ${command}; printf '%s\\n' "$@"`]);
     expect(split.exitCode).toBe(0);
     const args = split.stdout.toString().trimEnd().split("\n");
@@ -273,7 +278,12 @@ test("setup writer commands use the plan's HOME-only relocated memory home", asy
   writeFileSync(join(defaultHome, "amem.config.json"), JSON.stringify({ home: f.base }), { mode: 0o600 });
   const env = { ...f.env }; delete env.AMEM_HOME; delete env.AGENTHUB_HOME;
   const text = await runSetup("kimi", "preview", { env, root: outside, cwd: f.cwd, native: () => { throw Error("unexpected native call"); } });
-  expect(text).toContain("amem migrate --sync-placement --dry-run");
+  // #624: the command list names the checkpoint preview and confirm before the dry-run/apply fallback.
+  const checkpoint = text.indexOf("amem migrate --sync-placement --checkpoint --writer-root"), dryRun = text.indexOf("amem migrate --sync-placement --dry-run --writer-root");
+  expect(checkpoint).toBeGreaterThanOrEqual(0); expect(dryRun).toBeGreaterThan(checkpoint);
+  const confirm = text.indexOf("amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> --writer-root");
+  expect(confirm).toBeGreaterThan(checkpoint); expect(dryRun).toBeGreaterThan(confirm);
+  expect(text).toContain("amem migrate --sync-placement --apply --writer-root");
   expect(text).toContain(`--writer-root ${quote(outside)}`);
   expect(text).not.toContain("-> amem doctor");
 });

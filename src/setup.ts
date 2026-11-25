@@ -266,7 +266,7 @@ function placementWriterInventoryNote(root: string, home: string): string | unde
   try { canonical = realPath(root); } catch { return undefined; }
   if (roots.includes(canonical)) return undefined;
   // #551 AC2: the suggested argument is shell-quoted, so a root with a space, a quote or a shell metacharacter stays one argument.
-  return `WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory first with the person - amem migrate --sync-placement --dry-run --writer-root ${quote(canonical)}, then --apply - and rerun setup after that. Setup writes no inventory entry and never refuses on this alone.`;
+  return `WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory first with the person, through the checkpoint while sessions keep running - preview amem migrate --sync-placement --checkpoint --writer-root ${quote(canonical)} with every other install root, then amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> with the same --writer-root list; only if the checkpoint preview refuses, close every amem session and run amem migrate --sync-placement --dry-run --writer-root ${quote(canonical)}, then --apply - and rerun setup after that. Setup writes no inventory entry and never refuses on this alone.`;
 }
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
@@ -761,7 +761,10 @@ function setupWriterCommands(plan: SetupPlan): string[] {
     const all = [...new Set([...roots, ...readSetupWriterRoots(home), root].map(realPath))].sort();
     if (all.some(value => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value))) return ["amem doctor"];
     const flags = all.map(value => `--writer-root ${quote(value)}`).join(" ");
-    return [`amem migrate --sync-placement --dry-run ${flags}`, `amem migrate --sync-placement --apply ${flags}`];
+    // #624: the checkpoint renews while sessions keep running; the person fills <saved preview JSON> from their own preview.
+    // dry-run/apply is the fallback, which needs every amem session closed.
+    return [`amem migrate --sync-placement --checkpoint ${flags}`, `amem migrate --sync-placement --checkpoint --confirm --plan <saved preview JSON> ${flags}`,
+      `amem migrate --sync-placement --dry-run ${flags}`, `amem migrate --sync-placement --apply ${flags}`];
   } catch { return ["amem doctor"]; }
 }
 
