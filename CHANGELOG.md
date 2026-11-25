@@ -8,6 +8,11 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - When a working directory resolves to a different project key than before (for example after a remote is added), the session brief, `amem status` and `amem doctor` name both keys, the old key's curated note count and the complete `amem alias add` command. `amem project keep-separate` previews and, with `--confirm`, ends the notice without joining. The SessionStart hook records the key per directory in a new local `roots.jsonl` that holds only a hash of the real path and is never synced or exported. #581.
 
+### Changed
+
+- `amem project export` leaves capture rows out by default. A default bundle holds curated notes, goals and work lists and opens no capture database. `--include-capture` restores the previous bundle, screened as before. The receipt and `--json` report each count, the withheld count and `capture: included|excluded`. Leaving capture out is not redaction. #582.
+
+
 ## 0.39.0
 
 ### Added

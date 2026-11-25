@@ -121,9 +121,9 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     options: { ...json("the gc result"), "--confirm": flag("Evict now; without it, preview only"), "--batches": number("Evict windows per shard (1..1000, default 1)") } },
   project: { group: "maintenance", description: "Export, import, archive or forget one project", options: json("the project receipt"), commands: {
     export: { description: "Write one project's memory to a new export file",
-      details: "Capture, curated notes, goals and work lists, as JSON, JSONL or Markdown. Never overwrites.",
-      examples: ["amem project export repo@1234abcd --to ./repo.json"],
-      options: { ...json("the export receipt"), "--to": path("Destination file, outside the memory home"), "--format": { description: "Portable format (default json)", value: ["json", "jsonl", "markdown"] }, ...policy },
+      details: "Curated notes, goals and work lists, as JSON, JSONL or Markdown; capture only with --include-capture. Never overwrites.",
+      examples: ["amem project export repo@1234abcd --to ./repo.json", "amem project export repo@1234abcd --to ./repo.json --include-capture"],
+      options: { ...json("the export receipt"), "--to": path("Destination file, outside the memory home"), "--include-capture": flag("Also export capture rows, screened"), "--format": { description: "Portable format (default json)", value: ["json", "jsonl", "markdown"] }, ...policy },
       args: [{ name: "key" }] },
     import: { description: "Preview or re-import notes from a JSONL export", details: "Keeps the original entry ids.",
       examples: ["amem project import repo@1234abcd --from ./repo.jsonl", "amem project import repo@1234abcd --from ./repo.jsonl --confirm"],

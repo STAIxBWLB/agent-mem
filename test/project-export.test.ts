@@ -40,7 +40,7 @@ test("export writes one project's capture rows, curated notes and work lists as 
   capture(dir, "github.com/o/a", ["alpha one", "alpha two"]); capture(dir, "github.com/o/b", ["beta one"]);
   note(dir, "github.com/o/a", "alpha decision text"); note(dir, "github.com/o/b", "beta decision text");
   const work = new WorkListStore({ base, project: "github.com/o/a", policy: () => true }); await work.write("checklist", { title: "alpha list" }); work.close();
-  const result = await exportProject(base, "github.com/o/a", { to: out(dir) });
+  const result = await exportProject(base, "github.com/o/a", { to: out(dir), includeCapture: true });
   expect(result.counts).toMatchObject({ capture: 2, curated: 1, workLists: 1 });
   const bundle = JSON.parse(readFileSync(result.file, "utf8"));
   expect(bundle.schema).toBe(EXPORT_SCHEMA); expect(bundle.project).toBe("github.com/o/a");
@@ -57,7 +57,7 @@ test("export screens secrets: a secret-looking row is withheld and counted, neve
   // Capture screens secrets as it writes, so none reaches the database through the API. A restored or hand-edited database could hold one: plant it.
   const db = new Database(join(shardMachineDir(base, "github.com/o/a", machineId(base).id), "capture.db"));
   db.query("UPDATE rows SET excerpt = ? WHERE id = (SELECT MAX(id) FROM rows)").run("token = abcdefghijklmnop1234"); db.close();
-  const result = await exportProject(base, "github.com/o/a", { to: out(dir) });
+  const result = await exportProject(base, "github.com/o/a", { to: out(dir), includeCapture: true });
   expect(readFileSync(result.file, "utf8")).not.toContain("abcdefghijklmnop1234");
   expect(result.withheld).toBe(1);
   expect(result.counts.capture).toBe(1);
@@ -67,7 +67,7 @@ test("export applies the host policy when one is given: a withheld row is counte
   const { dir, base } = home();
   capture(dir, "github.com/o/a", ["public row", "private row PRIVATE-MARKER"]);
   const policy = createStandalonePolicy({ host: { screen: async (value: unknown) => !JSON.stringify(value).includes("PRIVATE-MARKER") } });
-  const result = await exportProject(base, "github.com/o/a", { to: out(dir), policy });
+  const result = await exportProject(base, "github.com/o/a", { to: out(dir), policy, includeCapture: true });
   expect(readFileSync(result.file, "utf8")).not.toContain("PRIVATE-MARKER");
   expect(result.withheld).toBe(1);
 });
@@ -76,21 +76,21 @@ test("export never overwrites: an existing file, a symlink at the target and a m
   const { dir, base } = home();
   capture(dir, "github.com/o/a", ["alpha one"]);
   writeFileSync(out(dir, "taken"), "keep me");
-  await expect(exportProject(base, "github.com/o/a", { to: out(dir, "taken") })).rejects.toThrow(/exists/);
+  await expect(exportProject(base, "github.com/o/a", { to: out(dir, "taken"), includeCapture: true })).rejects.toThrow(/exists/);
   expect(readFileSync(out(dir, "taken"), "utf8")).toBe("keep me");
   writeFileSync(out(dir, "victim"), "victim bytes"); symlinkSync(out(dir, "victim"), out(dir, "link"));
-  await expect(exportProject(base, "github.com/o/a", { to: out(dir, "link") })).rejects.toThrow(/exists|link/);
+  await expect(exportProject(base, "github.com/o/a", { to: out(dir, "link"), includeCapture: true })).rejects.toThrow(/exists|link/);
   expect(readFileSync(out(dir, "victim"), "utf8")).toBe("victim bytes");
-  await expect(exportProject(base, "github.com/o/a", { to: join(dir, "no", "such", "dir", "bundle") })).rejects.toThrow(/directory/);
+  await expect(exportProject(base, "github.com/o/a", { to: join(dir, "no", "such", "dir", "bundle"), includeCapture: true })).rejects.toThrow(/directory/);
 });
 
 test("export refuses a destination inside the memory home, an unknown project and a forgotten one", async () => {
   const { dir, base } = home();
   capture(dir, "github.com/o/a", ["alpha one"]);
-  await expect(exportProject(base, "github.com/o/a", { to: join(base, "projects", "bundle") })).rejects.toThrow(/memory home/);
-  await expect(exportProject(base, "github.com/o/none", { to: out(dir) })).rejects.toThrow(/no project shard/);
+  await expect(exportProject(base, "github.com/o/a", { to: join(base, "projects", "bundle"), includeCapture: true })).rejects.toThrow(/memory home/);
+  await expect(exportProject(base, "github.com/o/none", { to: out(dir), includeCapture: true })).rejects.toThrow(/no project shard/);
   appendLifecycle(base, { op: "forget", key: "github.com/o/a", actor: "person", machine: "m1" });
-  await expect(exportProject(base, "github.com/o/a", { to: out(dir) })).rejects.toThrow(/forgotten/);
+  await expect(exportProject(base, "github.com/o/a", { to: out(dir), includeCapture: true })).rejects.toThrow(/forgotten/);
 });
 
 test("export of an archived project works, and an aliased key exports the canonical project once", async () => {
@@ -98,7 +98,7 @@ test("export of an archived project works, and an aliased key exports the canoni
   capture(dir, "github.com/o/a", ["alpha one"]);
   appendAlias(base, { alias: "old-a", key: "github.com/o/a", actor: "person", machine: "m1" });
   appendLifecycle(base, { op: "archive", key: "github.com/o/a", actor: "person", machine: "m1" });
-  const result = await exportProject(base, "old-a", { to: out(dir) });
+  const result = await exportProject(base, "old-a", { to: out(dir), includeCapture: true });
   expect(JSON.parse(readFileSync(result.file, "utf8")).project).toBe("github.com/o/a");
   expect(result.counts.capture).toBe(1);
   expect(projectState(base, "github.com/o/a")).toBe("archived"); // export changes no state
@@ -113,7 +113,7 @@ test("export changes no content file of the home: only derived indexes and SQLit
   capture(dir, "github.com/o/a", ["alpha one"]);
   const snapshot = () => [...walk(base)].filter(([p]) => !DERIVED.test(p)).map(([p, s]) => `${p}:${s}`).sort();
   const before = snapshot();
-  await exportProject(base, "github.com/o/a", { to: out(dir) });
+  await exportProject(base, "github.com/o/a", { to: out(dir), includeCapture: true });
   expect(snapshot()).toEqual(before);
 });
 function* walk(root: string): Generator<[string, string]> {
@@ -198,7 +198,7 @@ test("a file that appears after the existence check but before the open is not t
   capture(dir, "github.com/o/a", ["alpha one"]);
   const target = out(dir, "raced");
   exportHooks.afterCheck = file => writeFileSync(file, "another writer's bytes");
-  await expect(exportProject(base, "github.com/o/a", { to: target })).rejects.toThrow(/exists/);
+  await expect(exportProject(base, "github.com/o/a", { to: target, includeCapture: true })).rejects.toThrow(/exists/);
   expect(readFileSync(target, "utf8")).toBe("another writer's bytes");
 });
 
@@ -209,17 +209,17 @@ test("the destination is claimed with O_EXCL before anything is read: a file tha
   // the first screened row proves the export already holds its file: a second exporter to the same path is refused, and the first keeps working
   let second: unknown;
   const policy = createStandalonePolicy({ host: { screen: async () => {
-    if (second === undefined) second = await exportProject(base, "github.com/o/a", { to: target }).then(() => "wrote", error => (error as Error).message);
+    if (second === undefined) second = await exportProject(base, "github.com/o/a", { to: target, includeCapture: true }).then(() => "wrote", error => (error as Error).message);
     return true;
   } } });
-  const result = await exportProject(base, "github.com/o/a", { to: target, policy });
+  const result = await exportProject(base, "github.com/o/a", { to: target, policy, includeCapture: true });
   expect(second).toMatch(/exists/);
   expect(JSON.parse(readFileSync(result.file, "utf8")).counts.capture).toBe(2);
   // a failure mid-write removes the partial file it created, and only that one
   const broken = out(dir, "broken"), keep = out(dir, "keep"); writeFileSync(keep, "untouched");
   let calls = 0;
   const failing = { screen: async () => { if (++calls === 2) throw new Error("policy failed"); return true; } };
-  await expect(exportProject(base, "github.com/o/a", { to: broken, policy: failing })).rejects.toThrow(/policy failed/);
+  await expect(exportProject(base, "github.com/o/a", { to: broken, policy: failing, includeCapture: true })).rejects.toThrow(/policy failed/);
   expect(existsSync(broken)).toBe(false);
   expect(readFileSync(keep, "utf8")).toBe("untouched");
 });
@@ -231,7 +231,7 @@ test("the export's own secret screen holds with a host policy that waves everyth
   db.query("UPDATE rows SET excerpt = ? WHERE id = (SELECT MAX(id) FROM rows)").run("password: hunter2hunter2hunter2"); db.close();
   // a permissive host (a different standalone policy object, as a host passes) must not widen what leaves the home
   const permissive = { screen: async () => true };
-  const result = await exportProject(base, "github.com/o/a", { to: out(dir), policy: permissive });
+  const result = await exportProject(base, "github.com/o/a", { to: out(dir), policy: permissive, includeCapture: true });
   expect(readFileSync(result.file, "utf8")).not.toContain("hunter2hunter2hunter2");
   expect(result.withheld).toBe(1);
 });
@@ -239,8 +239,8 @@ test("the export's own secret screen holds with a host policy that waves everyth
 test("--to at a filesystem root or an empty name is refused with an error about the destination, not a missing directory", async () => {
   const { dir, base } = home();
   capture(dir, "github.com/o/a", ["alpha"]);
-  await expect(exportProject(base, "github.com/o/a", { to: "/" })).rejects.toThrow(/names a file/);
-  await expect(exportProject(base, "github.com/o/a", { to: "   " })).rejects.toThrow(/--to/);
+  await expect(exportProject(base, "github.com/o/a", { to: "/", includeCapture: true })).rejects.toThrow(/names a file/);
+  await expect(exportProject(base, "github.com/o/a", { to: "   ", includeCapture: true })).rejects.toThrow(/--to/);
 });
 
 // #15 T5 review (codex-connector P2): the bundle holds what the project's own reads show, so a work log kept under a reviewed old key is in it.
@@ -252,14 +252,97 @@ test("export includes the work lists of a key aliased to the project, also when 
     const work = new WorkListStore({ base, project, policy: () => true }); await work.write("checklist", { title }); work.close();
   }
   appendAlias(base, { alias: OLD, key: A, actor: "person", machine: "m1" });
-  const onlyAlias = await exportProject(base, A, { to: out(dir, "only-alias") });
+  const onlyAlias = await exportProject(base, A, { to: out(dir, "only-alias"), includeCapture: true });
   const text = readFileSync(onlyAlias.file, "utf8");
   expect(text).toContain("checklist of the earlier name"); expect(text).not.toContain("checkchecklist of another project");
   expect(onlyAlias.counts.workLists).toBe(1);
 
   const work = new WorkListStore({ base, project: A, policy: () => true }); await work.write("current", { title: "checklist of the current name" }); work.close();
-  const both = await exportProject(base, A, { to: out(dir, "both") });
+  const both = await exportProject(base, A, { to: out(dir, "both"), includeCapture: true });
   const bothText = readFileSync(both.file, "utf8");
   expect(bothText).toContain("checklist of the earlier name"); expect(bothText).toContain("checklist of the current name");
   expect(both.counts.workLists).toBe(2);
+});
+
+// #582: capture leaves the home only with --include-capture.
+async function fixture582() {
+  const { dir, base } = home();
+  capture(dir, "github.com/o/a", ["prompt excerpt alpha", "prompt excerpt beta"]);
+  note(dir, "github.com/o/a", "alpha decision for the round trip");
+  const work = new WorkListStore({ base, project: "github.com/o/a", policy: () => true }); await work.write("checklist", { title: "alpha list" }); work.close();
+  return { dir, base };
+}
+
+test("AC1: a default export holds no capture row in any format and never opens a capture database", async () => {
+  const { dir, base } = await fixture582();
+  // Proof of "never opens": the capture database is made unreadable. A default export still succeeds; one that opens it fails.
+  const dbFile = join(shardMachineDir(base, "github.com/o/a", machineId(base).id), "capture.db");
+  const { chmodSync } = await import("node:fs");
+  chmodSync(dbFile, 0o000);
+  try {
+    for (const format of ["json", "jsonl", "markdown"] as const) {
+      const result = await exportProject(base, "github.com/o/a", { to: out(dir, `default.${format}`), format });
+      expect(result.capture).toBe("excluded");
+      expect(result.counts).toMatchObject({ capture: 0, curated: 1, workLists: 1 });
+      const text = readFileSync(result.file, "utf8");
+      expect(text).not.toContain("prompt excerpt");
+      if (format === "json") expect(JSON.parse(text).capture).toEqual([]);
+      if (format === "jsonl") expect(text.split("\n").filter(Boolean).map(line => JSON.parse(line).type)).not.toContain("capture");
+      if (format === "markdown") expect(text).toContain("## Capture\n\nexcluded; add --include-capture to export capture rows\n");
+    }
+    await expect(exportProject(base, "github.com/o/a", { to: out(dir, "opens"), includeCapture: true })).rejects.toThrow();
+  } finally { chmodSync(dbFile, 0o600); }
+});
+
+test("AC2: --include-capture writes the bundle the command wrote before #582 (same sections, rows and counts)", async () => {
+  const { dir, base } = await fixture582();
+  const normalize = (file: string) => readFileSync(file, "utf8").replace(/"exportedAt":"[^"]+"/g, '"exportedAt":"X"').replace(/Exported at \S+/, "Exported at X");
+  for (const format of ["json", "jsonl", "markdown"] as const) {
+    const a = await exportProject(base, "github.com/o/a", { to: out(dir, `a.${format}`), format, includeCapture: true });
+    const b = await exportProject(base, "github.com/o/a", { to: out(dir, `b.${format}`), format, includeCapture: true });
+    expect(normalize(a.file)).toBe(normalize(b.file));
+    expect(a.capture).toBe("included");
+    expect(a.counts).toEqual({ capture: 2, curated: 1, goals: 0, workLists: 1 });
+    expect(normalize(a.file)).toContain("prompt excerpt alpha");
+    expect(normalize(a.file)).not.toContain("excluded; add --include-capture");
+  }
+  // Pre-#582 shape: capture first, then curated, goals, work lists, counts and withheld; no new bundle field.
+  const bundle = JSON.parse(readFileSync(out(dir, "a.json"), "utf8"));
+  expect(Object.keys(bundle)).toEqual(["schema", "project", "exportedAt", "capture", "curated", "goals", "workLists", "counts", "withheld"]);
+  expect(bundle.schema).toBe(EXPORT_SCHEMA);
+});
+
+test("AC3: the receipt reports counts per kind and the withheld count in text and --json, for both modes", async () => {
+  const { dir } = await fixture582();
+  const { runCli } = await import("../src/cli.ts");
+  const previous = process.env.AMEM_HOME; process.env.AMEM_HOME = join(dir, "memory");
+  try {
+    const flat = (text: string) => text.replace(/\s+/g, " ");
+    const text = flat(await runCli(["project", "export", "github.com/o/a", "--to", out(dir, "t.json")], { cwd: dir, env: {}, stdinTTY: true }));
+    expect(text).toContain("1 notes, 0 goals, 1 work lists, 0 capture rows (excluded; add --include-capture); 0 withheld by the screen");
+    const json = JSON.parse(await runCli(["project", "export", "github.com/o/a", "--to", out(dir, "j.json"), "--json"], { cwd: dir, env: {}, stdinTTY: true }));
+    expect(json).toMatchObject({ capture: "excluded", counts: { capture: 0, curated: 1, goals: 0, workLists: 1 }, withheld: 0 });
+    const full = JSON.parse(await runCli(["project", "export", "github.com/o/a", "--to", out(dir, "f.json"), "--include-capture", "--json"], { cwd: dir, env: {}, stdinTTY: true }));
+    expect(full).toMatchObject({ capture: "included", counts: { capture: 2 }, withheld: 0 });
+    expect(flat(await runCli(["project", "export", "github.com/o/a", "--to", out(dir, "ft.json"), "--include-capture"], { cwd: dir, env: {}, stdinTTY: true }))).toContain("2 capture rows (included)");
+  } finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
+});
+
+test("AC4: importing a default export restores the same curated notes as importing a capture-including one", async () => {
+  const { dir, base } = await fixture582();
+  const plain = await exportProject(base, "github.com/o/a", { to: out(dir, "plain.jsonl"), format: "jsonl" });
+  const full = await exportProject(base, "github.com/o/a", { to: out(dir, "full.jsonl"), format: "jsonl", includeCapture: true });
+  const { importProject } = await import("../src/memory/project-import.ts");
+  const restored: string[][] = [];
+  for (const file of [plain.file, full.file]) {
+    const target = mkdtempSync(join(tmpdir(), "amem-import-")); cleanup.push(() => rmSync(target, { recursive: true, force: true }));
+    const store = new MemoryStore({ home: target, deferPromotions: true });
+    try {
+      const result = await importProject(store, { from: file, project: "github.com/o/a", confirm: true, policy: () => true });
+      expect(result.applied).toBe(true);
+      restored.push(store.list({ project: "github.com/o/a", limit: 100 }).map(view => `${view.id} ${view.text}`).sort());
+    } finally { store.close(); }
+  }
+  expect(restored[0]!.length).toBe(1);
+  expect(restored[0]).toEqual(restored[1]!);
 });

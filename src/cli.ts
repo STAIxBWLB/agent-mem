@@ -1316,8 +1316,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (typeof options["--to"] !== "string") throw new Error("usage: amem project export <key> --to <file>");
       const format = (options["--format"] ?? "json") as ProjectExportFormat;
       // The bundle leaves the home, so it is screened by the configured policy (secrets, personal data, the configured patterns and deny paths).
-      const result = await exportProject(memoryHome(), requested, { to: options["--to"], policy: policyOf(), format });
-      return options["--json"] ? JSON.stringify(result, null, 2) : `exported ${result.project} to ${result.file} as ${result.format}: ${result.counts.capture} capture rows, ${result.counts.curated} notes, ${result.counts.goals} goals, ${result.counts.workLists} work lists${result.withheld ? `; ${result.withheld} withheld by the screen` : ""}`;
+      const result = await exportProject(memoryHome(), requested, { to: options["--to"], policy: policyOf(), format, includeCapture: options["--include-capture"] === true });
+      return options["--json"] ? JSON.stringify(result, null, 2) : `exported ${result.project} to ${result.file} as ${result.format}: ${result.counts.curated} notes, ${result.counts.goals} goals, ${result.counts.workLists} work lists, ${result.counts.capture} capture rows (${result.capture === "included" ? "included" : "excluded; add --include-capture"}); ${result.withheld} withheld by the screen`;
     }
     if (op === "import") {
       if (typeof options["--from"] !== "string") throw new Error("usage: amem project import <key> --from <file.jsonl> [--confirm] [--allow-shared]");
