@@ -20,7 +20,7 @@ import { processLiveness, withGitTimeout } from "./platform.ts";
 import { endLikeSignal, STOP_SIGNALS } from "./sync-cadence.ts";
 import { boundRepoRoot } from "./repo-scope.ts";
 import { aliasedKeys, shardDir } from "./shard.ts";
-import { curatedCount, projectTransition, transitionNotice } from "./roots.ts";
+import { curatedCount, projectTransition, transitionKey, transitionNotice } from "./roots.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } from "./sync-cadence.ts";
 import { readSyncStatus } from "./sync-progress.ts";
@@ -96,8 +96,10 @@ function maskedSection(curated: MemoryStore | undefined): { masked?: Section } {
 }
 /** #581: a read of roots.jsonl and aliases.jsonl only; doctor never writes a root line. */
 function transitionSection(options: DoctorOptions): { transition?: Section } {
-  const transition = projectTransition(options.home, options.cwd, options.project, key => curatedCount(options.home, key, shardDir));
+  try {
+  const transition = projectTransition(options.home, options.cwd, transitionKey(options.cwd), key => curatedCount(options.home, key, shardDir));
   return transition ? { transition: { status: "attention", ...transition, notice: transitionNotice(transition) } } : {};
+  } catch { return {}; }
 }
 const ids = (list: string[]): string[] => list.slice(0, MAX_IDS).map(id => id.slice(0, 8));
 const regularDir = (path: string): boolean => { try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; } };

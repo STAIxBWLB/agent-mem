@@ -5,6 +5,7 @@ import { Database } from "bun:sqlite";
 import { effectiveAliases } from "./aliases.ts";
 import { indexFileName } from "./index-file.ts";
 import { realPath } from "./platform.ts";
+import { memoryProjectKey } from "./project.ts";
 
 /**
  * #581: which project key each working directory resolved to last, on this machine. `roots.jsonl` in the memory home
@@ -18,6 +19,11 @@ const READ_BOUND = 256 * 1024;
 
 export interface RootLine { schema: typeof ROOTS_SCHEMA; op: "bind" | "keep"; root: string; key: string; prev?: string; at: string; machine?: string }
 export interface ProjectTransition { state: "project_transition"; previousKey: string; key: string; previousCuratedNotes: number | null; aliasCommand: string; keepCommand: string }
+
+/** The key every #581 reader and writer compares: the hook's own resolution, isolated from an inherited GIT_* environment. Raw, before alias resolution. */
+export function transitionKey(cwd: string): string {
+  return memoryProjectKey(cwd, { repositoryIsolation: true });
+}
 
 export const rootsLogPath = (home: string): string => join(home, ROOTS_FILE);
 

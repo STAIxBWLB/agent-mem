@@ -140,3 +140,19 @@ test("AC5: roots.jsonl holds no path text, and neither sync nor project export c
   expect(syncSources).not.toContain("roots.jsonl");
   expect(projectTransition(f.base, f.cwd, f.project)).toBeUndefined();
 });
+
+test("an inherited GIT_DIR never yields a false transition, and keep-separate records the isolation key the hook resolves", async () => {
+  const f = fixture(), other = hookFixture("https://github.com/fixture/elsewhere.git"); clean.push(other.close);
+  await f.start();
+  const saved = process.env.GIT_DIR;
+  process.env.GIT_DIR = join(other.cwd, ".git");
+  try {
+    expect(await status(f)).toBeNull();
+    expect(JSON.parse(await f.cli("doctor", "--json")).sections.transition).toBeUndefined();
+    f.git("--git-dir", join(f.cwd, ".git"), "remote", "add", "origin", "https://github.com/fixture/isolated.git");
+    expect(await status(f)).toMatchObject({ previousKey: f.project, key: "github.com/fixture/isolated" });
+    await f.cli("project", "keep-separate", "--confirm");
+    expect(readRootBindings(f.base).get(rootHash(f.cwd))).toMatchObject({ op: "keep", key: "github.com/fixture/isolated" });
+  } finally { if (saved === undefined) delete process.env.GIT_DIR; else process.env.GIT_DIR = saved; }
+  expect(await f.brief()).not.toContain("project key changed");
+});

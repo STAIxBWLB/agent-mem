@@ -39,7 +39,7 @@ import { CandidateStore, candidateInputId, candidateTargetRevision, type Candida
 import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-overlaps.ts";
 import { openCuratedForRead } from "./memory/curated-read.ts";
 import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias, shardDir } from "./memory/shard.ts";
-import { curatedCount, projectTransition, recordKeepSeparate, rootsLogPath } from "./memory/roots.ts";
+import { curatedCount, projectTransition, recordKeepSeparate, rootsLogPath, transitionKey } from "./memory/roots.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity-text.ts";
 import { CaptureStore, readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
@@ -778,7 +778,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
       ...shardMigrationStatus(where.home),
       // #581: read-only (the SessionStart hook is the only writer of roots.jsonl); present only during a transition, so the default shape is unchanged.
-      ...(() => { try { const t = projectTransition(where.home, policyCwd, memoryProjectKey(policyCwd), key => curatedCount(where.home, key, shardDir));
+      ...(() => { try { const t = projectTransition(where.home, policyCwd, transitionKey(policyCwd), key => curatedCount(where.home, key, shardDir));
         return t ? { projectTransition: { previousKey: t.previousKey, key: t.key, previousCuratedNotes: t.previousCuratedNotes, aliasCommand: t.aliasCommand, keepCommand: t.keepCommand } } : {}; } catch { return {}; } })() };
     return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context, options), reportOptions(context, options));
   }
@@ -1297,7 +1297,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   }
   if (sub === "project" && parsed.path[1] === "keep-separate") {
     // #581: end a project-key transition for this directory without joining the keys. Preview without --confirm.
-    const home = memoryHome(), key = memoryProjectKey(policyCwd);
+    const home = memoryHome(), key = transitionKey(policyCwd);
     const transition = projectTransition(home, policyCwd, key, previous => curatedCount(home, previous, shardDir));
     if (!transition) throw Object.assign(new Error("no project key transition for this directory: nothing to keep apart. Run amem status to see the bound project."), { exitCode: 2 });
     if (options["--confirm"] !== true) {
