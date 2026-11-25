@@ -1,5 +1,5 @@
 import { lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { readProfileJSON, writeProfileJSON } from "./generation.ts";
 import { readerAdmissionDatabase } from "./mutation.ts";
 import { processLiveness, processSignature, realPath } from "./platform.ts";
@@ -48,6 +48,40 @@ function ownedLease(memoryDir: string, file: string, signature: string, scope: L
   if (!lease || lease.pid !== process.pid || lease.signature !== signature) throw new Error("reader lease ownership is unavailable");
 }
 
+/** #632: how many lease names one registration scans; later registrations clear what a large backlog leaves. */
+const GONE_LEASE_SCAN_LIMIT = 256;
+
+/** One syscall, no identity probe: only ESRCH proves the recorded process is gone. */
+function pidIsGone(pid: number): boolean {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+}
+
+/** #632: a registration clears leases of processes that are provably gone in its own scope, so doctor's
+ * `readers` attention state does not need a migration. The caller holds the admission fence, and each
+ * candidate is re-read there: a pid that exists (reused included), an unreadable or unverifiable file,
+ * a link or any non-regular file stays exactly as it is, and nothing here throws. Migration admission
+ * keeps its pid-plus-signature test, which is what clears a reused pid's lease. */
+function removeGoneLeases(memoryDir: string, scope: LeaseScope, own: string): void {
+  const dir = join(memoryDir, leaseFolder(scope));
+  let names: string[];
+  try { names = readdirSync(dir).filter(name => name.endsWith(".json")).sort().slice(0, GONE_LEASE_SCAN_LIMIT); }
+  catch { return; }
+  for (const name of names) {
+    if (name === own) continue;
+    const file = join(dir, name);
+    try {
+      const stat = lstatSync(file, { throwIfNoEntry: false });
+      if (!stat || !stat.isFile()) continue;
+      const lease = readLease(memoryDir, file, scope);
+      if (!lease || !pidIsGone(lease.pid)) continue;
+      const again = readLease(memoryDir, file, scope);
+      if (!again || again.pid !== lease.pid) continue;
+      rmSync(file);
+    } catch { /* unreadable or unverifiable evidence, or a file that moved under us, stays as it is */ }
+  }
+}
+
 function admitReader(memoryDir: string): void {
   // The profile lock is created under the same reader admission fence, then held across migration awaits.
   // Even a malformed or stale marker refuses admission; only the profile-lock owner may reclaim it.
@@ -89,6 +123,8 @@ export function registerReaderLease(memoryDir: string, options: { busyTimeoutMs?
     }
     const dir = checkReadersDir(memoryDir, scope);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // #632: a first registration for this file clears leases of provably gone processes; nested readers returned above.
+    removeGoneLeases(memoryDir, scope, basename(file));
     // A failed earlier close may have retained evidence. Never overwrite an unverifiable replacement.
     const existing = readLease(memoryDir, file, scope);
     if (existing && (existing.pid !== process.pid || existing.signature !== signature)) throw new Error("reader lease ownership is unavailable");

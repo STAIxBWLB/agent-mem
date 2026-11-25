@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Fixed
+
+- A reader registration clears leases of processes that are provably gone in its own scope (`readers` or `shard-readers`), so doctor's `readers` attention state clears without a migration. The test is one pid syscall (ESRCH): a pid that still exists, an unreadable or unverifiable file, a link, and a reused pid's lease are left alone, and migration admission keeps its pid-plus-signature test. At most 256 lease names are scanned per registration. The lease format, its file name, migration and the checkpoint fence are unchanged. #632.
+
 ## 0.40.0
 
 ### Added
