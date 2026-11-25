@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.40.0
 
 ### Added
 
@@ -17,6 +17,14 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - A placement sync reads the remote's placement refs once per run instead of once per target, and does not fetch a ref whose advertised tip it already holds. A warm no-op sync over many realms makes one `ls-remote` and no fetches. Moved remote heads are still fetched and audited, and receipts and formats are unchanged. #626.
 - After an upgrade, the placement writer-proof refusal and the doctor `writers` finding name the checkpoint renewal first: save the preview as JSON (`(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ... --json > checkpoint-plan.json)`), then `--checkpoint --confirm --plan checkpoint-plan.json`, which runs while sessions stay open. The dry-run/apply renewal is named only as the fallback and requires every amem session to be closed. A renewal `--apply` refused for live readers, and `amem setup`'s out-of-inventory warning, name the same checkpoint steps. Categories, cause classes and status fields are unchanged. #624.
 - The checkpoint preview's next step and the marked usage hint for a placement checkpoint name the saving form rather than a `<saved preview JSON>` placeholder: save the plan with `(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ... --json > checkpoint-plan.json)`, then `--confirm --plan checkpoint-plan.json` with the same writer roots. The human preview prints that next step as printed. The preview JSON's sealed plan and confirm's validation are unchanged. #627.
+
+### Compatibility with N-1 (0.39.0)
+
+- Project key transition (#581): `roots.jsonl` in the memory home is new, machine-local and holds only hashes of real paths. It is never synced or exported, and 0.39.0 ignores it. `amem project keep-separate --confirm` appends one `keep` line to it and writes nothing else. Status JSON can add an optional `projectTransition` object, doctor JSON an optional `transition` section, and the SessionStart brief one notice line. Existing fields keep their meanings.
+- Project export (#582): `amem project export` and the library `exportProject` leave capture rows out unless `--include-capture` or `includeCapture: true` is passed. A caller that relied on capture rows being in the default bundle must now pass that option. The receipt and `--json` add `capture: included|excluded`. The bundle with capture included has the same format as 0.39.0's. `HOST_API_VERSION` stays at 1.
+- Placement sync (#626): a run reads the remote's placement refs once and does not fetch a ref whose advertised tip it already holds. Storage, journal, ref, receipt and remote formats are unchanged, so 0.39.0 and 0.40.0 can share a home and a remote.
+- Messages (#624, #627): the writer-proof refusal, the renewal readers refusal, the doctor `writers` finding, `amem setup`'s out-of-inventory warning and the checkpoint preview's next step change only their text. Categories, cause classes, status fields and exit codes are unchanged.
+- Authoritative data and tooling: storage formats, entry ids and hashing, existing schema identifiers, sync transport and placement records, writer-pin rules, MCP tool names and format floors remain unchanged. Writer fingerprints still reflect the measured install, so normal writer verification and renewal apply when upgrading; the checkpoint renewal runs with sessions open. The exact `@staix/cli-output` pin stays at 0.1.3.
 
 ## 0.39.0
 
