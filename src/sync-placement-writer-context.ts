@@ -12,6 +12,7 @@ import { FormatFloorError } from "./memory/formats.ts";
 import type { PlacementCapturePort } from "./memory/sync-placement-capture.ts";
 import { SharedWriterRevisionError } from "./memory/sync-placement-writer-revision-format.ts";
 
+import { WRITER_CAUSE_CLASSES, WRITER_ROOT_CATEGORIES, type PlacementWriterRefusal } from "./memory/sync-placement-refusal-category.ts";
 export type PlacementWriterRootCategory = "running CLI" | "host package" | "setup receipt" | "declared writer" | "active locator" | "home floor" | "writer renewal";
 export type PlacementWriterContextPhase = "initial" | "active";
 const failureDetails:Record<SyncPlacementWriterFailureDetail,string>={
@@ -69,8 +70,6 @@ function setupReceiptRefusal(error: unknown): { target: SetupTarget; phase: Plac
   return { target: target as SetupTarget, phase: fields.phase?.value === "initial" ? "initial" : "active",
     ...(typeof detail === "string" && Object.hasOwn(failureDetails, detail) ? { detail: detail as SyncPlacementWriterFailureDetail } : {}) };
 }
-const WRITER_ROOT_CATEGORIES=["running CLI","host package","setup receipt","declared writer","active locator","home floor","writer renewal"] as const satisfies readonly PlacementWriterRootCategory[];
-const WRITER_CAUSE_CLASSES=["missing","changed","unavailable"] as const;
 /**
  * #551 AC1: the refusal as fixed own data for a person-facing surface. A real PlacementWriterContextError - or the one a
  * later sync failure carries as `placementRefusal` - is rebuilt from its own validated fields, so a tampered message, a
@@ -94,6 +93,12 @@ function placementWriterRefusal(error: unknown): PlacementWriterContextError | u
     state === "staging" || state === "pending" || state === "checkpoint-pending" ? state : undefined,
     typeof target === "string" && (SETUP_TARGETS as readonly string[]).includes(target) ? target as SetupTarget : undefined);
 }
+/** Closed data projection for progress telemetry. Shaped errors from other module copies do not qualify. */
+export function placementWriterRefusalDetail(error: unknown): PlacementWriterRefusal | undefined {
+  const refusal = placementWriterRefusal(error);
+  return refusal && { causeClass: refusal.causeClass, rootCategory: refusal.category };
+}
+
 /** #551: no category is claimed here, because the state could not be read far enough to name one. */
 const PLACEMENT_WRITER_UNVERIFIED_TEXT = "Placement writer verification could not establish a category: the retained writer inventory or its history could not be read far enough to name one; inspect the home with a compatible release, then run amem migrate --sync-placement --dry-run.";
 /** An inventory state that could not be proven: never reported as a missing root, and never given an invented category. */

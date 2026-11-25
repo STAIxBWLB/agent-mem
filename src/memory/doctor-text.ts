@@ -1,5 +1,7 @@
 import { CLIS, type DoctorReport, type Section, type SectionStatus } from "./doctor.ts";
 import { humanBytes, relativeTime, singleLine, wordedFacts, wordedKey, PLAIN, type Style } from "./style.ts";
+import { validPlacementWriterRefusal } from "./sync-placement-refusal-category.ts";
+import { writerRefusalText } from "./sync-progress-text.ts";
 import { attention, reportFrame, stateRows, STATE_WORD, type Finding, type ReportTextOptions } from "./status-text.ts";
 
 /** #592: the human doctor report, kept out of doctor.ts so the doctor's checks never import the output package. */
@@ -68,7 +70,8 @@ function sectionFact(name: string, detail: Record<string, unknown>, now: number)
   if (name === "cadence") {
     const sync = (detail.sync ?? {}) as Record<string, unknown>, ingest = (detail.ingest ?? {}) as Record<string, string>;
     return [`ingest ${Object.entries(ingest).map(([cli, how]) => `${cli} ${how}`).join(", ")}`,
-      `sync remote ${sync.remote}${sync.remote === "configured" ? `, last ok ${relativeTime(sync.lastOkAt as string | null, now)}, ${sync.failures} failures${sync.due ? ", due" : ""}` : ""}`];
+      `sync remote ${sync.remote}${sync.remote === "configured" ? `, last ok ${relativeTime(sync.lastOkAt as string | null, now)}, ${sync.failures} failures${sync.due ? ", due" : ""}` : ""}`,
+      ...(validPlacementWriterRefusal(sync.writerRefusal) ? [`last failure: ${writerRefusalText(sync.writerRefusal)}`] : [])];
   }
   if (name === "drops") {
     if (detail.counts === undefined) return [];

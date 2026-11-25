@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { SyncProgress, readSyncStatus, renderSyncProgress, renderSyncStatus, syncProgressSidecar, SYNC_PROGRESS_DIR, type SyncProgressSnapshot } from "../src/memory/sync-progress.ts";
+import { SyncProgress, readSyncStatus, renderSyncProgress, renderSyncStatus, syncProgressSidecar, syncStatusSnapshot, SYNC_PROGRESS_DIR, type SyncProgressSnapshot } from "../src/memory/sync-progress.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0)) close(); });
@@ -77,17 +77,21 @@ test("#426: a failed operation records its refusal category in the sidecar and a
   expect(readSyncStatus(dir, now()).operations).toHaveLength(0);
 });
 
-test("N-1: the 0.28.2 status reader reads a 0.29.0 inventory sidecar without a strict-schema refusal", async () => {
+test("the frozen 0.28.2 status reader accepts additive inventory and writer refusal data", async () => {
   // Fixture is the verbatim v0.28.2 reader (`git show v0.28.2:src/memory/sync-progress.ts` and its two imports).
   const old = await import("./fixtures/sync-progress-0.28.2/sync-progress.ts");
-  const dir = home(), progress = new SyncProgress({ sink: syncProgressSidecar(dir, { pid: process.pid }), intervalMs: 0, operationId: "3".repeat(16) });
+  const dir = home(), sink = syncProgressSidecar(dir, { pid: process.pid });
+  const progress = new SyncProgress({ sink: snapshot => sink(syncStatusSnapshot(snapshot, { causeClass: "missing", rootCategory: "running CLI" })),
+    intervalMs: 0, operationId: "3".repeat(16) });
   progress.inventory({ publications: 2, completed: 1, realms: 3, outcomes: [{ realm: "user", outcome: "committed" }, { realm: "a".repeat(16), outcome: "not-local" }] });
   const current = readSyncStatus(dir, Date.now(), () => "live");
   expect(current.operations[0]?.inventory?.outcomes).toContainEqual({ realm: "a".repeat(16), outcome: "not-local" });
+  progress.finish("failed", "unavailable", "writer-pin");
   const report = old.readSyncStatus(dir, Date.now(), () => "live");
   expect(report.malformed).toBe(0); expect(report.operations).toHaveLength(1);
-  expect(report.operations[0]).toMatchObject({ operationId: "3".repeat(16), state: "running" });
-  expect(old.renderSyncStatus(report)).toContain(`${"3".repeat(16)} writer verification`);
+  expect(report.operations[0]).toMatchObject({ operationId: "3".repeat(16), state: "failed", cause: "unavailable", category: "writer-pin" });
+  expect(report.operations[0]).not.toHaveProperty("writerRefusal");
+  expect(old.renderSyncStatus(report)).toContain("failed (unavailable, writer-pin) in writer verification");
 });
 
 
@@ -103,4 +107,51 @@ test("#450: deferred failure retains category until all inventory outcomes are r
   expect(readSyncStatus(dir).operations[0]).toMatchObject({ state: "failed", cause: "unavailable", category: "remote", inventory: { completed: 1, outcomes: [
     { realm: "user", outcome: "committed" }, { realm: "a".repeat(16), outcome: "failed" }, { realm: "b".repeat(16), outcome: "not-run" },
   ] } });
+});
+
+
+test("#613: writer refusal survives a deferred terminal snapshot, and malformed writer data drops the record", () => {
+  const dir = home(), sink = syncProgressSidecar(dir);
+  const writerRefusal = { causeClass: "changed", rootCategory: "running CLI" } as const;
+  const progress = new SyncProgress({ sink: snapshot => sink(syncStatusSnapshot(snapshot, writerRefusal)), operationId: "a".repeat(16) });
+  progress.deferFinish(true);
+  progress.finish("failed", "unavailable", "writer-pin");
+  expect(readSyncStatus(dir).operations[0]).not.toHaveProperty("writerRefusal");
+  progress.deferFinish(false);
+  expect(readSyncStatus(dir).operations[0]).toMatchObject({ state: "failed", cause: "unavailable", category: "writer-pin", writerRefusal });
+  const file = join(dir, SYNC_PROGRESS_DIR, "a".repeat(16) + ".json");
+  const saved = JSON.parse(readFileSync(file, "utf8"));
+  for (const tampered of [null, [], "changed", { causeClass: "wrong", rootCategory: "running CLI" },
+    { causeClass: "missing", rootCategory: "wrong" }, { ...writerRefusal, detail: "private path" }, { causeClass: "missing" }]) {
+    writeFileSync(file, JSON.stringify({ ...saved, writerRefusal: tampered }));
+    expect(readSyncStatus(dir)).toEqual({ operations: [], malformed: 1 });
+  }
+  writeFileSync(file, JSON.stringify({ ...saved, state: "succeeded" }));
+  expect(readSyncStatus(dir)).toEqual({ operations: [], malformed: 1 });
+});
+
+test("#613: success and cancellation omit writer refusal even if a proof failed earlier", () => {
+  for (const state of ["succeeded", "cancelled"] as const) {
+    const progress = new SyncProgress({ sink: () => {} });
+    progress.finish(state, state === "cancelled" ? "cancelled" : undefined);
+    expect(syncStatusSnapshot(progress.snapshot(), { causeClass: "unavailable", rootCategory: "writer renewal" })).not.toHaveProperty("writerRefusal");
+  }
+});
+
+test("#613: a full inventory plus writer refusal fits 4 KiB, and an oversized update preserves the prior record", () => {
+  const dir = home(), number = Number.MAX_SAFE_INTEGER;
+  const sink = syncProgressSidecar(dir, { pid: number, signature: "\\".repeat(256) });
+  const progress = new SyncProgress({ sink: snapshot => sink(syncStatusSnapshot(snapshot, { causeClass: "unavailable", rootCategory: "declared writer" })),
+    now: () => number, mono: () => 0, operationId: "b".repeat(16) });
+  progress.inventory({ publications: number, completed: number, realms: number,
+    outcomes: Array.from({ length: 33 }, (_, index) => ({ realm: index.toString(16).padStart(16, "0"), outcome: "not-needed" })) });
+  progress.counts({ permitted: number, local: number, declined: number, held: number });
+  progress.finish("failed", "unavailable", "writer-pin");
+  const file = join(dir, SYNC_PROGRESS_DIR, "b".repeat(16) + ".json"), before = readFileSync(file);
+  expect(before.byteLength).toBeLessThanOrEqual(4096);
+  expect(readSyncStatus(dir).operations[0]?.inventory?.outcomes).toHaveLength(32);
+  expect(readSyncStatus(dir).operations[0]?.writerRefusal).toEqual({ causeClass: "unavailable", rootCategory: "declared writer" });
+  const oversized = { ...progress.snapshot(), padding: "x".repeat(5000) };
+  expect(() => sink(oversized)).toThrow("sync status exceeds its byte bound");
+  expect(readFileSync(file)).toEqual(before);
 });

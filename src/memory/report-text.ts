@@ -7,6 +7,7 @@ import type { ShardMigrationResult } from "./shard-migration.ts";
 import type { View } from "./store.ts";
 import type { SyncResult } from "./sync.ts";
 import { renderSyncProgress, type SyncStatusReport } from "./sync-progress.ts";
+import { writerRefusalText } from "./sync-progress-text.ts";
 import type { UsageReport } from "./usage.ts";
 import { humanBytes, PLAIN, relativeTime, singleLine, wordedKey, type Style } from "./style.ts";
 
@@ -171,6 +172,7 @@ export function syncStatusReportText(status: SyncStatusReport, now: number, s: S
       const marker = op.state === "interrupted" ? "warn" : op.state === "running" ? "pending" : op.state === "succeeded" ? "ok" : op.state === "cancelled" ? "absent" : "fail";
       report.bullet(marker, `${op.operationId}: ${op.state === "interrupted" ? `interrupted in ${line.replace(/; last work progress .*$/, "")}; owner gone ${Math.round(op.lastAliveAgoMs / 1000)}s ago; not a successful sync`
         : op.state === "running" ? `${line}; last alive ${Math.round(op.lastAliveAgoMs / 1000)}s ago` : line}`);
+      if (op.writerRefusal) report.note(writerRefusalText(op.writerRefusal));
     }
   }
   if (status.malformed) report.note(`${plural(status.malformed, "unreadable status file")} ignored`);

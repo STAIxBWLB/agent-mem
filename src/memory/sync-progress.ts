@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, opendirSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { PLACEMENT_REFUSAL_CATEGORIES, type PlacementRefusalCategory } from "./sync-placement-refusal-category.ts";
+import { PLACEMENT_REFUSAL_CATEGORIES, validPlacementWriterRefusal, type PlacementRefusalCategory, type PlacementWriterRefusal } from "./sync-placement-refusal-category.ts";
 import { processLiveness, processSignature, type Liveness } from "./platform.ts";
 
 export const SYNC_PROGRESS_SCHEMA = "agent-mem.sync-progress/v1", SYNC_PROGRESS_INTERVAL_MS = 1000, SYNC_PROGRESS_DIR = "sync-status";
@@ -48,6 +48,16 @@ export interface SyncProgressSnapshot {
   /** #426: for a failed placement sync, the fixed category of the check that refused (allowlisted, no text). */
   category?: PlacementRefusalCategory;
 }
+interface SyncStatusSnapshot extends SyncProgressSnapshot {
+  writerRefusal?: PlacementWriterRefusal;
+}
+
+/** The CLI attaches its typed writer evidence only at a failed terminal checkpoint. */
+export function syncStatusSnapshot(snapshot: SyncProgressSnapshot, writerRefusal?: PlacementWriterRefusal): SyncStatusSnapshot {
+  if (snapshot.state !== "failed" || !validPlacementWriterRefusal(writerRefusal)) return snapshot;
+  return { ...snapshot, writerRefusal: { causeClass: writerRefusal.causeClass, rootCategory: writerRefusal.rootCategory } };
+}
+
 export type SyncProgressSink = (snapshot: SyncProgressSnapshot) => void;
 export interface SyncProgressOptions { sink: SyncProgressSink; intervalMs?: number; now?: () => number; mono?: () => number; operationId?: string }
 
@@ -157,7 +167,7 @@ function readBounded(file: string): Buffer | undefined {
 }
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 /** Allowlisted enumerations and non-negative integers only: a tampered sidecar cannot inject text into a terminal. */
-function validate(value: unknown, operationId: string): { snapshot: SyncProgressSnapshot; owner: Owner } | undefined {
+function validate(value: unknown, operationId: string): { snapshot: SyncStatusSnapshot; owner: Owner } | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const v = value as Record<string, unknown>, owner = v.owner as Record<string, unknown> | undefined, proofs = v.proofs as Record<string, unknown> | undefined, counts = v.counts as Record<string, unknown> | undefined, inventory = v.inventory as Record<string, unknown> | undefined;
   if (v.schema !== SYNC_PROGRESS_SCHEMA || v.operationId !== operationId || !(STATES as readonly unknown[]).includes(v.state) || !(PHASES as readonly unknown[]).includes(v.phase)
@@ -166,12 +176,13 @@ function validate(value: unknown, operationId: string): { snapshot: SyncProgress
     || v.unit !== undefined && (!(UNITS as readonly unknown[]).includes(v.unit) || !count(v.completed)) || v.total !== undefined && !count(v.total)
     || v.cause !== undefined && !(CAUSES as readonly unknown[]).includes(v.cause)
     || v.category !== undefined && !(PLACEMENT_REFUSAL_CATEGORIES as readonly unknown[]).includes(v.category)
+    || v.writerRefusal !== undefined && (v.state !== "failed" || !validPlacementWriterRefusal(v.writerRefusal))
     || counts !== undefined && ![counts.permitted, counts.local, counts.declined, counts.held].every(count)
     || inventory !== undefined && (!inventory || typeof inventory !== "object" || ![inventory.publications, inventory.completed, inventory.realms].every(count) || (inventory.completed as number) > (inventory.publications as number)
       || inventory.truncated !== undefined && inventory.truncated !== true
       || inventory.outcomes !== undefined && (!Array.isArray(inventory.outcomes) || inventory.outcomes.length > MAX_REALM_OUTCOMES
         || inventory.outcomes.some((item: unknown) => !item || typeof item !== "object" || !realmLabel((item as { realm?: unknown }).realm) || !(SYNC_REALM_OUTCOMES as readonly unknown[]).includes((item as { outcome?: unknown }).outcome))))) return undefined;
-  const snapshot: SyncProgressSnapshot = { schema: SYNC_PROGRESS_SCHEMA, operationId, state: v.state as SyncProgressState, phase: v.phase as SyncProgressPhase, attempt: v.attempt as number,
+  const snapshot: SyncStatusSnapshot = { schema: SYNC_PROGRESS_SCHEMA, operationId, state: v.state as SyncProgressState, phase: v.phase as SyncProgressPhase, attempt: v.attempt as number,
     startedUnixMs: v.startedUnixMs as number, elapsedMs: v.elapsedMs as number, phaseElapsedMs: v.phaseElapsedMs as number,
     ...(v.unit !== undefined ? { unit: v.unit as SyncProgressUnit, completed: v.completed as number, ...(v.total !== undefined ? { total: v.total as number } : {}) } : {}),
     ...(counts ? { counts: { permitted: counts.permitted as number, local: counts.local as number, declined: counts.declined as number, held: counts.held as number } } : {}),
@@ -179,10 +190,11 @@ function validate(value: unknown, operationId: string): { snapshot: SyncProgress
     ...(inventory ? { inventory: { publications: inventory.publications as number, completed: inventory.completed as number, realms: inventory.realms as number,
       ...(Array.isArray(inventory.outcomes) ? { outcomes: (inventory.outcomes as { realm: string; outcome: SyncRealmOutcome }[]).map(item => ({ realm: item.realm, outcome: item.outcome })) } : {}),
       ...(inventory.truncated === true ? { truncated: true } : {}) } } : {}),
-    ...(v.cause !== undefined ? { cause: v.cause as SyncProgressCause } : {}), ...(v.category !== undefined ? { category: v.category as PlacementRefusalCategory } : {}) };
+    ...(v.cause !== undefined ? { cause: v.cause as SyncProgressCause } : {}), ...(v.category !== undefined ? { category: v.category as PlacementRefusalCategory } : {}),
+    ...(v.writerRefusal !== undefined ? { writerRefusal: v.writerRefusal as PlacementWriterRefusal } : {}) };
   return { snapshot, owner: { pid: owner.pid as number, ...(typeof owner.signature === "string" ? { signature: owner.signature } : {}) } };
 }
-function load(dir: string, name: string): { snapshot: SyncProgressSnapshot; owner: Owner } | undefined {
+function load(dir: string, name: string): { snapshot: SyncStatusSnapshot; owner: Owner } | undefined {
   try { const bytes = readBounded(join(dir, name)); return bytes ? validate(JSON.parse(bytes.toString("utf8")), name.slice(0, 16)) : undefined; } catch { return undefined; }
 }
 
@@ -194,6 +206,8 @@ function load(dir: string, name: string): { snapshot: SyncProgressSnapshot; owne
 export function syncProgressSidecar(home: string, owner: Owner = { pid: process.pid, ...(processSignature(process.pid) ? { signature: processSignature(process.pid)! } : {}) }): SyncProgressSink {
   const dir = join(home, SYNC_PROGRESS_DIR); let ready = false;
   return snapshot => {
+    const body = JSON.stringify({ ...snapshot, owner }) + "\n";
+    if (Buffer.byteLength(body) > MAX_BYTES) throw new Error("sync status exceeds its byte bound");
     if (!ready) {
       mkdirSync(dir, { mode: 0o700, recursive: true }); if (!privateDirectory(dir)) throw new Error("sync status directory unavailable");
       const kept = names(dir).filter(name => name !== `${snapshot.operationId}.json`).map(name => ({ name, mtimeMs: lstatSync(join(dir, name), { throwIfNoEntry: false })?.mtimeMs ?? 0 })).sort((a, b) => b.mtimeMs - a.mtimeMs);
@@ -204,11 +218,11 @@ export function syncProgressSidecar(home: string, owner: Owner = { pid: process.
       ready = true;
     }
     const file = join(dir, `${snapshot.operationId}.json`), temporary = join(dir, `.${snapshot.operationId}.tmp`);
-    rmSync(temporary, { force: true }); writeFileSync(temporary, JSON.stringify({ ...snapshot, owner }) + "\n", { mode: 0o600, flag: "wx" }); renameSync(temporary, file);
+    rmSync(temporary, { force: true }); writeFileSync(temporary, body, { mode: 0o600, flag: "wx" }); renameSync(temporary, file);
   };
 }
 
-export interface SyncOperationStatus extends SyncProgressSnapshot { ownerLiveness: Liveness; lastAliveAgoMs: number; lastWorkProgressAgoMs: number }
+export interface SyncOperationStatus extends SyncStatusSnapshot { ownerLiveness: Liveness; lastAliveAgoMs: number; lastWorkProgressAgoMs: number }
 export interface SyncStatusReport { operations: SyncOperationStatus[]; malformed: number }
 /**
  * Read-only status for another terminal: opens no realm, takes no lock, renews no proof and writes nothing. A running

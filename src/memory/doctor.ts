@@ -22,6 +22,7 @@ import { boundRepoRoot } from "./repo-scope.ts";
 import { aliasedKeys, shardDir } from "./shard.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } from "./sync-cadence.ts";
+import { readSyncStatus } from "./sync-progress.ts";
 import { readSetupDrift } from "../setup-drift.ts";
 import { readHookSpoolStatus } from "../hook-spool.ts";
 
@@ -496,13 +497,19 @@ function cadenceSection(options: DoctorOptions): Section {
   const ingest: Record<string, string> = {};
   for (const cli of CLIS) ingest[cli] = receiptPhase(options.home, cli) === "applied" ? (cli === "claude" ? "hooks" : "session end") : "manual";
   const remote = remoteConfigured(options.home), state = usableState(readSyncState(options.home), options.now), next = nextSyncAt(state);
+  const latest = readSyncStatus(options.home, options.now).operations
+    .filter(op => op.state !== "running" && op.state !== "interrupted" && op.lastAliveUnixMs <= options.now)
+    .sort((a, b) => b.lastAliveUnixMs - a.lastAliveUnixMs)[0];
+  const lastOk = state.lastOkAt === null ? -Infinity : Date.parse(state.lastOkAt);
+  const writerRefusal = latest?.state === "failed" && latest.lastAliveUnixMs > lastOk ? latest.writerRefusal : undefined;
   const command = options.syncCommand ?? "amem sync --if-due";
   const stale = remote && (state.lastOkAt === null || options.now - Date.parse(state.lastOkAt) > SYNC_STALE_MS || state.failures >= 3);
   const sync = { remote: remote ? "configured" : "none", lastAttemptAt: state.lastAttemptAt, lastOkAt: state.lastOkAt, failures: state.failures,
     nextAttemptAt: next === null ? null : new Date(next).toISOString(), due: remote ? syncDue(state, options.now) : false,
+    ...(writerRefusal ? { writerRefusal } : {}),
     ...(remote ? { schedule: `run \`${command}\` from your own shell (for example a zshexit or bash EXIT trap): it needs a terminal like every mutating command; amem registers no sync hook and runs nothing between sessions` } : {}) };
   const manual = CLIS.filter(cli => ingest[cli] === "manual");
-  return { status: stale ? "attention" : "ok", ingest, ...(manual.length ? { manual } : {}), sync,
+  return { status: stale || writerRefusal ? "attention" : "ok", ingest, ...(manual.length ? { manual } : {}), sync,
     ...(stale ? { hint: state.failures >= 3 ? "sync has failed repeatedly; amem sync --force shows why" : "no recent successful sync: run amem sync" } : {}) };
 }
 

@@ -1552,26 +1552,40 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   let output: string;
   let placementWriters: import("./sync-placement-writer-context.ts").PlacementWriterContext | undefined;
   let progress: import("./memory/sync-progress.ts").SyncProgress | undefined;
+  let writerRefusal: import("./memory/sync-placement-refusal-category.ts").PlacementWriterRefusal | undefined;
+  let attestPlacement: import("./sync-placement-writer-context.ts").PlacementWriterContext["attest"] | undefined;
   const stop = ifDue ? stopSignal(context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS, process) : undefined;
   try {
     if (sub === "sync" && (readPlacementRuntimeMarkers(syncHome).profile as { publicationFormat?:string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
-      const { activePlacementWriterContext } = await import("./sync-placement-writer-context.ts");
-      progress = await placementProgress(syncHome, typeof options["--progress"] === "string" ? options["--progress"] as string : "auto", context);
+      const { activePlacementWriterContext, placementWriterRefusalDetail, placementWriterRefusalText } = await import("./sync-placement-writer-context.ts");
+      progress = await placementProgress(syncHome, typeof options["--progress"] === "string" ? options["--progress"] as string : "auto", context, () => writerRefusal);
       try { placementWriters = activePlacementWriterContext(syncHome,fileURLToPath(new URL("..",import.meta.url))); }
       catch (error) {
+        writerRefusal = placementWriterRefusalDetail(error);
         // #551 AC1: a writer-context refusal is this run's own failed result, so --json reports it instead of printing one
         // masked line; a human run keeps the refusal's fixed text and exit 1, and every other refusal keeps its own path.
-        const refusal = (await import("./sync-placement-writer-context.ts")).placementWriterRefusalText(error);
+        const refusal = placementWriterRefusalText(error);
         if (refusal === undefined || !options["--json"]) throw error;
         stampSync(refusal, stop?.cause());
         return JSON.stringify({ ok: false, pushed: false, entries: 0, failure: { cause: "refusal" }, error: refusal }, null, 2);
       }
+      const attest = placementWriters.attest;
+      attestPlacement = () => {
+        try {
+          const proof = attest();
+          writerRefusal = undefined;
+          return proof;
+        } catch (error) {
+          writerRefusal = placementWriterRefusalDetail(error);
+          throw error;
+        }
+      };
       const markers = readPlacementRuntimeMarkers(syncHome);
       if (!readActivePlacementBinding(syncHome, markers.profile, markers.shards)) throw Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing");
     }
     output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), ...(options["--json"] !== true ? { [CLI_MEMORY_RENDER]: { render: { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, ...(actor === "agent" ? { renderLegacy: (legacy: string, formatted: string) => { priorRead = legacy; return sub === "sync" ? screenedReceipt(legacy, formatted) : screenedReadPair(legacy, formatted); } } : {}) } } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       // #578 Q2: the CLI sync (also --if-due) is eligible; the home opt-in still decides whether a checkpoint can run.
-      sync: { ...(placementWriters ? { placementAttestation:placementWriters.attest, placementCheckpoint: true } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
+      sync: { ...(attestPlacement ? { placementAttestation: attestPlacement, placementCheckpoint: true } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },
       // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.
       forgetNearby: note => forgetNearby({ base: memoryHome(), project: note.project, text: note.text, title: note.title, screen: value => configured.screenStandalone(value) }) }));
@@ -1620,13 +1634,16 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
  * #418: one reporter per placement sync. The private sidecar backs `sync --status` in every mode; stderr gets human
  * lines or versioned JSON events. Each part fails alone and silently: telemetry never fails or alters the sync.
  */
-async function placementProgress(home: string, mode: string, context: CliContext): Promise<import("./memory/sync-progress.ts").SyncProgress> {
-  const { SyncProgress, renderSyncProgress, syncProgressSidecar } = await import("./memory/sync-progress.ts");
+async function placementProgress(home: string, mode: string, context: CliContext, writerRefusal: () => import("./memory/sync-placement-refusal-category.ts").PlacementWriterRefusal | undefined): Promise<import("./memory/sync-progress.ts").SyncProgress> {
+  const { SyncProgress, renderSyncProgress, syncProgressSidecar, syncStatusSnapshot } = await import("./memory/sync-progress.ts");
   const write = context.stderr ?? ((text: string) => { process.stderr.write(text); });
   const render = mode === "json" ? "json" : mode === "human" || mode === "auto" && (context.stderrTTY ?? process.stderr.isTTY) ? "human" : undefined;
   const parts = [syncProgressSidecar(home), ...(render ? [(snapshot: import("./memory/sync-progress.ts").SyncProgressSnapshot) => write((render === "json" ? JSON.stringify(snapshot) : renderSyncProgress(snapshot)) + "\n")] : [])];
   const live = new Set(parts.keys());
-  return new SyncProgress({ sink: snapshot => { for (const index of live) try { parts[index]!(snapshot); } catch { live.delete(index); } } });
+  return new SyncProgress({ sink: snapshot => {
+    const status = syncStatusSnapshot(snapshot, writerRefusal());
+    for (const index of live) try { parts[index]!(status); } catch { live.delete(index); }
+  } });
 }
 function outputStyle(context: CliContext, options: Record<string, string | boolean>): Style {
   const color = resolveColor(typeof options["--color"] === "string" ? options["--color"] : undefined, streamEnv((context.stdoutTTY ?? process.stdout.isTTY) === true, context.env ?? process.env), "amem");
