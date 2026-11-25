@@ -1,3 +1,4 @@
+import { PlacementSyncBoundError } from "./sync-placement-bound.ts";
 import { cliAttribution, noteDisplayActor } from "./cli-attribution.ts";
 import { extractNodes, GOAL_STATES, KINDS, MemoryStore, setMachineLabel, type GoalState, type GoalView, type Kind, type Tier, type View } from "./store.ts";
 import { syncMemory, type SyncOptions } from "./sync.ts";
@@ -262,7 +263,11 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
         const realmLines = r.placementRealms?.length ? `\n${r.placementRealms.map(item => `realm ${item.realm === "user" ? "user" : item.realm.slice(0, 16)}: ${item.outcome}${item.publication ? ` (publication ${item.publication})` : ""}`).join("\n")}` : "";
         // #578 Q2: one counts-only line when this sync ran a placement checkpoint.
         const checkpointLine = r.checkpoint ? `\nplacement checkpoint: window ${r.checkpoint.window}, objects ${r.checkpoint.objectsBefore} -> ${r.checkpoint.objectsAfter}` : "";
-        if (!r.ok) fail(`${names.memory} sync: ${r.error}${checkpointLine}${realmLines}`);
+        if (!r.ok) {
+          const bound = placement?.bound;
+          if (internal && cliAttribution()?.actor === "agent" && bound && (r.failure?.cause === "bound" || r.failure?.cause === "checkpoint-refused")) throw new PlacementSyncBoundError(bound);
+          fail(`${names.memory} sync: ${r.error}${checkpointLine}${realmLines}`);
+        }
         // #590 (task 429): the CLI renders the success report; hosts keep the legacy line below byte for byte.
         const cliSync = (legacy: string) => internal ? rendered(legacy, syncReportText(r, internal.render.style ?? PLAIN, { columns: internal.render.columns ?? 80 })) : legacy;
         if (r.pruneApplication) {

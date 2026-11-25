@@ -11,6 +11,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ### Fixed
 
 - Sync status and doctor cadence retain the fixed cause and root category for writer-proof refusals, so writer renewal can be distinguished from generic failures. Refs #613.
+- Placement sync reports the measured bound and checkpoint recovery steps in marked terminal sessions, including cadence sync. Refs #617.
 
 - Native SessionStart retains near-limit curated briefs. Shared writes can rebuild up to two additional projects after invalidation, and `amem brief` can rebuild a work cache from existing logs. Publication failures record fixed reason codes. Refs #614.
 

@@ -408,3 +408,57 @@ test("#551: an unprovable writer inventory is unverified in sync and doctor, nev
   expect(report.sections.writers!.category).toBeUndefined(); expect(report.sections.writers!.cause).toBeUndefined();
   expect(doctor.stdout.toString()).not.toContain("writer-revision-00001.json");
 },180_000);
+
+test("#617: a typed publication bound stays visible in marked human, JSON and cadence sync", async () => {
+  const f = await placementActivationFixture(); cleanup.push(f.close);
+  await activateSyncPlacement(f.options("apply"));
+  const sync = fileURLToPath(new URL("../src/memory/sync.ts", import.meta.url));
+  const bounds = fileURLToPath(new URL("../src/memory/sync-placement-bound.ts", import.meta.url));
+  const bound = { phase: "publication-plan", kind: "journal-objects", limit: 256, observed: 280 };
+  const call = (args: string[], marked: boolean, generic = false) => {
+    const env = { ...f.env };
+    delete env.CLAUDECODE;
+    if (marked) env.AGENTHUB_PEER_ID = "codex";
+    const program = `
+      const { mock } = await import("bun:test");
+      const sync = await import(${JSON.stringify(sync)});
+      const { placementSyncBoundMessage } = await import(${JSON.stringify(bounds)});
+      const bound = ${JSON.stringify(bound)};
+      const receipt = ${generic}
+        ? { ok: false, pushed: false, entries: 0, failure: { cause: "unavailable" }, error: "private diagnostic marker" }
+        : { ok: false, pushed: false, entries: 0, failure: { cause: "bound" }, error: placementSyncBoundMessage(bound),
+            placementPublication: { outcome: "not-needed", exported: 0, withheld: 0, bound, policyCeiling: "last-positive-check-before-in-flight-push" } };
+      mock.module(${JSON.stringify(sync)}, () => ({ ...sync, syncMemory: async () => receipt }));
+      const { runCli } = await import(${JSON.stringify(cli)});
+      try {
+        console.log(await runCli(${JSON.stringify(args)}, { cwd: ${JSON.stringify(f.cwd)}, env: process.env }));
+      } catch (error) { console.error(error.message); process.exitCode = 1; }
+    `;
+    return Bun.spawnSync([process.execPath, "-e", program], { cwd: f.cwd, env, stdout: "pipe", stderr: "pipe", timeout: 60_000 });
+  };
+  const check = (text: string) => {
+    expect(text).toContain("journal-objects bound (observed 280, limit 256)");
+    expect(text).toContain("amem migrate --sync-placement --checkpoint --writer-root");
+    expect(text).toContain("(umask 077; set -C; amem migrate");
+    expect(text).toContain("--confirm --plan checkpoint-plan.json");
+    expect(text).not.toContain("Memory operation unavailable or refused");
+  };
+  for (const [args, marked] of [
+    [["sync"], true], [["sync"], false],
+    [["sync", "--if-due", "--force", "--remote", "https://example.test/memory.git"], true],
+  ] as const) {
+    const result = call([...args], marked);
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout.toString()).toBe("");
+    check(result.stderr.toString());
+  }
+  for (const flags of [[], ["--if-due", "--force", "--remote", "https://example.test/memory.git"]]) {
+    const receipt = success(call(["sync", ...flags, "--json"], true));
+    expect(receipt).toMatchObject({ ok: false, failure: { cause: "bound" }, placementPublication: { bound } });
+    check(String(receipt.error));
+  }
+  const generic = call(["sync"], true, true);
+  expect(generic.exitCode).toBe(1);
+  expect(generic.stderr.toString()).toContain("Memory operation unavailable or refused");
+  expect(generic.stderr.toString()).not.toContain("private diagnostic marker");
+}, 120_000);
