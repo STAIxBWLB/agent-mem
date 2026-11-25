@@ -14,6 +14,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- A placement sync reads the remote's placement refs once per run instead of once per target, and does not fetch a ref whose advertised tip it already holds. A warm no-op sync over many realms makes one `ls-remote` and no fetches. Moved remote heads are still fetched and audited, and receipts and formats are unchanged. #626.
 - After an upgrade, the placement writer-proof refusal and the doctor `writers` finding name the checkpoint renewal first: save the preview as JSON (`(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ... --json > checkpoint-plan.json)`), then `--checkpoint --confirm --plan checkpoint-plan.json`, which runs while sessions stay open. The dry-run/apply renewal is named only as the fallback and requires every amem session to be closed. A renewal `--apply` refused for live readers, and `amem setup`'s out-of-inventory warning, name the same checkpoint steps. Categories, cause classes and status fields are unchanged. #624.
 - The checkpoint preview's next step and the marked usage hint for a placement checkpoint name the saving form rather than a `<saved preview JSON>` placeholder: save the plan with `(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ... --json > checkpoint-plan.json)`, then `--confirm --plan checkpoint-plan.json` with the same writer roots. The human preview prints that next step as printed. The preview JSON's sealed plan and confirm's validation are unchanged. #627.
 

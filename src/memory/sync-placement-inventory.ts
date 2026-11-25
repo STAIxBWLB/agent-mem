@@ -22,6 +22,7 @@ import { isLocalKey, localKeyOptInMessage, readShardDescriptor, shardDir, userSh
 import { projectState } from "./lifecycle.ts";
 import { SyncPlacementJournalError, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { SyncOptions, SyncResult } from "./sync.ts";
+import { bindPlacementAdvertisement } from "./sync-placement-advertisement.ts";
 import type { MemoryStore } from "./store.ts";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -98,7 +99,9 @@ function journalRefusal(error: unknown): (SyncResult & { placementRealms: Placem
     failure: { cause: code === "checkpoint-pending" ? "checkpoint-pending" : "unavailable" }, placementRealms: [] };
 }
 
-export async function syncPlacementInventory(home: string, opts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
+export async function syncPlacementInventory(home: string, callerOpts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
+  // #626: one remote advertisement per run, shared by its publications (never one a caller passed in).
+  const opts: SyncOptions = bindPlacementAdvertisement({ ...callerOpts });
   let local: InventoryRealm[], missing: string[], inactive: string[], retained: string[] | undefined;
   try {
     // #288 step 3: a started checkpoint pauses every placement effect before any journal read, with its own cause and next step.
