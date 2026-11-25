@@ -3,6 +3,7 @@ import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, rmSync, sy
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
 import { runCli } from "../src/cli.ts";
+import { generationSyncLock } from "../src/memory/generation-sync.ts";
 import { syncMemory, type SyncResult } from "../src/memory/sync.ts";
 import { SyncProgress, type SyncProgressSnapshot } from "../src/memory/sync-progress.ts";
 import { deterministicRowScreen, type RowScreen } from "../src/memory/sync-screen.ts";
@@ -179,3 +180,17 @@ test("#612 AC2 CLI: `amem sync --json` over 20 realms in 10 publications finishe
     expect(hitMs).toBeLessThan(120_000);
   } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }, 900_000);
+
+test("#612 a run refused before admission (remote visibility or a held sync lock) leaves the slot untouched", async () => {
+  const f = await inventoryFixture(1), remote = bareRemote();
+  await run(f, remote); await run(f, remote);
+  const [name] = cacheFiles(f.home), path = join(f.home, PLACEMENT_NOOP_CACHE_DIR, name!), before = readFileSync(path, "utf8");
+  const refused = await syncMemory(f.entry(), { ...f.opts(remote), visibility: async () => "public" });
+  expect(refused.ok).toBe(false); expect(readFileSync(path, "utf8")).toBe(before);
+  const release = generationSyncLock(join(f.home, "shard-sync-placement")); if (!release) throw Error("fixture lock unavailable");
+  try {
+    const contended = await syncMemory(f.entry(), f.opts(remote));
+    expect(contended.ok).toBe(false); expect(readFileSync(path, "utf8")).toBe(before);
+  } finally { release(); }
+  expect((await run(f, remote)).phases.has("policy-evaluation")).toBe(false); // the untouched slot still hits
+}, 300_000);

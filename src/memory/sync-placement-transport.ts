@@ -295,7 +295,12 @@ class PlacementTransport {
   enter(...args: Parameters<SyncProgress["phase"]>): void { this.phaseNow = args[0]; this.progress?.phase(...args); }
   refusal?: PlacementRefusalCategory;
   /** #612: the last materialization's decision counts, and the counts a no-op cache hit returned. */
-  decisionCounts?: PlacementNoopCounts; noopHit?: PlacementNoopCounts; noopKept=false;
+  decisionCounts?: PlacementNoopCounts; noopHit?: PlacementNoopCounts; noopKept=false; syncLockHeld=false;
+  /** #612: optional slot deletion runs only with the sync lock and every mutation fence positively held and still current. */
+  holdsNoopFences(): boolean {
+    if(!this.syncLockHeld||!this.rootMutation||!this.homeMutation||!this.targets.length||this.targets.some(target=>!target.mutation))return false;
+    try{this.metadata();return true;}catch{return false;}
+  }
   /** #612: the no-op reuse key over this run's captured and freshly read inputs; undefined when any input is missing. */
   noopSlot(): string { return digest(canonicalJSON({epochHash:this.epochHash,realms:this.targets.map(physical)})); }
   noopKey(): string|undefined {
@@ -356,7 +361,7 @@ class PlacementTransport {
     await yieldTurn(); this.prove(); // a host callout ends any reusable proof
     if (!existsSync(this.root)) mkdirSync(this.root, { mode: 0o700 });
     const transport = acquireMutation(this.root); if (!transport) refuse("lock"); this.rootMutation=transport; this.releases.push(transport);
-    const sync = generationSyncLock(this.root); if (!sync) refuse("lock"); this.releases.push(sync);
+    const sync = generationSyncLock(this.root); if (!sync) refuse("lock"); this.releases.push(sync); this.syncLockHeld=true;
     for (const dir of [...new Set([this.home, ...this.targets.map(target => target.store.dir)])].sort()) {
       const handle = acquireMutation(dir); if (!handle) refuse("lock"); this.releases.push(handle); if (dir === this.home) this.homeMutation = handle;
       for (const target of this.targets) if (target.store.dir === dir) target.mutation = handle;
@@ -819,9 +824,9 @@ class PlacementTransport {
       return this.result(false,"not-needed",placementRefusalMessage(this.refusal,this.phaseNow));
     }finally{
       let ownedCache=true;try{this.metadata();}catch{ownedCache=false;}
-      // #612: every terminal path other than a full-path not-needed or a cache hit invalidates its slot, under the held sync lock and
-      // home ownership fence. Without the fence the slot stays; its key still binds every input, so it can only match an identical no-op.
-      if(ownedCache&&!this.noopKept&&this.epochHash&&this.targets.length)try{this.metadata();clearPlacementNoopCache(this.home,this.noopSlot());}catch{}
+      // #612: every terminal path other than a full-path not-needed or a cache hit invalidates its slot, but only once admission
+      // completed: the sync lock and every mutation fence are held and current. A run refused before that leaves the slot alone.
+      if(!this.noopKept&&this.epochHash&&this.holdsNoopFences())try{clearPlacementNoopCache(this.home,this.noopSlot());}catch{}
       if(ownedCache){
         for(const ref of this.refs)try{this.metadata();await generationSyncGit(this.root,this.args(["update-ref","--no-deref","-d",ref]),undefined);}catch{}
         for(const file of this.temporary)try{this.metadata();rmSync(file,{force:true});}catch{}
