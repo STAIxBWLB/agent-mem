@@ -47,6 +47,7 @@ import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
 import { realPath } from "./memory/platform.ts";
 import { RemoteRealmRefusal } from "./memory/sync-placement-remote-refusal.ts";
+import { placementSyncBoundMessage, placementSyncBoundReceipt } from "./memory/sync-placement-bound.ts";
 import { hashJSON, readSelector, resolveProfile } from "./memory/generation.ts";
 import { migrate } from "./memory/migrate.ts";
 import { migrationText } from "./memory/migrate-text.ts";
@@ -417,6 +418,10 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       let usage: Error | undefined, parsed: ReturnType<typeof parseCommand> | undefined;
       try { parsed = parseCommand(argv); } catch (parseError) { usage = parseError as Error; }
       if (usage) throw Object.assign(new Error(usage.message), (error as { exitCode?: number }).exitCode === undefined ? {} : { exitCode: (error as { exitCode?: number }).exitCode });
+      if (parsed?.path[0] === "sync") {
+        const bound = placementSyncBoundReceipt(error);
+        if (bound) throw new Error(placementSyncBoundMessage(bound));
+      }
       const setupError = parsed && markedSetupApplyError(parsed, error);
       if (setupError) throw setupError;
       if (parsed && markedReadOnly(parsed)) {

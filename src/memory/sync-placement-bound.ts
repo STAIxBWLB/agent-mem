@@ -18,11 +18,11 @@ const phases: Record<PlacementSyncBoundPhase, string> = { "source-capture": "sou
 export function placementSyncBoundMessage(bound: PlacementSyncBound): string {
   // #288 step 3: a full live window is relieved by a person-reviewed checkpoint; records stay a reported bound.
   const remedy = bound.kind === "journal-objects"
-    ? "The active epoch journal cannot hold this publication; preview a checkpoint with amem migrate --sync-placement --checkpoint --writer-root <install root> (repeat for every install), then confirm it after the exact command is approved and rerun amem sync."
+    ? "The active epoch journal cannot hold this publication. Save a new private preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json). Repeat --writer-root for every install. After reviewing and approving the saved plan, run amem migrate --sync-placement --checkpoint --writer-root <install root> --confirm --plan checkpoint-plan.json with the same roots, then rerun amem sync."
     : bound.kind === "journal-records"
       ? "The active epoch journal cannot hold this publication; retain the inputs and report this bound."
       : "Retain the inputs and report this bound; no row was omitted to fit.";
-  return `Placement sync refused before any publication attempt: ${phases[bound.phase]} exceeds its supported ${bound.kind} bound (observed ${bound.observed}, limit ${bound.limit}). No source, selector, epoch, journal or remote ref was changed. ${remedy}`;
+  return `Placement sync refused before any publication attempt: ${phases[bound.phase]} exceeds its supported ${bound.kind} bound (observed ${bound.observed}, limit ${bound.limit}). No source, selector, epoch, journal or remote ref was changed by this publication. ${remedy}`;
 }
 /** Expected input refusal before a publication attempt exists. Code stays "bound" for existing callers. */
 export class PlacementSyncBoundError extends SyncPlacementJournalError {
