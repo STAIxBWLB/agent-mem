@@ -20,6 +20,7 @@ import { processLiveness, withGitTimeout } from "./platform.ts";
 import { endLikeSignal, STOP_SIGNALS } from "./sync-cadence.ts";
 import { boundRepoRoot } from "./repo-scope.ts";
 import { aliasedKeys, shardDir } from "./shard.ts";
+import { curatedCount, projectTransition, transitionKey, transitionNotice } from "./roots.ts";
 import type { MemoryStore, View } from "./store.ts";
 import { nextSyncAt, readSyncState, remoteConfigured, syncDue, usableState } from "./sync-cadence.ts";
 import { readSyncStatus } from "./sync-progress.ts";
@@ -77,6 +78,8 @@ export interface DoctorReport {
     setup?: Section;
     /** #551, additive: present on a placement home only - the writer verification the next sync performs. */
     writers?: Section;
+    /** #581, additive: present only when this working root last resolved to a different, unjoined key. Read-only. */
+    transition?: Section;
   };
 }
 
@@ -90,6 +93,13 @@ function maskedSection(curated: MemoryStore | undefined): { masked?: Section } {
   const { forgets, prunes } = curated.maskingCounts();
   if (!forgets && !prunes) return {};
   return { masked: { status: "ok", forgets, prunes, note: "masked entries stay in the local log and in sync history; see docs/purge.md" } };
+}
+/** #581: a read of roots.jsonl and aliases.jsonl only; doctor never writes a root line. */
+function transitionSection(options: DoctorOptions): { transition?: Section } {
+  try {
+  const transition = projectTransition(options.home, options.cwd, transitionKey(options.cwd), key => curatedCount(options.home, key, shardDir));
+  return transition ? { transition: { status: "attention", ...transition, notice: transitionNotice(transition) } } : {};
+  } catch { return {}; }
 }
 const ids = (list: string[]): string[] => list.slice(0, MAX_IDS).map(id => id.slice(0, 8));
 const regularDir = (path: string): boolean => { try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); } catch { return false; } };
@@ -633,7 +643,7 @@ async function runDoctor(options: DoctorOptions, scratch: string): Promise<Docto
   try {
     await tick();
     const writers = await writersSection(options);
-    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), spool: spoolSection(options), setup, ...(writers ? { writers } : {}), ...maskedSection(curated) };
+    sections = { duplicates, stale, candidates, capture: captureSection(options), brief: await briefSection(options, curated, workBase, copyFailed), index, readers: readersSection(options), policy: policySection(options), cadence: cadenceSection(options), drops: dropsSection(options), spool: spoolSection(options), setup, ...(writers ? { writers } : {}), ...maskedSection(curated), ...transitionSection(options) };
     await tick();   // a signal that arrived during the last synchronous stage is handled while the guard is still installed
   } finally { curated?.close(); }
   return { schema: DOCTOR_SCHEMA, status: worst(Object.values(sections).map(section => section.status)), home: { path: options.home, source: options.homeSource }, project: options.project, sections };

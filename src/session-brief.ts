@@ -18,6 +18,7 @@ import { createStandalonePolicy, type StandalonePolicyOptions } from "./memory/p
 import { configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { pendingLine, pendingSummary } from "./memory/candidate-pending.ts";
 import { memoryProjectKey } from "./memory/project.ts";
+import { curatedCount, projectTransition, transitionNotice } from "./memory/roots.ts";
 import { registerReaderLease } from "./memory/reader-lease.ts";
 import { type ReadRef, type ReadWindow } from "./memory/search-fts.ts";
 import { briefFailureReason } from "./memory/metrics.ts";
@@ -179,6 +180,14 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
     // F7: one line, "N candidates pending, oldest expires in D days", only when some wait, so a brief with none is byte-identical to before. It is numbers only (no candidate text),
     // read-only (no database is created, pruned or altered here, and neither the brief nor the hook ever stamps a candidate as shown: only `amem review walk` does) and reserved out of the
     // same byte budget as everything else; when it does not fit it is left out.
+    // #581: one notice line when this working root last resolved to a different, unjoined key. A bounded local read
+    // (roots.jsonl tail, aliases.jsonl, one read-only index count); any failure yields no line. Reserved first.
+    let transitionLine: string | undefined;
+    if (!options.measureOnly) {
+      const transition = projectTransition(base, cwd, requested, key => curatedCount(base, key, shardDir));
+      const notice = transition ? transitionNotice(transition) : undefined;
+      if (notice !== undefined && Buffer.byteLength(notice) + 1 <= remaining) { remaining -= Buffer.byteLength(notice) + 1; transitionLine = notice; }
+    }
     let candidateLine: string | undefined;
     const line = pendingLine(pendingSummary(base, [project, ...aliases], (options.now ?? Date.now)()));
     if (line !== undefined && Buffer.byteLength(line) + 1 <= remaining) { remaining -= Buffer.byteLength(line) + 1; candidateLine = line; }
@@ -453,15 +462,20 @@ export async function sessionStartBrief(options: BriefOptions): Promise<BriefRes
         }
       }
       guard(true);
-      let context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
+      const notices = () => [...(transitionLine ? [transitionLine] : []), ...(candidateLine ? [candidateLine] : [])];
+      let context = [header(coverage, reasons), ...notices(), ...lines].join("\n");
       while (Buffer.byteLength(context) > maximum && lines.length) {
         const repoIndex = lines.findLastIndex(line => line.startsWith('{"section":"repo",'));
         const removed = JSON.parse(lines.splice(repoIndex >= 0 ? repoIndex : lines.length - 1, 1)[0]!) as { section?: Section };
         if (removed.section && coverage[removed.section] === "complete") coverage[removed.section] = "partial";
-        context = [header(coverage, reasons), ...(candidateLine ? [candidateLine] : []), ...lines].join("\n");
+        context = [header(coverage, reasons), ...notices(), ...lines].join("\n");
       }
       if (Buffer.byteLength(context) > maximum && candidateLine) {
         candidateLine = undefined;
+        context = [header(coverage, reasons), ...notices(), ...lines].join("\n");
+      }
+      if (Buffer.byteLength(context) > maximum && transitionLine) {
+        transitionLine = undefined;
         context = [header(coverage, reasons), ...lines].join("\n");
       }
       if (Buffer.byteLength(context) > maximum) result = unavailable();

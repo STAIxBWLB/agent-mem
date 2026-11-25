@@ -38,7 +38,8 @@ import { memoryProjectKey } from "./memory/project.ts";
 import { CandidateStore, candidateInputId, candidateTargetRevision, type CandidateFilter } from "./memory/candidates.ts";
 import { candidateOverlaps, candidateOverlapsBatch } from "./memory/candidate-overlaps.ts";
 import { openCuratedForRead } from "./memory/curated-read.ts";
-import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias } from "./memory/shard.ts";
+import { aliasedKeys, appendAlias, appendUnalias, listAliases, readShardedSelection, resolveAlias, shardDir } from "./memory/shard.ts";
+import { curatedCount, projectTransition, recordKeepSeparate, rootsLogPath, transitionKey } from "./memory/roots.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { capacityText, capacityApplyText, capacitySplitText } from "./memory/capacity-text.ts";
 import { CaptureStore, readCaptureConfigFile, writeCaptureConfigFile, type CaptureConfig } from "./memory/capture.ts";
@@ -775,7 +776,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       candidates: (() => { const bound = boundProject(), summary = pendingSummary(where.home, [bound, ...aliasedKeys(where.home, bound)], Date.now(), true);
         if (summary === null) return { unavailable: "candidates.db exists but cannot be read" };
         return { ...summary, ...(summary.dueWithin7Days ? { warning: `${summary.dueWithin7Days} candidate${summary.dueWithin7Days === 1 ? "" : "s"} within 7 days of expiry: run \`amem review walk\`` } : {}) }; })(),
-      ...shardMigrationStatus(where.home) };
+      ...shardMigrationStatus(where.home),
+      // #581: read-only (the SessionStart hook is the only writer of roots.jsonl); present only during a transition, so the default shape is unchanged.
+      ...(() => { try { const t = projectTransition(where.home, policyCwd, transitionKey(policyCwd), key => curatedCount(where.home, key, shardDir));
+        return t ? { projectTransition: { previousKey: t.previousKey, key: t.key, previousCuratedNotes: t.previousCuratedNotes, aliasCommand: t.aliasCommand, keepCommand: t.keepCommand } } : {}; } catch { return {}; } })() };
     return options["--json"] ? JSON.stringify(status, null, 2) : statusText(status as unknown as StatusView, outputStyle(context, options), reportOptions(context, options));
   }
   if (parsed.path[0] === "formats" && parsed.path[1] === "raise") {
@@ -1290,6 +1294,20 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     return options["--json"] ? JSON.stringify(result, null, 2)
       : result.checked ? `no ${source} memory found; checked ${result.checked.join(" and ")}`
       : `imported ${result.added} ${source} candidates from ${result.files} files (${result.read} records, ${result.pending.count} pending); skipped ${result.skipped.rules} rule files, ${result.skipped.policy} policy/secret records, ${result.skipped.invalid} invalid records and ${result.skipped.truncated} oversized inputs${result.queueFull ? "; candidate queue is full" : result.limitReached ? "; per-run candidate cap reached" : ""}`;
+  }
+  if (sub === "project" && parsed.path[1] === "keep-separate") {
+    // #581: end a project-key transition for this directory without joining the keys. Preview without --confirm.
+    const home = memoryHome(), key = transitionKey(policyCwd);
+    const transition = projectTransition(home, policyCwd, key, previous => curatedCount(home, previous, shardDir));
+    if (!transition) throw Object.assign(new Error("no project key transition for this directory: nothing to keep apart. Run amem status to see the bound project."), { exitCode: 2 });
+    if (options["--confirm"] !== true) {
+      const preview = { preview: true, previousKey: transition.previousKey, key: transition.key, previousCuratedNotes: transition.previousCuratedNotes, file: rootsLogPath(home), confirmCommand: "amem project keep-separate --confirm" };
+      return options["--json"] ? JSON.stringify(preview, null, 2)
+        : `preview: keep ${transition.key} apart from ${transition.previousKey} for this directory. Appends one keep line to ${rootsLogPath(home)}; no key is joined and no note moves. Run: amem project keep-separate --confirm`;
+    }
+    const line = recordKeepSeparate(home, policyCwd, transition);
+    return options["--json"] ? JSON.stringify({ kept: { previousKey: line.prev, key: line.key, at: line.at }, file: rootsLogPath(home) }, null, 2)
+      : `kept ${line.key} apart from ${line.prev} for this directory; the notice stops. To join them later: ${transition.aliasCommand}`;
   }
   if (sub === "project") {
     const op = parsed.path[1]!, [requested] = parsed.positionals;

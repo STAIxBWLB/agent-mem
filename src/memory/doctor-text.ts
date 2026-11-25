@@ -13,6 +13,7 @@ const SECTION_TITLE: Record<keyof DoctorReport["sections"], string> = {
   spool: "pending hook spool",
   setup: "native setup registrations",
   masked: "forgotten or pruned entries (informational)",
+  transition: "project key transition",
 };
 
 /**
@@ -105,6 +106,7 @@ function sectionFact(name: string, detail: Record<string, unknown>, now: number)
     ...(Array.isArray(detail.examples) && detail.examples.length ? [`examples ${(detail.examples as unknown[]).map(item => Array.isArray(item) ? item.join(" = ") : String(item)).join(", ")}`] : [])];
   if (name === "stale" && typeof detail.checked === "number") return [`${detail.checked} checked, ${detail.missingReferences ?? 0} missing`,
     ...(Array.isArray(detail.examples) && detail.examples.length ? [`examples ${(detail.examples as unknown[]).join(", ")}`] : [])];
+  if (name === "transition") return [`was ${detail.previousKey}${typeof detail.previousCuratedNotes === "number" ? ` (${detail.previousCuratedNotes} curated notes)` : ""}, now ${detail.key}; see Attention`];
   if (name === "masked") return [`${detail.forgets ?? 0} forgotten, ${detail.prunes ?? 0} pruned; see docs/purge.md`];
   if (name === "candidates") return [`${detail.count ?? 0} pending${detail.unshown ? `, ${detail.unshown} never shown` : ""}${detail.oldestExpiresInDays !== null && detail.oldestExpiresInDays !== undefined ? `, oldest expires in ${detail.oldestExpiresInDays} d` : ""}`];
   const { examples, note: _note, ...rest } = detail;
@@ -120,6 +122,7 @@ export function doctorText(report: DoctorReport, s: Style = PLAIN, opts: ReportT
   const findings: Finding[] = [];
   for (const [name, item] of entries) {
     if (name === "writers" && item.status === "attention") findings.push(writerFinding(item));
+    if (name === "transition") findings.push({ text: `this directory resolved to ${item.previousKey} before and to ${item.key} now`, next: [String(item.aliasCommand), String(item.keepCommand)] });
     if (item.hint) findings.push(hintFinding(name, item.hint, item));
     if (name === "capture" && item.clis) for (const [cli, row] of Object.entries(item.clis as Record<string, { hint?: string }>)) if (row.hint) findings.push(captureFinding(cli, row.hint));
   }

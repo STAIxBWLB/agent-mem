@@ -251,6 +251,22 @@ For an aliased key the CLI and MCP exact-project filter widens to the canonical 
 
 Every write that copies a row keeps the key the row was written under, never the canonical label a reconciled read shows: a promote's long-term copy and a vault link name the raw project, so a raw-key reader, a non-reconciled host and the same note promoted on another machine all produce the same row and id. Known limits: (1) `aliases.jsonl` is not synced and an amem or hub older than this change ignores the `unalias` line, so it keeps binding the old key to the canonical one for capture, work lists and the MCP binding until it is upgraded; upgrade every host that shares the home before relying on `alias remove`. (2) A correction accepted on an aliased row is a new note under the canonical key, and its supersede op is appended to the shard that holds the old row. After `alias remove` the old key's shard shows the old note again, because the replacement lives in the canonical shard. This affects visibility only, nothing is lost, and the replacement stays readable under the canonical key.
 
+### Project key transitions (#581)
+
+`roots.jsonl` in the memory home records which project key each working root resolved to on this machine. A line is `{schema: "agent-mem.roots/v1", op: "bind" | "keep", root, key, prev?, at, machine?}`. `root` is `sha256(realPath(working root))` as 64 hex characters and is never path text. The working root is the nearest ancestor holding `.git`, found by `lstat` alone, else the directory itself. The file is append-only with mode 0600, and the latest line per root wins. Readers read at most the last 256 KB, skip malformed lines and treat a missing or unreadable file as empty. The file is local: sync, placement sync and `amem project export` never carry it.
+
+Writers, exhaustively:
+- The native SessionStart hook appends a `bind` on first sight of a root. It also appends a `bind` when the recorded key is alias-joined to the resolved key, so a later change names the middle key. It appends nothing when the keys match or when they differ without a join. The append is one fail-open write: an error yields no line and never fails the hook. The hook never writes curated notes, goals or candidates here.
+- `amem project keep-separate --confirm` appends a `keep` line (`key` is the new key, `prev` the old one).
+
+`amem status`, `amem doctor`, the brief builder and MCP only read the file.
+
+A root is in `project_transition` when its latest line names a key other than the resolved one, and no alias joins the two through `effectiveAliases` (one hop, either direction, or both onto one canonical key). The state is a notice, never a stop. Capture, reads and curated writes continue under the resolved (new) key. The session brief gets one line, reserved ahead of the pending-candidate line and dropped last:
+
+`amem: project key changed for this directory: was <old> (<n> curated notes), now <new>. Join: amem alias add <old> <new>  Keep apart: amem project keep-separate`
+
+The count is omitted when the old key's index cannot be read without waiting. `amem status --json` carries `projectTransition: {previousKey, key, previousCuratedNotes, aliasCommand, keepCommand}` only during a transition (absent otherwise, so the default output is unchanged), and `amem doctor` adds an attention section `transition` with the same fields. Nothing joins keys automatically. Joining stays the person's `amem alias add`. Not covered: a directory moved to a new path has a new root hash and is not recognised, and a second machine keeps its own record.
+
 ### Hook upgrade regression (#13, task #327)
 
 `test/capture-mcp-lazy.test.ts` seeds 5,001 maximum-length capture excerpts, removes only the derived MCP index to represent a pre-upgrade shard, and opens/appends through the ordinary hook store. Transparent SQL-call recording observes the real row insert and zero MCP-index statements on that hook path; the unchanged SQLite schema version and absent MCP table/triggers independently verify its effects without a load-sensitive timing assertion. A lazy read then includes both historical and pre-initialization appends; later inserts, updates and deletes retain index parity. A first open under a real SQLite writer lock returns bounded substring pages, and the same handle retries after release. MCP fallback regressions cross the 256-row boundary with denied rows and preserve infix substring matches in curated data, including an empty capture tier.

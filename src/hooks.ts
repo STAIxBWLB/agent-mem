@@ -18,6 +18,7 @@ import { canonicalPath, realPath } from "./memory/platform.ts";
 import { createStandalonePolicy, type MemoryPolicy, type StandalonePolicyOptions } from "./memory/policy.ts";
 import { configuredPolicyOptions, loadAmemConfig, recordsEnabled, repoConfigRoot } from "./memory/config.ts";
 
+import { observeRoot } from "./memory/roots.ts";
 import { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, isHookTranscriptProgress, type HookTranscriptProgress } from "./hook-contract.ts";
 export { HOOK_EVENTS, HOOK_INPUT_BYTES, HOOK_CONTEXT_BYTES, HOOK_OUTPUT_BYTES, type HookEvent } from "./hook-contract.ts";
 // Leave 10ms of the external 150ms R2 budget for teardown and the metrics write.
@@ -333,6 +334,9 @@ async function sessionInParent(input: unknown, options: HookOptions, base: strin
     const [identity, owner, briefModule] = metadata;
     if (identity.status !== "fulfilled" || owner.status !== "fulfilled" || briefModule.status !== "fulfilled") throw new Error("hook metadata unavailable");
     const project = resolveAlias(base, identity.value);
+    // #581: the one writer of roots.jsonl lines: first sight of this working root, or a re-bind once an alias joined
+    // its recorded key. One bounded read and at most one 0600 append; observeRoot never throws, so it cannot fail the hook.
+    observeRoot(base, cwd, identity.value);
     const signature = owner.value;
     const { sessionStartBrief } = briefModule.value;
     if (remaining() <= 0) return result;
