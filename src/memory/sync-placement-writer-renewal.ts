@@ -15,7 +15,9 @@ import { readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appen
 import { createWriterRevision, createWriterCommit, createWriterRenewalIntent, writerRevisionWriters, WRITER_REVISION_SCHEMA, WRITER_RENEWAL_INTENT_SCHEMA, WRITER_REVISION_LIMIT, WRITER_COMMIT_LOG, SharedWriterRevisionError, type WriterRenewalIntent } from "./sync-placement-writer-revision-format.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
 import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
-import { withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
+import { withPlacementActivationFences as activationFences } from "./sync-placement-activation-locks.ts";
+/** #624: renewal runs on an active inventory, so its readers refusal names the checkpoint continuation. */
+const withPlacementActivationFences: typeof activationFences = (home, directories, work) => activationFences(home, directories, work, { renewal: true });
 import { assertPlacementActivationOwner, type PlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { previewSyncPlacementSources, previewOwnedSyncPlacementSources } from "./sync-placement-capture.ts";
 import { captureInspectionPendingPrunes } from "./sync-placement-inspection-pending.ts";
