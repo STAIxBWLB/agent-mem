@@ -317,7 +317,7 @@ function markedSetupApplyError(parsed: ReturnType<typeof parseCommand>, error: u
 
 /** Some commands write files despite having no mutates entry; preserve their existing effectful error/receipt treatment. */
 function markedReadOnly(parsed: ReturnType<typeof parseCommand>): boolean {
-  return parsed.definition.mutates === undefined && parsed.path[0] !== "setup"
+  return parsed.definition.mutates === undefined && (parsed.path[0] !== "setup" || parsed.options["--list"] === true)
     && !(parsed.path[0] === "eval" && parsed.path[1] === "audit" && parsed.path[2] === "sample")
     && !(parsed.path[0] === "project" && parsed.path[1] === "export");
 }
@@ -365,7 +365,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (marked && !argv.includes("--help") && !["--version", "version", "--help", "help", "completion"].includes(argv[0] ?? "")) {
       const parsed = parseCommand(argv);
       // Audit outputs and review targets are screened whole for marked reads.
-      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup" || parsed.path[0] === "eval" && parsed.path[1] === "audit" || parsed.path[0] === "review" && parsed.path[1] === "targets") {
+      if (parsed.definition.mutates !== undefined || parsed.path[0] === "setup" && parsed.options["--list"] !== true || parsed.path[0] === "eval" && parsed.path[1] === "audit" || parsed.path[0] === "review" && parsed.path[1] === "targets") {
         let receipt: unknown = output;
         // Import receipts contain fixed counters named `pii`; they are not row privacy flags.
         // Screen the complete rendered receipt, including every key and value, as text.
@@ -559,6 +559,22 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     return [`amem skills export: ${report.root}${report.linkedFrom ? ` (linked from ${report.linkedFrom})` : ""}`, "NAME                 CHANGE     PATH / REASON", ...report.actions.map(a => `${a.name.padEnd(20)} ${a.change.padEnd(10)} ${a.path}${a.reason ? ` / ${a.reason}` : ""}`)].join("\n");
   }
   if (parsed.path[0] === "setup") {
+    if (options["--list"] === true) {
+      const { setupMemoryHome } = await import("./setup.ts");
+      const { listAgyReceiptLocations } = await import("./setup-drift.ts");
+      const home = setupMemoryHome(context.env ?? process.env);
+      const result = listAgyReceiptLocations(home);
+      const lines = result.receipts.flatMap(receipt => [`${receipt.state}: ${receipt.workspace}`, `  ${receipt.apply}`, `  ${receipt.undo}`]);
+      if (result.incomplete) lines.push("Some Antigravity setup receipts could not be listed safely.");
+      else if (!lines.length) lines.push("No Antigravity setup receipts found.");
+      const output = options["--json"] === true ? JSON.stringify(result, null, 2) : lines.join("\n");
+      if (actor === "agent") {
+        const policy = configuredPolicy(home, context.cwd ?? process.cwd());
+        assertAgentAdministrative(result, policy);
+        assertAgentAdministrative(output, policy);
+      }
+      return output;
+    }
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
       || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new CommandUsageError("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo]");
     if (parsed.positionals[0] === "console") {

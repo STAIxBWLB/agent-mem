@@ -142,6 +142,10 @@ function workspaceBinding(options: SetupContext): WorkspaceBinding {
   if (![0, 1].includes(ignored.status ?? -1) || ignored.error) throw Error("Antigravity setup cannot verify configuration ignore status");
   return { root, ignored: ignored.status === 0, assertCurrent };
 }
+export function setupMemoryHome(env: NodeJS.ProcessEnv, home = realPath(resolve(env.HOME?.trim() || homedir()))): string {
+  return canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") }));
+}
+
 function context(options: SetupContext, workspace?: WorkspaceBinding) {
   const env = options.env ?? process.env, home = realPath(resolve(env.HOME?.trim() || homedir()));
   const { paths, legacyPaths, redirects } = resolveSetupPaths(env, home, workspace?.root);
@@ -154,7 +158,7 @@ function context(options: SetupContext, workspace?: WorkspaceBinding) {
     const roots = [resolve(tmpdir()), realPath(tmpdir())], entries = [resolve(entry), realPath(entry)];
     if (roots.some(root => entries.some(file => { const part = relative(root, file); return part !== ".." && !part.startsWith("../") && !isAbsolute(part); }))) throw Error("setup refuses a temporary package entry; install amem in a persistent location first");
   }
-  return { env, home, paths, legacyPaths, redirects, bun, entry, root: install, workspace, state: join(canonicalPath(memoryHome({ ...env, AGENTHUB_HOME: env.AGENTHUB_HOME?.trim() || join(home, ".agenthub") })), "setup") };
+  return { env, home, paths, legacyPaths, redirects, bun, entry, root: install, workspace, state: join(setupMemoryHome(env, home), "setup") };
 }
 export interface InstallRoot { path: string; version: string }
 const PACKAGE_JSON_MAX = 64 * 1024;

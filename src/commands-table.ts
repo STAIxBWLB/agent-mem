@@ -48,8 +48,8 @@ export const COMMANDS: Record<string, CommandDefinition> = {
     options: { ...json("the queued candidates"), "--project": text("This project's key", "Another project is refused; run from its directory.") } },
   setup: { group: "setup", description: "Preview or apply MCP setup and capture hooks",
     details: "Covers native coding CLIs, or the acon console plugin manifest (console). Apply and undo use explicit flags.",
-    examples: ["amem setup claude", "amem setup all --apply"],
-    options: { ...json("the setup plan"), "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
+    examples: ["amem setup claude", "amem setup all --apply", "amem setup agy --list"],
+    options: { ...json("the setup plan or receipt list"), "--list": flag("List Antigravity receipt workspaces and repair commands (agy only)"), "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
       "--verbose": flag("Show static notes and history lines (human output only)"),
       "--root": path("Register this absolute install root", "Such as <install>/releases/<version>/, resolved to its real path, instead of the running one."),
       "--adopt-current": flag("With --apply: adopt the current wiring", "Keeps a stale setup receipt aside (its entries were replaced at another install root) and adopts the current wiring, which --undo restores.") },
@@ -340,6 +340,10 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   for (let i = 0; i < positionals.length; i++) {
     const argument = definition.args?.[i];
     if (argument?.values && !argument.values.includes(positionals[i]!)) throw new CommandUsageError(`${argument.name} takes ${argument.values.join(" or ")}`);
+  }
+  if (path[0] === "setup" && options["--list"] === true && options["--help"] !== true
+    && (positionals[0] !== "agy" || ["--apply", "--undo", "--root", "--adopt-current", "--verbose"].some(flag => options[flag] !== undefined))) {
+    throw new CommandUsageError("usage: amem setup agy --list [--json]");
   }
   const allowed = path[0] === "version" && options["--version"] === true ? completionDefinitions()[0]!.options : completionDefinitions().find(row => row.path.join(" ") === path.join(" "))!.options;
   for (const name of Object.keys(options)) if (!allowed[name]) throw new CommandUsageError(`unknown option ${name} for ${path.join(" ")}`);
