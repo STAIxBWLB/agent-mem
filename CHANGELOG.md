@@ -6,6 +6,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- A placement checkpoint renewal no longer refuses as `writer-below-floor` when an install in the current inventory was already removed from disk and the new plan leaves it out. A removed install that is still passed as `--writer-root` now refuses in both the preview and the confirm with a cause naming that root. Floors, `formats.json` and storage formats are unchanged. Refs #634.
 - A reader registration clears leases of processes that are provably gone in its own scope (`readers` or `shard-readers`), so doctor's `readers` attention state clears without a migration. The test is one pid syscall (ESRCH): a pid that still exists, an unreadable or unverifiable file, a link, and a reused pid's lease are left alone, and migration admission keeps its pid-plus-signature test. At most 256 lease names are scanned per registration. The lease format, its file name, migration and the checkpoint fence are unchanged. #632.
 
 ## 0.40.0
