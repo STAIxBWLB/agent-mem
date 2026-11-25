@@ -2,6 +2,12 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
+## Unreleased
+
+### Added
+
+- When a working directory resolves to a different project key than before (for example after a remote is added), the session brief, `amem status` and `amem doctor` name both keys, the old key's curated note count and the complete `amem alias add` command. `amem project keep-separate` previews and, with `--confirm`, ends the notice without joining. The SessionStart hook records the key per directory in a new local `roots.jsonl` that holds only a hash of the real path and is never synced or exported. #581.
+
 ## 0.39.0
 
 ### Added

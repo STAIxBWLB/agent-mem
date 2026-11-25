@@ -152,7 +152,7 @@ export interface InboxSourceState {
 }
 export interface InboxSources { paths: string[]; roots: string[]; states: Record<string, InboxSourceState>; version: string }
 const MAX_SOURCES = 16_384, MAX_TAIL_BYTES = 256 * 1024;
-const fixedFiles = ["amem.config.json", "capture-config.json", "formats.json", "profile.json", "shards.json", "aliases.jsonl", "lifecycle.jsonl", "profile.lock", "public-prune-view.intent.json", "candidates.db", "candidates.db-wal"];
+const fixedFiles = ["amem.config.json", "capture-config.json", "formats.json", "profile.json", "shards.json", "aliases.jsonl", "lifecycle.jsonl", "roots.jsonl", "profile.lock", "public-prune-view.intent.json", "candidates.db", "candidates.db-wal"];
 const logDirectory = (value: string) => /(?:^|\/)(?:log|local)$/.test(value);
 const evidenceDirectory = (value: string) => /(?:^|\/)(?:public-prune-objects|public-prune-inputs|public-prune-input-sets|bridge-snapshots)(?:\/|$)/.test(value);
 function validPath(value: string): void {

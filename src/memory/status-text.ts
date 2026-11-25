@@ -9,6 +9,8 @@ export interface StatusView {
   active: boolean; generation?: string; phase?: string;
   pending: Record<string, unknown> & { rows: number };
   deadLeasesRemoved?: { lease: string; at: string }[]; refusals?: string[];
+  /** #581: null unless this working root last resolved to a different, unjoined key. */
+  projectTransition?: { previousKey: string; key: string; previousCuratedNotes: number | null; aliasCommand: string; keepCommand: string } | null;
 }
 
 /** Human rendering options (#590): `--verbose` history lines, the wrap width and the version in the context line. */
@@ -68,7 +70,9 @@ export function statusText(status: StatusView, s: Style = PLAIN, opts: ReportTex
   if (interrupted) findings.push({ text: "a shard migration stopped after capture; authoring is refused until it activates", next: ["amem migrate --shards --resume"] });
   for (const reason of refusals) findings.push({ text: `migration refusal: ${reason}`, next: [] });
   if (status.pending.rows && !interrupted) findings.push({ text: `${plural(status.pending.rows, "old-layout row")} wait for the shard migration`, next: ["amem migrate --shards --dry-run", "amem migrate --shards --resume"] });
-  const overall: State = candidateState === "unavailable" ? "unavailable" : candidateState === "attention" || migrationState === "attention" ? "attention" : "ok";
+  const transition = status.projectTransition;
+  if (transition) findings.push({ text: `this directory resolved to ${transition.previousKey}${transition.previousCuratedNotes === null ? "" : ` (${plural(transition.previousCuratedNotes, "curated note")})`} before and to ${transition.key} now`, next: [transition.aliasCommand, transition.keepCommand] });
+  const overall: State = candidateState === "unavailable" ? "unavailable" : candidateState === "attention" || migrationState === "attention" || transition ? "attention" : "ok";
   const { machine, repo, denyPaths, piiPatterns, ...limits } = status.config;
   const limitFacts = Object.entries(limits).filter(([, value]) => value !== undefined && value !== null)
     .map(([key, value]) => typeof value === "number" && key.endsWith("Bytes") ? `${wordedKey(key)} ${humanBytes(value)}`
