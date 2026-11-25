@@ -126,7 +126,7 @@ export async function previewPlacementCheckpoint(homeInput: string, opts: { writ
   const minReader = PLACEMENT_CHECKPOINT_MIN_READER;
   return { mode: "checkpoint-preview", window: window.window, nextWindow: intent.window, journalObjects, currentObjects: journal.objects, headroom,
     floorReady: homeFloorAtLeast(home, minReader), requiredHomeFloor: minReader, writers: roots.length, planHash: intent.seal, plan: intent,
-    nextStep: `${CHECKPOINT_PREVIEW} --confirm --plan <saved preview JSON> --writer-root <install root> (repeat for every install)` };
+    nextStep: `(umask 077; set -C; ${CHECKPOINT_PREVIEW} --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install, then ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json with the same --writer-root list` };
 }
 async function checkpointHeadroom(home: string, intent: CheckpointIntent): Promise<{ headroom: PlacementCheckpointHeadroom; journalObjects: PlacementJournalObjectComposition; assertCurrent(): void }> {
   const epochHash = intent.epochHash, prospective = await checkpointProspective(home).catch(historyRefusal);

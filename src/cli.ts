@@ -537,7 +537,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const chosen = [options["--confirm"] === true, options["--resume"] === true, options["--abandon"] === true].filter(Boolean).length;
       if (options["--admit"] !== undefined || options["--list-remote"] === true || options["--from-remote"] === true || options["--apply"] === true || options["--dry-run"] === true || chosen > 1 || (options["--confirm"] === true) !== (options["--plan"] !== undefined)
         || (options["--resume"] === true || options["--abandon"] === true) && options["--writer-root"] !== undefined)
-        throw new AgentUsageError("A placement checkpoint uses --sync-placement --checkpoint --writer-root <install root> (repeat) to preview, then --confirm --plan <saved preview JSON> with the same writer roots, or --resume / --abandon alone.");
+        throw new AgentUsageError("A placement checkpoint previews with --sync-placement --checkpoint --writer-root <install root> (repeat), saves the plan with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), then confirms with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json and the same writer roots, or uses --resume / --abandon alone.");
     } else if (options["--plan"] !== undefined) {
       throw new AgentUsageError("--plan applies only to --sync-placement --checkpoint --confirm.");
     } else if (options["--admit"] !== undefined) {
@@ -711,7 +711,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           + `completed plan: ${h.completedPlan.slots} slots + ${h.completedPlan.reservedJournalChunks} reserved journal chunks; prospective plan: ${h.prospectivePlan.state === "cache-only" ? `${h.prospectivePlan.slots} slots + ${h.prospectivePlan.reservedJournalChunks} reserved journal chunks (cache-only; remote may have changed)` : h.prospectivePlan.state === "none" ? "none" : "unavailable without current remote evidence; using completed history"}\n`
           + `headroom after checkpoint: ${h.remaining} of ${h.limit} (live ${h.liveAfter}, next renewal ${h.nextRenewal}, largest plan ${h.largestPlan.slots} + ${h.largestPlan.reservedJournalChunks} reserved journal chunks)\n`
           + `home floor ${preview.requiredHomeFloor}: ${preview.floorReady ? "ready" : `missing; preview amem formats raise home ${preview.requiredHomeFloor}, then --confirm it`}; writers ${preview.writers}; plan ${preview.planHash}\n`
-          + `next: save this preview with --json, then ${preview.nextStep}\n`;
+          + `next: ${preview.nextStep}\n`;
       }
       if (options["--admit"] !== undefined) {
         const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");
