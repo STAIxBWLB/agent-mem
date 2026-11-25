@@ -1,9 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openShardStore } from "../src/memory/store.ts";
+import { runCli } from "../src/cli.ts";
 import { syncMemory, type SyncResult } from "../src/memory/sync.ts";
 import { SyncProgress, type SyncProgressSnapshot } from "../src/memory/sync-progress.ts";
+import { deterministicRowScreen, type RowScreen } from "../src/memory/sync-screen.ts";
 import { PLACEMENT_NOOP_CACHE_DIR, PLACEMENT_NOOP_CACHE_MAX_BYTES, PLACEMENT_NOOP_CACHE_SCHEMA, placementNoopKey } from "../src/memory/sync-placement-noop-cache.ts";
 import { bareRemote, closeInventoryFixtures, inventoryFixture, note } from "./fakes/sync-placement-inventory.ts";
 
@@ -91,12 +93,12 @@ test("#612 a corrupt, oversized, unknown-schema or bad-count cache takes the ful
 }, 300_000);
 
 test("#612 the key changes with every input and is order-independent", () => {
-  const base = { version: "0.38.0", writersHash: "a".repeat(64), policyHash: "b".repeat(64), sourceHash: "c".repeat(64), aliasesHash: "d".repeat(64), contextHash: "e".repeat(64),
+  const base = { version: "0.38.0", screenIdentity: null, writersHash: "a".repeat(64), policyHash: "b".repeat(64), sourceHash: "c".repeat(64), aliasesHash: "d".repeat(64), contextHash: "e".repeat(64),
     markerHash: "f".repeat(64), remoteHash: "0".repeat(64), journal: { sequence: 1, headHash: "1".repeat(64) }, targets: [{ remote: "2".repeat(40), local: null, pruned: [], fetched: [] }] };
   const key = placementNoopKey(base), seen = new Set([key]);
-  for (const changed of [{ version: "0.39.0" }, { writersHash: "9".repeat(64) }, { policyHash: "9".repeat(64) }, { sourceHash: "9".repeat(64) }, { journal: { sequence: 2, headHash: "1".repeat(64) } },
+  for (const changed of [{ screenIdentity: "8".repeat(64) }, { version: "0.39.0" }, { writersHash: "9".repeat(64) }, { policyHash: "9".repeat(64) }, { sourceHash: "9".repeat(64) }, { journal: { sequence: 2, headHash: "1".repeat(64) } },
     { targets: [{ remote: "3".repeat(40), local: null, pruned: [], fetched: [] }] }, { targets: [{ remote: "2".repeat(40), local: null, pruned: ["x"], fetched: [] }] }]) seen.add(placementNoopKey({ ...base, ...changed }));
-  expect(seen.size).toBe(8);
+  expect(seen.size).toBe(9);
   expect(placementNoopKey({ ...base, targets: [{ remote: "2".repeat(40), local: null, pruned: ["b", "a"], fetched: [] }] })).toBe(placementNoopKey({ ...base, targets: [{ remote: "2".repeat(40), local: null, pruned: ["a", "b"], fetched: [] }] }));
 });
 
@@ -112,4 +114,68 @@ test("#612 AC2 fixture: a no-op over 20 realms in 10 publications finishes withi
   expect(hit.phases.has("policy-evaluation")).toBe(false);
   expect(receipt(hit.result)).toEqual(receipt(full.result));
   expect(hitMs).toBeLessThan(120_000);
+}, 900_000);
+
+test("#612 an arbitrary host screen never caches; the package's deterministic screen does", async () => {
+  const f = await inventoryFixture(2), remote = bareRemote();
+  const host = async (screen: RowScreen) => { const phases = new Set<string>(); const progress = new SyncProgress({ sink: s => { phases.add(s.phase); }, intervalMs: 0 });
+    const result = await syncMemory(f.entry(), { ...f.opts(remote), progress, screen }); return { result, phases }; };
+  await host(() => true);
+  expect((await host(() => true)).result.placementRealms!.every(item => item.outcome === "not-needed")).toBe(true);
+  expect(cacheFiles(f.home)).toEqual([]);
+  expect((await host(() => true)).phases.has("policy-evaluation")).toBe(true);
+  const options = { piiPatterns: ["NEVER_PUBLIC_"] };
+  await host(deterministicRowScreen(options));
+  expect(cacheFiles(f.home).length).toBeGreaterThan(0);
+  expect((await host(deterministicRowScreen(options))).phases.has("policy-evaluation")).toBe(false);
+  expect((await host(deterministicRowScreen({ piiPatterns: ["NEVER_PUBLIC_", "OTHER_"] }))).phases.has("policy-evaluation")).toBe(true);
+  expect((await host(() => true)).phases.has("policy-evaluation")).toBe(true);
+}, 300_000);
+
+test("#612 cache I/O stays confined: loose modes, foreign links and an outside target are a miss and are never touched", async () => {
+  const f = await inventoryFixture(1), remote = bareRemote();
+  await run(f, remote); await run(f, remote);
+  const dir = join(f.home, PLACEMENT_NOOP_CACHE_DIR), [name] = cacheFiles(f.home), path = join(dir, name!);
+  chmodSync(path, 0o644); expect((await run(f, remote)).phases.has("policy-evaluation")).toBe(true); // a loose file is a miss, then rewritten privately
+  expect(lstatSync(join(dir, name!)).mode & 0o777).toBe(0o600);
+  chmodSync(dir, 0o755);
+  const loose = await run(f, remote); expect(loose.phases.has("policy-evaluation")).toBe(true); expect(loose.result.ok).toBe(true);
+  expect(lstatSync(dir).mode & 0o777).toBe(0o755); // never repaired or written through
+  chmodSync(dir, 0o700); await run(f, remote);
+  const outside = join(f.root, "outside-target"); writeFileSync(outside, "keep\n", { mode: 0o600 });
+  unlinkSync(join(dir, name!)); symlinkSync(outside, join(dir, name!));
+  const linked = await run(f, remote); expect(linked.result.ok).toBe(true); expect(linked.phases.has("policy-evaluation")).toBe(true);
+  expect(readFileSync(outside, "utf8")).toBe("keep\n"); expect(lstatSync(join(dir, name!)).isSymbolicLink()).toBe(true);
+  rmSync(dir, { recursive: true }); symlinkSync(f.root, dir);
+  const linkedDir = await run(f, remote); expect(linkedDir.result.ok).toBe(true); expect(linkedDir.phases.has("policy-evaluation")).toBe(true);
+  expect(readdirSync(f.root).some(item => item.endsWith(".json") && /^[a-f0-9]{64}/.test(item))).toBe(false);
+}, 300_000);
+
+test("#612 a failed attempt after a cached no-op clears its slot", async () => {
+  const f = await inventoryFixture(1), remote = bareRemote();
+  await run(f, remote); await run(f, remote); expect(cacheFiles(f.home).length).toBe(1);
+  const controller = new AbortController();
+  // Stop after capture starts, so the attempt is past initialization and holds the sync lock and home fence.
+  const progress = new SyncProgress({ sink: snapshot => { if (snapshot.phase === "source-capture") controller.abort(); }, intervalMs: 0 });
+  const stopped = await syncMemory(f.entry(), { ...f.opts(remote), signal: controller.signal, progress });
+  expect(stopped.ok).toBe(false);
+  expect(cacheFiles(f.home)).toEqual([]);
+}, 300_000);
+
+test("#612 AC2 CLI: `amem sync --json` over 20 realms in 10 publications finishes a cached no-op within 120 s, all not-needed", async () => {
+  const f = await inventoryFixture(19, undefined, true), remote = bareRemote();
+  writeFileSync(join(f.home, "amem.config.json"), JSON.stringify({ piiPatterns: ["NEVER_PUBLIC_"], privateRemotes: [remote] }) + "\n", { mode: 0o600 });
+  const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = f.home;
+  const sync = async (args: string[]) => JSON.parse(await runCli(["sync", ...args, "--json"], { cwd: f.root, env: {} })) as SyncResult;
+  try {
+    expect((await sync(["--remote", remote])).ok).toBe(true);
+    let started = performance.now(); const full = await sync([]); const fullMs = performance.now() - started;
+    started = performance.now(); const hit = await sync([]); const hitMs = performance.now() - started;
+    console.log(`#612 AC2 CLI: full-path no-op ${Math.round(fullMs)} ms, cached no-op ${Math.round(hitMs)} ms`);
+    expect(hit.placementRealms!.length).toBe(20); expect(new Set(hit.placementRealms!.map(item => item.publication)).size).toBe(10);
+    expect(hit.placementRealms!.every(item => item.outcome === "not-needed")).toBe(true);
+    expect(cacheFiles(f.home).length).toBe(10);
+    expect(receipt(hit)).toEqual(receipt(full));
+    expect(hitMs).toBeLessThan(120_000);
+  } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }, 900_000);

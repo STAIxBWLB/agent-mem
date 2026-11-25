@@ -8,7 +8,7 @@ import { generationSyncGit, generationSyncGitBytes, remoteVisibility, type SyncF
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { isLocalKey, localKeyOptInMessage, PlacementRealmRefusal, resolveShardProfile } from "./shard.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
-import { outboundPolicyEvaluator } from "./sync-screen.ts";
+import { outboundPolicyEvaluator, rowScreenIdentity } from "./sync-screen.ts";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
 import { captureSyncPlacementContextAsync, placementCaptureContextHash, previewSyncPlacementSources, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
@@ -295,12 +295,14 @@ class PlacementTransport {
   enter(...args: Parameters<SyncProgress["phase"]>): void { this.phaseNow = args[0]; this.progress?.phase(...args); }
   refusal?: PlacementRefusalCategory;
   /** #612: the last materialization's decision counts, and the counts a no-op cache hit returned. */
-  decisionCounts?: PlacementNoopCounts; noopHit?: PlacementNoopCounts;
+  decisionCounts?: PlacementNoopCounts; noopHit?: PlacementNoopCounts; noopKept=false;
   /** #612: the no-op reuse key over this run's captured and freshly read inputs; undefined when any input is missing. */
   noopSlot(): string { return digest(canonicalJSON({epochHash:this.epochHash,realms:this.targets.map(physical)})); }
   noopKey(): string|undefined {
     const capture=this.capture,version=amemReaderVersion();if(!capture||!version||!this.writerInventory||!this.epochHash)return undefined;
-    return placementNoopKey({version,writersHash:hashJSON({writers:this.writerInventory.writers,revision:this.writerInventory.revisionHash??null}),
+    // An arbitrary host screen has no cross-run identity, so it always takes the full path; only the package's deterministic screen binds.
+    const screenIdentity=this.opts.screen===undefined?null:rowScreenIdentity(this.opts.screen);if(screenIdentity===undefined)return undefined;
+    return placementNoopKey({version,screenIdentity,writersHash:hashJSON({writers:this.writerInventory.writers,revision:this.writerInventory.revisionHash??null}),
       policyHash:capture.context.policyHash,sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,contextHash:placementCaptureContextHash(capture),
       markerHash:capture.markerHash,remoteHash:digest(this.url),journal:{sequence:this.journal.sequence,headHash:this.journal.headHash},
       targets:this.targets.map(target=>({remote:target.remote??null,local:target.local??null,pruned:[...(target.store.prunePort().snapshot().pruned??[])],fetched:[...target.fetched]}))});
@@ -750,7 +752,7 @@ class PlacementTransport {
         const hit=readPlacementNoopCache(this.home,this.noopSlot(),noopKey);
         if(hit){
           await yieldTurn();const applications=await this.applicationCoordinator();await applications.prepare();
-          if(!this.importsNeeded()){this.prove();this.noopHit=hit;this.progress?.counts(hit);this.attemptHash=undefined;return this.result(true,"not-needed");}
+          if(!this.importsNeeded()){this.prove();this.noopHit=hit;this.noopKept=true;this.progress?.counts(hit);this.attemptHash=undefined;return this.result(true,"not-needed");}
         }
       }
       clearPlacementNoopCache(this.home,this.noopSlot());
@@ -773,7 +775,7 @@ class PlacementTransport {
       await yieldTurn();const applications=await this.applicationCoordinator();await applications.prepare();
       if(!retained&&!material.events.length&&!changed&&!this.importsNeeded()){
         this.attemptHash=undefined;
-        if(noopKey&&this.decisionCounts&&noopKey===this.noopKey())writePlacementNoopCache(this.home,this.noopSlot(),noopKey,this.decisionCounts);
+        if(noopKey&&this.decisionCounts&&noopKey===this.noopKey()){writePlacementNoopCache(this.home,this.noopSlot(),noopKey,this.decisionCounts);this.noopKept=true;}
         return this.result(true,"not-needed");
       }
       if(!retained){await this.observe("before-plan-fsync");await yieldTurn();this.prove();preparePlacementPublication(this.home,material.bundle,this.storage());await this.observe("plan-fsynced");await yieldTurn();this.prove();}
@@ -817,6 +819,9 @@ class PlacementTransport {
       return this.result(false,"not-needed",placementRefusalMessage(this.refusal,this.phaseNow));
     }finally{
       let ownedCache=true;try{this.metadata();}catch{ownedCache=false;}
+      // #612: every terminal path other than a full-path not-needed or a cache hit invalidates its slot, under the held sync lock and
+      // home ownership fence. Without the fence the slot stays; its key still binds every input, so it can only match an identical no-op.
+      if(ownedCache&&!this.noopKept&&this.epochHash&&this.targets.length)try{this.metadata();clearPlacementNoopCache(this.home,this.noopSlot());}catch{}
       if(ownedCache){
         for(const ref of this.refs)try{this.metadata();await generationSyncGit(this.root,this.args(["update-ref","--no-deref","-d",ref]),undefined);}catch{}
         for(const file of this.temporary)try{this.metadata();rmSync(file,{force:true});}catch{}
