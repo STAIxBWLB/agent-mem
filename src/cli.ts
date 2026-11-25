@@ -22,6 +22,7 @@ import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./memory/sync-placement-jo
 import { MCP_TOOLS, serveMcp, writeConfirmed } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
+import { deterministicRowScreen } from "./memory/sync-screen.ts";
 import { vaultCandidates, vaultCandidatesText, vaultCandidatesAllText } from "./memory/vault.ts";
 import type { IngestKind, IngestReceipt } from "./ingest.ts";
 import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
@@ -1590,7 +1591,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     }
     output = await withRepoRows(await rawMemoryCommand(memoryArgs, cwd, { person: true, rankedSearch: !legacySearch, ...(identity.actor === "agent" ? { screenGraph: true } : {}), ...(explainSearch ? { explainSearch: true } : {}), ...(options["--json"] !== true ? { [CLI_MEMORY_RENDER]: { render: { columns: reportWidth(context) ?? 80, style: outputStyle(context, options), ...(context.now ? { now: context.now() } : {}) }, ...(actor === "agent" ? { renderLegacy: (legacy: string, formatted: string) => { priorRead = legacy; return sub === "sync" ? screenedReceipt(legacy, formatted) : screenedReadPair(legacy, formatted); } } : {}) } } : {}), project: boundProject(), open: sub === "sync" && placementWriters ? () => openShardStore({ memoryDir: syncHome, user: true, deferPromotions: true }) : open, readable: notes => identity.actor === "person" ? notes : notes.filter(view => view.project === boundProject() && policyOf().screenStandalone(view)), stale: createRecallStalenessProbe({ cwd: recallRoot ?? cwd, rootConfirmed, policy: () => configured }), outputReady: notes => outputReady(notes.map(view => view.id)), importPolicy: () => text => configured.declinesPersonal(text),
       // #578 Q2: the CLI sync (also --if-due) is eligible; the home opt-in still decides whether a checkpoint can run.
-      sync: { ...(attestPlacement ? { placementAttestation: attestPlacement, placementCheckpoint: true } : {}), ...(progress ? { progress } : {}), screen: row => configured.screenStandalone(row), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
+      sync: { ...(attestPlacement ? { placementAttestation: attestPlacement, placementCheckpoint: true } : {}), ...(progress ? { progress } : {}), screen: deterministicRowScreen(configuredPolicyOptions(memoryHome(), policyCwd)), policyVersion: () => JSON.stringify(configuredPolicyOptions(memoryHome(), policyCwd)), ...(stop ? { signal: stop.signal } : {}) },   // the repository-narrowed policy binds what sync publishes too
       onBridgeStatus: status => { receipt.bridgeStatus = status; },
       // #188: ids-only listing of nearby machine-local rows; policy-refused rows are neither listed nor counted.
       forgetNearby: note => forgetNearby({ base: memoryHome(), project: note.project, text: note.text, title: note.title, screen: value => configured.screenStandalone(value) }) }));

@@ -65,6 +65,19 @@ export function syncOutboundContent(row: unknown): Record<string, unknown> {
 
 /** A row passes when the machine's configured policy and the caller's extra screen (if any) both accept its text. */
 export type RowScreen = (row: Record<string, unknown>) => boolean;
+/**
+ * #612: screens whose verdict is a pure function of standalone policy options, recorded with the canonical digest of those
+ * options. Package-internal: only these may share a cross-run no-op cache identity; any other host callback has none and
+ * always takes the full path.
+ */
+const deterministicScreens = new WeakMap<RowScreen, string>();
+export function deterministicRowScreen(options: { denyPaths?: readonly string[]; piiPatterns?: readonly string[] }): RowScreen {
+  const frozen = { denyPaths: [...(options.denyPaths ?? [])], piiPatterns: [...(options.piiPatterns ?? [])] }, policy = createStandalonePolicy(frozen);
+  const screen: RowScreen = row => policy.screenStandalone(row);
+  deterministicScreens.set(screen, createHash("sha256").update(JSON.stringify(frozen)).digest("hex")); return screen;
+}
+/** The cross-run identity of a screen, or undefined for an arbitrary callback (which has none). */
+export function rowScreenIdentity(screen: RowScreen): string | undefined { return deterministicScreens.get(screen); }
 export type SyncPolicyCategory = StandalonePolicyDecline | "host";
 export type OutboundVerdict = { ok: true } | { ok: false; category: SyncPolicyCategory };
 /** One evaluator for actual sync and public inspection, with the same projection and AND composition. */
