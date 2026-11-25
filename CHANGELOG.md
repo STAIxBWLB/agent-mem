@@ -18,6 +18,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Changed
 
+- A placement sync with nothing to publish skips policy evaluation for each publication whose captured, journal and freshly read remote inputs match its last `not-needed` run, and reports the same receipt and counts. The derived cache `sync-noop-cache/` in the memory home is safe to delete and is never read for publication. Writer and remote verification still run for every publication. Refs #612.
+
 - Runtime dependencies stay off the write path: the human renderers that use `@staix/cli-output` moved into presentation modules (`doctorText`, `migrationText`, `shardMigrationText`, `pruneText`, `capacityText`, `capacityApplyText`, `capacitySplitText`, `gcText` keep their package exports and bytes), and `bun scripts/check-boundary.ts` now fails when any write-path module (one that imports a write-capable built-in such as `node:fs`, `bun:sqlite` or `node:crypto`, or screens policy) imports a runtime dependency, directly or through other modules. Writer pins keep covering only amem's own files. Refs #592.
 
 ## 0.38.0

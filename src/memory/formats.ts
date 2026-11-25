@@ -31,6 +31,8 @@ const READER_VERSION: string | undefined = (() => {
   try { const { version } = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version?: unknown }; return typeof version === "string" && SEMVER.test(version) ? version : undefined; }
   catch { return undefined; }
 })();
+/** This release's plain version as read at load, or undefined when unreadable. */
+export function amemReaderVersion(): string | undefined { return READER_VERSION; }
 const parts = (version: string) => SEMVER.exec(version)!.slice(1, 4).map(Number);
 /** Compare versions accepted by format-floor records, using their numeric release components. */
 export function formatVersionBelow(reader: string, floor: string): boolean {

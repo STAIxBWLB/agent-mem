@@ -21,7 +21,8 @@ import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, SyncPlacementFormatError } 
 import { PLACEMENT_JOURNAL_MAX_RECORDS, PLACEMENT_JOURNAL_MAX_OBJECTS, createPlacementRecord, placementKeyId, type PlacementEvent, type PlacementRealm, type PlacementRecord } from "./sync-placement-journal-format.ts";
 import { rebuildPlacementProjection, type PlacementProjection } from "./sync-placement-projection.ts";
 import { readPlacementJournal, readPlacementWriterJournalAnchors, placementWriterJournalToken, appendPlacementEvent, appendPlacementEvents, releasePlacementStorageCaches, ensurePlacementPublicationDurability, readPlacementPublicationMetadata, placementDecisionOwners, placementJournalObjectComposition, placementJournalObjectCompositionText, type PlacementJournalObjectComposition, type PlacementJournalRead, type PlacementStorageOptions } from "./sync-placement-journal-storage.ts";
-import { formatFloorAtLeast } from "./formats.ts";
+import { amemReaderVersion, formatFloorAtLeast } from "./formats.ts";
+import { clearPlacementNoopCache, placementNoopKey, readPlacementNoopCache, writePlacementNoopCache, type PlacementNoopCounts } from "./sync-placement-noop-cache.ts";
 import { preparePlacementPublication, readPlacementPublication, recordPlacementPublicationPhase, type PlacementPublicationRead } from "./sync-placement-publication-storage.ts";
 import { planPlacementPublication, planPlacementPublicationAsync, planPlacementPublicationV2Async, placementDecisionReuseEnabled, PLACEMENT_PUBLICATION_PLAN_V2_SCHEMA, publicationBytes, publicationFileNames, type PlacementPublicationBundle, type PlacementPublicationDecision, type PlacementPublicationSource, type PlacementPublicationObject } from "./sync-placement-publication-plan.ts";
 import { placementPublicationEventSteps } from "./sync-placement-publication-events.ts";
@@ -293,6 +294,17 @@ class PlacementTransport {
   phaseNow: SyncProgressPhase = "writer-verification";
   enter(...args: Parameters<SyncProgress["phase"]>): void { this.phaseNow = args[0]; this.progress?.phase(...args); }
   refusal?: PlacementRefusalCategory;
+  /** #612: the last materialization's decision counts, and the counts a no-op cache hit returned. */
+  decisionCounts?: PlacementNoopCounts; noopHit?: PlacementNoopCounts;
+  /** #612: the no-op reuse key over this run's captured and freshly read inputs; undefined when any input is missing. */
+  noopSlot(): string { return digest(canonicalJSON({epochHash:this.epochHash,realms:this.targets.map(physical)})); }
+  noopKey(): string|undefined {
+    const capture=this.capture,version=amemReaderVersion();if(!capture||!version||!this.writerInventory||!this.epochHash)return undefined;
+    return placementNoopKey({version,writersHash:hashJSON({writers:this.writerInventory.writers,revision:this.writerInventory.revisionHash??null}),
+      policyHash:capture.context.policyHash,sourceHash:capture.context.sourceHash,aliasesHash:capture.context.aliasesHash,contextHash:placementCaptureContextHash(capture),
+      markerHash:capture.markerHash,remoteHash:digest(this.url),journal:{sequence:this.journal.sequence,headHash:this.journal.headHash},
+      targets:this.targets.map(target=>({remote:target.remote??null,local:target.local??null,pruned:[...(target.store.prunePort().snapshot().pruned??[])],fetched:[...target.fetched]}))});
+  }
   async observe(phase: PlacementSyncPhase): Promise<void> { await this.phase?.(phase); }
   storage(factual = false): PlacementStorageOptions { if (!this.homeMutation) refuse(); return { mutation: this.homeMutation, assertCurrent: factual ? () => this.metadata() : this.check, ...(this.attemptHash ? { publicationAttemptHash: this.attemptHash } : {}) }; }
   configStamp():string {
@@ -459,11 +471,11 @@ class PlacementTransport {
     this.prove();
     for(const [index,target]of this.targets.entries())Object.assign(target,materialized.targets[index]!);
     const {decisions,plannedTargets:targets,objects}=materialized;
-    if(this.progress){
+    {
       // Each decision lands in one bucket: policy-declined, source-local, or held for a journal/dependency reason.
       const counts={permitted:0,local:0,declined:0,held:0},other=new Set(["journal-hold","related-local","unsupported-reference","unverified-prune"]);
       for(const d of decisions)counts[d.eligible?"permitted":d.reason==="source-local"?"local":d.reason&&!other.has(d.reason)?"declined":"held"]++;
-      this.progress.counts(counts);
+      this.decisionCounts=counts;this.progress?.counts(counts);
     }
     this.enter("publication-plan");
     const body={epochHash:this.epochHash,generation:this.journal.epoch.generation,homeHash:capture.context.homeHash,contextHash:placementCaptureContextHash(capture),markerHash:capture.markerHash,
@@ -680,7 +692,7 @@ class PlacementTransport {
     const cause:SyncFailureCause|undefined=ok?undefined:this.opts.signal?.aborted?"stopped":this.bound?"bound":outcome==="unknown"?"unknown-outcome":this.failureCause??(this.refusal?"refusal":"unavailable");
     return{ok,pushed:this.accepted&&(this.attempted||this.recovered&&!!this.current?.bundle.root.targets.some(target=>target.publish)),entries:this.current?.exported??0,...(error?{error}:{}),
       ...(cause?{failure:{cause,...(cause==="refusal"&&this.refusal?{category:this.refusal}:{})}}:{}),...(this.applications?{pruneApplication:{...this.applications.application}}:{}),
-      placementPublication:{...(this.attemptHash?{attemptHash:this.attemptHash}:{}),outcome,...(this.bound?{bound:this.bound}:{}),...(this.journalObjects?{journalObjects:this.journalObjects}:{}),...(this.refusal?{refusal:{category:this.refusal,phase:this.phaseNow}}:{}),withheld:this.current?.withheld??0,exported:this.current?.exported??0,
+      placementPublication:{...(this.attemptHash?{attemptHash:this.attemptHash}:{}),outcome,...(this.bound?{bound:this.bound}:{}),...(this.journalObjects?{journalObjects:this.journalObjects}:{}),...(this.refusal?{refusal:{category:this.refusal,phase:this.phaseNow}}:{}),withheld:this.current?.withheld??(this.noopHit?this.noopHit.local+this.noopHit.declined+this.noopHit.held:0),exported:this.current?.exported??0,
         ...(this.lastPolicyHash?{lastPolicyHash:this.lastPolicyHash}:{}),...(this.lastPolicyCheckUnixMs!==undefined?{lastPolicyCheckUnixMs:this.lastPolicyCheckUnixMs,policyCheckSource:this.policyCheckSource??(this.recovered?"durable-intent" as const:"live" as const)}:{}),
         policyCeiling:"last-positive-check-before-in-flight-push",...(this.recovered?{recovered:true}:{})}};
   }
@@ -732,6 +744,16 @@ class PlacementTransport {
           &&root.policyHash===this.capture!.context.policyHash&&root.targets.every((target,index)=>target.expectedRemoteHead===(this.targets[index]?.remote??null));
         if(!stable)return await this.terminalUnknown(retained);
       }
+      // #612: a fresh attempt whose every no-op input equals the last not-needed run skips policy evaluation; any mismatch takes the full path.
+      const noopKey=retained?undefined:this.noopKey();
+      if(noopKey){
+        const hit=readPlacementNoopCache(this.home,this.noopSlot(),noopKey);
+        if(hit){
+          await yieldTurn();const applications=await this.applicationCoordinator();await applications.prepare();
+          if(!this.importsNeeded()){this.prove();this.noopHit=hit;this.progress?.counts(hit);this.attemptHash=undefined;return this.result(true,"not-needed");}
+        }
+      }
+      clearPlacementNoopCache(this.home,this.noopSlot());
       const frontier=retained?{...this.journal,sequence:retained.bundle.root.journal.sequence,headHash:retained.bundle.root.journal.headHash}:this.journal;
       const material=await this.materialize(retained?.bundle.root.createdUnixSeconds??Math.floor(Date.now()/1000),frontier,retained?.bundle);
       const changed=material.bundle.root.targets.some((target,index)=>target.publish&&target.commit!==(this.targets[index]!.remote??null));
@@ -749,7 +771,11 @@ class PlacementTransport {
       }
       this.current=material;this.attemptHash=material.bundle.root.seal;
       await yieldTurn();const applications=await this.applicationCoordinator();await applications.prepare();
-      if(!retained&&!material.events.length&&!changed&&!this.importsNeeded()){this.attemptHash=undefined;return this.result(true,"not-needed");}
+      if(!retained&&!material.events.length&&!changed&&!this.importsNeeded()){
+        this.attemptHash=undefined;
+        if(noopKey&&this.decisionCounts&&noopKey===this.noopKey())writePlacementNoopCache(this.home,this.noopSlot(),noopKey,this.decisionCounts);
+        return this.result(true,"not-needed");
+      }
       if(!retained){await this.observe("before-plan-fsync");await yieldTurn();this.prove();preparePlacementPublication(this.home,material.bundle,this.storage());await this.observe("plan-fsynced");await yieldTurn();this.prove();}
       // One mutation batch: a complete proof on each side, fence checks (and at most 1 s of proof reuse) per record.
       this.prove();await this.appendThrough(material.bundle,material.events,material.preCount);this.prove();
