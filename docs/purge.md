@@ -26,7 +26,7 @@ What this does **not** do: the authored row stays in the local log and the sync 
 A rebuild cannot carry over:
 
 - lifecycle operations: supersede, demote, settle and forget are not exported, so the new home has the authored notes without them;
-- capture rows, goals and work lists: `jsonl` export writes them, but `amem project import` does not read them back;
+- capture rows, goals and work lists: `jsonl` export writes goals and work lists, and capture rows only with `--include-capture`, but `amem project import` does not read any of them back;
 - notes that no project export selects, such as user-scope and shared-scope notes outside a project, and notes of a project you did not export;
 - candidates, generation history, migration sources and sync state.
 
