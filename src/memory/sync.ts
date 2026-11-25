@@ -265,6 +265,12 @@ export interface SyncOptions {
    * `amem sync` (including `--if-due`) and a library host may set it; hooks, `amem mcp` and capture never do.
    */
   placementCheckpoint?: boolean;
+  /**
+   * #626, internal to one placement inventory run: the remote's advertised placement refs by remote URL, read once and
+   * shared by the run's publications. Never authority: each publication still proves every target against it, and a
+   * publication that pushes deletes its entry. Hosts never set it; the inventory driver makes a fresh one per run.
+   */
+  placementAdvertisement?: Map<string, ReadonlyMap<string, string>>;
 }
 
 export { shardSyncBinding, shardSyncSourceBinding } from "./sync-binding.ts";

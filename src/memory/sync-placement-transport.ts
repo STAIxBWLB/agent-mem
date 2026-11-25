@@ -395,17 +395,45 @@ class PlacementTransport {
     const result = await this.call(() => generationSyncGitBytes(this.root, this.args(["cat-file", "blob", object]), this.opts.signal, undefined, limit));
     if (result.code !== 0 || result.out.length < 1) refuse(); return Buffer.from(result.out);
   }
+  /**
+   * #626: the placement refs as the remote advertises them, read once per inventory run. One `ls-remote` costs a
+   * network round trip, and a run used to pay it once per target. The advertisement is the same read the per-ref call
+   * made, so each target still proves its tip against it; a ref this run's push moved is dropped from it (see finish).
+   */
+  async advertisement(): Promise<ReadonlyMap<string, string>> {
+    const shared = this.opts.placementAdvertisement;
+    const cached = shared?.get(this.url);
+    if (cached) return cached;
+    const result = await this.call(() => generationSyncGitBytes(this.root, this.args(["ls-remote", "--refs", "origin", "refs/heads/amem/u", "refs/heads/amem/p/*"]), this.opts.signal, undefined, REMOTE_REALM_ADVERTISEMENT_BYTES));
+    if (result.code !== 0) refuse("remote");
+    let text: string; try { text = new TextDecoder("utf-8", { fatal: true }).decode(result.out); } catch { return refuse("remote"); }
+    const refs = new Map<string, string>();
+    for (const line of text.split("\n")) {
+      if (!line) continue;
+      const fields = line.split("\t"); if (fields.length !== 2 || !oid(fields[0]) || !/^refs\/heads\/amem\/(?:u|p\/[0-9a-f]{16})$/.test(fields[1]!) || refs.has(fields[1]!)) refuse("remote");
+      refs.set(fields[1]!, fields[0]!);
+    }
+    shared?.set(this.url, refs);
+    return refs;
+  }
   async fetch(): Promise<void> {
+    const advertisement = await this.advertisement();
     for (const target of this.targets) {
       const ref = shardSyncRef(target.realm); if ((await this.git(["symbolic-ref", "--quiet", ref])).code !== 1) refuse();
       const cached = await this.git(["rev-parse", "--verify", "--quiet", ref]);
       if (cached.code !== 0 && cached.code !== 1 || cached.code === 0 && !oid(cached.out)) refuse(); target.local = cached.code === 0 ? cached.out : undefined;
-      const advertised = await this.git(["ls-remote", "--exit-code", "origin", ref]);
-      if (advertised.code === 2) { if (target.local && !this.journal.publicationReservation) refuse(); target.remote = undefined; target.remoteHistory = undefined; continue; }
-      const fields = advertised.out.split("\t"); if (advertised.code !== 0 || fields.length !== 2 || !oid(fields[0]) || fields[1] !== ref) refuse();
-      const incoming = `refs/amem/placement-incoming/${randomBytes(16).toString("hex")}`; this.refs.push(incoming);
-      await this.required(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "origin", `${ref}:${incoming}`]);
-      const tip = await this.required(["rev-parse", "--verify", incoming]); if (!oid(tip) || tip !== fields[0]) refuse();
+      const advertised = advertisement.get(ref);
+      if (advertised === undefined) { if (target.local && !this.journal.publicationReservation) refuse(); target.remote = undefined; target.remoteHistory = undefined; continue; }
+      let tip: string;
+      if (target.local === advertised) {
+        // #626: the advertised tip is already the verified cached ref, so its objects are local; fetching it again only
+        // repeats a round trip. Equality with the advertisement is the same proof the fetched incoming ref gave.
+        tip = advertised;
+      } else {
+        const incoming = `refs/amem/placement-incoming/${randomBytes(16).toString("hex")}`; this.refs.push(incoming);
+        await this.required(["fetch", "-q", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules", "origin", `${ref}:${incoming}`]);
+        tip = await this.required(["rev-parse", "--verify", incoming]); if (!oid(tip) || tip !== advertised) refuse();
+      }
       if (target.local && !await target.auditor.verifiedAncestor(target.local, tip) && !this.journal.publicationReservation) refuse();
       target.remote = tip; target.remoteHistory = await target.auditor.history(tip);
       target.rows = new Map(target.remoteHistory.rows); target.fetched = new Set(target.remoteHistory.rows.keys()); target.origins = new Map(target.remoteHistory.origins);
@@ -799,6 +827,8 @@ class PlacementTransport {
       this.lastPolicyCheckUnixMs=Date.now(); this.lastPolicyHash=material.bundle.root.policyHash;this.policyCheckSource="live";
       const participating=material.bundle.root.targets.map((target,index)=>({target,index})).filter(item=>item.target.publish);
       this.attempted=participating.length>0;
+      // #626: a push moves advertised refs, so no later publication of this run may reuse the advertisement read before it.
+      if(this.attempted)this.opts.placementAdvertisement?.delete(this.url);
       const sent=participating.length?await generationSyncGit(this.root,this.args(["push","--atomic","--no-follow-tags","-q",...participating.map(({target,index})=>`--force-with-lease=${shardSyncRef(this.targets[index]!.realm)}:${target.expectedRemoteHead??""}`),"origin",...participating.map(({target,index})=>`${target.commit}:${shardSyncRef(this.targets[index]!.realm)}`)]),this.opts.signal):{code:0};
       this.accepted=sent.code===0;await this.observe("cas-returned");
       if(!this.accepted)return this.result(false,"unknown","The placement publication outcome is unknown; retained receipts may have published. Recheck this exact attempt before retrying.");

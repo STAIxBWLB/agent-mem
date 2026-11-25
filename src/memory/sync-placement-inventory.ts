@@ -98,7 +98,9 @@ function journalRefusal(error: unknown): (SyncResult & { placementRealms: Placem
     failure: { cause: code === "checkpoint-pending" ? "checkpoint-pending" : "unavailable" }, placementRealms: [] };
 }
 
-export async function syncPlacementInventory(home: string, opts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
+export async function syncPlacementInventory(home: string, callerOpts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
+  // #626: one remote advertisement per run, shared by its publications (never one a caller passed in).
+  const opts: SyncOptions = { ...callerOpts, placementAdvertisement: new Map() };
   let local: InventoryRealm[], missing: string[], inactive: string[], retained: string[] | undefined;
   try {
     // #288 step 3: a started checkpoint pauses every placement effect before any journal read, with its own cause and next step.
