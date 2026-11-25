@@ -4,6 +4,7 @@
  * person-written floor record (`amem formats raise` is the one writer).
  */
 import { randomBytes } from "node:crypto";
+import { lstatSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { types } from "node:util";
 import { memoryPolicySnapshot } from "./policy.ts";
@@ -35,7 +36,7 @@ const RESUME = `${CHECKPOINT_PREVIEW} --resume`, ABANDON = `${CHECKPOINT_PREVIEW
 const homeFloorAtLeast = (home: string, minimum: string): boolean =>
   (readFormatFloors(home) ?? []).some(floor => floor.surface === "home" && !formatVersionBelow(floor.minReader, minimum));
 
-export type PlacementCheckpointCause = "pending" | "commit-started" | "floor" | "writer-below-floor" | "headroom" | "obligation" | "changed" | "inactive" | "candidate" | "history";
+export type PlacementCheckpointCause = "pending" | "commit-started" | "floor" | "writer-below-floor" | "headroom" | "obligation" | "changed" | "inactive" | "candidate" | "history" | "writer-missing";
 const MESSAGES: Record<PlacementCheckpointCause, string> = {
   pending: PLACEMENT_CHECKPOINT_PENDING_MESSAGE,
   "commit-started": `The placement checkpoint's commit line has started, so it can no longer be abandoned; run ${RESUME} to complete it.`,
@@ -47,6 +48,7 @@ const MESSAGES: Record<PlacementCheckpointCause, string> = {
   inactive: "This home has no active sync placement; activate it with amem migrate --sync-placement --dry-run first.",
   candidate: `A checkpoint carries one writer renewal: pass the complete inventory as repeatable --writer-root <install root> (every amem install sharing this home), then preview again with ${CHECKPOINT_PREVIEW}.`,
   history: "",
+  "writer-missing": "",
 };
 /** #567: the retained-history cause class and, for `bound`, which bound with its counts. Never a path, row or object id. */
 export interface PlacementCheckpointHistoryRefusal { category: "shard history"; cause: ShardHistoryCause; kind?: string; limit?: number; observed?: number }
@@ -62,7 +64,7 @@ export class PlacementCheckpointError extends Error {
   readonly history?: PlacementCheckpointHistoryRefusal;
   constructor(readonly causeClass: PlacementCheckpointCause, detail = "", history?: PlacementCheckpointHistoryRefusal) {
     super(causeClass === "headroom" ? `The checkpoint would not leave room for the next sync: ${detail} A single checkpoint cannot unblock this plan; the deferred multi-plan split in #288 design item 5 is the open path. Nothing was written.`
-      : causeClass === "history" && history ? historyMessage(history) : MESSAGES[causeClass] + (detail ? ` ${detail}` : ""));
+      : causeClass === "history" && history ? historyMessage(history) : [MESSAGES[causeClass], detail].filter(Boolean).join(" "));
     this.name = "PlacementCheckpointError";
     if (causeClass === "history" && history) this.history = history;
   }
@@ -86,6 +88,9 @@ function input(home: string, a: ActivePlacementBinding, roots: PlacementCheckpoi
 }
 function measured(home: string, writerRoots: readonly string[], ownRoot: string): PlacementCheckpointInput["roots"] {
   if (!writerRoots.length) throw new PlacementCheckpointError("candidate");
+  // #634: name a removed install before measurement turns it into a generic inventory refusal; preview and confirm both pass here.
+  const missing = writerRoots.find(installAbsent);
+  if (missing !== undefined) throw new PlacementCheckpointError("writer-missing", missingWriterMessage(missing));
   try { return initialPlacementWriterContext(home, writerRoots, ownRoot).measurement.roots; } catch { throw new PlacementCheckpointError("candidate"); }
 }
 function plan(home: string, epochHash: string, value: PlacementCheckpointInput): CheckpointIntent {
@@ -167,13 +172,27 @@ function reviewedHeadroom(value: unknown): unknown {
   if (!detached) throw new PlacementCheckpointError("changed");
   return detached;
 }
+/**
+ * #634: an install whose root no longer exists (ENOENT or ENOTDIR on the root itself). An existing root with a missing or
+ * unreadable package.json is not absent: it can still run, so the floor check keeps refusing it.
+ */
+function installAbsent(root: string): boolean {
+  try { lstatSync(root); return false; } catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR"; }
+}
+function missingWriterMessage(root: string): string {
+  return `The install at ${root} no longer exists; drop that --writer-root, then save the preview again with (umask 077; set -C; ${CHECKPOINT_PREVIEW} --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every remaining install, and confirm it with ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json with the same --writer-root list.`;
+}
 function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | undefined, minReader: string): void {
   if (!homeFloorAtLeast(home, minReader)) throw new PlacementCheckpointError("floor");
   // This reader itself below the recorded floor cannot measure anything: name the writer cause, not the inventory.
   try { assertFormatFloor(home, "sync"); } catch { throw new PlacementCheckpointError("writer-below-floor"); }
   if (!roots) return;
   const effective = readEffectiveSyncPlacementWriters(home).roots ?? [];
-  const versions = [...roots.map(root => root.version), ...effective.map(root => installVersion(root))];
+  // #634: an inventoried install that is gone from disk and left out of the new plan can no longer write here; the
+  // renewal removes it. A root the new plan measures is checked through its measured version.
+  const renewed = new Set(roots.map(root => root.root));
+  const retained = effective.filter(root => !renewed.has(root) && !installAbsent(root));
+  const versions = [...roots.map(root => root.version), ...retained.map(root => installVersion(root))];
   const floors = (readFormatFloors(home) ?? []).filter(floor => floor.surface === "home" || floor.surface === "sync");
   if (versions.some(version => version === null || floors.some(floor => formatVersionBelow(version, floor.minReader)))) throw new PlacementCheckpointError("writer-below-floor");
 }
