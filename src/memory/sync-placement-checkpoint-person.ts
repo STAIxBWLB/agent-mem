@@ -99,7 +99,6 @@ function measured(home: string, writerRoots: readonly string[], ownRoot: string)
   }
 }
 function plan(home: string, epochHash: string, value: PlacementCheckpointInput): CheckpointIntent {
-  if (placementCheckpointPending(home, epochHash)) throw new PlacementCheckpointError("pending");
   try { return planPlacementCheckpoint(home, epochHash, value); }
   catch (error) {
     const code = error instanceof SyncPlacementJournalError ? Object.getOwnPropertyDescriptor(error, "code")?.value : undefined;
@@ -130,6 +129,7 @@ export interface PlacementCheckpointPreview {
 export async function previewPlacementCheckpoint(homeInput: string, opts: { writerRoots: readonly string[]; ownRoot: string }): Promise<PlacementCheckpointPreview> {
   const home = realPath(homeInput), a = active(home), epochHash = a.profile.placementHead;
   const roots = measured(home, opts.writerRoots, opts.ownRoot);
+  if (placementCheckpointPending(home, epochHash)) throw new PlacementCheckpointError("pending");
   checkWriterVersions(home, roots);
   const intent = plan(home, epochHash, input(home, a, roots, randomBytes(32).toString("hex")));
   const journal = readPlacementJournal(home, epochHash), window = resolvePlacementWindow(home, epochHash);
