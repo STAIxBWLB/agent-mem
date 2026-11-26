@@ -7,6 +7,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ### Fixed
 
 - A reader registration clears leases of processes that are provably gone in its own scope (`readers` or `shard-readers`), so doctor's `readers` attention state clears without a migration. The test is one pid syscall (ESRCH): a pid that still exists, an unreadable or unverifiable file, a link, and a reused pid's lease are left alone, and migration admission keeps its pid-plus-signature test. At most 256 lease names are scanned per registration. The lease format, its file name, migration and the checkpoint fence are unchanged. #632.
+- When an Antigravity setup receipt points to a missing install, sync and doctor direct you to `amem setup agy --list`. The listing shows each receipt workspace and the apply and undo commands to run from it. Refs #636.
 
 ## 0.40.0
 

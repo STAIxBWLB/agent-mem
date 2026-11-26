@@ -79,6 +79,7 @@ import { builtinSet, evalSeeded, evalStore, FIXTURE_PATH, readEvalSet } from "./
 import { markShown, pendingSummary } from "./memory/candidate-pending.ts";
 import { buildNote, FAIL_TEMPLATE, hasFailLabel, noteAdd, parseFailTemplate, type FailFields } from "./memory/note-add.ts";
 import { runEditor } from "./memory/editor.ts";
+import { listAgyReceiptLocations } from "./setup-drift.ts";
 import { doctorReport } from "./memory/doctor.ts";
 import { doctorText } from "./memory/doctor-text.ts";
 import { statusText, type StatusView } from "./memory/status-text.ts";
@@ -561,7 +562,6 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   if (parsed.path[0] === "setup") {
     if (options["--list"] === true) {
       const { setupMemoryHome } = await import("./setup.ts");
-      const { listAgyReceiptLocations } = await import("./setup-drift.ts");
       const home = setupMemoryHome(context.env ?? process.env);
       const result = listAgyReceiptLocations(home);
       const lines = result.receipts.flatMap(receipt => [`${receipt.state}: ${receipt.workspace}`, `  ${receipt.apply}`, `  ${receipt.undo}`]);
@@ -576,7 +576,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       return output;
     }
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
-      || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new CommandUsageError("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo]");
+      || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new CommandUsageError("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo] | amem setup agy --list [--json]");
     if (parsed.positionals[0] === "console") {
       const { consoleSetup, consoleSetupText } = await import("./setup-console.ts");
       const mode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview";

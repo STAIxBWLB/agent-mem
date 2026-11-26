@@ -49,7 +49,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
   setup: { group: "setup", description: "Preview or apply MCP setup and capture hooks",
     details: "Covers native coding CLIs, or the acon console plugin manifest (console). Apply and undo use explicit flags.",
     examples: ["amem setup claude", "amem setup all --apply", "amem setup agy --list"],
-    options: { ...json("the setup plan or receipt list"), "--list": flag("List Antigravity receipt workspaces and repair commands (agy only)"), "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
+    options: { ...json("the setup plan or receipt list"), "--list": flag("List agy receipt workspaces and repair commands", "Use only with the agy target."), "--apply": flag("Apply the previewed setup"), "--undo": flag("Restore the original configuration"),
       "--verbose": flag("Show static notes and history lines (human output only)"),
       "--root": path("Register this absolute install root", "Such as <install>/releases/<version>/, resolved to its real path, instead of the running one."),
       "--adopt-current": flag("With --apply: adopt the current wiring", "Keeps a stale setup receipt aside (its entries were replaced at another install root) and adopts the current wiring, which --undo restores.") },
