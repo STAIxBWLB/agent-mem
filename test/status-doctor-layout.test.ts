@@ -85,6 +85,7 @@ test("#590: doctor golden at 80 columns, color off, with a writer refusal", () =
     "",
     "▸ Attention (1)",
     "  ⚠  placement writer proof is missing (declared writer category)",
+    "    →  amem migrate --sync-placement --writers",
     "    →  amem migrate --sync-placement --checkpoint",
     "    →  amem formats raise home 0.22.0",
     "    →  amem migrate --sync-placement --dry-run",

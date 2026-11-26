@@ -4,6 +4,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+### Added
+
+- `amem migrate --sync-placement --writers [--json]` lists the placement writer inventory (each root present or missing, with its version), the running install, the setup receipts' launcher roots, and the present roots to declare with the exact saving-preview command for a checkpoint renewal. It is read-only and searches no other paths. The doctor writer finding and the checkpoint `candidate` refusal name it first. Refs #639.
+
 ### Fixed
 
 - A placement checkpoint renewal no longer refuses as `writer-below-floor` when an install in the current inventory was already removed from disk and the new plan leaves it out. A removed install that is still passed as `--writer-root` now refuses in both the preview and the confirm with a cause naming that root. Floors, `formats.json` and storage formats are unchanged. Refs #634.

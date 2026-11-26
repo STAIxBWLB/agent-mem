@@ -46,7 +46,7 @@ const MESSAGES: Record<PlacementCheckpointCause, string> = {
   obligation: "The placement journal has an unfinished append, publication, reservation, renewal or source recovery; finish it with amem sync (or the pending renewal with amem migrate --sync-placement --resume), then preview the checkpoint again.",
   changed: `The placement state changed since the checkpoint plan was sealed; preview a fresh plan with ${CHECKPOINT_PREVIEW} and confirm that one.`,
   inactive: "This home has no active sync placement; activate it with amem migrate --sync-placement --dry-run first.",
-  candidate: `A checkpoint carries one writer renewal: pass the complete inventory as repeatable --writer-root <install root> (every amem install sharing this home), then preview again with ${CHECKPOINT_PREVIEW}.`,
+  candidate: `A checkpoint carries one writer renewal: list the inventory and the roots to declare with amem migrate --sync-placement --writers, then pass the complete inventory as repeatable --writer-root <install root> (every amem install sharing this home), then preview again with ${CHECKPOINT_PREVIEW}.`,
   history: "",
   "writer-missing": "",
 };

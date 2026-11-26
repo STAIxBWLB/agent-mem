@@ -64,6 +64,18 @@ export class SetupWriterRootsError extends Error {
 }
 /** Current managed MCP AFTER images only. Native configuration paths and historical BEFORE/START images are never opened. */
 export function readSetupWriterRoots(home: string): string[] {
+  return [...new Set(setupWriterLaunchers(home, false).map(row => row.root))].sort();
+}
+/** One applied receipt's launcher install: its target, root, and whether the install still exists (#639). */
+export interface SetupWriterLauncher { target: SetupTarget; root: string; state: "present" | "missing" }
+/**
+ * #639: the same bounded, stamp-checked walk for the read-only writer listing. A launcher root positively absent
+ * (ENOENT/ENOTDIR) is reported as missing with its recorded path instead of refusing; every other refusal is unchanged.
+ */
+export function readSetupWriterLaunchers(home: string): SetupWriterLauncher[] {
+  return setupWriterLaunchers(home, true);
+}
+function setupWriterLaunchers(home: string, reportMissing: boolean): SetupWriterLauncher[] {
   function fail(category: SetupWriterRootsError["category"], target?: SetupTarget): never { throw new SetupWriterRootsError(category, target); }
   try {
     const owned = (stat: BigIntStats) => { if (stat.isSymbolicLink() || stat.uid !== BigInt(process.getuid?.() ?? -1) || (stat.mode & 0o077n) !== 0n) fail("unsafe"); };
@@ -85,7 +97,7 @@ export function readSetupWriterRoots(home: string): string[] {
       if (stat.size > BigInt(JOURNAL_MAX) || totalBytes + Number(stat.size) > 32 * 1024 * 1024) fail("bound");
       totalBytes += Number(stat.size); files.push({ name: entry.name, stat });
     } } finally { iterator.closeSync(); }
-    const roots = new Set<string>(), launchers: { entry: string; root: string }[] = [];
+    const rows: SetupWriterLauncher[] = [], launchers: { entry: string; root: string }[] = [];
     for (const file of files.sort((a, b) => a.name.localeCompare(b.name))) {
       const target = (file.name.startsWith("agy-") && /^agy-[a-f0-9]{64}\.json$/.test(file.name) ? "agy" : file.name.slice(0, -5)) as SetupTarget;
       if (!SETUP_TARGETS.includes(target) || target === "agy" && !/^agy-[a-f0-9]{64}\.json$/.test(file.name)) fail("unsupported");
@@ -111,11 +123,12 @@ export function readSetupWriterRoots(home: string): string[] {
       try { root = realPath(dirname(dirname(runtime.entry))); }
       catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
+        if ((code === "ENOENT" || code === "ENOTDIR") && reportMissing) { rows.push({ target, root: dirname(dirname(runtime.entry)), state: "missing" }); continue; }
         if (code === "ENOENT" || code === "ENOTDIR") fail("unavailable", target);
         fail("unavailable");
       }
       if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) fail("unavailable");
-      roots.add(root); launchers.push({ entry: runtime.entry, root });
+      rows.push({ target, root, state: "present" }); launchers.push({ entry: runtime.entry, root });
     }
     const finalHome = lstatSync(home, { bigint: true }); owned(finalHome);
     if (!finalHome.isDirectory() || stamp(lstatSync(directory, { bigint: true })) !== stamp(initial) || finalHome.dev !== base.dev || finalHome.ino !== base.ino) fail("changed");
@@ -125,7 +138,7 @@ export function readSetupWriterRoots(home: string): string[] {
     if (JSON.stringify(finalNames.sort()) !== JSON.stringify(namespace.sort())) fail("changed");
     for (const file of files) if (stamp(lstatSync(join(directory, file.name), { bigint: true })) !== stamp(file.stat)) fail("changed");
     for (const runtime of launchers) if (realPath(dirname(dirname(runtime.entry))) !== runtime.root) fail("changed");
-    return [...roots].sort();
+    return rows;
   } catch (error) {
     if (error && typeof error === "object" && !types.isProxy(error) && error instanceof SetupWriterRootsError) {
       const category = Object.getOwnPropertyDescriptor(error, "category"), target = Object.getOwnPropertyDescriptor(error, "target")?.value;
