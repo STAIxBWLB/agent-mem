@@ -2,7 +2,7 @@ import { closeSync, constants, type Dir, existsSync, fstatSync, lstatSync, opend
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { setupReceiptRemedy, type SetupTarget } from "./setup-writer-roots.ts";
+import { decodeReceipt, setupReceiptRemedy, type SetupTarget } from "./setup-writer-roots.ts";
 import { SETUP_CONFIG_BYTES } from "./setup-toml.ts";
 import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries, mcpLauncher, mcpRecord, type ConfigImage } from "./setup-owned.ts";
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
@@ -150,6 +150,60 @@ function installEntry(target: SetupTarget, file: string, state: "missing" | "una
     : entry(target, file, "amem install", installUnavailable(target), "unavailable");
 }
 
+/** Match the placement writer inventory's 256-name bound, including non-receipt entries. */
+function agyReceiptNames(directory: string): string[] | undefined {
+  const names: string[] = [];
+  let scanned = 0, overflow = false, dir: Dir | undefined;
+  try {
+    // The writer inventory refuses a linked or non-directory setup/; never enumerate through one.
+    const stat = lstatSync(directory, { throwIfNoEntry: false });
+    if (stat && !stat.isDirectory()) throw Object.assign(Error("setup is not a plain directory"), { code: "ENOTPLAIN" });
+    if (stat) dir = opendirSync(directory);
+    for (;dir;) {
+      const item = dir.readSync(); if (!item) break;
+      if (++scanned > 256) { overflow = true; break; }
+      if (/^agy-[a-f0-9]{64}\.json$/.test(item.name)) names.push(item.name);
+    }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+  } finally { dir?.closeSync(); }
+  return overflow ? undefined : names.sort();
+}
+
+type AgyReceiptLocation = { workspace: string; state: "current" | "stale"; apply: string; undo: string };
+
+/** Explicit setup listing: only receipt metadata and launcher roots, never native config files. */
+export function listAgyReceiptLocations(home: string): { receipts: AgyReceiptLocation[]; incomplete: boolean } {
+  const directory = join(home, "setup"), budget = { remaining: READ_BYTES };
+  const receipts: AgyReceiptLocation[] = [];
+  let names: string[] | undefined;
+  try { names = agyReceiptNames(directory); }
+  catch { return { receipts, incomplete: true }; }
+  if (!names) return { receipts, incomplete: true };
+  let incomplete = false;
+  for (const name of names) {
+    try {
+      const raw = safeImage(join(directory, name), JOURNAL_BYTES, budget);
+      if (raw.bytes === null) continue;
+      const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.from(raw.bytes, "base64")));
+      if (!plain(value)) throw Error("invalid receipt");
+      const receipt = decodeReceipt(value, "agy", 1, true);
+      if (receipt.phase !== "applied") throw Error("pending receipt");
+      const change = receipt.changes[0]!;
+      const workspace = dirname(dirname(change.path));
+      if (change.path !== resolveSetupPaths({}, workspace, workspace).paths.agy[0] || name !== `agy-${hash(workspace)}.json`
+        || /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(workspace)) throw Error("invalid workspace");
+      const install = installMissing("agy", change.after);
+      if (install === "unavailable") throw Error("unavailable install");
+      const command = `cd ${shellQuote(workspace)} && amem setup agy`;
+      receipts.push({ workspace, state: install === "missing" ? "stale" : "current", apply: `${command} --apply`, undo: `${command} --undo` });
+    } catch { incomplete = true; }
+  }
+  receipts.sort((a, b) => a.workspace.localeCompare(b.workspace));
+  return { receipts, incomplete };
+}
+
 /** Read setup receipts and only the resolver-selected native config files. This function never writes. */
 export function readSetupDrift(options: { home: string; env?: SetupEnvironment; cwd?: string }): SetupDriftReport {
   const env = options.env ?? process.env;
@@ -252,26 +306,13 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
   // #520: placement sync reads every `agy-<hash>.json` under setup/, so another workspace's receipt whose install is gone
   // blocks it too. Only that receipt and its launcher root are read; the other workspace's native files are never opened.
   const ownAgy = root === undefined ? undefined : `agy-${hash(root)}.json`;
-  // Bounded the way the writer inventory is: more than 256 names in setup/ refuses there, so it is reported here, never sliced away.
-  const foreign: string[] = [];
   const incomplete = (reason: string) => { entries.push(entry("agy", "setup receipt of another workspace", "receipts", reason, "unavailable")); unavailable = true; };
-  let scanned = 0, overflow = false, dir: Dir | undefined;
-  try {
-    // The writer inventory refuses a linked or non-directory setup/; never enumerate through one.
-    const stat = lstatSync(join(options.home, "setup"), { throwIfNoEntry: false });
-    if (stat && !stat.isDirectory()) throw Object.assign(Error("setup is not a plain directory"), { code: "ENOTPLAIN" });
-    if (stat) dir = opendirSync(join(options.home, "setup"));
-    for (;dir;) {
-      const item = dir.readSync(); if (!item) break;
-      if (++scanned > 256) { overflow = true; break; }
-      if (/^agy-[a-f0-9]{64}\.json$/.test(item.name) && item.name !== ownAgy) foreign.push(item.name);
-    }
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT" && code !== "ENOTDIR") incomplete("the setup receipt directory could not be listed; placement sync may refuse until it is readable");
-  } finally { dir?.closeSync(); }
-  if (overflow) incomplete("the setup receipt directory holds more entries than the inventory bound; placement sync refuses until receipts are removed with amem setup <target> --undo");
-  else for (const name of foreign.sort()) {
+  let names: string[] | undefined = [];
+  try { names = agyReceiptNames(join(options.home, "setup")); }
+  catch { incomplete("the setup receipt directory could not be listed; placement sync may refuse until it is readable"); }
+  if (!names) incomplete("the setup receipt directory holds more entries than the inventory bound; placement sync refuses until receipts are removed with amem setup <target> --undo");
+  else for (const name of names) {
+    if (name === ownAgy) continue;
     let raw: ConfigImage;
     try { raw = safeImage(join(options.home, "setup", name), JOURNAL_BYTES, budget); }
     catch { incomplete("an agy setup receipt of another workspace cannot be read safely; placement sync refuses until it is readable"); continue; }

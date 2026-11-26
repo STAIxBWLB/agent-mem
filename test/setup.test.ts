@@ -5,6 +5,8 @@ import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rea
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runCli } from "../src/cli.ts";
+import { readSetupWriterRoots, setupReceiptRemedy } from "../src/setup-writer-roots.ts";
 import { applySetup, planSetup, runSetup, setupPlanText, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
 import { SETUP_CONFIG_BYTES } from "../src/setup-toml.ts";
 import { memoryGitEnv, memoryGitSync, realPath } from "../src/memory/platform.ts";
@@ -826,6 +828,56 @@ test("Antigravity project receipts and undo are independent in one memory home",
   undoSetup(f.agyPlan("undo"), f.options); expect(image(otherFile)).toEqual(otherBefore);
   expect(existsSync(secondPlan.actions[0]!.receipt)).toBe(true);
   undoSetup(planSetup("agy", "undo", second), second); expect(existsSync(otherFile)).toBe(false);
+});
+
+test("#636: a read-only listing leads to both stale Antigravity receipts", async () => {
+  const f = agyFixture(), other = join(f.home, "PRIVATE_WORKSPACE with 'quotes'");
+  mkdirSync(other); agyGit(other, "init", "-q");
+  put(f.entry, "");
+  for (const cwd of [f.home, other]) {
+    const options = { ...f.options, cwd };
+    applySetup(planSetup("agy", "apply", options), options);
+  }
+  const context = { cwd: f.home, env: f.env, stdinTTY: false };
+  const list = async () => JSON.parse(await runCli(["setup", "agy", "--list", "--json"], context));
+  expect((await list()).receipts.map((row: { state: string }) => row.state)).toEqual(["current", "current"]);
+  rmSync(dirname(dirname(f.entry)), { recursive: true });
+  const memory = f.env.AMEM_HOME!;
+  expect(() => readSetupWriterRoots(memory)).toThrow("run amem setup agy --list");
+  expect(setupReceiptRemedy("qwen")).toBe("the qwen setup receipt names an amem install that no longer exists; run amem setup qwen --apply to refresh the receipt or amem setup qwen --undo to remove it");
+  const before = snapshot(f.home);
+  const output = await runCli(["setup", "agy", "--list"], context);
+  const result = await list();
+  expect(result.incomplete).toBe(false);
+  expect(result.receipts.map((row: { workspace: string; state: string }) => [row.workspace, row.state])).toEqual([[f.home, "stale"], [other, "stale"]]);
+  expect(output).not.toContain(f.entry);
+  expect(snapshot(f.home)).toEqual(before);
+
+  const policy = join(memory, "amem.config.json");
+  put(policy, JSON.stringify({ piiPatterns: ["PRIVATE_WORKSPACE"] }));
+  const marked = { ...context, env: { ...context.env, CODEX_THREAD_ID: "fixture" } };
+  for (const args of [[], ["--json"]]) {
+    await expect(runCli(["setup", "agy", "--list", ...args], marked)).rejects.toThrow("policy_withheld");
+  }
+
+  const cli = fileURLToPath(new URL("../bin/amem.js", import.meta.url));
+  const shim = join(f.home, "shim", "amem"), quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  put(shim, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(cli)} "$@"\n`, 0o700);
+  const env = { ...context.env, PATH: `${dirname(shim)}:${dirname(process.execPath)}:/usr/bin:/bin` };
+  for (const row of result.receipts) {
+    expect(output).toContain(row.apply);
+    expect(output).toContain(row.undo);
+    const undo = spawnSync("/bin/sh", ["-c", row.undo], { cwd: f.home, env, encoding: "utf8" });
+    expect(undo.stderr).toBe("");
+    expect(undo.status).toBe(0);
+    expect(existsSync(join(row.workspace, ".agents", "mcp_config.json"))).toBe(false);
+  }
+  expect(readSetupWriterRoots(memory)).toEqual([]);
+  expect(await list()).toEqual({ receipts: [], incomplete: false });
+  const forged = join(memory, "setup", `agy-${"a".repeat(64)}.json`);
+  put(forged, JSON.stringify({ version: 2, target: "agy", phase: "applied", intent: "a".repeat(64),
+    changes: [{ key: "agy:0", path: join(other, ".agents", "mcp_config.json"), before: { bytes: null, mode: 0o600 }, after: { bytes: null, mode: 0o600 } }] }));
+  expect(await list()).toEqual({ receipts: [], incomplete: true });
 });
 
 test("Antigravity refuses outside Git and tracked config in every mode", () => {

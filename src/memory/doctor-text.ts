@@ -60,7 +60,7 @@ export function hintFinding(name: string, hint: string, section: Record<string, 
 export function writerFinding(section: Record<string, unknown>): Finding {
   const reason = String(section.reason ?? "");
   // #624: the checkpoint renewal comes first. Its saving preview is a subshell, so the finding names the bare checkpoint command; the reason keeps the saving form.
-  const commands = [...reason.matchAll(/amem (?:migrate --sync-placement --(?:checkpoint|dry-run|resume|abandon)|formats raise home [0-9.]+|setup [a-z]+ --(?:apply|undo))/g)].map(match => match[0]);
+  const commands = reason.includes("amem setup agy --list") ? ["amem setup agy --list"] : [...reason.matchAll(/amem (?:migrate --sync-placement --(?:checkpoint|dry-run|resume|abandon)|formats raise home [0-9.]+|setup [a-z]+ --(?:apply|undo))/g)].map(match => match[0]);
   return { text: `placement writer proof is ${section.cause ?? "unverified"} (${section.category ?? "unknown"} category)`, next: [...new Set(commands)] };
 }
 
