@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
+import { installRuntimeFixtures } from "./fakes/runtime-dependencies.ts";
 
 test("isolated real prune writer target placement and proof mutants fail the frozen compatibility gate", () => {
   const root = mkdtempSync(join(tmpdir(), "amem-isolated-writer-mutants-"));
@@ -11,7 +11,7 @@ test("isolated real prune writer target placement and proof mutants fail the fro
     // This explicit small list mirrors the fixture's import closure; only the pinned dependency runtime files are added.
     for (const name of ["store", "recap-scratch", "task-group", "formats", "index-file", "machine", "generation", "profile-lock-diagnostic", "generation-index", "inspection-bound", "inspection-stream", "bridge", "platform", "mutation", "home", "prune", "ops-contract", "migrate", "screen", "search-fts", "search-score", "capture", "capture-input", "capture-plan", "shard", "aliases", "lifecycle", "lifecycle-log", "reader-lease", "shard-bridge", "config", "policy", "private-spans", "project", "style", "cli-attribution", "public-prune-inputs", "public-prune-input-chain", "binding-read-set", "public-prune-view", "public-prune-witness", "shard-sync-format", "sync-placement-yield", "sync-placement-format", "sync-placement-guard", "sync-placement-activation-path", "sync-placement-active", "home-identity", "sync-placement-plan", "sync-placement-journal-format", "sync-placement-batch-intent", "sync-placement-bound", "sync-placement-checkpoint-format", "sync-placement-checkpoint-storage", "sync-placement-journal-storage", "sync-placement-projection", "sync-placement-publication-plan", "sync-placement-realm-attribution", "sync-placement-realm-effective", "sync-placement-realm-extension-format", "sync-placement-realm-extension-storage", "sync-placement-realm-intent-format", "sync-placement-realm-intent-storage", "sync-placement-realm-pending", "sync-placement-realm-proof", "sync-placement-realm-torn", "sync-placement-writer-history", "sync-placement-writer-revision-format", "sync-placement-writers", "sync-screen", "curated-cache-state", "preference-brief", "metrics"]) writeFileSync(join(root, "src", "memory", `${name}.ts`), readFileSync(new URL(`../src/memory/${name}.ts`, import.meta.url)));
     for (const name of ["brief-curated.ts", "brief-capture.ts", "brief-cache.ts", "hook-record.ts", "hook-resources.ts"]) writeFileSync(join(root, "src", name), readFileSync(new URL(`../src/${name}`, import.meta.url)));
-    installCliOutputFixture(root);
+    installRuntimeFixtures(root);
     writeFileSync(join(root, "test", "generation-replay.test.ts"), readFileSync(new URL("./generation-replay.test.ts", import.meta.url)));
     writeFileSync(join(root, "test", "fixtures", "generation-prune.json"), readFileSync(new URL("./fixtures/generation-prune.json", import.meta.url)));
     const run = () => Bun.spawnSync([process.execPath, "test", "test/generation-replay.test.ts", "--test-name-pattern", "real generation prune writer matches"], {

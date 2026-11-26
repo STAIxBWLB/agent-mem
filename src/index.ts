@@ -46,7 +46,8 @@ export { pruneText } from "./memory/prune-text.ts";
 export * from "./memory/shard-migration.ts";
 export { shardMigrationText } from "./memory/shard-migration-text.ts";
 
-export * from "./mcp.ts";
+export { MCP_TOOLS, serveMcp, writeConfirmed } from "./mcp.ts";
+export type { McpHandlers, McpOptions, McpToolName } from "./mcp.ts";
 export * from "./mcp-memory.ts";
 export * from "./memory/policy.ts";
 export { configuredPolicy, recordsEnabled } from "./memory/config.ts";

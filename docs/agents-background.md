@@ -12,6 +12,8 @@ Agents working in this repository run only the typecheck, boundary check, the te
 
 ## 변경 이력
 
+- 2026-11-27: #587 added the exact mcp-stdio pin at the stdio transport boundary. Writer pins continue to cover only agent-mem source.
+
 - 2026-11-14: Added the draft-first PR flow and ready-for-review handoff in #402.
 - 2026-11-14: The dgx02 remote slot cap now points to `dot remote status` `max_runs` (5 at the time) instead of a fixed 3, which had held back a verification in tasks 251/252.
 - 2026-11-16: #431 removed the agent actor gates (read allowlist, sync-placement activation, history reads, brief cache, model consolidation, review walk refusal) and replaced the person-only `formats.json` rule with `amem formats raise`.

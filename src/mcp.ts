@@ -1,6 +1,6 @@
-import { once } from "node:events";
+import type { ServeOptions } from "@staix/mcp-stdio";
 import type { Readable, Writable } from "node:stream";
-import { MCP_FRAME_BYTES, MCP_PROPERTY_NAME_LENGTH, MCP_RESULT_BYTES } from "./mcp-bounds.ts";
+import { MCP_FRAME_BYTES, MCP_RESULT_BYTES } from "./mcp-bounds.ts";
 
 const string = (maxLength: number, minLength = 1) => ({ type: "string", minLength, maxLength });
 const briefNodes = { type: "array", maxItems: 9, items: string(512) };
@@ -38,123 +38,34 @@ export interface McpOptions {
   /** Host-only observation after a successful tool response reaches the write callback. Never implies delivery or citation. */
   onEmitted?: (tool: McpToolName, requestId: string | number, value: unknown) => void | Promise<void>;
 }
-const protocols = ["2025-06-18", "2025-03-26", "2024-11-05"];
-const plain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v) && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
-
-/** The deliberately small schema vocabulary of the tools, shared with runtime validation. */
-function valid(value: unknown, raw: unknown): boolean {
-  const s = raw as Record<string, any>, type = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-  const types = Array.isArray(s.type) ? s.type : [s.type];
-  if (!types.includes(type) && !(type === "number" && Number.isSafeInteger(value) && types.includes("integer"))) return false;
-  if (s.enum && !s.enum.includes(value)) return false;
-  if (typeof value === "string" && (value.length < (s.minLength ?? 0) || value.length > (s.maxLength ?? MCP_FRAME_BYTES) || value.includes("\0"))) return false;
-  if (typeof value === "number" && (!Number.isFinite(value) || value < (s.minimum ?? -Infinity) || value > (s.maximum ?? Infinity))) return false;
-  if (Array.isArray(value)) {
-    if (value.length < (s.minItems ?? 0) || value.length > (s.maxItems ?? 64) || !plain(s.items)) return false;
-    return value.every(item => valid(item, s.items));
-  }
-  if (plain(value)) {
-    const keys = Object.keys(value);
-    if (keys.length < (s.minProperties ?? 0) || keys.length > (s.maxProperties ?? 64)) return false;
-    if ((s.required ?? []).some((key: string) => !Object.hasOwn(value, key))) return false;
-    for (const key of keys) {
-      if (["__proto__", "prototype", "constructor"].includes(key) || key.length > MCP_PROPERTY_NAME_LENGTH) return false;
-      if (Object.hasOwn(s.properties ?? {}, key)) { if (!valid(value[key], s.properties[key])) return false; }
-      else if (s.additionalProperties === false || !plain(s.additionalProperties) || !valid(value[key], s.additionalProperties)) return false;
-    }
-  } else if (type === "object") return false;
-  return true;
+export function mcpServeOptions(options: McpOptions): ServeOptions {
+  return {
+    name: "amem", version: options.version ?? "unreleased", tools: MCP_TOOLS, handlers: options.tools,
+    ...(options.input ? { input: options.input } : {}),
+    ...(options.output ? { output: options.output } : {}),
+    limits: { frameBytes: MCP_FRAME_BYTES, resultBytes: MCP_RESULT_BYTES },
+    failureText(error) {
+      const full = typeof error === "object" && error !== null && (error as { code?: unknown }).code === "candidate_queue_full";
+      return full
+        ? "The review queue is full: no more candidates are accepted. Do not retry; review pending candidates through the screened CLI."
+        : "Memory operation unavailable or refused; no partial result is shown.";
+    },
+    // The core invokes the observer only for a successful tool from the supplied table.
+    ...(options.onEmitted ? { onEmitted: (name, id, value) => options.onEmitted!(name as McpToolName, id, value) } : {}),
+  };
 }
 
-/** Shared callback-confirmed emission; close/error are failures and never delivery evidence. */
-export const writeConfirmed = (output: Writable, text: string): Promise<void> => new Promise((resolve, reject) => {
-    let settled = false, writing = true, callbackDone = false, callbackFailure: Error | null | undefined;
-    const finish = (failure?: Error | null) => {
-      if (settled) return; settled = true; output.removeListener("close", closed);
-      // A Writable callback failure precedes its error event; keep that one-shot listener until the event arrives.
-      if (!failure) output.removeListener("error", failed);
-      if (failure) reject(failure); else resolve();
-    };
-    const failed = (failure: Error) => { finish(failure); output.removeListener("error", failed); };
-    const closed = () => { finish(Error("output closed before emission")); output.removeListener("error", failed); };
-    output.once("error", failed); output.once("close", closed);
-    try {
-      output.write(text, failure => { callbackDone = true; callbackFailure = failure; if (!writing) finish(failure); });
-      writing = false; if (callbackDone) finish(callbackFailure);
-    } catch (failure) { writing = false; finish(failure as Error); output.removeListener("error", failed); }
-  });
+/** Resolve only after a Writable response reaches its write callback. */
+export const writeConfirmed = async (output: Writable, text: string): Promise<void> => {
+  const core = await import("@staix/mcp-stdio");
+  await core.writeConfirmed(output, text);
+};
 
-/** MCP 2025-06-18 basic/transports: newline stdio only. Sequential, bounded, no listener or timer. */
 export async function serveMcp(options: McpOptions): Promise<void> {
-  const input = options.input ?? process.stdin, output = options.output ?? process.stdout;
-  let phase: "new" | "initializing" | "ready" = "new";
-  const send = async (response: unknown) => { if (!output.write(JSON.stringify(response) + "\n")) await once(output, "drain"); };
-  const error = (id: unknown, code: number, message: string) => send({ jsonrpc: "2.0", id, error: { code, message } });
-  const handle = async (line: string) => {
-    let msg: unknown;
-    try { msg = JSON.parse(line); } catch { await error(null, -32700, "Parse error"); return; }
-    if (!plain(msg) || msg.jsonrpc !== "2.0" || typeof msg.method !== "string") { await error(null, -32600, "Invalid request"); return; }
-    if (!Object.hasOwn(msg, "id")) {
-      if (msg.method === "notifications/initialized" && phase === "initializing") phase = "ready";
-      return; // Notifications never invoke a mutating handler.
-    }
-    const id = msg.id;
-    if (!(typeof id === "string" && id.length <= 200 || typeof id === "number" && Number.isSafeInteger(id))) { await error(null, -32600, "Invalid request id"); return; }
-    if (msg.method === "ping") { await send({ jsonrpc: "2.0", id, result: {} }); return; }
-    if (msg.method === "initialize") {
-      if (phase !== "new" || !plain(msg.params) || typeof msg.params.protocolVersion !== "string" || !plain(msg.params.capabilities) || !plain(msg.params.clientInfo)) { await error(id, -32602, "Invalid initialization"); return; }
-      phase = "initializing";
-      await send({ jsonrpc: "2.0", id, result: { protocolVersion: protocols.includes(msg.params.protocolVersion) ? msg.params.protocolVersion : protocols[0],
-        capabilities: { tools: { listChanged: false } }, serverInfo: { name: "amem", version: options.version ?? "unreleased" } } });
-      return;
-    }
-    if (phase !== "ready") { await error(id, -32002, "Initialize the session first"); return; }
-    if (msg.method === "tools/list") {
-      const params = msg.params;
-      if (params !== undefined && params !== null && (!plain(params) || Object.keys(params).some(key => key !== "cursor" && key !== "_meta") || params.cursor !== undefined && params.cursor !== null || params._meta !== undefined && (!plain(params._meta) || Object.keys(params._meta).length > 0))) { await error(id, -32602, "Invalid tool listing arguments"); return; }
-      await send({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } }); return;
-    }
-    if (msg.method !== "tools/call") { await error(id, -32601, "Method not found"); return; }
-    const params = msg.params;
-    if (!plain(params) || Object.keys(params).some(k => !["name", "arguments", "_meta"].includes(k)) || typeof params.name !== "string") { await error(id, -32602, "Invalid tool call"); return; }
-    const definition = MCP_TOOLS.find(t => t.name === params.name), args = params.arguments ?? {};
-    if (!definition || !valid(args, definition.inputSchema)) { await error(id, -32602, "Invalid tool name or arguments"); return; }
-    let result: unknown, observedValue: unknown, succeeded = false;
-    try {
-      const value = await options.tools[definition.name](args as Record<string, unknown>), text = JSON.stringify(value);
-      if (text === undefined || Buffer.byteLength(text) > MCP_RESULT_BYTES) throw new Error("result unavailable");
-      result = { content: [{ type: "text", text }] }; observedValue = value; succeeded = true;
-    } catch (failure) {
-      // Every failure is opaque to the model except one named, fixed, text-free condition: the candidate queue is full. It carries no stored content, so it is safe to say, and it
-      // tells the caller to stop proposing and use `amem review` instead of retrying blindly.
-      const full = typeof failure === "object" && failure !== null && (failure as { code?: unknown }).code === "candidate_queue_full";
-      result = { isError: true, content: [{ type: "text", text: full ? "The review queue is full: no more candidates are accepted. Do not retry; review pending candidates through the screened CLI." : "Memory operation unavailable or refused; no partial result is shown." }] };
-    }
-    if (succeeded && options.onEmitted) {
-      await writeConfirmed(output, JSON.stringify({ jsonrpc: "2.0", id, result }) + "\n");
-      try { await options.onEmitted(definition.name, id, observedValue); } catch { /* optional observation never changes the response or emits another */ }
-    } else await send({ jsonrpc: "2.0", id, result });
-  };
-  let pending = "", overflow = false;
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  const consume = async (chunk: string) => {
-    let start = 0;
-    for (;;) {
-      const newline = chunk.indexOf("\n", start), part = chunk.slice(start, newline < 0 ? undefined : newline);
-      if (!overflow) {
-        if (Buffer.byteLength(pending) + Buffer.byteLength(part) > MCP_FRAME_BYTES) { overflow = true; pending = ""; }
-        else pending += part;
-      }
-      if (newline < 0) return;
-      if (overflow) await error(null, -32600, "Request exceeds the 64 KiB frame bound");
-      else if (pending.trim()) await handle(pending);
-      pending = ""; overflow = false; start = newline + 1;
-    }
-  };
   try {
-    for await (const chunk of input) await consume(typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }));
-    await consume(decoder.decode());
-    // A truncated frame on EOF is not an accepted request and must never cause a write.
-    if (pending.trim() || overflow) await error(null, -32700, "Incomplete request at EOF");
-  } finally { await options.close?.(); }
+    const { serve } = await import("@staix/mcp-stdio");
+    await serve(mcpServeOptions(options));
+  } finally {
+    await options.close?.();
+  }
 }

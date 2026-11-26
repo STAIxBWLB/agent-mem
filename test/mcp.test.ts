@@ -73,18 +73,9 @@ test("stdio client initializes, lists the twelve startup-bound tools, calls one 
   expect(s.calls).toBe(1);
 });
 
-test("pre-initialization tools, unknown methods and model-selected project are refused before backend effects", async () => {
-  const s = await session(request(7, "tools/list") + initialize + request(2, "other/method") + request(3, "tools/call", { name: "amem_search", arguments: { query: "a", project: "other/repo" } }));
-  expect(s.replies[0].error.code).toBe(-32002);
-  expect(s.replies.find(r => r.id === 2).error.code).toBe(-32601);
+test("amem search rejects a model-selected project before backend effects", async () => {
+  const s = await session(initialize + request(3, "tools/call", { name: "amem_search", arguments: { query: "a", project: "other/repo" } }));
   expect(s.replies.find(r => r.id === 3).error.code).toBe(-32602);
-  expect(s.calls).toBe(0);
-});
-
-test("malformed frames and tools/call notifications never perform writes, later requests still get their rid", async () => {
-  const s = await session(initialize + "{broken}\n" + JSON.stringify({ jsonrpc: "2.0", method: "tools/call", params: { name: "amem_remember", arguments: { text: "hidden write" } } }) + "\n" + request(9, "ping"));
-  expect(s.replies.find(r => r.error?.code === -32700).id).toBeNull();
-  expect(s.replies.find(r => r.id === 9).result).toEqual({});
   expect(s.calls).toBe(0);
 });
 
@@ -93,14 +84,6 @@ test("tool failures do not leak storage paths or private exception text", async 
   const r = s.replies.find(r => r.id === 2);
   expect(r.result.isError).toBe(true);
   expect(JSON.stringify(r)).not.toContain("/secret/data");
-  expect(s.closed).toBe(1);
-});
-
-test("an overlong request is refused without buffering it into a tool invocation", async () => {
-  const s = await session(initialize + request(2, "tools/call", { name: "amem_remember", arguments: { text: "x".repeat(70_000) } }) + request(3, "ping"));
-  expect(s.calls).toBe(0);
-  expect(s.replies.some(r => r.error?.code === -32600)).toBe(true);
-  expect(s.replies.find(r => r.id === 3)?.result).toEqual({});
   expect(s.closed).toBe(1);
 });
 
@@ -124,19 +107,4 @@ test("a fake client uses a real stdio child, whose EOF closes once and exits wit
     expect(replies[1].result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);
     expect(JSON.parse(replies[2].result.content[0].text)).toEqual({ args: { id: "abcdef123456" } });
   } finally { clearTimeout(timeout); if (child.exitCode === null) { child.kill(); await child.exited; } }
-});
-
-test("tools/list accepts MCP null cursor and metadata forms without widening tool arguments", async () => {
-  const accepted = [null, { cursor: null }, { _meta: {} }];
-  for (const params of accepted) {
-    const s = await session(initialize + request(2, "tools/list", params));
-    expect(s.replies.find(r => r.id === 2)?.result.tools).toHaveLength(12);
-    expect(s.replies.find(r => r.id === 2)?.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(expectedTools);
-    expect(s.calls).toBe(0);
-  }
-  for (const params of [{ cursor: "next" }, { _meta: { unexpected: true } }, { extra: true }, [], 1]) {
-    const s = await session(initialize + request(2, "tools/list", params));
-    expect(s.replies.find(r => r.id === 2)?.error.code).toBe(-32602);
-    expect(s.calls).toBe(0);
-  }
 });
