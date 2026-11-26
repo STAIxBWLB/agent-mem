@@ -55,6 +55,12 @@ export function mcpServeOptions(options: McpOptions): ServeOptions {
   };
 }
 
+/** Resolve only after a Writable response reaches its write callback. */
+export const writeConfirmed = async (output: Writable, text: string): Promise<void> => {
+  const core = await import("@staix/mcp-stdio");
+  await core.writeConfirmed(output, text);
+};
+
 export async function serveMcp(options: McpOptions): Promise<void> {
   try {
     const { serve } = await import("@staix/mcp-stdio");
