@@ -472,7 +472,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     const originSession = captureSessionKey(env.AMEM_ORIGIN_SESSION), originPeer = env.AGENTHUB_PEER_ID?.trim() || undefined;
     const constructDone = observeMcpPhase(base, peaks, "construct");
     let memory: ReturnType<typeof createMemoryMcp>;
-    try { memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base, peaks,
+    try { memory = createMemoryMcp({ cwd: context.cwd ?? process.cwd(), base, peaks, boundSearchResults: true,
       ...(originSession || originPeer ? { origin: () => ({ ...(originSession ? { session: originSession } : {}), ...(originPeer ? { peer: originPeer } : {}) }) } : {}) }); } finally { constructDone(); }
     await serveMcp({ tools: memory.tools, close: memory.close, onEmitted: memory.onEmitted, version: VERSION });
     return "";

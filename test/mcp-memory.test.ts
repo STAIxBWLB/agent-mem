@@ -2,6 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { MCP_RESULT_BYTES } from "../src/mcp-bounds.ts";
+import { memoryProjectKey } from "../src/memory/project.ts";
+import { readMemoryUse } from "../src/memory/use-telemetry.ts";
 import { createMemoryMcp } from "../src/mcp-memory.ts";
 import { MemoryStore } from "../src/memory/store.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
@@ -15,6 +18,58 @@ function fixture() {
   const note = (text: string, p = project, about = ["path:public.ts"]) => store.note({ op: "note", project: p, scope: "project", tier: "long", kind: "decision", peer: "person", text, about, source: "person" });
   return { root, base, project, store, note };
 }
+
+test("#646: stdio search returns only a byte-bounded prefix and observes only emitted hits", async () => {
+  const f = fixture(), project = memoryProjectKey(f.root);
+  for (let i = 0; i < 100; i++) f.note(`rankneedle ${i} ${"가".repeat(3000)} ${'"'.repeat(400)}`, project, []);
+  f.store.close();
+  const request = { query: "rankneedle", limit: 100, ungrouped: true };
+  const direct = createMemoryMcp({ cwd: f.root, base: f.base, project });
+  type Search = { engine: string; hits: { view: { id: string }; score: number }[]; truncated?: true; hint?: string };
+  let full: Search;
+  try { full = await direct.tools.amem_search(request) as Search; } finally { direct.close(); }
+  expect(full.hits).toHaveLength(100);
+  expect(Buffer.byteLength(JSON.stringify(full))).toBeGreaterThan(MCP_RESULT_BYTES);
+  const input = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {} } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "amem_search", arguments: request } },
+  ].map(frame => JSON.stringify(frame)).join("\n") + "\n";
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: f.root, AMEM_HOME: f.base };
+  delete env.CODEX_THREAD_ID;
+  delete env.CLAUDECODE;
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.AGENTHUB_PEER_ID;
+  delete env.PI_SESSION_ID;
+  let emitted: Search | undefined;
+  for (const marker of [undefined, "fixture"]) {
+    const child = Bun.spawnSync([process.execPath, join(import.meta.dir, "../bin/amem.js"), "mcp"], {
+      cwd: f.root, env: { ...env, CODEX_THREAD_ID: marker }, stdin: Buffer.from(input), stdout: "pipe", stderr: "pipe", timeout: 15_000,
+    });
+    expect(child.stderr.toString()).toBe("");
+    expect(child.exitCode).toBe(0);
+    const reply = JSON.parse(child.stdout.toString().trim().split("\n")[1]!);
+    expect(reply.result.isError).toBeUndefined();
+    const payload = reply.result.content[0].text as string;
+    expect(Buffer.byteLength(payload)).toBeLessThanOrEqual(MCP_RESULT_BYTES);
+    const result = JSON.parse(payload) as Search;
+    expect(result.truncated).toBe(true);
+    expect(result.hint).toContain("Narrow the query");
+    expect(result.hits.length).toBeGreaterThan(0);
+    expect(result.hits.map(hit => hit.view)).toEqual(full.hits.slice(0, result.hits.length).map(hit => hit.view));
+    const next = { ...result, hits: full.hits.slice(0, result.hits.length + 1) };
+    expect(Buffer.byteLength(JSON.stringify(next))).toBeGreaterThan(MCP_RESULT_BYTES);
+    if (emitted) expect(result.hits.map(hit => hit.view)).toEqual(emitted.hits.map(hit => hit.view));
+    emitted = result;
+  }
+  const sidecar = new CandidateStore({ home: f.root });
+  try {
+    const visibleIds = new Set(emitted!.hits.map(hit => hit.view.id));
+    for (const { view } of full.hits) {
+      expect(readMemoryUse(sidecar, project, view.id).records).toBe(visibleIds.has(view.id) ? 2 : 0);
+    }
+  } finally { sidecar.close(); }
+}, 45_000);
 
 test("policy removes rows before limits, prefixes and graph construction; scope cannot escape", async () => {
   const f = fixture();
