@@ -8,6 +8,8 @@ Step 1 research, checked 2026-10-26. CLI/TUI (`agy`), the standalone IDE and the
 
 Private undo receipts are keyed by repository. Apply is idempotent; undo restores only that repository and refuses an edited owned entry. Unrelated configuration bytes are preserved. Only strict JSON is accepted: comments, trailing commas, BOM and duplicate owned keys refuse. A JSONC-preserving codec is the future upgrade for commented native files.
 
+When an install that a receipt names is removed, sync and doctor point to `amem setup agy --list`, which lists every receipt workspace with its state and the apply or undo command to run there (see [setup](setup.md)).
+
 Restart Antigravity after setup. Use one workspace per session and ensure no other global, plugin or running server is named `amem`; setup can detect collisions only in the workspace file it reads. Native TUI/IDE launch and interactive completion remain unverified; the installed-package smoke initializes the registered MCP command directly.
 
 No ingest kind or capture hook is installed. A supported offline transcript contract with row time, historical workspace origin and stable replay behavior would unlock ingestion. Current mounted workspace paths and completion readback do not prove historical origin.
