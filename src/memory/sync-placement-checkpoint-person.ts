@@ -26,7 +26,7 @@ import { PLACEMENT_CHECKPOINT_LIMIT, PLACEMENT_CHECKPOINT_MIN_READER, validateCh
 import { withPlacementCheckpointFences } from "./sync-placement-activation-locks.ts";
 import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
-import { initialPlacementWriterContext } from "../sync-placement-writer-context.ts";
+import { initialPlacementWriterContext, placementWriterRefusalDetail } from "../sync-placement-writer-context.ts";
 import { readSetupWriterRoots, SetupWriterRootsError } from "../setup-writer-roots.ts";
 import { checkpointProspective, type CheckpointProspective } from "./sync-placement-checkpoint-prospective.ts";
 import { ShardHistoryError, type ShardHistoryCause } from "./shard-sync-history.ts";
@@ -91,7 +91,12 @@ function measured(home: string, writerRoots: readonly string[], ownRoot: string)
   // #634: name a removed install before measurement turns it into a generic inventory refusal; preview and confirm both pass here.
   const missing = writerRoots.find(installAbsent);
   if (missing !== undefined) throw new PlacementCheckpointError("writer-missing", missingWriterMessage(missing));
-  try { return initialPlacementWriterContext(home, writerRoots, ownRoot).measurement.roots; } catch { throw new PlacementCheckpointError("candidate"); }
+  try { return initialPlacementWriterContext(home, writerRoots, ownRoot).measurement.roots; }
+  catch (error) {
+    const refusal = placementWriterRefusalDetail(error);
+    if (refusal && !(refusal.rootCategory === "running CLI" && refusal.causeClass === "missing")) throw error;
+    throw new PlacementCheckpointError("candidate");
+  }
 }
 function plan(home: string, epochHash: string, value: PlacementCheckpointInput): CheckpointIntent {
   if (placementCheckpointPending(home, epochHash)) throw new PlacementCheckpointError("pending");
