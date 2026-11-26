@@ -262,6 +262,50 @@ test("#288 step 3: a pending checkpoint pauses sync with its own cause; abandon 
   expect((await f.sync()).ok).toBe(true);
 }, 300_000);
 
+test("#635: checkpoint preview keeps the safe setup writer refusal in text and JSON", async () => {
+  const f = await fixture();
+  const other = join(f.root, "other writer");
+  mkdirSync(join(other, "bin"), { recursive: true, mode: 0o755 });
+  mkdirSync(join(other, "src"), { mode: 0o755 });
+  writeFileSync(join(other, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.38.0" }), { mode: 0o644 });
+  writeFileSync(join(other, "src", "index.ts"), "// isolated writer\n", { mode: 0o644 });
+  writeFileSync(join(other, "bin", "amem.js"), "// isolated writer\n", { mode: 0o755 });
+  const checkpoint = ["migrate", "--sync-placement", "--checkpoint", "--writer-root"];
+  await withHome(f.base, async () => {
+    await expect(runCli([...checkpoint, other], { cwd: f.root, env: {}, stdinTTY: false })).rejects.toThrow("pass the complete inventory as repeatable --writer-root");
+  });
+
+  const setup = join(f.base, "setup"), install = join(f.root, "private retired install"), sentinel = "PRIVATE_RECEIPT_METADATA";
+  mkdirSync(setup, { mode: 0o700 });
+  const after = { mcpServers: { amem: { command: process.execPath, args: ["--smol", join(install, "bin", "amem.js"), "mcp"] } }, comment: sentinel };
+  const receipt = join(setup, "qwen.json");
+  writeFileSync(receipt, JSON.stringify({ version: 1, target: "qwen", intent: "a".repeat(64), phase: "applied", changes: [
+    { key: "qwen:0", path: join(f.root, "private native settings.json"), before: { bytes: null, mode: 0o600 },
+      after: { bytes: Buffer.from(JSON.stringify(after)).toString("base64"), mode: 0o600 } },
+  ] }), { mode: 0o600 });
+  const before = tree(f.base);
+  await withHome(f.base, async () => {
+    for (const env of [{}, { CODEX_THREAD_ID: "t" }]) {
+      const context = { cwd: f.root, env, stdinTTY: false };
+      const args = [...checkpoint, activationOwnRoot];
+      const human = await runCli(args, context).then(() => { throw Error("expected a refusal"); }, (error: Error) => error.message);
+      expect(human).toContain("proof is unavailable (setup receipt category");
+      expect(human).toContain("amem setup qwen --apply");
+      expect(human).toContain("amem setup qwen --undo");
+      expect(human).not.toContain("pass the complete inventory as repeatable --writer-root");
+
+      let exitCode: number | undefined;
+      const output = await runCli([...args, "--json"], { ...context, onExitCode: code => { exitCode = code; } });
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(output)).toEqual({ ok: false, refusal: { category: "setup receipt", cause: "unavailable" }, message: human });
+      for (const text of [human, output]) {
+        for (const privateValue of [f.root, f.base, sentinel, "private native settings.json"]) expect(text).not.toContain(privateValue);
+      }
+    }
+  });
+  expect(tree(f.base)).toEqual(before);
+}, 180_000);
+
 test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed modes, and the bound names the checkpoint", async () => {
   const f = await fixture(); expect((await f.sync()).ok).toBe(true);
   f.floor("0.22.0");
