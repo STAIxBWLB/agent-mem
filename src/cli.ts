@@ -19,7 +19,7 @@ import { DecayApplyError, UNUSED_INJECTION_REASON } from "./memory/decay-review.
 import { createMemoryMcp } from "./mcp-memory.ts";
 import { safeProfileLockMessage } from "./memory/profile-lock-diagnostic.ts";
 import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE } from "./memory/sync-placement-journal-format.ts";
-import { MCP_TOOLS, serveMcp, writeConfirmed } from "./mcp.ts";
+import { MCP_TOOLS, serveMcp } from "./mcp.ts";
 import { createStandalonePolicy } from "./memory/policy.ts";
 import { configuredPolicy, configuredPolicyOptions, loadAmemConfig, repoConfigRoot } from "./memory/config.ts";
 import { deterministicRowScreen } from "./memory/sync-screen.ts";
@@ -1763,7 +1763,10 @@ export function formatCliError(error: unknown, usage = false, argv: readonly str
 }
 
 /** A completed write means rendered output, never evidence of host delivery or citation. */
-export async function writeCliOutput(text: string, output: Writable = process.stdout): Promise<void> { await writeConfirmed(output, text); }
+export async function writeCliOutput(text: string, output: Writable = process.stdout): Promise<void> {
+  const { writeConfirmed } = await import("@staix/mcp-stdio");
+  await writeConfirmed(output, text);
+}
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   let personStop: string | undefined;
   try {

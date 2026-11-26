@@ -9,8 +9,12 @@ import { dependencyReach } from "./boundary-graph.ts";
 const root = realPath(resolve(import.meta.dir, "../src"));
 const failures: string[] = [];
 const manifest = JSON.parse(readFileSync(resolve(root, "../package.json"), "utf8")) as { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string> };
-if (JSON.stringify(manifest.dependencies) !== JSON.stringify({ "@staix/cli-output": "0.1.3" }) || Object.keys(manifest.optionalDependencies ?? {}).length || Object.keys(manifest.peerDependencies ?? {}).length)
-  failures.push("package.json: keep only @staix/cli-output at exact version 0.1.3; remove other runtime, optional or peer dependencies");
+const runtimeDependencies = { "@staix/cli-output": "0.1.3", "@staix/mcp-stdio": "0.2.0" };
+const declared = manifest.dependencies ?? {};
+if (Object.keys(declared).length !== Object.keys(runtimeDependencies).length
+  || Object.entries(runtimeDependencies).some(([name, version]) => declared[name] !== version)
+  || Object.keys(manifest.optionalDependencies ?? {}).length || Object.keys(manifest.peerDependencies ?? {}).length)
+  failures.push("package.json: keep the exact cli-output and mcp-stdio runtime pins; remove other runtime, optional or peer dependencies");
 let files = 0;
 const inside = (path: string) => { const rel = relative(root, path); return rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel); };
 
@@ -24,7 +28,7 @@ function check(path: string): void {
   function dependency(node: ts.Node, specifier: ts.Node | undefined): void {
     if (!specifier || !ts.isStringLiteralLike(specifier)) { fail(node, "dependency must be a string literal"); return; }
     const name = specifier.text;
-    if (isBuiltin(name) || name === "bun:sqlite" || name === "@staix/cli-output") return;
+    if (isBuiltin(name) || name === "bun:sqlite" || Object.hasOwn(runtimeDependencies, name)) return;
     if (!name.startsWith("./") && !name.startsWith("../")) { fail(node, `non-built-in dependency ${name}`); return; }
     try {
       const target = realPath(resolve(dirname(path), name));

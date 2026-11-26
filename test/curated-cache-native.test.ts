@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
+import { installRuntimeFixtures } from "./fakes/runtime-dependencies.ts";
 import { briefCacheFile, readBriefCache, writeBriefCache } from "../src/brief-cache.ts";
 import { machineId, MemoryStore } from "../src/memory/store.ts";
 import { migrate } from "../src/memory/migrate.ts";
@@ -31,7 +31,7 @@ async function fixture() {
     const indexFile = join(store.profile.dir, indexFileName(!!store.profile.foreignPruneFormat));
     const sourceLog = join(store.profile.dir, "log", `${store.machine.id}.jsonl`);
     cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
-    installCliOutputFixture(isolated);
+    installRuntimeFixtures(isolated);
     writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-native-fixture", version: "99.0.0", type: "module" }));
     writeFileSync(join(isolated, "run.ts"), `
 import { writeFileSync } from "node:fs";

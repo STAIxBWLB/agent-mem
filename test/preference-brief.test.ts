@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
+import { installRuntimeFixtures } from "./fakes/runtime-dependencies.ts";
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,7 +68,7 @@ test("amem_brief shows current preferences without an anchor, and the SessionSta
   // A person records the floor; amem never writes formats.json.
   writeFileSync(join(memory, "formats.json"), JSON.stringify([{ surface: "curated", minReader: "0.25.0", since: "2026-11-11" }]) + "\n");
   cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
-  installCliOutputFixture(isolated);
+  installRuntimeFixtures(isolated);
   writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-preference-brief-probe", version: "99.0.0", type: "module" }));
   writeFileSync(join(isolated, "probe.ts"), PROBE);
   writeFileSync(job, JSON.stringify({ memory, cwd, project: "fixture/brief", other: "fixture/elsewhere", out }));

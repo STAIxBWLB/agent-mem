@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
+import { installRuntimeFixtures } from "./fakes/runtime-dependencies.ts";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -112,7 +112,7 @@ test("this build ships the kind, so it opens a home at the introducing release's
 function futureReader(r: ReturnType<typeof rig>, source: string) {
   const isolated = join(r.root, "future"), job = join(r.root, "job.json"), out = join(r.root, "probe.json");
   cpSync(join(import.meta.dir, "../src"), join(isolated, "src"), { recursive: true });
-  installCliOutputFixture(isolated);
+  installRuntimeFixtures(isolated);
   // A fake manifest only: these proofs are about the kind, its floor and its readers, never about a released version string.
   writeFileSync(join(isolated, "package.json"), JSON.stringify({ name: "amem-preference-probe", version: "99.0.0", type: "module" }));
   writeFileSync(join(isolated, "probe.ts"), source);

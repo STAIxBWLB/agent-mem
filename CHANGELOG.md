@@ -8,6 +8,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 - The MCP schemas for `amem_brief`, `amem_work_state_write` and `amem_remember` lower their argument limits to fit the stdio frame. Requests accepted under the old limits can now be refused by schema validation. Oversized `amem_search` results return whole ranked hits with a truncation flag and a narrowing hint. Refs #646.
 
+### Changed
+
+- MCP stdio uses the exact first-party `@staix/mcp-stdio@0.2.0` pin. Invalid arguments name the field (for example, `query: expected string`) and malformed UTF-8 receives `-32700 Invalid UTF-8 input`. Initialize now prefers `2025-11-25` for unsupported versions, and the server also supports stateless `2026-07-28` discovery and per-request metadata. Both newer revisions return schema failures as tool errors, while earlier revisions retain JSON-RPC `-32602`. The core validates advertised schemas at startup and rejects NUL in argument property names. Tool handlers, #646 limits, and the confirmed-write observation retain their behavior. Refs #587.
+
 ## 0.41.0
 
 ### Added

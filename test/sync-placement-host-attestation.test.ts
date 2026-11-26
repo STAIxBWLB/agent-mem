@@ -6,7 +6,7 @@ import { activateSyncPlacement } from "../src/memory/sync-placement-activation.t
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { createInspectionRemote, inspectionFilesystemSnapshot, reachableInspectionRowIds } from "./fakes/sync-placement-inspection.ts";
 import { hookFixture } from "./fakes/hooks-fixture.ts";
-import { installCliOutputFixture } from "./fakes/cli-output-install.ts";
+import { installRuntimeFixtures } from "./fakes/runtime-dependencies.ts";
 import { measureSyncPlacementWriters } from "../src/memory/sync-placement-writers.ts";
 
 type HostApi = typeof import("../src/index.ts");
@@ -19,7 +19,7 @@ async function copiedHost(root: string) {
   for (const name of ["src", "bin", "hooks", ".claude-plugin"]) cpSync(join(activationOwnRoot, name), join(install, name), { recursive: true, errorOnExist: true, force: false });
   copyFileSync(join(activationOwnRoot, "package.json"), join(install, "package.json"));
   const before = measureSyncPlacementWriters([install]);
-  installCliOutputFixture(install);
+  installRuntimeFixtures(install);
   const after = measureSyncPlacementWriters([install]);
   expect(after.writers).toEqual(before.writers);
   const api = await import(pathToFileURL(join(install, "src", "index.ts")).href) as HostApi;
