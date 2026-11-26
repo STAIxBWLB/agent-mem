@@ -7,6 +7,7 @@ import { createRecallStalenessProbe } from "./memory/recall-staleness.ts";
 import { recordMemoryUse } from "./memory/use-telemetry.ts";
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
+import { MCP_RESULT_BYTES } from "./mcp-bounds.ts";
 import type { McpHandlers, McpOptions } from "./mcp.ts";
 import { CandidateStore, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { candidateOverlaps } from "./memory/candidate-overlaps.ts";
@@ -38,10 +39,27 @@ export const MCP_SCAN_LIMIT = 5000;
 const SEARCH_CANDIDATES = 5000;
 const READ_PAGE = 256;
 type SearchValue = { source: "curated"; evidence: true; view: View } | { source: "repo"; evidence: false; view: RepoView } | { source: "capture"; evidence: false; capture: CaptureRow };
+/** Account for the exact inner JSON payload; the wire encodes that payload as a text block. */
+function boundedSearchResult<Hit>(result: { engine: string; hits: Hit[] }): {
+  engine: string; hits: Hit[]; truncated?: true; hint?: string;
+} {
+  const empty = { engine: result.engine, hits: [] as Hit[] };
+  const truncated = { ...empty, truncated: true as const, hint: "Narrow the query, add a since filter, or lower limit." };
+  let bytes = Buffer.byteLength(JSON.stringify(empty));
+  const markerBytes = Buffer.byteLength(JSON.stringify(truncated)) - bytes;
+  let count = 0, prefix = 0;
+  for (const hit of result.hits) {
+    bytes += Buffer.byteLength(JSON.stringify(hit)) + (count === 0 ? 0 : 1);
+    if (bytes > MCP_RESULT_BYTES) break;
+    count++;
+    if (bytes + markerBytes <= MCP_RESULT_BYTES) prefix = count;
+  }
+  return count === result.hits.length ? result : { ...truncated, hits: result.hits.slice(0, prefix) };
+}
 export interface MemoryMcpOptions {
   /** #323: ids the host knows about the proposing session, read on each proposal; nothing is inferred when absent. */
   origin?: () => { session?: string; peer?: string; turn?: string } | undefined;
-  cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void; peaks?: PeakTracker }
+  cwd: string; base?: string; project?: string; policy?: StandalonePolicyOptions; allowed?: () => boolean; policyVersion?: () => string; assertCurrent?: () => void; peaks?: PeakTracker; boundSearchResults?: true }
 export interface MemoryMcp { tools: McpHandlers; close(): void; onEmitted: NonNullable<McpOptions["onEmitted"]> }
 const unavailable = (): never => { throw new Error("memory operation unavailable"); };
 const bound = (args: Record<string, unknown>, keys: string[]) => { if (Object.keys(args).some(key => !keys.includes(key))) unavailable(); };
@@ -299,8 +317,9 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
             const hit = { ...value, score };
             return scoreDetails ? { ...hit, scoreDetails: { source: value.source, ...scoreDetails } } : hit;
           });
-          const probe = stale(), result = { engine: useFts ? "fts5" : "substring", hits: selected.map(hit => hit.source === "curated" && "view" in hit && hit.view ? { ...hit, view: decorate(hit.view as View, probe) } : hit) };
-          guard(); return observed(result, selected.flatMap(hit => hit.source === "curated" && "view" in hit && hit.view ? [hit.view.id] : []), selected.map(hit => "view" in hit ? hit.view : hit.capture));
+          const probe = stale(), rankedResult = { engine: useFts ? "fts5" : "substring", hits: selected.map(hit => hit.source === "curated" && "view" in hit && hit.view ? { ...hit, view: decorate(hit.view as View, probe) } : hit) };
+          const result = options.boundSearchResults ? boundedSearchResult(rankedResult) : rankedResult;
+          guard(); return observed(result, result.hits.flatMap(hit => hit.source === "curated" && "view" in hit && hit.view ? [hit.view.id] : []), result.hits.map(hit => "view" in hit ? hit.view : hit.capture));
         } finally { const position = closers.indexOf(releaseIndex); if (position >= 0) closers.splice(position, 1); releaseIndex(); }
       },
       async amem_show(args) {

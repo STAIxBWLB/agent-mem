@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
+import { MCP_FRAME_BYTES, MCP_PROPERTY_NAME_LENGTH } from "../src/mcp-bounds.ts";
 import { MCP_TOOLS, serveMcp, type McpHandlers } from "../src/mcp.ts";
 
 const expectedTools = ["amem_brief", "amem_capacity", "amem_correct", "amem_evidence", "amem_graph", "amem_remember", "amem_search", "amem_show", "amem_timeline", "amem_vault_candidates", "amem_work_state_read", "amem_work_state_write"];
 
-const request = (id: number, method: string, params?: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) }) + "\n";
+const request = (id: number | string, method: string, params?: unknown) => JSON.stringify({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) }) + "\n";
 const initialize = request(1, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake-client", version: "1" } }) + JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n";
 async function session(lines: string, handlers: Partial<McpHandlers> = {}) {
   const input = new PassThrough(), output = new PassThrough();
@@ -16,6 +17,49 @@ async function session(lines: string, handlers: Partial<McpHandlers> = {}) {
   await done;
   return { replies: text.trim().split("\n").filter(Boolean).map(line => JSON.parse(line)), closed, calls };
 }
+
+type InputSchema = {
+  type: string | string[]; properties?: Record<string, InputSchema>; additionalProperties?: InputSchema | boolean;
+  items?: InputSchema; enum?: unknown[]; maxLength?: number; minLength?: number;
+  maxProperties?: number; maxItems?: number; minimum?: number; maximum?: number;
+};
+const escapedControl = String.fromCharCode(1);
+const longestJsonValue = (values: unknown[]) => values.reduce((a, b) => Buffer.byteLength(JSON.stringify(a)) >= Buffer.byteLength(JSON.stringify(b)) ? a : b);
+function largestArgument(schema: InputSchema): unknown {
+  if (schema.enum) return longestJsonValue(schema.enum);
+  const types = [schema.type].flat();
+  if (types.includes("string") && schema.maxLength !== undefined) return escapedControl.repeat(schema.maxLength);
+  if (schema.type === "object") {
+    const fields = Object.entries(schema.properties ?? {}).map(([key, child]) => [key, largestArgument(child)]);
+    if (typeof schema.additionalProperties === "object" && schema.maxProperties !== undefined) {
+      const value = largestArgument(schema.additionalProperties);
+      for (let i = fields.length; i < schema.maxProperties; i++) {
+        const digits = i.toString(2).replaceAll("0", escapedControl).replaceAll("1", String.fromCharCode(2));
+        fields.push([digits.padStart(MCP_PROPERTY_NAME_LENGTH, escapedControl), value]);
+      }
+    } else if (schema.additionalProperties !== false) throw Error("unbounded object schema");
+    return Object.fromEntries(fields);
+  }
+  if (schema.type === "array" && schema.items && schema.maxItems !== undefined) return Array.from({ length: schema.maxItems }, () => largestArgument(schema.items!));
+  if (schema.type === "integer" && schema.minimum !== undefined && schema.maximum !== undefined) return longestJsonValue([schema.minimum, schema.maximum]);
+  if (schema.type === "boolean") return false;
+  throw Error(`unbounded or unsupported input schema type: ${schema.type}`);
+}
+
+test("#646: every advertised tool accepts its maximal compact JSON frame", async () => {
+  const listed = await session(initialize + request(2, "tools/list"));
+  const tools = listed.replies[1].result.tools as { name: string; inputSchema: InputSchema }[];
+  expect(tools).toHaveLength(MCP_TOOLS.length);
+  const id = escapedControl.repeat(200);
+  const frames = tools.map(tool => {
+    const encoded = request(id, "tools/call", { name: tool.name, arguments: largestArgument(tool.inputSchema) });
+    expect(Buffer.byteLength(encoded), tool.name).toBeLessThanOrEqual(MCP_FRAME_BYTES);
+    return encoded;
+  });
+  const replied = await session(initialize + frames.join(""));
+  expect(replied.calls).toBe(tools.length);
+  expect(replied.replies.slice(1).every(reply => reply.id === id && !reply.error && !reply.result.isError)).toBe(true);
+});
 
 test("stdio client initializes, lists the twelve startup-bound tools, calls one and closes on EOF", async () => {
   const s = await session(initialize + request(2, "tools/list", {}) + request(3, "tools/call", { name: "amem_search", arguments: { query: "policy", limit: 1 } }));
