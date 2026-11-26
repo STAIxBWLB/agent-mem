@@ -61,6 +61,9 @@ export function writerFinding(section: Record<string, unknown>): Finding {
   const reason = String(section.reason ?? "");
   // #624: the checkpoint renewal comes first. Its saving preview is a subshell, so the finding names the bare checkpoint command; the reason keeps the saving form.
   const commands = reason.includes("amem setup agy --list") ? ["amem setup agy --list"] : [...reason.matchAll(/amem (?:migrate --sync-placement --(?:checkpoint|dry-run|resume|abandon)|formats raise home [0-9.]+|setup [a-z]+ --(?:apply|undo))/g)].map(match => match[0]);
+  // #639: a renewal needs the complete root list, so the read-only listing that prints it comes first. A stale agy receipt
+  // (#636) is fixed first, so its single command stays alone.
+  if (commands.includes("amem migrate --sync-placement --checkpoint")) commands.unshift("amem migrate --sync-placement --writers");
   return { text: `placement writer proof is ${section.cause ?? "unverified"} (${section.category ?? "unknown"} category)`, next: [...new Set(commands)] };
 }
 

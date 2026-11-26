@@ -528,6 +528,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
     if (options["--list-remote"] === true && (modes.length || options["--admit"] !== undefined || options["--from-remote"] === true || options["--writer-root"] !== undefined || options["--confirm"] === true || options["--checkpoint"] === true || options["--plan"] !== undefined))
       throw new AgentUsageError("Remote realm listing uses only --sync-placement --list-remote and optional --json.");
+    if (options["--writers"] === true && (modes.length || ["--admit","--list-remote","--from-remote","--writer-root","--confirm","--checkpoint","--checkpoint-on-bound","--plan"].some(key=>options[key]!==undefined)))
+      throw new CommandUsageError("usage: amem migrate --sync-placement --writers [--json]");
     if (options["--from-remote"] === true && options["--admit"] === undefined)
       throw new AgentUsageError("--from-remote requires --sync-placement --admit <project>.");
     if (options["--checkpoint-on-bound"] !== undefined) {
@@ -547,6 +549,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     } else if (options["--confirm"] === true) {
       throw new AgentUsageError("--confirm applies only to --sync-placement --admit <project> --abandon or --sync-placement --checkpoint --plan <file>; other placement modes keep their own confirmation.");
     }
+  } else if (parsed.path[0] === "migrate" && options["--writers"] !== undefined) {
+    throw new CommandUsageError("usage: amem migrate --sync-placement --writers [--json]");
   } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined||options["--checkpoint"]!==undefined||options["--plan"]!==undefined)) {
     throw new AgentUsageError("--writer-root, --abandon, --admit, --list-remote, --from-remote, --checkpoint and --plan apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
@@ -685,6 +689,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (modes.length > 1) throw new Error("migration modes are mutually exclusive");
     const mode = options["--apply"] ? "apply" : options["--resume"] ? "resume" : options["--deactivate"] ? "deactivate" : "dry-run";
     if (options["--sync-placement"] === true) {
+      if (options["--writers"] === true) {
+        const { listPlacementWriters, placementWritersText } = await import("./memory/sync-placement-writer-listing.ts");
+        const listing = listPlacementWriters(memoryHome(), fileURLToPath(new URL("..", import.meta.url)));
+        return options["--json"] === true ? JSON.stringify(listing, null, 2) : placementWritersText(listing);
+      }
       if (options["--list-remote"] === true) {
         const { discoverRemotePlacementRealms } = await import("./memory/sync-placement-transport.ts");
         const realms = await discoverRemotePlacementRealms(memoryHome(), { ...(context.visibility ? { visibility: context.visibility } : {}) });

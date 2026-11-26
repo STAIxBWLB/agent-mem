@@ -237,6 +237,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       "--public-prune-view": flag("Enable the v2 public prune view on a split", "Forward-only, on an active split."),
       "--sync-placement": flag("Activate placement sync on this memory home", "Forward-only. Previews by default and applies with --apply; no automatic migration or renewal."),
       "--list-remote": flag("List remote project refs outside the inventory", "By hash, outside the active inventory."),
+      "--writers": flag("List writer installs and the roots to declare", "Read-only: inventory, running install, setup receipts and the saving-preview command."),
       "--abandon": flag("Discard an interrupted placement attempt", "Pre-commit only. Initial activation requires both markers to match their original v2 bytes; realm admission requires --confirm."),
       "--admit": text("Admit one new curated project realm", "A realm that appeared after activation, into the same epoch. Previews without --apply."),
       "--from-remote": flag("Admit the named remote-only realm", "Uses the configured placement sync remote."),

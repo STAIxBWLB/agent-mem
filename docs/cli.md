@@ -224,6 +224,8 @@ amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json
 amem setup <target> --apply
 ```
 
+`amem migrate --sync-placement --writers` lists the current inventory, the running install and the setup receipts' roots, each marked present or missing, and prints that saving command filled in with the present roots (#639). When doctor's `writers` finding names a checkpoint, this listing is its first next step; see [sync](sync.md).
+
 Fall back to the dry-run and apply renewal only when the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0). That path refuses while any reader lease is live, so close every amem session first:
 
 ```
