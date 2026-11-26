@@ -714,6 +714,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
             context.onExitCode?.(1);
             return JSON.stringify({ ok: false, refusal: error.history, message: error.message, nextStep: error.history.cause === "bound" ? "retain the history; a window this large needs the multi-plan checkpoint work (#288)" : person.CHECKPOINT_PREVIEW }, null, 2);
           }
+          if (options["--json"] === true && error instanceof person.PlacementCheckpointError && error.causeClass === "writer-below-floor") {
+            context.onExitCode?.(1);
+            return JSON.stringify({ ok: false, refusal: { cause: error.causeClass }, message: error.message }, null, 2);
+          }
           if (options["--json"] === true) {
             const { placementWriterRefusalDetail, placementWriterRefusalText } = await import("./sync-placement-writer-context.ts");
             const refusal = placementWriterRefusalDetail(error);

@@ -99,7 +99,6 @@ function measured(home: string, writerRoots: readonly string[], ownRoot: string)
   }
 }
 function plan(home: string, epochHash: string, value: PlacementCheckpointInput): CheckpointIntent {
-  if (placementCheckpointPending(home, epochHash)) throw new PlacementCheckpointError("pending");
   try { return planPlacementCheckpoint(home, epochHash, value); }
   catch (error) {
     const code = error instanceof SyncPlacementJournalError ? Object.getOwnPropertyDescriptor(error, "code")?.value : undefined;
@@ -129,7 +128,10 @@ export interface PlacementCheckpointPreview {
  */
 export async function previewPlacementCheckpoint(homeInput: string, opts: { writerRoots: readonly string[]; ownRoot: string }): Promise<PlacementCheckpointPreview> {
   const home = realPath(homeInput), a = active(home), epochHash = a.profile.placementHead;
-  const roots = measured(home, opts.writerRoots, opts.ownRoot), intent = plan(home, epochHash, input(home, a, roots, randomBytes(32).toString("hex")));
+  const roots = measured(home, opts.writerRoots, opts.ownRoot);
+  if (placementCheckpointPending(home, epochHash)) throw new PlacementCheckpointError("pending");
+  checkWriterVersions(home, roots);
+  const intent = plan(home, epochHash, input(home, a, roots, randomBytes(32).toString("hex")));
   const journal = readPlacementJournal(home, epochHash), window = resolvePlacementWindow(home, epochHash);
   const { headroom, journalObjects, assertCurrent } = await checkpointHeadroom(home, intent);
   assertCurrent();
@@ -191,7 +193,9 @@ function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | und
   if (!homeFloorAtLeast(home, minReader)) throw new PlacementCheckpointError("floor");
   // This reader itself below the recorded floor cannot measure anything: name the writer cause, not the inventory.
   try { assertFormatFloor(home, "sync"); } catch { throw new PlacementCheckpointError("writer-below-floor"); }
-  if (!roots) return;
+  if (roots) checkWriterVersions(home, roots);
+}
+function checkWriterVersions(home: string, roots: PlacementCheckpointInput["roots"]): void {
   const effective = readEffectiveSyncPlacementWriters(home).roots ?? [];
   // #634: an inventoried install that is gone from disk and left out of the new plan can no longer write here; the
   // renewal removes it. A root the new plan measures is checked through its measured version.

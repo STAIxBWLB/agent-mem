@@ -196,21 +196,39 @@ test("#288: suffixed home and sync floors use the existing numeric floor compari
   expect(await confirmPlacementCheckpoint(f.base, preview, opts)).toMatchObject({ window: 1, renewed: true });
 }, 180_000);
 
-test("#288: every candidate writer must meet the actual home floor, including a suffixed floor", async () => {
+test("#642 AC1: preview and confirm refuse a declared writer below the recorded sync floor", async () => {
   const f = await fixture();
   const old = join(f.root, "older candidate writer");
   mkdirSync(old, { mode: 0o755 }); mkdirSync(join(old, "src"), { mode: 0o755 }); mkdirSync(join(old, "bin"), { mode: 0o755 });
-  writeFileSync(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.29.0" }), { mode: 0o644 });
+  writeFileSync(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.30.0" }), { mode: 0o644 });
   writeFileSync(join(old, "src", "index.ts"), "// isolated writer\n", { mode: 0o644 });
   writeFileSync(join(old, "bin", "amem.js"), "// isolated writer\n", { mode: 0o755 });
-  writeFileSync(join(f.base, "formats.json"), JSON.stringify([
-    { surface: "home", minReader: "0.30.0+build.1", since: "2026-11-19" },
-    { surface: "home", minReader: "0.30.0", since: "2026-11-19" },
-  ]) + "\n", { mode: 0o600 });
   const opts = { ...f.opts, writerRoots: [activationOwnRoot, old] };
   const preview = await previewPlacementCheckpoint(f.base, opts);
   expect(preview.floorReady).toBe(true);
+  const planFile = join(f.root, "reviewed-checkpoint.json");
+  writeFileSync(planFile, JSON.stringify(preview), { mode: 0o600 });
+  writeFileSync(join(f.base, "formats.json"), JSON.stringify([
+    { surface: "home", minReader: "0.30.0", since: "2026-11-19" },
+    { surface: "sync", minReader: "0.31.0-rc.1", since: "2026-11-19" },
+  ]) + "\n", { mode: 0o600 });
+  const before = tree(f.base);
+  expect(await cause(() => previewPlacementCheckpoint(f.base, opts))).toBe("writer-below-floor");
   expect(await cause(() => confirmPlacementCheckpoint(f.base, preview, opts))).toBe("writer-below-floor");
+  const args = ["migrate", "--sync-placement", "--checkpoint", "--writer-root", activationOwnRoot, "--writer-root", old];
+  await withHome(f.base, async () => {
+    for (const mode of [[], ["--confirm", "--plan", planFile]]) {
+      let exitCode: number | undefined;
+      const context = { cwd: f.root, env: { CODEX_THREAD_ID: "t" }, stdinTTY: false, onExitCode: (code: number) => { exitCode = code; } };
+      const human = await runCli([...args, ...mode], context).then(() => { throw Error("expected a refusal"); }, (error: Error) => error.message);
+      expect(human).toContain("below the recorded home or sync format floor");
+      expect(human).toContain("amem migrate --sync-placement --checkpoint --writer-root");
+      const json = await runCli([...args, ...mode, "--json"], context);
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(json)).toEqual({ ok: false, refusal: { cause: "writer-below-floor" }, message: human });
+    }
+  });
+  expect(tree(f.base)).toEqual(before);
   expect(existsSync(f.checkpoints)).toBe(false);
 }, 180_000);
 

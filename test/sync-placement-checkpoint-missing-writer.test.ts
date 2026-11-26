@@ -43,11 +43,23 @@ test("#634 AC1: a renewal drops an inventoried install already removed from disk
   expect(readEffectiveSyncPlacementWriters(f.base).roots).not.toContain(retired);
 }, 240_000);
 
-test("#634 AC2: an inventoried install that still exists with an unreadable version keeps refusing as writer-below-floor", async () => {
+test("#642 AC2: preview and confirm refuse an inventoried install with an unreadable version", async () => {
   const { f, own } = await renewedWithRetired();
-  writeFileSync(join(f.root, "retired writer", "package.json"), "{ not json", { mode: 0o644 });
   const preview = await previewPlacementCheckpoint(f.base, own);
-  expect((await refusal(() => confirmPlacementCheckpoint(f.base, preview, own))).causeClass).toBe("writer-below-floor");
+  writeFileSync(join(f.root, "retired writer", "package.json"), "{ not json", { mode: 0o644 });
+  const blocked = await refusal(() => previewPlacementCheckpoint(f.base, own));
+  expect(blocked.causeClass).toBe("writer-below-floor");
+  expect((await refusal(() => confirmPlacementCheckpoint(f.base, preview, own))).message).toBe(blocked.message);
+  const bin = join(activationOwnRoot, "bin", "amem.js");
+  const env = { ...process.env, AMEM_HOME: f.base };
+  const args = [process.execPath, bin, "migrate", "--sync-placement", "--checkpoint", "--writer-root", activationOwnRoot];
+  const human = Bun.spawnSync(args, { cwd: f.root, env });
+  expect(human.exitCode).toBe(1);
+  expect(human.stderr.toString()).toContain(blocked.message);
+  const json = Bun.spawnSync([...args, "--json"], { cwd: f.root, env });
+  expect(json.exitCode).toBe(1);
+  expect(json.stderr.toString()).toBe("");
+  expect(JSON.parse(json.stdout.toString())).toEqual({ ok: false, refusal: { cause: "writer-below-floor" }, message: blocked.message });
   expect(resolvePlacementWindow(f.base, readEffectiveSyncPlacementWriters(f.base).epochHash).window).toBe(1);
 }, 240_000);
 
