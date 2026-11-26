@@ -2,7 +2,7 @@
 
 References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies agent-hub issues and PRs; board tasks use `task N` without `#`.
 
-## Unreleased
+## 0.41.0
 
 ### Added
 
@@ -15,6 +15,15 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 - Placement checkpoint previews check declared and retained writer versions against the recorded floors before sealing a plan. Preview and confirm both show the same writer-version refusal and return exit 1 with its cause under `--json`. The preview still reports when the 0.30.0 home floor needs to be raised. Refs #642.
 - A reader registration clears leases of processes that are provably gone in its own scope (`readers` or `shard-readers`), so doctor's `readers` attention state clears without a migration. The test is one pid syscall (ESRCH): a pid that still exists, an unreadable or unverifiable file, a link, and a reused pid's lease are left alone, and migration admission keeps its pid-plus-signature test. At most 256 lease names are scanned per registration. The lease format, its file name, migration and the checkpoint fence are unchanged. #632.
 - When an Antigravity setup receipt points to a missing install, sync and doctor direct you to `amem setup agy --list`. The listing shows each receipt workspace and the apply and undo commands to run from it. Refs #636.
+
+### Compatibility with N-1 (0.40.0)
+
+- Writer renewal (#634, #642): the checkpoint confirm skips an inventoried install that is gone from disk and left out of the new plan, and the preview now runs the same writer-version floor check as the confirm. A deleted `--writer-root` refuses with a new internal cause, `writer-missing`, in both steps. A plan that 0.40.0's preview accepted but its confirm refused can now be renewed. Formats, floors and the journal are unchanged.
+- Checkpoint refusals (#635, #642): with `--json`, a writer-context refusal and `writer-below-floor` return `{ ok: false, refusal, message }` on stdout with exit 1 instead of an error on stderr. Human text keeps the fixed messages. A script that parsed only stderr for these refusals must read stdout.
+- New read-only commands (#636, #639): `amem setup agy --list [--json]` and `amem migrate --sync-placement --writers [--json]` (schema `amem.placement-writers/v1`). They write nothing, and 0.40.0 has neither.
+- Messages (#635, #636, #639): the agy setup-receipt remedy names `amem setup agy --list`, the checkpoint `candidate` refusal and doctor's `writers` finding name `--writers` first. Categories, cause classes, status fields and default doctor JSON are unchanged.
+- Reader leases (#632): a new registration removes leases whose pid no longer exists in its own scope. The lease format and file names are unchanged; 0.40.0 readers keep registering and renewing their own leases as before.
+- Authoritative data and tooling: storage formats, entry ids and hashing, existing schema identifiers, sync transport and placement records, writer-pin rules, MCP tool names, the library API and format floors remain unchanged. Writer fingerprints still reflect the measured install, so writer renewal applies when upgrading; run `amem migrate --sync-placement --writers` and the checkpoint it prints, with sessions open. The exact `@staix/cli-output` pin stays at 0.1.3.
 
 ## 0.40.0
 
