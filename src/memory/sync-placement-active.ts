@@ -1,3 +1,4 @@
+import { freezeMetadata, isMetadataSnapshot, sameMetadataStamp } from "./profile-marker-cache.ts";
 /** Metadata-only v3 admission. Publication still requires the complete journal/source/policy proof. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
@@ -14,7 +15,6 @@ import { shardDir, userShardDir } from "./shard.ts";
 
 export interface ActivePlacementBinding { profile: PlacementProfile; shards: PlacementShards; epoch: PlacementEpoch; activation: SyncPlacementActivationPlan }
 function fail(): never { throw new Error("sync placement activation metadata unavailable or changed; inspect the retained activation before continuing"); }
-const same = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 function owned(s: BigIntStats, directory = false): void {
   if (s.uid !== BigInt(process.getuid?.() ?? -1) || (s.mode & 0o077n) !== 0n || s.isSymbolicLink()
     || (directory ? !s.isDirectory() : !s.isFile() || s.nlink !== 1n)) fail();
@@ -26,6 +26,9 @@ export function assertPlacementViewAdvance(home: string, activation: SyncPlaceme
   if (canonicalJSON(before) !== canonicalJSON(after)) fail();
   const initialShards = { ...shards, selectorRevision: hashJSON(initial) };
   if (hashJSON(initialShards) !== activation.targetShardsHash) fail();
+  assertLivePruneAdvance(home, initial, profile);
+}
+function assertLivePruneAdvance(home: string, initial: PlacementProfile, profile: PlacementProfile): void {
   if (initial.pruneInputSetHash === profile.pruneInputSetHash) return;
   const oldView = readPublicPruneViewForActivation(home, initial.pruneInputSetHash, profile.generation);
   const nextView = readPublicPruneViewForActivation(home, profile.pruneInputSetHash, profile.generation);
@@ -37,16 +40,26 @@ export function assertPlacementViewAdvance(home: string, activation: SyncPlaceme
     if (old !== undefined && !chain.commitments.includes(old)) fail();
   }
 }
-/**
- * Last verified binding keyed by the lstat stamps of every object the full read checks (#420). A sync calls this several
- * times per fence check; an unchanged stamp is the same identity the full read already accepts between its own reads.
- * ponytail: one entry per process; drop it if a same-size rewrite inside one timestamp tick must be caught across calls.
- */
-const freeze = <T>(value: T): T => { if (value && typeof value === "object" && !Object.isFrozen(value)) { for (const inner of Object.values(value)) freeze(inner); Object.freeze(value); } return value; };
-let bindingMemo: { key: string; value: Pick<ActivePlacementBinding, "epoch" | "activation"> } | undefined;
+// Only file-reader snapshots have stable identity. Arbitrary caller objects always take the full validator.
+const shardProofs = new WeakMap<object, { input: object; proof: { profile: PlacementProfile; shards: PlacementShards } }>();
+export function provePlacementShards(value: unknown, profileInput: unknown): { profile: PlacementProfile; shards: PlacementShards } {
+  const cached = isMetadataSnapshot(value) ? shardProofs.get(value) : undefined;
+  if (cached && cached.input === profileInput) return cached.proof;
+  const profile = validatePlacementProfile(profileInput);
+  const proof = { profile, shards: validatePlacementShards(value, profile) };
+  if (isMetadataSnapshot(value) && isMetadataSnapshot(profileInput)) {
+    shardProofs.set(value, { input: profileInput, proof: freezeMetadata(proof) });
+  }
+  return proof;
+}
+
+type BindingProof = Pick<ActivePlacementBinding, "epoch" | "activation">;
+// ponytail: only one proof per parsed shard snapshot (bounded by the marker caches), plus one for arbitrary inputs.
+const snapshotBindings = new WeakMap<object, { key: string; profileInput: object; value: BindingProof }>();
+let valueBinding: { key: string; value: BindingProof } | undefined;
 /** No mutation/reader registration/index open. Missing preparation is distinct from malformed retained evidence. */
 export function readActivePlacementBinding(homeInput: string, profileInput: unknown, shardsInput: unknown): ActivePlacementBinding | undefined {
-  const profile = validatePlacementProfile(profileInput), shards = validatePlacementShards(shardsInput, profile);
+  const { profile, shards } = provePlacementShards(shardsInput, profileInput);
   const home = realPath(homeInput), root = lstatSync(home, { bigint: true }); owned(root, true);
   const stampKey = () => {
     const dir = join(home, "sync-placement", "epochs", profile.placementHead), stamps: string[] = [];
@@ -56,11 +69,17 @@ export function readActivePlacementBinding(homeInput: string, profileInput: unkn
       reportBindingRead(file);
       stamps.push([st.dev, st.ino, st.size, st.mtimeNs, st.ctimeNs].map(String).join(":"));
     }
-    return canonicalJSON([home, canonicalJSON(profile), canonicalJSON(shards), stamps]);
+    return JSON.stringify([home, stamps]);
   }, memoKey = stampKey();
-  if (memoKey !== undefined && bindingMemo?.key === memoKey) {
-    assertPlacementViewAdvance(home, bindingMemo.value.activation, profile, shards);
-    return { profile, shards, epoch: bindingMemo.value.epoch, activation: bindingMemo.value.activation };
+  const snapshot = isMetadataSnapshot(profileInput) && isMetadataSnapshot(shardsInput) ? { profileInput, shardsInput } : undefined;
+  const previous = snapshot && snapshotBindings.get(snapshot.shardsInput);
+  const valueKey = !snapshot && memoKey !== undefined ? canonicalJSON([memoKey, profile, shards]) : undefined;
+  const cached = previous && previous.key === memoKey && previous.profileInput === profileInput ? previous.value
+    : valueKey !== undefined && valueBinding?.key === valueKey ? valueBinding.value : undefined;
+  if (cached) {
+    // The binding stamps cover the static commitments. Prune artifacts can change independently.
+    assertLivePruneAdvance(home, cached.activation.targetProfile, profile);
+    return { profile: { ...profile }, shards: snapshot ? structuredClone(shards) : shards, ...cached };
   }
   const checks: (() => void)[] = [() => { const now = lstatSync(home, { bigint: true }); owned(now, true); if (now.dev !== root.dev || now.ino !== root.ino) fail(); }];
   const directory = (dir: string): boolean => {
@@ -73,13 +92,13 @@ export function readActivePlacementBinding(homeInput: string, profileInput: unkn
     owned(before); if (before.size <= 0n || before.size > 262144n) fail();
     const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const s = fstatSync(fd, { bigint: true }); owned(s); if (!same(before, s)) fail();
+      const s = fstatSync(fd, { bigint: true }); owned(s); if (!sameMetadataStamp(before, s)) fail();
       const bytes = Buffer.alloc(Number(s.size) + 1); let at = 0;
       while (at < bytes.length) { const n = readSync(fd, bytes, at, bytes.length - at, at); if (!n) break; at += n; }
-      if (at !== Number(s.size) || !same(s, fstatSync(fd, { bigint: true })) || !same(s, lstatSync(file, { bigint: true }))) fail();
+      if (at !== Number(s.size) || !sameMetadataStamp(s, fstatSync(fd, { bigint: true })) || !sameMetadataStamp(s, lstatSync(file, { bigint: true }))) fail();
       const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, at)), value: unknown = JSON.parse(text);
       if (canonicalJSON(value) + "\n" !== text) fail();
-      checks.push(() => { const now = lstatSync(file, { bigint: true }); owned(now); if (!same(s, now)) fail(); }); return { value, text };
+      checks.push(() => { const now = lstatSync(file, { bigint: true }); owned(now); if (!sameMetadataStamp(s, now)) fail(); }); return { value, text };
     } finally { closeSync(fd); }
   };
   if (!directory(join(home, "sync-placement")) || !directory(join(home, "sync-placement", "epochs"))) return undefined;
@@ -95,6 +114,10 @@ export function readActivePlacementBinding(homeInput: string, profileInput: unkn
   if (read(join(home, "profile.json"))?.text !== canonicalJSON(profile) + "\n" || read(join(home, "shards.json"))?.text !== canonicalJSON(shards) + "\n") fail();
   assertPlacementViewAdvance(home, activation, profile, shards);
   for (const check of checks) check();
-  if (memoKey !== undefined && stampKey() === memoKey) bindingMemo = { key: memoKey, value: { epoch: freeze(epoch), activation: freeze(activation) } };
-  return { profile, shards, epoch, activation };
+  if (memoKey !== undefined && stampKey() === memoKey) {
+    const value = { epoch: freezeMetadata(epoch), activation: freezeMetadata(activation) };
+    if (snapshot) snapshotBindings.set(snapshot.shardsInput, { key: memoKey, profileInput: snapshot.profileInput, value });
+    else if (valueKey !== undefined) valueBinding = { key: valueKey, value };
+  }
+  return { profile: { ...profile }, shards: snapshot ? structuredClone(shards) : shards, epoch, activation };
 }
