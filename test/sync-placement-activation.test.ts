@@ -39,13 +39,14 @@ test("initial placement dry-run is authority-free and byte/mtime read-only; appl
 },60_000);
 
 test("#414: initial activation captures a home above the old 8 MiB aggregate with every source file below 8 MiB",async()=>{
-  const f=await placementActivationFixture(10_248);cleanup.push(f.close);
+  // 1,200 rows of about 8 KB cross the old 8 MiB aggregate with each realm file near 2.4 MiB; row count, not bytes, drove the CI time (#651).
+  const f=await placementActivationFixture(1_200,240);cleanup.push(f.close);
   const files:number[]=[];const walk=(dir:string):void=>{for(const e of readdirSync(dir,{withFileTypes:true})){const p=join(dir,e.name);if(e.isDirectory())walk(p);else if(e.name.endsWith(".jsonl"))files.push(statSync(p).size);}};
   // Placement sources live in realm directories; the retained pre-shard root log is not a placement source.
   for(const realm of ["projects","user"])if(existsSync(join(f.base,realm)))walk(join(f.base,realm));
-  expect(files.reduce((a,b)=>a+b,0)).toBeGreaterThan(22*1024*1024);expect(Math.max(...files)).toBeLessThan(8*1024*1024);
+  expect(files.reduce((a,b)=>a+b,0)).toBeGreaterThan(8*1024*1024);expect(Math.max(...files)).toBeLessThan(8*1024*1024);
   const before=inspectionFilesystemSnapshot(f.base),preview=await activateSyncPlacement(f.options("dry-run"));
-  expect(preview).toMatchObject({active:false,source:{declined:1,policyPermittedOriginals:10_249}});
+  expect(preview).toMatchObject({active:false,source:{declined:1,policyPermittedOriginals:1_201}});
   expect(inspectionFilesystemSnapshot(f.base)).toEqual(before);
   expect((await activateSyncPlacement(f.options("apply"))).active).toBe(true);
 },300_000);

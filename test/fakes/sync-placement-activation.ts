@@ -10,7 +10,7 @@ import { hookFixture } from "./hooks-fixture.ts";
 
 export const activationOwnRoot = fileURLToPath(new URL("../..",import.meta.url));
 /** bulk: extra ~2.2 KB notes spread over four projects so the aggregate grows while each segment stays small (#414). */
-export async function placementActivationFixture(bulk=0){
+export async function placementActivationFixture(bulk=0,bodyRepeat=60){
   const f=hookFixture("https://example.test/placement/activation.git");
   try {
     const seed=new MemoryStore({memoryDir:f.base,deferPromotions:true});
@@ -23,7 +23,7 @@ export async function placementActivationFixture(bulk=0){
       // Per-note store writes refresh the whole log (O(n^2)); append canonical rows built from a real template instead.
       const log=join(f.base,"log",readdirSync(join(f.base,"log")).find(name=>name.endsWith(".jsonl"))!);
       const {id:_id,...template}=JSON.parse(readFileSync(log,"utf8").trim().split("\n").at(-1)!);let out="";
-      for(let i=0;i<bulk;i++){const body={...template,project:`placement-bulk-${i%4}`,text:`bulk row ${i} `+"synthetic placement capture body ".repeat(60)};out+=JSON.stringify({...body,id:entryId(body)})+"\n";}
+      for(let i=0;i<bulk;i++){const body={...template,project:`placement-bulk-${i%4}`,text:`bulk row ${i} `+"synthetic placement capture body ".repeat(bodyRepeat)};out+=JSON.stringify({...body,id:entryId(body)})+"\n";}
       appendFileSync(log,out);
     }
     const migration=await migrateShards({memoryDir:f.base,generation:"a".repeat(32),mode:"apply",authorizedPerson:true,tty:true});
