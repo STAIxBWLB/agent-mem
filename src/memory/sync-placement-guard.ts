@@ -1,4 +1,5 @@
-import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
+import { metadataReader, sameMetadataStamp } from "./profile-marker-cache.ts";
+import { provePlacementShards, readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
 import { readEffectiveRealmInventory, type EffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type Bi
 import { join } from "node:path";
 import { LOCAL_METADATA_MAX_BYTES, legacyProfileMarkerShape, type BoundProfile } from "./generation.ts";
 import { legacyShardMarkerShape } from "./shard.ts";
-import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
+import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA } from "./sync-placement-format.ts";
 import { PLACEMENT_ACTIVATION_INTENT } from "./sync-placement-activation-path.ts";
 import { profileLockRefusal, rememberProfileLockError } from "./profile-lock-diagnostic.ts";
 
@@ -66,8 +67,7 @@ export class SyncPlacementRuntimeError extends Error {
   constructor(reason: string) { super(reason); this.name = "SyncPlacementRuntimeError"; this.code = reason === PLACEMENT_STAGE1_REFUSAL ? "sync_placement_not_enabled" : "sync_placement_unavailable";rememberProfileLockError(this,reason); }
 }
 class MarkerChanged extends Error {}
-const same = (left: BigIntStats, right: BigIntStats) => left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
-function readMarker(file: string): unknown | undefined {
+function readMarkerUncached(file: string): { stamp: BigIntStats; value: unknown } | undefined {
   for (let attempt = 0; attempt < 6; attempt++) {
     let fd: number | undefined;
     try {
@@ -76,19 +76,30 @@ function readMarker(file: string): unknown | undefined {
       if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(LOCAL_METADATA_MAX_BYTES)) throw new SyncPlacementRuntimeError(PLACEMENT_MARKER_REFUSAL);
       fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const opened = fstatSync(fd, { bigint: true });
-      if (!same(before, opened)) throw new MarkerChanged();
+      if (!sameMetadataStamp(before, opened)) throw new MarkerChanged();
       const bytes = Buffer.alloc(Number(opened.size) + 1); let count = 0;
       while (count < bytes.length) { const read = readSync(fd, bytes, count, bytes.length - count, count); if (!read) break; count += read; }
       const after = fstatSync(fd, { bigint: true }), named = lstatSync(file, { bigint: true, throwIfNoEntry: false });
-      if (count !== Number(opened.size) || !same(opened, after) || !named || named.isSymbolicLink() || !same(opened, named)) throw new MarkerChanged();
-      return JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, count)));
+      if (count !== Number(opened.size) || !sameMetadataStamp(opened, after) || !named || named.isSymbolicLink() || !sameMetadataStamp(opened, named)) throw new MarkerChanged();
+      return { stamp: named, value: JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, count))) as unknown };
     } catch (error) { if (error instanceof MarkerChanged && attempt < 5) continue; throw new SyncPlacementRuntimeError(PLACEMENT_MARKER_REFUSAL); }
     finally { if (fd !== undefined) closeSync(fd); }
   }
   throw new SyncPlacementRuntimeError(PLACEMENT_MARKER_REFUSAL);
 }
-export function readPlacementRuntimeMarkers(home: string): { profile: unknown | undefined; shards: unknown | undefined } {
+const readMarker = metadataReader(readMarkerUncached);
+/** The shard reader reuses only parsed v3 markers. Legacy and malformed values keep their existing reader. */
+export function readPlacementV3Marker(file: string): Record<string, unknown> | undefined {
+  let value: unknown;
+  try { value = readMarker(file); } catch { return undefined; }
+  const format = schema(value);
+  return format === PLACEMENT_PROFILE_SCHEMA || format === PLACEMENT_SHARDS_SCHEMA ? value as Record<string, unknown> : undefined;
+}
+function runtimeMarkers(home: string): { profile: unknown | undefined; shards: unknown | undefined } {
   return { profile: readMarker(join(home, "profile.json")), shards: readMarker(join(home, "shards.json")) };
+}
+export function readPlacementRuntimeMarkers(home: string): { profile: unknown | undefined; shards: unknown | undefined } {
+  return structuredClone(runtimeMarkers(home));
 }
 /** #551 AC2: whether a home is provably a placement home, provably not one, or unprovable from its own markers. */
 export type PlacementMarkerState = "placement" | "unverified" | "not placement";
@@ -99,7 +110,7 @@ export type PlacementMarkerState = "placement" | "unverified" | "not placement";
  */
 export function placementMarkerState(home: string): PlacementMarkerState {
   let markers: { profile: unknown | undefined; shards: unknown | undefined };
-  try { markers = readPlacementRuntimeMarkers(home); } catch { return "unverified"; }
+  try { markers = runtimeMarkers(home); } catch { return "unverified"; }
   if (schema(markers.profile) === PLACEMENT_PROFILE_SCHEMA || schema(markers.shards) === PLACEMENT_SHARDS_SCHEMA)
     return (markers.profile as { publicationFormat?: unknown } | undefined)?.publicationFormat === PLACEMENT_FORMAT ? "placement" : "unverified";
   // A missing marker or a recognizable legacy one is a home that never activated placement sync; any other shape is malformed.
@@ -120,7 +131,7 @@ function plainMarker(value: unknown): boolean {
 export function placementMarkerRefusal(profile: unknown, shards: unknown): string | undefined {
   if (!plainMarker(profile) || !plainMarker(shards)) return PLACEMENT_MARKER_REFUSAL;
   if (schema(profile) === PLACEMENT_PROFILE_SCHEMA || schema(shards) === PLACEMENT_SHARDS_SCHEMA) {
-    try { validatePlacementShards(shards, validatePlacementProfile(profile)); }
+    try { provePlacementShards(shards, profile); }
     catch { return PLACEMENT_MARKER_REFUSAL; }
     return PLACEMENT_STAGE1_REFUSAL;
   }
@@ -158,7 +169,7 @@ function placementFencePresent(home: string): boolean {
  * The v3 publication coordinator separately proves the complete journal, selected sources and policy. */
 export function placementRuntimeRefusal(home: string, bound?: Pick<BoundProfile,"kind"|"sharded"|"generation"|"publicationFormat"|"placementHead">): string | undefined {
   if (doctorScratchBinding(home)) return undefined;
-  try { const fenced = placementFencePresent(home), pending = placementActivationPending(home), markers = readPlacementRuntimeMarkers(home);
+  try { const fenced = placementFencePresent(home), pending = placementActivationPending(home), markers = runtimeMarkers(home);
     const refusal = placementMarkerRefusal(markers.profile, markers.shards);
     if (refusal === PLACEMENT_STAGE1_REFUSAL) {
       const active=readActivePlacementBinding(home,markers.profile,markers.shards);

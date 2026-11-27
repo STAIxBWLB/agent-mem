@@ -1,7 +1,6 @@
-import { readActivePlacementBinding } from "./sync-placement-active.ts";
+import { provePlacementShards, readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
-import { validatePlacementProfile, validatePlacementShards } from "./sync-placement-format.ts";
-import { assertPlacementRuntime, doctorScratchBinding, doctorScratchInventory, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
+import { assertPlacementRuntime, doctorScratchBinding, doctorScratchInventory, readPlacementV3Marker, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -116,11 +115,14 @@ export function legacyShardMarkerShape(value: unknown): boolean {
     && typeof row.phase === "string" && ["captured", "active"].includes(row.phase) && typeof row.selectorRevision === "string"
     && (row.schema !== SHARDED_V2_SCHEMA || !Object.keys(row).some(key => !(SHARDED_V2_FIELDS as readonly string[]).includes(key)));
 }
+function readShardMarker(path: string): Record<string, unknown> | undefined {
+  return readPlacementV3Marker(path) ?? (readProfileJSON(path) as Record<string, unknown> | undefined);
+}
+
 function shardJournal(memoryDir: string): ShardedJournal {
-  const value = readProfileJSON(join(memoryDir, "shards.json")) as Record<string, unknown> | undefined;
+  const value = readShardMarker(join(memoryDir, "shards.json"));
   if (value?.schema === "agent-mem.shards/v3") {
-    const profile = validatePlacementProfile(readProfileJSON(join(memoryDir, "profile.json")));
-    return validatePlacementShards(value, profile) as unknown as ShardedJournal;
+    return provePlacementShards(value, readShardMarker(join(memoryDir, "profile.json"))).shards as unknown as ShardedJournal;
   }
   if (!value || (value.schema !== SHARDED_SCHEMA && value.schema !== SHARDED_V2_SCHEMA) || !validGeneration(value.generation) || value.phase !== "active" || typeof value.selectorRevision !== "string") throw new Error("no active curated shard migration");
   if (value.schema === SHARDED_V2_SCHEMA && Object.keys(value).some(key => !(SHARDED_V2_FIELDS as readonly string[]).includes(key))) throw new Error("unsupported curated shard view");
@@ -148,7 +150,7 @@ function shardSnapshot(memoryDir: string, deadline: number) {
       journal = current; continue;
     }
     const current = shardJournal(memoryDir);
-    if (canonicalJSON(current) !== canonicalJSON(journal)) {
+    if (current !== journal && canonicalJSON(current) !== canonicalJSON(journal)) {
       if (!compatibleShardAdvance(journal, current)) throw new Error("curated shard selector changed");
       journal = current; continue;
     }
@@ -213,11 +215,11 @@ export function assertCuratedShardLayout(memoryDir: string, opts: { project?: st
  */
 export function assertCuratedShardPaths(memoryDir: string, opts: { project?: string; user?: boolean }, origin: "cwd binding" | "remote" | "local binding" = "local binding"): void {
   assertPlacementRuntime(memoryDir);
-  const selector = readProfileJSON(join(memoryDir, "profile.json")) as {schema?:unknown} | undefined;
+  const selector = readShardMarker(join(memoryDir, "profile.json"));
   let recheckInventory: (() => void) | undefined;
   if (selector?.schema === "agent-mem.profile/v3") {
     const scratch = doctorScratchBinding(memoryDir);
-    const active = scratch ?? readActivePlacementBinding(memoryDir, selector, readProfileJSON(join(memoryDir, "shards.json")));
+    const active = scratch ?? readActivePlacementBinding(memoryDir, selector, readShardMarker(join(memoryDir, "shards.json")));
     const keyHash = opts.user ? undefined : createHash("sha256").update(opts.project!).digest("hex");
     // An appended same-epoch extension is part of the inventory a curated write may open (#448); a realm it does not name stays refused.
     const inventory = scratch ? doctorScratchInventory(memoryDir) : active ? readEffectiveRealmInventory(memoryDir, active) : undefined;
@@ -246,13 +248,13 @@ function inventoryView(inventory: RealmInventory | undefined): PlacementRealmVie
 export type PlacementRealmView = { readonly kind: "none" } | { readonly kind: "inventory"; admitted(keyHash: string): boolean; assertCurrent(): void };
 
 export function placementRealmView(base: string): PlacementRealmView | undefined {
-  let selector: { schema?: unknown } | undefined;
-  try { selector = readProfileJSON(join(base, "profile.json")) as { schema?: unknown } | undefined; } catch { return undefined; }
+  let selector: Record<string, unknown> | undefined;
+  try { selector = readShardMarker(join(base, "profile.json")); } catch { return undefined; }
   if (selector?.schema !== "agent-mem.profile/v3") return { kind: "none" };
   // No fallback to `none` here: a malformed v3 home is unproved, not ungated.
   try {
     const scratch = doctorScratchBinding(base);
-    const active = scratch ?? readActivePlacementBinding(base, selector, readProfileJSON(join(base, "shards.json")));
+    const active = scratch ?? readActivePlacementBinding(base, selector, readShardMarker(join(base, "shards.json")));
     return inventoryView(scratch ? doctorScratchInventory(base) : active ? readEffectiveRealmInventory(base, active) : undefined);
   } catch { return undefined; }
 }
@@ -360,7 +362,7 @@ export function resolveShardProfile(memoryDir: string, opts: { project?: string;
   const shardMachine = readProfileJSON(join(dir, "machine.json"), 4096) as { id?: unknown } | undefined;
   if (typeof rootMachine?.id !== "string" || !/^[a-f0-9]{16}$/.test(rootMachine.id) || rootMachine.id !== shardMachine?.id) throw new Error("curated shard machine identity mismatch");
   const final = shardSnapshot(memoryDir, deadline), selector = final.selector;
-  if (canonicalJSON(final.journal) !== canonicalJSON(initial.journal) && !compatibleShardAdvance(initial.journal, final.journal)
+  if (final.journal !== initial.journal && canonicalJSON(final.journal) !== canonicalJSON(initial.journal) && !compatibleShardAdvance(initial.journal, final.journal)
     || selector.revision !== final.journal.selectorRevision) throw new Error("curated shard selector changed; resume or inspect migration state");
   if (selector.selector?.schema === "agent-mem.profile/v2" || selector.selector?.schema === "agent-mem.profile/v3") readPublicPruneView(memoryDir, selector.selector.pruneInputSetHash, generation, deadline);
   const legacyMainHome = join(dir, "legacy-main");

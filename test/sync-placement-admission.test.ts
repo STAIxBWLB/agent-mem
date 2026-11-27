@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
@@ -10,7 +10,7 @@ import { activatePublicPruneView } from "../src/memory/public-prune-activation.t
 import { advancePublicPruneView, type PublicPruneAdvanceStage } from "../src/memory/public-prune-advance.ts";
 import { readPublicPruneViewForActivation, publicPruneViewHash, PUBLIC_PRUNE_INTENT } from "../src/memory/public-prune-view.ts";
 import { preparePublicPruneInput, persistPublicPruneInput } from "../src/memory/public-prune-inputs.ts";
-import { resolveShardProfile } from "../src/memory/shard.ts";
+import { readShardedSelection, resolveShardProfile } from "../src/memory/shard.ts";
 import { acquireMutation } from "../src/memory/mutation.ts";
 import { captureSyncPlacementContext } from "../src/memory/sync-placement-capture.ts";
 import { planPlacementJournal, preparePlacementJournal, type PlacementJournalPort } from "../src/memory/sync-placement-journal.ts";
@@ -93,6 +93,33 @@ for (const component of ["epoch", "activation", "fence"] as const) for (const fa
     refusedWithoutEffects(f.home);
   });
 
+for (const fault of ["same-size activation rewrite", "missing shard marker", "dangling shard marker"] as const) {
+  test(`warm placement bindings refuse a ${fault}`, async () => {
+    const f = await fixture();
+    const marker = join(f.home, "shards.json");
+    const stampTime = new Date("2020-01-01T00:00:00.000Z");
+    utimesSync(f.files.activation, stampTime, stampTime);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(readShardedSelection(f.home).schema).toBe(PLACEMENT_SHARDS_SCHEMA);
+      expect(resolveShardProfile(f.home, { project: PROJECT }).placementHead).toBe(f.epochHash);
+    }
+    if (fault === "same-size activation rewrite") {
+      const before = lstatSync(f.files.activation, { bigint: true });
+      const value = json(f.files.activation);
+      write(f.files.activation, { ...value, seal: (value.seal[0] === "0" ? "1" : "0") + value.seal.slice(1) });
+      utimesSync(f.files.activation, stampTime, stampTime);
+      const after = lstatSync(f.files.activation, { bigint: true });
+      expect([after.dev, after.ino, after.size, after.mtimeNs]).toEqual([before.dev, before.ino, before.size, before.mtimeNs]);
+      expect(after.ctimeNs).not.toBe(before.ctimeNs);
+    } else {
+      rmSync(marker);
+      if (fault === "dangling shard marker") symlinkSync("missing-shards.json", marker);
+    }
+    expect(() => readShardedSelection(f.home)).toThrow();
+    expect(() => resolveShardProfile(f.home, { project: PROJECT })).toThrow();
+  });
+}
+
 test("durable fence rejects selector rollback to the original valid v2 pair", async () => {
   const f = await fixture();
   writeFileSync(join(f.home, "profile.json"), f.oldProfile); writeFileSync(join(f.home, "shards.json"), f.oldShards);
@@ -115,7 +142,12 @@ test("normal public-prune maintenance preserves v3 publication fields and admiss
   const facts = Object.fromEntries(Object.entries(f.files).map(([name, file]) => [name, readFileSync(file, "utf8")]));
   const store = openShardStore({ memoryDir: f.home, project: PROJECT, deferPromotions: true });
   try {
+    const warm = readShardedSelection(f.home);
+    expect(readShardedSelection(f.home)).toEqual(warm);
+    expect(resolveShardProfile(f.home, { project: PROJECT }).selectorRevision).toBe(warm.selectorRevision);
     const { result, view } = await advanceEmptyUser(f), next = json(join(f.home, "profile.json")), nextShards = json(join(f.home, "shards.json"));
+    expect(readShardedSelection(f.home).selectorRevision).toBe(result.revision);
+    expect(resolveShardProfile(f.home, { project: PROJECT }).selectorRevision).toBe(result.revision);
     expect(result.viewHash).toBe(publicPruneViewHash(view));
     expect(next).toEqual({ ...profile, pruneInputSetHash: result.viewHash });
     expect(nextShards).toEqual({ ...shards, selectorRevision: hashJSON(next) });
