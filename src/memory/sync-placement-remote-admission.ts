@@ -16,7 +16,9 @@ import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { readEffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { pendingRealmInventory } from "./sync-placement-realm-pending.ts";
-import { PlacementInventoryFenceError, withPlacementActivationFences } from "./sync-placement-activation-locks.ts";
+import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
+import { assertNoLiveReaders } from "./reader-lease.ts";
+import { PlacementInventoryFenceError, withPlacementMutationFences } from "./sync-placement-activation-locks.ts";
 import { assertPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { previewOwnedSyncPlacementSources } from "./sync-placement-capture.ts";
 import { activePlacementWriterContext } from "../sync-placement-writer-context.ts";
@@ -56,7 +58,13 @@ function assertCheckpointClear(home: string): void {
   catch (error) { if (error instanceof SyncPlacementJournalError && error.code === "pending") throw new SyncPlacementJournalError("checkpoint-pending"); throw error; }
 }
 function dirs(home: string, project: string): string[] {
-  const dir = shardDir(home, project); return lstatSync(dir, { throwIfNoEntry: false }) ? [dir] : [];
+  const markers = readPlacementRuntimeMarkers(home);
+  const binding = readActivePlacementBinding(home, markers.profile, markers.shards);
+  if (!binding) return unavailable("epoch");
+  const directories = placementFenceDirectories(home, binding);
+  const target = shardDir(home, project);
+  if (lstatSync(target, { throwIfNoEntry: false })) directories.push(target);
+  return directories;
 }
 const nextSync = "amem sync";
 
@@ -72,6 +80,13 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
   // A private stage without any companion cannot be attributed to this operation or silently abandoned.
   if (!plan && !staged.length && pending.hashes.includes(realm)) return unavailable("staging");
   const admitted = () => active(home, realm);
+  const assertTargetIdle = () => {
+    if (admitted()) return;
+    const target = shardDir(home, project);
+    if (!lstatSync(target, { throwIfNoEntry: false })) return;
+    try { assertNoLiveReaders(target, { includeShards: true }); }
+    catch { unavailable("lock"); }
+  };
   if (options.mode === "dry-run") {
     if (plan || staged.length) return { state: "retained", realm, staged: staged.length, nextStep: "resume or review abandon" };
     if (admitted()) return { state: "already-admitted", realm, nextStep: nextSync };
@@ -81,19 +96,19 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
   }
   if (options.mode === "abandon" && staged.length) {
     if (!options.confirm) return { state: "retained", realm, staged: staged.length, nextStep: "confirm abandon" };
-    await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
+    await withPlacementMutationFences(home, dirs(home, project), async (mutation, owner) => {
       const proof = { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); } };
       clearRemoteAdoptionPending(home, realm, staged, proof);
-    });
+    }, { surface: "admit" });
     return { state: "abandoned", realm, staged: staged.length, nextStep: plan ? "resume or review abandon" : "preview admission" };
   }
   if (options.mode === "abandon" && !plan) return { state: admitted() ? "already-admitted" : "abandoned", realm, nextStep: admitted() ? nextSync : "preview admission" };
   if (options.mode === "abandon" && plan && !options.confirm) return { state: "retained", realm, nextStep: "confirm abandon" };
   if (options.mode === "apply" && (plan || staged.length) && !admitted()) return unavailable("pending");
   if (!plan && admitted()) {
-    if (staged.length) await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
+    if (staged.length) await withPlacementMutationFences(home, dirs(home, project), async (mutation, owner) => {
       clearRemoteAdoptionPending(home, realm, staged, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); } });
-    });
+    }, { surface: "admit" });
     return { state: "already-admitted", realm, nextStep: nextSync };
   }
   if (options.mode === "resume" && !plan && !staged.length) return admitted() ? { state: "already-admitted", realm, nextStep: nextSync } : unavailable();
@@ -105,11 +120,11 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
   }
   const frozen: RemoteAdoption = plan, files = packs!;
   const clearOwn = async () => {
-    await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
+    await withPlacementMutationFences(home, dirs(home, project), async (mutation, owner) => {
       const current = readRemoteAdoption(home, realm); if (!current) return;
       if (current.seal !== frozen.seal) return unavailable("staging");
       clearRemoteAdoption(home, frozen, files, { mutation, assertCurrent: () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); } });
-    });
+    }, { surface: "admit" });
   };
   if (options.mode === "abandon") {
     const oldIntent = readRealmIntent(home, realm);
@@ -120,13 +135,15 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
         await applyRealmAdmission(home, project, { mode: "abandon", confirm: true });
       }
     }
-    await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
+    await withPlacementMutationFences(home, dirs(home, project), async (mutation, owner) => {
       const current = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); };
       const proof = { mutation, assertCurrent: current };
-      if (!admitted() && remoteAdoptionLogMayBeInstalled(home, project, frozen))
+      if (!admitted() && remoteAdoptionLogMayBeInstalled(home, project, frozen)) {
+        assertTargetIdle();
         discardRemoteInstalledLog(home, project, frozen, { mutation, assertCurrent: () => { current(); if (admitted()) unavailable(); } });
+      }
       clearRemoteAdoption(home, frozen, files, proof);
-    });
+    }, { surface: "admit" });
     return { state: admitted() ? "already-admitted" : "abandoned", realm, nextStep: admitted() ? nextSync : "preview admission" };
   }
   if (admitted()) {
@@ -134,8 +151,9 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
     await clearOwn();
     return { state: "already-admitted", realm, nextStep: nextSync };
   }
-  await withPlacementActivationFences(home, dirs(home, project), async (mutation, owner) => {
+  await withPlacementMutationFences(home, dirs(home, project), async (mutation, owner) => {
     if (admitted()) return;
+    assertTargetIdle();
     const remotePending = pendingRemoteAdoptions(home); if (remotePending.unknown) return unavailable("staging"); if (remotePending.hashes.some(hash => hash !== realm)) return unavailable("pending");
     const pending = pendingRealmInventory(home); if (pending.unknown) return unavailable("staging"); if (pending.hashes.some(hash => hash !== realm)) return unavailable("pending");
     const markers = readPlacementRuntimeMarkers(home), binding = readActivePlacementBinding(home, markers.profile, markers.shards);
@@ -162,7 +180,7 @@ async function remoteRealmAdmissionInner(homeInput: string, project: string, opt
     const retained = readRealmIntent(home, realm);
     const completeMetadata = source.base.realms.some(item => item.scope === "project" && item.keyHash === realm);
     installRemoteAdoptionLog(home, project, frozen, proof, !!retained || completeMetadata); await options.checkpoint?.("after-install");
-  });
+  }, { surface: "admit" });
   if (admitted()) {
     await clearOwn();
     return { state: "already-admitted", realm, nextStep: nextSync };

@@ -8,21 +8,29 @@ import { assertNoLiveReaders } from "./reader-lease.ts";
 import { createPlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 /** #578 Q1: a checkpoint fence never refuses for readers; its `busy` means a placement sync, admission or renewal holds a lock. */
 export const PLACEMENT_CHECKPOINT_BUSY_MESSAGE = "Sync placement checkpoint is busy: a placement sync, admission or renewal holds its lock; wait for it to finish (amem sync --status shows recorded operations), then rerun the same checkpoint command.";
-/** #624: only a writer renewal on an active inventory can continue through the checkpoint, which never waits for readers. */
-export const PLACEMENT_RENEWAL_READERS_CONTINUATION = " To renew writers while sessions keep running, use the checkpoint instead, which does not wait for readers: %s.".replace("%s", "save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list");
-export class PlacementInventoryFenceError extends Error{
-  constructor(readonly causeClass:"readers"|"busy",checkpoint=false,renewal=false){super(checkpoint&&causeClass==="busy"?PLACEMENT_CHECKPOINT_BUSY_MESSAGE:`Sync placement migration is ${causeClass}; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.${renewal&&causeClass==="readers"?PLACEMENT_RENEWAL_READERS_CONTINUATION:""}`);this.name="PlacementInventoryFenceError";}
+type PlacementMutationSurface = "checkpoint" | "admit" | "renewal";
+export class PlacementInventoryFenceError extends Error {
+  constructor(readonly causeClass: "readers" | "busy", surface?: PlacementMutationSurface) {
+    const message = causeClass === "readers"
+      ? "Sync placement migration is blocked by live readers; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying."
+      : surface === "checkpoint" ? PLACEMENT_CHECKPOINT_BUSY_MESSAGE
+      : surface === "admit" ? "Sync placement realm admission is busy; wait for the operation holding its lock (amem sync --status), then run amem migrate --sync-placement --admit <project> --dry-run."
+      : surface === "renewal" ? "Sync placement writer renewal is busy; wait for the operation holding its lock (amem sync --status), then run amem migrate --sync-placement --dry-run before retrying."
+      : "Sync placement migration is busy; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.";
+    super(message);
+    this.name = "PlacementInventoryFenceError";
+  }
 }
-type FenceWork<T>=(mutation:MutationHandle,owner:ReturnType<typeof createPlacementActivationOwner>)=>Promise<T>;
-async function withFences<T>(home:string,directories:readonly string[],options:{readers:boolean;renewal?:boolean},work:FenceWork<T>):Promise<T> {
-  const fail=(cause:"readers"|"busy"):never=>{throw new PlacementInventoryFenceError(cause,!options.readers,options.renewal===true);};
+type FenceWork<T> = (mutation: MutationHandle, owner: ReturnType<typeof createPlacementActivationOwner>) => Promise<T>;
+async function withFences<T>(home: string, directories: readonly string[], work: FenceWork<T>, surface?: PlacementMutationSurface): Promise<T> {
+  const fail = (cause: "readers" | "busy"): never => { throw new PlacementInventoryFenceError(cause, surface); };
   return withProfileLock(home,async()=>{
     const releases:(()=>void)[]=[];
     try {
       const transports=["shard-sync","shard-sync-placement"].map(name=>join(home,name)).filter(dir=>lstatSync(dir,{throwIfNoEntry:false})!==undefined);
       const dirs=[...new Set([home,...directories,...transports])].sort();let mutation:MutationHandle|undefined;
       for(const dir of dirs){
-        if(options.readers){try{assertNoLiveReaders(dir,{includeShards:true});}catch{fail("readers");}}
+        if(surface === undefined){try{assertNoLiveReaders(dir,{includeShards:true});}catch{fail("readers");}}
         const handle=acquireMutation(dir);if(!handle)fail("busy");releases.push(handle!);if(dir===home)mutation=handle!;
       }
       if(!mutation)fail("busy");
@@ -31,16 +39,16 @@ async function withFences<T>(home:string,directories:readonly string[],options:{
     }finally{for(const release of releases.reverse())release();}
   });
 }
-/** Activation, renewal and admission: every live reader lease refuses, as before. */
-export function withPlacementActivationFences<T>(home:string,directories:readonly string[],work:FenceWork<T>,options:{renewal?:boolean}={}):Promise<T> {
-  return withFences(home,directories,{readers:true,renewal:options.renewal===true},work);
+/** Initial activation changes the markers that readers bind to when opening a store. */
+export function withPlacementActivationFences<T>(home: string, directories: readonly string[], work: FenceWork<T>): Promise<T> {
+  return withFences(home, directories, work);
 }
-/**
- * #578 Q1: checkpoint confirm, resume and abandon exclude placement writers only (profile lock, every mutation and sync
- * lock). Live curated readers keep running: the checkpoint writes only under `sync-placement-checkpoints/`, never the
- * binding markers, and an extension-log reader fails closed (`checkpoint-pending`, then `changed`). The held profile
- * lock still refuses new reader admission for the duration.
- */
-export function withPlacementCheckpointFences<T>(home:string,directories:readonly string[],work:FenceWork<T>):Promise<T> {
-  return withFences(home,directories,{readers:false},work);
+
+/** Active placement mutations leave store bindings intact. The profile lock still blocks new readers. */
+export function withPlacementMutationFences<T>(home: string, directories: readonly string[], work: FenceWork<T>, options: { surface: PlacementMutationSurface }): Promise<T> {
+  return withFences(home, directories, work, options.surface);
+}
+
+export function withPlacementCheckpointFences<T>(home: string, directories: readonly string[], work: FenceWork<T>): Promise<T> {
+  return withPlacementMutationFences(home, directories, work, { surface: "checkpoint" });
 }

@@ -20,7 +20,8 @@ import { assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { realPath } from "./platform.ts";
 import { readShardDescriptor, assertCuratedShardLayout, shardDir } from "./shard.ts";
 import { assertPlacementActivationOwner, type PlacementActivationOwner } from "./sync-placement-activation-proof.ts";
-import { withPlacementActivationFences, PlacementInventoryFenceError } from "./sync-placement-activation-locks.ts";
+import { placementFenceDirectories } from "./sync-placement-writer-renewal.ts";
+import { withPlacementMutationFences, PlacementInventoryFenceError } from "./sync-placement-activation-locks.ts";
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
 import { previewOwnedSyncPlacementSources, previewSyncPlacementSources } from "./sync-placement-capture.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
@@ -74,7 +75,7 @@ export interface RealmAdmissionResult {
 }
 export class RealmAdmissionError extends Error {
   constructor(readonly causeClass: "readers" | "busy" | "changed" | "pending" | "committed" | "metadata", readonly retainedRealm?: string) {
-    super(`Sync placement realm admission is ${causeClass}${retainedRealm ? `; retained realm keyHash=${retainedRealm}` : ""}; the existing activated realms keep syncing. ${action(causeClass)}`);
+    super(`Sync placement realm admission is ${causeClass === "readers" ? "blocked by live readers" : causeClass}${retainedRealm ? `; retained realm keyHash=${retainedRealm}` : ""}; the existing activated realms keep syncing. ${action(causeClass)}`);
     this.name = "RealmAdmissionError";
   }
 }
@@ -83,6 +84,7 @@ function action(causeClass: RealmAdmissionError["causeClass"]): string {
   if (causeClass === "committed") return "The extension chain no longer matches the frozen intent: run amem migrate --sync-placement --admit <project> --resume to complete or clean up the retained attempt, and keep --abandon --confirm for an append that never committed.";
   if (causeClass === "changed") return "Re-read the home with amem migrate --sync-placement --admit <project> --dry-run and apply the reviewed append.";
   if (causeClass === "metadata") return "Inspect the local placement and curated metadata it names, then run amem migrate --sync-placement --admit <project> --dry-run.";
+  if (causeClass === "busy") return "Wait for the operation holding the lock (amem sync --status), then run amem migrate --sync-placement --admit <project> --dry-run.";
   return "Close cooperating readers and writers, then run amem migrate --sync-placement --admit <project> --dry-run.";
 }
 function fail(causeClass: RealmAdmissionError["causeClass"]): never { throw new RealmAdmissionError(causeClass); }
@@ -95,6 +97,7 @@ function assertNoPendingAdmission(home: string, ownRealm?: string): void {
 function rethrow(error: unknown): never {
   if (error instanceof RealmAdmissionError || error instanceof RealmExtensionFormatError || error instanceof SyncPlacementJournalError && error.code === "checkpoint-pending") throw error;
   if (error instanceof PlacementInventoryFenceError) fail(error.causeClass);
+  if (error instanceof Error && error.message === "profile lock held by a live or unknown owner") fail("busy");
   return fail("metadata");
 }
 
@@ -246,8 +249,8 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
       ...(plan.staged ? { staged: plan.staged } : {}), nextStep: "confirm amem migrate --sync-placement --admit <project> --abandon --confirm" };
     const stages = plan.staged ? inspectRealmIntentStages(home, realm) : undefined;
     if (plan.staged && stages?.length !== plan.staged) fail("changed");
-    return withPlacementActivationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
-      try {
+    try {
+      return await withPlacementMutationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
         assertCheckpointClear(home);
         const binding = realmBinding(activeBinding(home)), intent = readRealmIntent(home, realm);
         const check = () => { assertPlacementActivationOwner(owner, home); assertMutationHandle(mutation, home); assertCheckpointClear(home); }, proof = { mutation, assertCurrent: check };
@@ -264,8 +267,8 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
         clearRealmIntent(home, intent, proof);
         return { mode: "abandon" as const, state: "abandoned" as const, realm, sequence: intent.sequence, discarded,
           nextStep: "amem migrate --sync-placement --admit <project> --dry-run" };
-      } catch (error) { return rethrow(error); }
-    });
+      }, { surface: "admit" });
+    } catch (error) { return rethrow(error); }
   }
   if (options.mode === "apply") assertNoPendingAdmission(home);
   const planned = options.mode === "apply" ? inspectRealmAdmission(home, project) : undefined;
@@ -275,8 +278,8 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
     if (inForce(home, realm)) return { mode: options.mode, state: "already-admitted", realm };
     throw Error("No retained admission intent exists for this realm; run amem migrate --sync-placement --admit <project> --dry-run.");
   }
-  return withPlacementActivationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
-    try {
+  try {
+    return await withPlacementMutationFences(home, directories(home, projectPrefix), async (mutation, owner) => {
       assertCheckpointClear(home);
       if (options.mode === "apply") assertNoPendingAdmission(home);
       if (options.mode === "resume") assertNoPendingAdmission(home, realm);
@@ -343,10 +346,12 @@ export async function applyRealmAdmission(homeInput: string, project: string, op
       await options.checkpoint?.("after-append");
       clearRealmIntent(home, frozen, proof);
       return { mode: options.mode, state: "admitted" as const, realm, sequence: frozen.sequence, headHash: record.seal, created };
-    } catch (error) { return rethrow(error); }
-  });
+    }, { surface: "admit" });
+  } catch (error) { return rethrow(error); }
 }
 function directories(home: string, projectPrefix: string): string[] {
   const realmDir = join(home, "projects", projectPrefix);
-  return existsSync(realmDir) ? [realmDir] : [];
+  const active = placementFenceDirectories(home, activeBinding(home));
+  if (existsSync(realmDir)) active.push(realmDir);
+  return active;
 }

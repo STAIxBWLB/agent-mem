@@ -2,6 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
+import { createMemoryMcp } from "../src/mcp-memory.ts";
+import { runCli } from "../src/cli.ts";
+import { resolvePlacementWindow } from "../src/memory/sync-placement-checkpoint-storage.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { syncMemory } from "../src/memory/sync.ts";
@@ -39,6 +42,37 @@ async function fixture(){
 }
 function floor(home:string){writeFileSync(join(home,"formats.json"),JSON.stringify([{surface:"home",minReader:"0.22.0",since:"2026-11-06"}])+"\n",{mode:0o600});}
 function records(home:string,epoch:string){const dir=join(home,"sync-placement","epochs",epoch);return Object.fromEntries(readdirSync(dir).filter(n=>!n.startsWith("writer-")).map(n=>[n,readFileSync(join(dir,n)).toString("base64")]));}
+
+test("#658: initial activation fences readers, and CLI renewal leaves the live checkpoint window unchanged", async () => {
+  const f = await placementActivationFixture();
+  cleanup.push(f.close);
+  const openMcp = () => createMemoryMcp({ cwd: f.root, base: f.base, project: f.project });
+  const initial = openMcp();
+  try { await expect(activateSyncPlacement(f.options("apply"))).rejects.toMatchObject({ causeClass: "readers" }); }
+  finally { initial.close(); }
+
+  await activateSyncPlacement(f.options("apply"));
+  floor(f.base);
+  const epoch = JSON.parse(readFileSync(join(f.base, "profile.json"), "utf8")).placementHead as string;
+  const before = resolvePlacementWindow(f.base, epoch);
+  const previousWriters = readEffectiveSyncPlacementWriters(f.base);
+  const next = install(f.root, "new writer");
+  const mcp = openMcp();
+  const prior = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = f.base;
+  try {
+    await runCli(["migrate", "--sync-placement", "--apply", "--writer-root", activationOwnRoot, "--writer-root", next], { cwd: f.root, env: {} });
+    const after = resolvePlacementWindow(f.base, epoch);
+    expect(after.window).toBe(before.window);
+    expect(after.archived).toEqual(before.archived);
+    expect(() => previousWriters.assertCurrent()).toThrow();
+    expect(readEffectiveSyncPlacementWriters(f.base).roots).toContain(realPath(next));
+    expect(await mcp.tools.amem_search({ query: "inventory" })).toHaveProperty("hits");
+  } finally {
+    mcp.close();
+    if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior;
+  }
+}, 60_000);
 
 test("root retirement renews the same epoch and resumes publication with unchanged holds/receipts",async()=>{
   const f=await fixture(),remote=createInspectionRemote(f.root);let store=openShardStore({memoryDir:f.base,project:f.project,deferPromotions:true});

@@ -270,7 +270,7 @@ function placementWriterInventoryNote(root: string, home: string): string | unde
   try { canonical = realPath(root); } catch { return undefined; }
   if (roots.includes(canonical)) return undefined;
   // #551 AC2: the suggested argument is shell-quoted, so a root with a space, a quote or a shell metacharacter stays one argument.
-  return `WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory first with the person, through the checkpoint while sessions keep running - save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ${quote(canonical)} --json > checkpoint-plan.json), adding --writer-root for every other install root, then run amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list; only if the checkpoint preview refuses, close every amem session and run amem migrate --sync-placement --dry-run --writer-root ${quote(canonical)}, then --apply - and rerun setup after that. Setup writes no inventory entry and never refuses on this alone.`;
+  return `WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory with the person while sessions keep running. Run amem migrate --sync-placement --dry-run --writer-root ${quote(canonical)}, adding --writer-root for every other install root, then use --apply with the same roots. If the live window needs compaction, save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ${quote(canonical)} --json > checkpoint-plan.json), adding the same other roots, and confirm with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the complete root list. Rerun setup after renewal. Setup writes no inventory entry and never refuses on this alone.`;
 }
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
@@ -765,10 +765,8 @@ function setupWriterCommands(plan: SetupPlan): string[] {
     const all = [...new Set([...roots, ...readSetupWriterRoots(home), root].map(realPath))].sort();
     if (all.some(value => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value))) return ["amem doctor"];
     const flags = all.map(value => `--writer-root ${quote(value)}`).join(" ");
-    // #624: the checkpoint renews while sessions keep running. Its preview is saved as the JSON plan confirm reads, in a new
-    // 0600 file (umask 077, noclobber); dry-run/apply is the fallback, which needs every amem session closed.
-    return [`(umask 077; set -C; amem migrate --sync-placement --checkpoint ${flags} --json > checkpoint-plan.json)`, `amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json ${flags}`,
-      `amem migrate --sync-placement --dry-run ${flags}`, `amem migrate --sync-placement --apply ${flags}`];
+    return [`amem migrate --sync-placement --dry-run ${flags}`, `amem migrate --sync-placement --apply ${flags}`,
+      `(umask 077; set -C; amem migrate --sync-placement --checkpoint ${flags} --json > checkpoint-plan.json)`, `amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json ${flags}`];
   } catch { return ["amem doctor"]; }
 }
 

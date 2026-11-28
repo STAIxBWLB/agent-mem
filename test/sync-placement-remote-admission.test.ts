@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { createMemoryMcp } from "../src/mcp-memory.ts";
+import { registerReaderLease } from "../src/memory/reader-lease.ts";
 import { runCli } from "../src/cli.ts";
 import { openShardStore } from "../src/memory/store.ts";
 import { shardDir, shardKeyHash } from "../src/memory/shard.ts";
@@ -39,8 +41,17 @@ test("remote-only realm is explicitly previewed and admitted without changing ex
     const preview = JSON.parse(dry); expect(preview.state).toBe("preview"); expect(preview.omitted).toBe(0); expect(preview.remoteHead).toMatch(/^[a-f0-9]{40}$/);
     expect(preview.nextStep).toBe("amem migrate --sync-placement --admit <project> --from-remote --apply");
     expect(dry).not.toContain(target); expect(dry).not.toContain(remote); expect(existsSync(join(project, "generation.json"))).toBe(false);
-    const applied = JSON.parse(await invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--json"]));
-    expect(applied).toMatchObject({ state: "admitted", omitted: 0, nextStep: "amem sync" });
+    const mcp = createMemoryMcp({ cwd: b.root, base: b.home, project: shared });
+    const reader = openShardStore({ memoryDir: b.home, project: shared, deferPromotions: true });
+    const apply = () => invoke(["migrate", "--sync-placement", "--admit", target, "--from-remote", "--apply", "--json"]);
+    try {
+      const targetLease = registerReaderLease(project);
+      try { await expect(apply()).rejects.toThrow(); } finally { targetLease(); }
+      expect(existsSync(join(project, "generation.json"))).toBe(false);
+      expect(JSON.parse(await apply())).toMatchObject({ state: "admitted", omitted: 0, nextStep: "amem sync" });
+      expect(reader.list({ project: shared }).map(row => row.text)).toContain(`inventory note for ${shared}`);
+      expect(await mcp.tools.amem_search({ query: "inventory" })).toHaveProperty("hits");
+    } finally { reader.close(); mcp.close(); }
     expect(readFileSync(join(project, "project.json"))).toEqual(before);
     const workAgain = new WorkListStore({ base: b.home, project: target, policy: () => true });
     try { expect((await workAgain.read())[0]?.items[0]?.task).toBe("preserved local work"); } finally { workAgain.close(); }

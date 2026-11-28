@@ -47,7 +47,7 @@ import { CaptureStore, readCaptureConfigFile, writeCaptureConfigFile, type Captu
 import { COMMANDS, CommandUsageError, commandHelp, commandPath, parseCommand, usageLine } from "./commands-table.ts";
 import { completionScript } from "./completion.ts";
 import { memoryHome, resolveMemoryHome } from "./memory/home.ts";
-import { realPath } from "./memory/platform.ts";
+import { memoryGitEnv, memoryGitSync, realPath } from "./memory/platform.ts";
 import { RemoteRealmRefusal } from "./memory/sync-placement-remote-refusal.ts";
 import { placementSyncBoundMessage, placementSyncBoundReceipt } from "./memory/sync-placement-bound.ts";
 import { hashJSON, readSelector, resolveProfile } from "./memory/generation.ts";
@@ -183,6 +183,29 @@ function assertSpoolReplayArguments(path: readonly string[], options: Record<str
   }
 }
 /** Realm admission receipts name hashes and counts only; the project key is the caller's own argument. */
+function resolveAdmissionProject(home: string, cwd: string, input: string): string {
+  if (input === ".") {
+    try {
+      const directory = realPath(cwd);
+      const git = memoryGitSync(["-C", directory, "rev-parse", "--git-dir"], {
+        encoding: "utf8", env: memoryGitEnv(process.env, { repositoryIsolation: true }),
+      });
+      if (git.status !== 0 || !git.stdout.trim()) throw new Error("Git project unavailable");
+      return resolveAlias(home, memoryProjectKey(directory, { strictGitErrors: true, repositoryIsolation: true }));
+    } catch {
+      throw new AgentUsageError("--admit . requires a readable Git project in the current directory. Run from that project or pass its canonical project key.");
+    }
+  }
+  if (!input || /^(?:\.\.?(?:[/\\]|$)|[/\\]|[a-z]:[/\\])/i.test(input)) {
+    throw new AgentUsageError("--admit requires a canonical project key. Run from the project and use --admit . to resolve it.");
+  }
+  if (/^github\.com\//i.test(input) && input !== input.toLowerCase()) {
+    const hint = /^github\.com\/[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(input) ? input.toLowerCase() : "github.com/<owner>/<repo>";
+    throw new AgentUsageError(`--admit requires a lowercase GitHub project key. Use ${hint}.`);
+  }
+  return input;
+}
+
 function realmAdmissionDetail(result: { state: string; next?: { sequence: number; mode: "new" | "existing" }; sequence?: number; headHash?: string; created?: boolean; discarded?: number; discards?: number; staged?: number; nextStep?: string }): string {
   if (result.staged) return `; ${result.state === "abandoned" ? "removed" : "would remove"} ${result.staged} private intent stage(s), ${result.discarded ?? result.discards ?? 0} bytes${result.state === "abandoned" ? "" : "; rerun with --confirm"}`;
   if (result.state === "admitted") return `; appended record ${result.sequence} ${result.headHash}${result.created ? "; wrote the realm's empty curated metadata first" : ""}`;
@@ -408,6 +431,8 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     if (marked && error instanceof Error && error.name === "PlacementCheckpointError" && error instanceof (await import("./memory/sync-placement-checkpoint-person.ts")).PlacementCheckpointError) throw new Error(error.message);
     // #578 Q3: a placement fence refusal is a fixed cause class and next step (no path, pid, row or project).
     if (marked && error instanceof Error && error.name === "PlacementInventoryFenceError" && error instanceof (await import("./memory/sync-placement-activation-locks.ts")).PlacementInventoryFenceError) throw new Error(error.message);
+    if (marked && error instanceof Error && error.name === "RealmAdmissionError"
+      && error instanceof (await import("./memory/sync-placement-realm-admission.ts")).RealmAdmissionError && error.causeClass === "busy") throw new Error(error.message);
     const recovery=marked?safeProfileLockMessage(error):undefined;if(recovery)throw new Error(recovery);
     // #520/#551: a placement refusal keeps its fixed data - the receipt case its target and remedy, every other case its
     // category, cause class and remedy - so a marked session prints that instead of the masked line. Every other placement
@@ -752,7 +777,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       }
       if (options["--admit"] !== undefined) {
         const { previewRealmAdmission, planRealmAbandon, applyRealmAdmission } = await import("./memory/sync-placement-realm-admission.ts");
-        const project = String(options["--admit"]);
+        const project = resolveAdmissionProject(memoryHome(), context.cwd ?? process.cwd(), String(options["--admit"]));
         const { readRemoteAdoption, inspectRemoteAdoptionPending, pendingRemoteAdoptions } = await import("./memory/sync-placement-remote-stage.ts");
         const realm = createHash("sha256").update(project).digest("hex"), recovery = options["--resume"] === true || options["--abandon"] === true;
         const pending = recovery ? pendingRemoteAdoptions(memoryHome()) : undefined;
