@@ -1086,11 +1086,12 @@ test("#659 AC1: doctor checks an existing console plugin manifest and names setu
     expect(report(result)).toContain("amem setup console --apply");
     put(manifest, original);
   }
-  // An intact module remains usable regardless of its install version.
+  // Design 1: an intact module from an older install is drift too; one from this release is not.
   const old = join(f.home, "old install"), plugin = join(old, "src", "ui", "plugin.ts");
   put(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.1.0" })); put(plugin, "// an older release's plugin\n");
   put(manifest, JSON.stringify({ api: 1, tool: "amem", module: plugin, sha256: createHash("sha256").update(readFileSync(plugin)).digest("hex") }));
-  expect(drift()).toMatchObject({ status: "ok", checked: 1, entries: [] });
+  expect(drift().entries).toEqual([expect.objectContaining({ target: "console", kind: "drift", reason: expect.stringMatching(/names amem 0\.1\.0, older than this amem [0-9.]+; run amem setup console --apply/) })]);
+  expect(report(drift())).toContain("amem setup console --apply");
 });
 
 test("#659 AC2: setup all previews an existing console manifest refresh and never creates one", async () => {
