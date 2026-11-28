@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.ts";
+import { realPath } from "../src/memory/platform.ts";
 
 // #590: the human status/doctor reports changed; `--json` must stay byte-identical to main (78e411bb) for the same home.
 // The goldens were written from that main commit by running this file with AMEM_WRITE_JSON_GOLDEN=1 before the renderer change.
@@ -14,10 +15,15 @@ const normalize = (text: string, home: string, cwd: string) => text.replaceAll(`
 for (const command of ["status", "doctor"] as const) {
   test(`#590: ${command} --json is byte-identical to main`, async () => {
     const home = mkdtempSync(join(tmpdir(), "amem-json-golden-")), cwd = mkdtempSync(join(tmpdir(), "amem-json-cwd-"));
-    const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = home;
+    const prior = process.env.AMEM_HOME, priorHub = process.env.AGENTHUB_HOME;
+    process.env.AMEM_HOME = home;
+    process.env.AGENTHUB_HOME = join(realPath(cwd), "unused-agenthub");
     let text: string;
     try { text = normalize(await runCli([command, "--json"], { cwd, env: { ...process.env, AMEM_HOME: home }, stdinTTY: false }), home, cwd); }
-    finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
+    finally {
+      if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior;
+      if (priorHub === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = priorHub;
+    }
     const file = join(GOLDEN, `${command}.json`);
     if (process.env.AMEM_WRITE_JSON_GOLDEN === "1" || !existsSync(file)) { if (process.env.AMEM_WRITE_JSON_GOLDEN !== "1") throw Error(`missing golden ${file}`); writeFileSync(file, text); }
     expect(text).toBe(readFileSync(file, "utf8"));

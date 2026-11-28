@@ -10,7 +10,7 @@ export interface ConsoleSetup { file: string; module: string; change: "add" | "r
 
 /** `$AGENTHUB_HOME/console/plugins/amem.json`, the acon plugin manifest; doctor and `setup all` read the same path. */
 export function consoleManifestFile(env: Readonly<Record<string, string | undefined>> = process.env): string {
-  const configured = env.AGENTHUB_HOME ?? process.env.AGENTHUB_HOME;
+  const configured = env.AGENTHUB_HOME;
   const family = configured?.trim() ? resolve(configured) : join(env.HOME?.trim() || homedir(), ".agenthub");
   return join(family, "console", "plugins", "amem.json");
 }
