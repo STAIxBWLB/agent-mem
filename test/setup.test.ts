@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runCli } from "../src/cli.ts";
 import { readSetupWriterRoots, setupReceiptRemedy } from "../src/setup-writer-roots.ts";
 import { applySetup, planSetup, refreshAgyWorkspaces, runSetup, setupPlanText, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
+import { acquireMutation } from "../src/memory/mutation.ts";
 import { consoleSetup } from "../src/setup-console.ts";
 import { readSetupDrift } from "../src/setup-drift.ts";
 import { doctorText } from "../src/memory/doctor-text.ts";
@@ -1085,12 +1086,11 @@ test("#659 AC1: doctor checks an existing console plugin manifest and names setu
     expect(report(result)).toContain("amem setup console --apply");
     put(manifest, original);
   }
-  // Design 1: an intact module from an older install is drift too; one from this release is not.
+  // An intact module remains usable regardless of its install version.
   const old = join(f.home, "old install"), plugin = join(old, "src", "ui", "plugin.ts");
   put(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.1.0" })); put(plugin, "// an older release's plugin\n");
   put(manifest, JSON.stringify({ api: 1, tool: "amem", module: plugin, sha256: createHash("sha256").update(readFileSync(plugin)).digest("hex") }));
-  expect(drift().entries).toEqual([expect.objectContaining({ target: "console", kind: "drift", reason: expect.stringMatching(/names amem 0\.1\.0, older than this amem [0-9.]+; run amem setup console --apply/) })]);
-  expect(report(drift())).toContain("amem setup console --apply");
+  expect(drift()).toMatchObject({ status: "ok", checked: 1, entries: [] });
 });
 
 test("#659 AC2: setup all previews an existing console manifest refresh and never creates one", async () => {
@@ -1154,3 +1154,19 @@ test("#659 AC2: setup all --apply refreshes an existing console manifest from th
   rmSync(manifest);
   expect(consoleSetup("apply", env, undefined, { existingOnly: true })).toMatchObject({ change: "none" }); expect(existsSync(manifest)).toBe(false);
 });
+
+
+test("#659 AC2: console refresh and explicit undo share the manifest mutation lock", () => {
+  const f = fixture(), env = { ...f.env, AGENTHUB_HOME: join(f.home, "hub") };
+  const { file } = consoleSetup("apply", env);
+  const release = acquireMutation(dirname(file));
+  expect(release).toBeFunction();
+  try {
+    expect(() => consoleSetup("apply", env, undefined, { existingOnly: true })).toThrow("console setup is busy");
+    expect(() => consoleSetup("undo", env)).toThrow("console setup is busy");
+    expect(existsSync(file)).toBe(true);
+  } finally { release?.(); }
+  expect(consoleSetup("undo", env).change).toBe("remove");
+  expect(consoleSetup("apply", env, undefined, { existingOnly: true }).change).toBe("none");
+  expect(existsSync(file)).toBe(false);
+}, 15_000);
