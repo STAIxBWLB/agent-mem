@@ -96,9 +96,9 @@ test("active diagnostics keep restore-or-renew and locator recovery never invent
   for(const category of ["running CLI","setup receipt","declared writer"] as PlacementWriterRootCategory[]){
     const error=new PlacementWriterContextError(category,"changed");
     if(category==="setup receipt")continue;   // #520: a receipt without a target keeps its own sentence below
-    // #624 AC1: the exact active sentence, checkpoint first, then the apply fallback with its all-sessions-closed condition.
-    expect(error.message).toBe(`Sync placement writer proof is changed (${category} category); restore the inventoried install, or renew it through the checkpoint while sessions keep running: save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list. Only if the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0), close every amem session (agent sessions, hub peers and their amem mcp servers), then, if needed, preview amem formats raise home 0.22.0 and add --confirm after the exact command is approved; then run amem migrate --sync-placement --dry-run with the complete --writer-root inventory, and run --apply after the exact apply command is approved.`);
-    expect(error.message.indexOf("--checkpoint --writer-root")).toBeLessThan(error.message.indexOf("--dry-run"));
+    // The fixed active refusal gives same-epoch renewal first and tells the reader when to use a checkpoint.
+    expect(error.message).toBe(`Sync placement writer proof is changed (${category} category); restore the inventoried install, or renew it while sessions keep running. If needed, preview amem formats raise home 0.22.0 and add --confirm after the exact command is approved. Run amem migrate --sync-placement --dry-run with the complete --writer-root inventory, then run --apply after the exact apply command is approved. When the live window needs compaction, save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list.`);
+    expect(error.message.indexOf("--dry-run")).toBeLessThan(error.message.indexOf("--checkpoint --writer-root"));
     expect(error.category).toBe(category);expect(error.causeClass).toBe("changed");expect(error.phase).toBe("active");
     expect(placementWriterRefusalDetail(error)).toEqual({causeClass:"changed",rootCategory:category});
   }
@@ -219,23 +219,22 @@ test("active writer remediation retains preview and approval without actor gatin
   expect(text).toContain("exact apply command is approved"); expect(text).not.toMatch(/have the person/i);
 });
 
-// #624 AC1: the marked surface (rebuilt from fixed fields) and a later sync failure that carries the refusal print the same checkpoint-first sentence.
-test("#624 AC1: marked and unmarked writer-proof refusals name the checkpoint preview and confirm before the apply fallback", () => {
+// The marked surface and a later sync failure reconstruct the same renewal guidance.
+test("#658: writer-proof refusals give same-epoch renewal first and checkpoint for compaction", () => {
   const refusal = new PlacementWriterContextError("running CLI", "missing");
   const later = placementSyncFailure(refusal, Error("transport refused"));
   expect(placementWriterRefusalText(later)).toBe(refusal.message);
   expect(placementWriterRefusalText(refusal)).toBe(refusal.message);
-  expect(refusal.message).toContain("save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list. Only if the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0), close every amem session");
+  expect(refusal.message).toContain("renew it while sessions keep running");
+  expect(refusal.message).toContain("When the live window needs compaction, save the preview");
+  expect(refusal.message.indexOf("--dry-run")).toBeLessThan(refusal.message.indexOf("--checkpoint --writer-root"));
   expect(placementWriterRefusalDetail(later)).toEqual({ causeClass: "missing", rootCategory: "running CLI" });
 });
 
-test("#624 AC2: a renewal readers refusal names the checkpoint continuation; activation, admission and busy texts are unchanged", () => {
-  const base = "Sync placement migration is readers; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.";
-  expect(new PlacementInventoryFenceError("readers", false, true).message).toBe(`${base} To renew writers while sessions keep running, use the checkpoint instead, which does not wait for readers: save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install root, then run amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list.`);
-  // initial activation and realm admission pass no renewal flag: today's text, no checkpoint sentence
-  expect(new PlacementInventoryFenceError("readers").message).toBe(base);
-  expect(new PlacementInventoryFenceError("readers").message).not.toContain("checkpoint");
-  expect(new PlacementInventoryFenceError("busy", false, true).message).toBe("Sync placement migration is busy; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.");
-  expect(new PlacementInventoryFenceError("busy", true).message).toBe(PLACEMENT_CHECKPOINT_BUSY_MESSAGE);
-  expect(new PlacementInventoryFenceError("readers", false, true).causeClass).toBe("readers");
+test("#658: activation names live readers and active mutations give surface-specific busy remedies", () => {
+  const activation = new PlacementInventoryFenceError("readers");
+  expect(activation.message).toBe("Sync placement migration is blocked by live readers; close cooperating readers/writers, then run amem migrate --sync-placement --dry-run before retrying.");
+  expect(activation.causeClass).toBe("readers");
+  expect(new PlacementInventoryFenceError("busy", "checkpoint").message).toBe(PLACEMENT_CHECKPOINT_BUSY_MESSAGE);
+  expect(new PlacementInventoryFenceError("busy", "renewal").message).toContain("Sync placement writer renewal is busy");
 });

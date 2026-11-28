@@ -4,7 +4,13 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+### Changed
+
+- Local and remote realm admission and same-epoch placement writer renewal now run with existing amem reader sessions open. Initial placement activation still requires readers to close. Same-epoch renewal keeps the current checkpoint window. Use `--admit .` to select the current Git project. Refs #658.
+
 ### Fixed
+
+- Placement admission lock refusals point to the admission dry-run and `amem sync --status`. Live-reader fence text changes from "is readers" to "blocked by live readers". Mixed-case GitHub keys and filesystem paths passed to `--admit` now refuse before creating a realm. Refs #658.
 
 - The MCP schemas for `amem_brief`, `amem_work_state_write` and `amem_remember` lower their argument limits to fit the stdio frame. Requests accepted under the old limits can now be refused by schema validation. Oversized `amem_search` results return whole ranked hits with a truncation flag and a narrowing hint. Refs #646.
 

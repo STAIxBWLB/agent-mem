@@ -216,28 +216,26 @@ Intake runs at the end of each Codex, Kimi, Pi and Qwen session once `amem setup
 
 A writer-context refusal is also `amem sync`'s own result (#551). A human run prints that fixed sentence and exits 1. With `--json` the run returns `{"ok": false, "pushed": false, "entries": 0, "failure": {"cause": "refusal"}, "error": <fixed sentence>}` instead of a single masked line, so a marked session reads the category, the cause class and the remedy; like every other failed `--json` sync that result exits 0, and the attempt is still recorded so `--if-due` backs off. A `setup receipt` refusal whose recorded install is gone prints one sentence too: the fixed category and cause class in front of the receipt's own cause marker (`setup_receipt_missing_install`), its target and both remedies, so a marked and an unmarked run read the same text. Every other refusal keeps the anonymous masked message.
 
-Moving an install root on a placement home has an order. Writer verification compares the running install and every applied setup receipt against the active inventory, so a root the inventory does not hold stops sync as a `missing` entry: `running CLI` for the install running the command, `setup receipt` for one a receipt names. Renew the inventory first, then move the setup receipts to the new root. Renew through the checkpoint first (#624). It excludes placement writers only, so agent sessions, hub peers and their `amem mcp` servers keep running:
-
-```
-(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <new root> --writer-root <other roots> --json > checkpoint-plan.json)
-amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json --writer-root <new root> --writer-root <other roots>
-amem setup <target> --apply
-```
-
-`amem migrate --sync-placement --writers` lists the current inventory, the running install and the setup receipts' roots, each marked present or missing, and prints that saving command filled in with the present roots (#639). When doctor's `writers` finding names a checkpoint, this listing is its first next step; see [sync](sync.md).
-
-Fall back to the dry-run and apply renewal only when the checkpoint preview refuses (an open obligation, no headroom, or a home floor below 0.30.0). That path refuses while any reader lease is live, so close every amem session first:
+Moving an install root on a placement home has an order. Writer verification compares the running install and every applied setup receipt against the active inventory, so a root the inventory does not hold stops sync as a `missing` entry: `running CLI` for the install running the command, `setup receipt` for one a receipt names. Renew the inventory first, then move the setup receipts to the new root. Agent sessions, hub peers and their `amem mcp` servers can stay open for both renewal paths.
 
 ```
 amem migrate --sync-placement --dry-run --writer-root <new root> --writer-root <other roots>
 amem migrate --sync-placement --apply --writer-root <new root> --writer-root <other roots>
+amem setup <target> --apply
 ```
 
-The writer-proof refusal, the doctor `writers` finding and a renewal `--apply` refused for live readers all name the checkpoint path in this order.
+If the live window needs compaction, review and confirm a checkpoint with the same complete root list.
+
+```
+(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <new root> --writer-root <other roots> --json > checkpoint-plan.json)
+amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json --writer-root <new root> --writer-root <other roots>
+```
+
+`amem migrate --sync-placement --writers` lists the current inventory, the running install and the setup receipts' roots, each marked present or missing, and prints the checkpoint saving command filled in with the present roots. See [sync](sync.md).
 
 After a writer root changes, an opted-in sync-run checkpoint (`amem migrate --sync-placement --checkpoint-on-bound on --confirm`, see [sync](sync.md)) refuses with `checkpoint-refused` until this renewal is applied, because it runs only with identical writer pins.
 
-`amem setup` previews that same order: the checkpoint preview and confirm first, then the dry-run/apply fallback. When the root it would register is provably outside the active placement writer inventory, its human report shows one warning and complete renewal commands with shell-quoted writer roots. The `--apply --json` receipt repeats the warning in `warnings`; setup writes no inventory entry, renews nothing and never refuses on this alone. An inventory it cannot read, or a home whose placement markers it cannot read or parse, is reported as unverified rather than as a root the inventory does not hold or as a home that never activated placement sync. Only a home proven not to be a placement home stays silent.
+`amem setup` previews that same order: the same-epoch dry-run and apply first, followed by the checkpoint preview and confirm for compaction. When the root it would register is provably outside the active placement writer inventory, its human report shows one warning and complete renewal commands with shell-quoted writer roots. The `--apply --json` receipt repeats the warning in `warnings`; setup writes no inventory entry, renews nothing and never refuses on this alone. An inventory it cannot read, or a home whose placement markers it cannot read or parse, is reported as unverified rather than as a root the inventory does not hold or as a home that never activated placement sync. Only a home proven not to be a placement home stays silent.
 
 V1 split-home sync durably holds verified foreign-generation prunes with a "held, not applied" warning. The opt-in v2 path below applies eligible complete same-realm public prunes across generations after durable proof and root-map commitment. Unsupported historical lineage and multi-realm translations remain held; targets can remain visible and agent-mem#15 AC4 stays open (see [the sync contract](contracts.md#per-shard-private-sync-15-t3)).
 

@@ -239,7 +239,7 @@ export const COMMANDS: Record<string, CommandDefinition> = {
       "--list-remote": flag("List remote project refs outside the inventory", "By hash, outside the active inventory."),
       "--writers": flag("List writer installs and the roots to declare", "Read-only: inventory, running install, setup receipts and the saving-preview command."),
       "--abandon": flag("Discard an interrupted placement attempt", "Pre-commit only. Initial activation requires both markers to match their original v2 bytes; realm admission requires --confirm."),
-      "--admit": text("Admit one new curated project realm", "A realm that appeared after activation, into the same epoch. Previews without --apply."),
+      "--admit": text("Admit one new curated project realm", "A realm that appeared after activation, into the same epoch. Use a canonical project key or . for the current Git project. Previews without --apply."),
       "--from-remote": flag("Admit the named remote-only realm", "Uses the configured placement sync remote."),
       "--confirm": flag("Confirm the previewed abandonment or checkpoint"),
       "--checkpoint": flag("Preview a placement checkpoint", "Person-reviewed: preview by default, then --confirm --plan, --resume or --abandon."),

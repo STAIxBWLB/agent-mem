@@ -1,6 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createMemoryMcp } from "../src/mcp-memory.ts";
+import { acquireMutation } from "../src/memory/mutation.ts";
+import { generationSyncLock } from "../src/memory/generation-sync.ts";
 import { runCli } from "../src/cli.ts";
 import { withProfileLock } from "../src/memory/generation.ts";
 import { openShardStore } from "../src/memory/store.ts";
@@ -14,6 +17,7 @@ import { readEffectiveSyncPlacementWriters } from "../src/memory/sync-placement-
 import { holdPlacementRow, readPlacementProjection, releasePlacementHold, type PlacementJournalPort } from "../src/memory/sync-placement-journal.ts";
 import { captureSyncPlacementContext } from "../src/memory/sync-placement-capture.ts";
 import { createPlacementAttestation } from "../src/sync-placement-writer-context.ts";
+import { RealmExtensionFormatError } from "../src/memory/sync-placement-realm-extension-format.ts";
 import { REALM_EXTENSION_LOG, readRealmExtensionHistory } from "../src/memory/sync-placement-realm-extension-storage.ts";
 import { applyRealmAdmission, planRealmAbandon, previewRealmAdmission } from "../src/memory/sync-placement-realm-admission.ts";
 import { REALM_INTENT_PREFIX } from "../src/memory/sync-placement-realm-pending.ts";
@@ -34,6 +38,52 @@ const bindingOf = (home: string) => {
     generation: active.epoch.generation, initialProjectHashes: active.activation.realms.flatMap(realm => realm.scope === "project" ? [realm.keyHash] : []) } };
 };
 const realmsOf = (home: string) => readEffectiveRealmInventory(home, bindingOf(home).active).realms;
+
+test("#658: local admission resolves cwd and commits while existing readers stay open", async () => {
+  const project = "example.test/admission/existing";
+  const f = await inventoryFixture(1, [project], true);
+  git(f.root, "init");
+  git(f.root, "remote", "add", "origin", "git@github.com:ExampleOrg/Repo.git");
+  const admitted = "github.com/exampleorg/repo";
+  const mcp = createMemoryMcp({ cwd: f.root, base: f.home, project });
+  const reader = openShardStore({ memoryDir: f.home, project, deferPromotions: true });
+  const prior = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = f.home;
+  try {
+    const invoke = (key: string, mode = "--dry-run", cwd = f.root) => runCli(
+      ["migrate", "--sync-placement", "--admit", key, mode, "--json"], { cwd, env: {} },
+    );
+    const before = readEffectiveRealmInventory(f.home, bindingOf(f.home).active);
+    const notes = reader.list({ project });
+    expect(JSON.parse(await invoke("."))).toMatchObject({ realm: digest(admitted), state: "not-local" });
+    await expect(invoke("github.com/ExampleOrg/Repo")).rejects.toThrow(admitted);
+    await expect(invoke("/abs/path")).rejects.toThrow("canonical project key");
+    await expect(invoke("..")).rejects.toThrow("canonical project key");
+    await expect(invoke(".", "--dry-run", join(f.root, "missing"))).rejects.toThrow("readable Git project");
+    expect(JSON.parse(await invoke(".", "--apply"))).toMatchObject({ realm: digest(admitted), state: "admitted" });
+    expect(() => before.assertCurrent()).toThrow(RealmExtensionFormatError);
+    expect(realmsOf(f.home)).toContainEqual(expect.objectContaining({ keyHash: digest(admitted) }));
+    expect(reader.list({ project })).toEqual(notes);
+    expect(await mcp.tools.amem_search({ query: "inventory" })).toHaveProperty("hits");
+  } finally {
+    reader.close(); mcp.close();
+    if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior;
+  }
+}, 60_000);
+
+test("#658: both placement lock conflicts report the admission retry", async () => {
+  const f = await inventoryFixture(1, undefined, true);
+  for (const lock of [generationSyncLock, acquireMutation]) {
+    const release = lock(f.home);
+    expect(release).toBeFunction();
+    try {
+      await expect(applyRealmAdmission(f.home, "example.test/admission/busy", { mode: "apply" })).rejects.toMatchObject({
+        name: "RealmAdmissionError", causeClass: "busy",
+        message: expect.stringContaining("amem migrate --sync-placement --admit <project> --dry-run"),
+      });
+    } finally { release?.(); }
+  }
+}, 60_000);
 
 test("#448: a retained admission prevents another realm from consuming its sequence", async () => {
   const f = await inventoryFixture(1, undefined, true), first = "example.test/placement/serial-first", second = "example.test/placement/serial-second";

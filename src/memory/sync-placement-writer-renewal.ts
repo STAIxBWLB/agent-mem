@@ -15,9 +15,7 @@ import { readWriterHistory, writeWriterRenewalIntent, writeWriterRevision, appen
 import { createWriterRevision, createWriterCommit, createWriterRenewalIntent, writerRevisionWriters, WRITER_REVISION_SCHEMA, WRITER_RENEWAL_INTENT_SCHEMA, WRITER_REVISION_LIMIT, WRITER_COMMIT_LOG, SharedWriterRevisionError, type WriterRenewalIntent } from "./sync-placement-writer-revision-format.ts";
 import { requireWriterRenewalHomeFloor } from "./sync-placement-prerequisites.ts";
 import { resolvePlacementWindow } from "./sync-placement-checkpoint-storage.ts";
-import { withPlacementActivationFences as activationFences } from "./sync-placement-activation-locks.ts";
-/** #624: renewal runs on an active inventory, so its readers refusal names the checkpoint continuation. */
-const withPlacementActivationFences: typeof activationFences = (home, directories, work) => activationFences(home, directories, work, { renewal: true });
+import { withPlacementMutationFences } from "./sync-placement-activation-locks.ts";
 import { assertPlacementActivationOwner, type PlacementActivationOwner } from "./sync-placement-activation-proof.ts";
 import { previewSyncPlacementSources, previewOwnedSyncPlacementSources } from "./sync-placement-capture.ts";
 import { captureInspectionPendingPrunes } from "./sync-placement-inspection-pending.ts";
@@ -95,7 +93,7 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
   try{history=readWriterHistory(home,b,{allowPending:true});}catch(error){
     if(options.mode!=="abandon"||!error||typeof error!=="object"||types.isProxy(error)||!(error instanceof SharedWriterRevisionError)||Object.getOwnPropertyDescriptor(error,"code")?.value!=="staging")throw error;
     requireWriterRenewalHomeFloor(home);
-    return withPlacementActivationFences(home,directories(home,initial),async(mutation,owner)=>{
+    return withPlacementMutationFences(home,directories(home,initial),async(mutation,owner)=>{
       const locator=readInitialSyncPlacementWriterLocator(home),seal=hashJSON({action:"abandon-unpublished-writer-staging",...b,initialLocatorHash:locator.seal});
       let authorized=false;try{authorized=options.authorize(Object.freeze({seal,generation:b.generation,homeHash:b.homeHash}))===true;}catch{}
       if(!authorized)throw new WriterRenewalError("authorization");
@@ -106,7 +104,7 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
       };
       const cleared=abandonUnpublishedWriterStaging(home,{...b,initialLocatorHash:locator.seal},{mutation,assertCurrent,assertCommittedHistory});
       return{mode:options.mode,active:true,abandoned:true,unpublishedStagingRemoved:cleared.removed,nextStep:"amem migrate --sync-placement --dry-run"};
-    });
+    }, { surface: "renewal" });
   }
   if(!history.pending&&(options.mode==="resume"||options.mode==="abandon")&&history.sequence===0)return undefined;
   if(options.mode==="dry-run"){
@@ -132,7 +130,7 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
   // An unlocked refusal stays entirely passive; crashed owners must first be reclaimed by the real fences below.
   const passivePreflight=options.mode==="apply"||options.mode==="resume"&&history.pending&&!history.appendStarted&&!lstatSync(join(home,"profile.lock"),{throwIfNoEntry:false});
   let sourceCheck=passivePreflight?(journalClear(home,b.epochHash),pendingSources(home)):undefined;
-  return withPlacementActivationFences(home,directories(home,initial),async(mutation,owner)=>{
+  return withPlacementMutationFences(home,directories(home,initial),async(mutation,owner)=>{
     if(options.mode==="resume"&&history.pending&&!history.appendStarted){journalClear(home,b.epochHash);sourceCheck=pendingSources(home,owner);}
     let intent=history.pending;
     const cleanupOnly=!intent&&options.mode==="resume"&&!!history.current;
@@ -185,5 +183,5 @@ export async function renewSyncPlacementWriters(options:PlacementActivationOptio
     check();writeWriterRenewalIntent(home,fixed,storage);writeWriterRevision(home,fixed,storage);appendWriterCommit(home,fixed,storage);
     clearWriterRenewalIntent(home,fixed,{...storage,assertCurrent:metadata});
     return{mode:options.mode,active:true,renewed:true,epochHash:b.epochHash,sequence:fixed.revision.sequence,revisionHash:fixed.commit.seal,remainingRevisions:WRITER_REVISION_LIMIT-fixed.revision.sequence};
-  });
+  }, { surface: "renewal" });
 }
