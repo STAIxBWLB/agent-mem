@@ -1,11 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore as LegacyMemoryStore } from "@staix/agent-mem-v1";
 import { MemoryStore, fts5Available, CaptureStore, type NoteInput } from "../src/index.ts";
-import { setFts5AvailableForTest, type SearchIndex } from "../src/memory/search-fts.ts";
+import { searchFileName, setFts5AvailableForTest, type SearchIndex } from "../src/memory/search-fts.ts";
 
 
 const project = "proj";
@@ -157,12 +157,43 @@ test("P2-4: the project filter runs inside the FTS query; a busy sibling project
   expect(result.hits.map((h) => h.view?.id)).toContain(mine);
 });
 
+test("#583: the versioned cache leaves the old search file alone and refills from rows on reopen", () => {
+  if (!fts5Available()) return;
+  const dir = home(), base = join(dir, "memory"), legacy = join(base, "search.db");
+  mkdirSync(base);
+  const old = new Database(legacy);
+  old.run("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  old.run("INSERT INTO meta VALUES ('schema', '2')");
+  old.close();
+  const oldBytes = readFileSync(legacy);
+  const initial = new MemoryStore({ home: dir, screen: () => "keep" });
+  let id: string;
+  try {
+    id = initial.note(note("개인 정보 처리 방침을 검토했습니다"));
+    expect(initial.search("개인정보처리방침", { project, includeCapture: false }).hits.map(hit => hit.view?.id)).toEqual([id]);
+  } finally { initial.close(); }
+  const file = join(base, searchFileName());
+  expect(existsSync(file)).toBe(true);
+  expect(readFileSync(legacy)).toEqual(oldBytes);
+  const docs = () => {
+    const db = new Database(file, { readonly: true });
+    try { return db.query("SELECT ref, body, hangul FROM docs ORDER BY ref").all(); } finally { db.close(); }
+  };
+  const incremental = docs();
+  expect(incremental).toHaveLength(1);
+  rmSync(file);
+  const reopened = store(dir);
+  expect(reopened.search("개인정보처리방침", { project, includeCapture: false }).hits.map(hit => hit.view?.id)).toEqual([id!]);
+  expect(docs()).toEqual(incremental);
+  expect(readFileSync(legacy)).toEqual(oldBytes);
+});
+
 test("P2-5: a locked derived search.db never fails or stalls a curated write; the next search resyncs", () => {
   if (!fts5Available()) return;
   const dir = home(), s = store(dir);
   s.note(note("a note written before the lock"));
   // Hold the derived copy's write lock from a raw connection: curated writes must still go through, fast.
-  const holder = new Database(join(s.dir, "search.db"));
+  const holder = new Database(join(s.dir, searchFileName()));
   holder.run("PRAGMA busy_timeout = 0");
   holder.run("BEGIN EXCLUSIVE");
   const start = performance.now();

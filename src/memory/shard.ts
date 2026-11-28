@@ -3,6 +3,7 @@ import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts
 import { assertPlacementRuntime, doctorScratchBinding, doctorScratchInventory, readPlacementV3Marker, SyncPlacementRuntimeError } from "./sync-placement-guard.ts";
 import { assertNoPublicPruneIntent, readPublicPruneView } from "./public-prune-view.ts";
 import { indexFileName } from "./index-file.ts";
+import { searchFileName } from "./search-fts.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, linkSync, lstatSync, mkdirSync, opendirSync, readFileSync, rmSync, writeFileSync, type Dir } from "node:fs";
 import { join } from "node:path";
@@ -208,7 +209,7 @@ export function assertCuratedShardLayout(memoryDir: string, opts: { project?: st
   check(dir, true);
   for (const folder of ["log", "local", "legacy", "legacy/log", "legacy/local", "legacy-main", "legacy-main/log", "legacy-main/local"]) check(join(dir, folder), true);
   for (const name of ["project.json", "generation.json", "generation-seal.json", "migration-sources.json", "machine.json", "legacy/machine.json", "legacy-main/machine.json", "prune-translations.jsonl"]) check(join(dir, name), false);
-  for (const database of new Set(["index.db", "index-v2.db", indexFileName(false), indexFileName(true), "search.db", "mutation-lock.db"])) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
+  for (const database of new Set(["index.db", "index-v2.db", indexFileName(false), indexFileName(true), "search.db", searchFileName(), "mutation-lock.db"])) for (const suffix of ["", "-wal", "-shm", "-journal"]) check(join(dir, database + suffix), false);
 }
 /** Fixed curated paths cannot redirect writes into legacy inputs or another shard.
  * ponytail: same-user concurrent parent replacement needs descriptor-relative opens; fixed preflight does not claim that fence.

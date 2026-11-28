@@ -35,6 +35,14 @@ for (const fallback of [false, true]) test(`expiry is filtered before the final 
   expect(value.best("needle", 10, now).map(hit => hit.value.id)).toContain("future-beyond-sqlite-calendar");
 });
 
+test("#583: screened FTS finds joined curated compounds without adding capture matches", () => {
+  if (!fts5Available()) return;
+  const value = index();
+  value.append([row("curated", "개인 정보 처리 방침"), row("capture", "개인 정보 처리 방침", "capture")]);
+  expect(value.best("개인정보처리방침", 2, now).map(hit => hit.value.id)).toEqual(["curated"]);
+  expect(value.bestCaptureGroups("개인정보처리방침", 2, now)).toEqual([]);
+});
+
 test.skipIf(process.platform !== "linux" && process.platform !== "darwin")("spilled TEMP state is owner-only and already unlinked while open", () => {
   const files = () => {
     const result: { ino: number; mode: number; links: number }[] = [];

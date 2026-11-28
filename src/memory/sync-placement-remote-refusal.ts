@@ -15,7 +15,7 @@ const messages: Record<RemoteRealmCause, string> = {
 };
 export class RemoteRealmRefusal extends Error {
   constructor(readonly causeClass: RemoteRealmCause, subpath?: string) {
-    const safeName = subpath && subpath.length <= 128 && !/[\r\n]/.test(subpath) && /^(?:log|local|legacy|legacy-main|generation\.json|generation-seal\.json|migration-sources\.json|machine\.json|prune-translations\.jsonl|prune-plans|public-prune-objects|public-prune-inputs|public-prune-input-sets|index(?:-v[0-9]+(?:-i[0-9]+)?)?\.db(?:-wal|-shm|-journal)?|search\.db(?:-wal|-shm|-journal)?)$/.test(subpath) ? subpath : undefined;
+    const safeName = subpath && subpath.length <= 128 && !/[\r\n]/.test(subpath) && /^(?:log|local|legacy|legacy-main|generation\.json|generation-seal\.json|migration-sources\.json|machine\.json|prune-translations\.jsonl|prune-plans|public-prune-objects|public-prune-inputs|public-prune-input-sets|index(?:-v[0-9]+(?:-i[0-9]+)?)?\.db(?:-wal|-shm|-journal)?|search(?:-s[0-9]+)?\.db(?:-wal|-shm|-journal)?)$/.test(subpath) ? subpath : undefined;
     super(`Remote realm unavailable (${causeClass}): ${safeName ? `existing curated subpath: ${safeName}. ` : ""}${messages[causeClass]}`); this.name = "RemoteRealmRefusal";
   }
 }

@@ -30,7 +30,7 @@ function rejectExistingCurated(dir: string): void {
     "prune-translations.jsonl", "prune-plans", "public-prune-objects", "public-prune-inputs", "public-prune-input-sets"]);
   for (const name of readdirSync(dir)) {
     if (fixed.has(name) || /^index(?:-v[0-9]+(?:-i[0-9]+)?)?\.db(?:-wal|-shm|-journal)?$/.test(name)
-      || /^search\.db(?:-wal|-shm|-journal)?$/.test(name))
+      || /^search(?:-s[0-9]+)?\.db(?:-wal|-shm|-journal)?$/.test(name))
       throw new RemoteRealmRefusal("existing", name);
   }
 }

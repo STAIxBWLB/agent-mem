@@ -22,7 +22,7 @@ import { assertProjectActive, lifecycleResolver } from "./lifecycle.ts";
 export { machineId, type Machine } from "./machine.ts";
 import { rankedScore, rankedScoreDetails, unrankedScoreDetails, type SearchScoreDetails } from "./search-score.ts";
 export type { SearchScoreDetails } from "./search-score.ts";
-import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch } from "./search-fts.ts";
+import { readWindowSql, readRef, type ReadWindow, type ReadRef, SearchIndex, captureSearch, searchFileName } from "./search-fts.ts";
 import { assertCuratedShardPaths, ensureShardDescriptor, readShardDescriptor, readShardedSelection, aliasedKeys, effectiveAliases, resolveAlias, resolveShardProfile, shardDir, shardKeyHash, shardMachineDir, userShardDir } from "./shard.ts";
 import { readCaptureConfig, type CaptureRow } from "./capture.ts";
 import { assertSharedV1Op } from "./ops-contract.ts";
@@ -323,8 +323,10 @@ export class MemoryStore {
       db.run("CREATE INDEX IF NOT EXISTS ops_settlement ON ops(target) WHERE op = 'settle'");
       this.db = db;
       this.mutationDb = openedMutation = mutationDatabase(this.dir);
-      // One derived FTS copy per profile: a generation handle and a shared-v1 handle on one home never resync-fight.
-      this.searchIndex = openedSearch = new SearchIndex(this.recapScratch ? ":memory:" : this.profile.sharded ? join(this.dir, "search.db") : join(home, this.profile.kind === "generation" ? `search-${this.profile.generation}.db` : "search.db"));
+      // One derived FTS copy per profile and schema. Other generations and older readers keep their own files.
+      const searchDir = this.profile.sharded ? this.dir : home;
+      const searchGeneration = this.profile.kind === "generation" && !this.profile.sharded ? this.profile.generation : undefined;
+      this.searchIndex = openedSearch = new SearchIndex(this.recapScratch ? ":memory:" : join(searchDir, searchFileName(searchGeneration)));
       this.memoryBaseDir = home;
       try { chmodSync(indexFile, 0o600); } catch { /* best effort */ }
       if (this.profile.kind === "generation") this.generationIndex = new GenerationIndex({ profile: this.profile, db, now: this.now,

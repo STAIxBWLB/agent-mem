@@ -7,18 +7,23 @@ import type { CaptureRow } from "./capture.ts";
 /**
  * #13 R5: full-text search over the curated tier with SQLite FTS5 and BM25, replacing substring matching where the
  * platform's sqlite has FTS5 (verified in bun:sqlite on Bun 1.4.2, macOS and Linux). The index lives in its own
- * `search.db` beside the memory logs: `index.db`'s table set is part of the shared-v1 golden contract and must not
+ * its versioned search file beside the memory logs: `index.db`'s table set is part of the shared-v1 golden contract and must not
  * gain tables, and the sync .gitignore already keeps every other file machine-local. `search.db` is derived only
  * from curated rows: every add is idempotent by entry id, and a store rebuild, a prune, a lock or any count drift
  * forces a full resync, so the incremental index equals a rebuild.
  *
- * The copy is a DERIVED cache: a locked or failing `search.db` never fails or stalls a curated write — the apply
+ * The copy is a DERIVED cache: a locked or failing search file never fails or stalls a curated write — the apply
  * path marks the copy stale and the next search resyncs it. Its busy timeout is zero: derived writes fail fast and
  * degrade, never queue behind another process's lock (R2's 150 ms hook budget includes the write path).
  */
 
 /** Bumped when the docs table's shape changes: an older copy is dropped and rebuilt from the curated rows. */
-const SEARCH_SCHEMA = "2";
+const SEARCH_SCHEMA = "3";
+
+/** Separate cache files let older and newer releases share a home without rebuilding each other's FTS tables. */
+export function searchFileName(generation?: string): string {
+  return generation === undefined ? `search-s${SEARCH_SCHEMA}.db` : `search-${generation}-s${SEARCH_SCHEMA}.db`;
+}
 
 let probe: boolean | undefined;
 /** One runtime probe; the answer is cached for the process. */
@@ -43,11 +48,16 @@ export function setFts5AvailableForTest(value: boolean | undefined): void {
 
 const KOREAN_PARTICLES = ["에는", "에서", "으로", "에게", "한테", "처럼", "보다", "까지", "부터", "마다", "조차", "마저", "이나", "이랑", "하고", "은", "는", "이", "가", "을", "를", "에", "로", "와", "과", "도", "만", "의", "랑", "나", "라"];
 
-/** The original term plus a common-particle-stripped Korean alternative, so both 메모리 and 메모리는 match either form. */
+/** Keep at least two characters after removing a common Korean suffix. */
+export function stripKoreanParticle(term: string): string {
+  const particle = KOREAN_PARTICLES.find(p => term.endsWith(p) && term.length - p.length >= 2);
+  return particle ? term.slice(0, -particle.length) : term;
+}
+
+/** The original term plus a common-particle-stripped Korean alternative. */
 function queryVariants(term: string): string[] {
-  if (!/[가-힣]/u.test(term)) return [term];
-  const particle = KOREAN_PARTICLES.find((p) => term.endsWith(p) && term.length - p.length >= 2);
-  return particle ? [term, term.slice(0, -particle.length)] : [term];
+  const bare = /[가-힣]/u.test(term) ? stripKoreanParticle(term) : term;
+  return bare === term ? [term] : [term, bare];
 }
 
 /**
@@ -60,6 +70,22 @@ export function ftsTerms(q: string): string {
   const terms = [...new Set(q.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? [])].slice(0, 32);
   const variants = [...new Set(terms.flatMap(queryVariants))].slice(0, 64);
   return variants.map((t) => `"${t.replaceAll('"', '""')}" *`).join(" OR ");
+}
+
+const joinHangul = (text: string): string => text.replace(/(?<=[가-힣])[ \t]+(?=[가-힣])/gu, "");
+const hangulShadow = (text: string): string => (joinHangul(text).match(/[가-힣]+/gu) ?? []).join(" ");
+const BODY_RANK = "bm25(docs, 1.0, 0.0)";
+const COMPOUND_RANK = "bm25(docs, 1.0, 4.0)";
+
+/** The ordinary body lexicon stays separate from the joined Hangul spans. */
+function curatedMatch(query: string, includeCompounds = true): { match: string; rank: string } {
+  const terms = ftsTerms(query);
+  const trimmed = query.trim();
+  const compound = includeCompounds && /^[가-힣]+(?:[ \t]+[가-힣]+)*$/u.test(trimmed) ? joinHangul(trimmed) : "";
+  return {
+    match: !terms ? "" : `body : (${terms})${compound.length >= 3 ? ` OR hangul : "${compound}" *` : ""}`,
+    rank: compound.length >= 3 ? COMPOUND_RANK : BODY_RANK,
+  };
 }
 
 export interface CuratedDoc { id: string; at: string; project: string; tier: string; scope: string; body: string }
@@ -84,7 +110,7 @@ export class SearchIndex {
         db.run("DELETE FROM meta");
         db.query("INSERT INTO meta (key, value) VALUES ('schema', ?)").run(SEARCH_SCHEMA);
       }
-      db.run("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(body, ref UNINDEXED, project UNINDEXED, tier UNINDEXED, at UNINDEXED, scope UNINDEXED)");
+      db.run("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(body, hangul, ref UNINDEXED, project UNINDEXED, tier UNINDEXED, at UNINDEXED, scope UNINDEXED)");
       // FTS5 has no unique constraint: refs remembers what is indexed, so a repeated or rebuilt row is never doubled.
       db.run("CREATE TABLE IF NOT EXISTS refs (ref TEXT PRIMARY KEY)");
       if (file !== ":memory:") try { chmodSync(file, 0o600); } catch { /* best effort */ }
@@ -107,7 +133,7 @@ export class SearchIndex {
         // confuse it), so idempotency is a plain lookup, never the statement's change count.
         if (db.query("SELECT 1 FROM refs WHERE ref = ?").get(doc.id)) return;
         db.query("INSERT INTO refs (ref) VALUES (?)").run(doc.id);
-        db.query("INSERT INTO docs (body, ref, project, tier, at, scope) VALUES (?, ?, ?, ?, ?, ?)").run(doc.body, doc.id, doc.project, doc.tier, doc.at, doc.scope);
+        db.query("INSERT INTO docs (body, hangul, ref, project, tier, at, scope) VALUES (?, ?, ?, ?, ?, ?, ?)").run(doc.body, hangulShadow(doc.body), doc.id, doc.project, doc.tier, doc.at, doc.scope);
         db.query("INSERT INTO meta (key, value) VALUES ('curated', '1') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").run();
       }).immediate();
     } catch { this.markDirty(); } // the FTS copy degrades, the curated write stands
@@ -138,7 +164,7 @@ export class SearchIndex {
         let n = 0;
         for (const doc of load()) {
           db.query("INSERT INTO refs (ref) VALUES (?)").run(doc.id);
-          db.query("INSERT INTO docs (body, ref, project, tier, at, scope) VALUES (?, ?, ?, ?, ?, ?)").run(doc.body, doc.id, doc.project, doc.tier, doc.at, doc.scope);
+          db.query("INSERT INTO docs (body, hangul, ref, project, tier, at, scope) VALUES (?, ?, ?, ?, ?, ?, ?)").run(doc.body, hangulShadow(doc.body), doc.id, doc.project, doc.tier, doc.at, doc.scope);
           n++;
         }
         db.query("INSERT INTO meta (key, value) VALUES ('curated', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(n));
@@ -168,17 +194,17 @@ export class SearchIndex {
    */
   query(q: string, limit: number, project?: string | readonly string[], offset = 0): RankedRef[] {
     if (!this.db) return [];
-    const match = ftsTerms(q);
+    const { match, rank } = curatedMatch(q);
     if (!match) return [];
     const where = project ? "docs MATCH ? AND (project IN (SELECT value FROM json_each(?)) OR scope = 'shared')" : "docs MATCH ?";
     const bind = project ? [match, JSON.stringify(typeof project === "string" ? [project] : project)] : [match];
-    return this.db.query(`SELECT ref, project, tier, at, bm25(docs) AS rank FROM docs WHERE ${where} ORDER BY rank, ref LIMIT ? OFFSET ?`).all(...bind, limit, offset) as RankedRef[];
+    return this.db.query(`SELECT ref, project, tier, at, ${rank} AS rank FROM docs WHERE ${where} ORDER BY rank, ref LIMIT ? OFFSET ?`).all(...bind, limit, offset) as RankedRef[];
   }
 
   /** Matching identities in chronological keyset pages; raw-corpus BM25 never selects a private-policy window. */
   candidates(q: string, window: ReadWindow): ReadRef[] {
     if (!this.db) return [];
-    const match = ftsTerms(q); if (!match) return [];
+    const { match } = curatedMatch(q); if (!match) return [];
     const { columns, where, bind } = readWindowSql(window, "ref");
     where.push("docs MATCH ?"); bind.push(match);
     return (this.db.query(`SELECT ${columns} FROM docs WHERE ${where.join(" AND ")} ORDER BY candidate_position, candidate_id LIMIT ?`)
@@ -188,7 +214,7 @@ export class SearchIndex {
   close(): void { this.db?.close(); }
 }
 
-const SCREENED_SCORE = rankedScoreSql(), SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
+const SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
 
 /** Screened query-local corpus in SQLite-owned TEMP storage, removed even when the process exits. */
 export class ScreenedSearchIndex<T> {
@@ -204,8 +230,8 @@ export class ScreenedSearchIndex<T> {
       if ((db.query("SELECT sqlite_compileoption_used('TEMP_STORE=3') AS memoryOnly").get() as { memoryOnly: number }).memoryOnly) throw Error("disk-backed search unavailable");
       db.run("PRAGMA temp_store = FILE");
       db.run(this.available
-        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED, event UNINDEXED, session UNINDEXED)"
-        : "CREATE TEMP TABLE docs (body TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL, event TEXT, session TEXT)");
+        ? "CREATE VIRTUAL TABLE temp.docs USING fts5(body, hangul, ref UNINDEXED, tier UNINDEXED, at UNINDEXED, payload UNINDEXED, expires UNINDEXED, event UNINDEXED, session UNINDEXED)"
+        : "CREATE TEMP TABLE docs (body TEXT, hangul TEXT, ref TEXT, tier TEXT, at TEXT, payload TEXT, expires REAL, event TEXT, session TEXT)");
       db.run("PRAGMA temp.cache_size = -2048");
       // A platform spill minimum can exceed cache_size (macOS: 20,000 pages).
       // Spill at the cache target so dirty TEMP pages cannot accumulate behind that minimum.
@@ -215,26 +241,27 @@ export class ScreenedSearchIndex<T> {
   }
 
   append(rows: readonly { body: string; ref: string; tier: string; at: string; value: T; expiresAt?: string | null; event?: string; session?: string }[]): void {
-    const insert = this.db.query("INSERT INTO docs (body, ref, tier, at, payload, expires, event, session) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    const insert = this.db.query("INSERT INTO docs (body, hangul, ref, tier, at, payload, expires, event, session) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
     this.db.transaction(() => {
       for (const row of rows) {
         const deadline = row.expiresAt == null ? null : Date.parse(row.expiresAt);
         // Invalid deadlines fail closed; this sentinel predates every representable Date.
-        insert.run(row.body, row.ref, row.tier, row.at, JSON.stringify(row.value), deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline, row.event ?? null, row.session ?? null);
+        insert.run(row.body, this.available && row.tier !== "capture" ? hangulShadow(row.body) : "", row.ref, row.tier, row.at, JSON.stringify(row.value), deadline !== null && !Number.isFinite(deadline) ? Number.MIN_SAFE_INTEGER : deadline, row.event ?? null, row.session ?? null);
       }
     })();
   }
 
   best(query: string, limit: number, now: number, useFts = this.available, explain = false): { value: T; score: number; scoreDetails?: ScoreFactors }[] {
-    if (useFts && !ftsTerms(query)) return [];
-    const score = useFts ? SCREENED_SCORE : SCREENED_SUBSTRING_SCORE;
+    const { match, rank } = curatedMatch(query);
+    if (useFts && !match) return [];
+    const score = useFts ? rankedScoreSql(rank) : SCREENED_SUBSTRING_SCORE;
     const instant = new Date(now).toISOString();
     const where = "WHERE (expires IS NULL OR expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
-    const factors = explain ? rankedScoreSqlDetails(useFts ? "bm25(docs)" : "-1.0", useFts) : undefined;
+    const factors = explain ? rankedScoreSqlDetails(useFts ? rank : "-1.0", useFts) : undefined;
     const columns = factors ? `, ${factors.rawBm25Rank} AS rawBm25Rank, ${factors.tierFactor} AS tierFactor, ${factors.recencyFactor} AS recencyFactor` : "";
     const statement = this.db.query(`SELECT payload, ${score} AS score${columns} FROM docs ${where} ORDER BY score DESC, ref LIMIT ?`);
-    const rows = (explain ? statement.all(instant, instant, now, ...(useFts ? [ftsTerms(query)] : []), limit)
-      : statement.all(instant, now, ...(useFts ? [ftsTerms(query)] : []), limit)) as { payload: string; score: number; rawBm25Rank?: number | null; tierFactor?: number | null; recencyFactor?: number | null }[];
+    const rows = (explain ? statement.all(instant, instant, now, ...(useFts ? [match] : []), limit)
+      : statement.all(instant, now, ...(useFts ? [match] : []), limit)) as { payload: string; score: number; rawBm25Rank?: number | null; tierFactor?: number | null; recencyFactor?: number | null }[];
     return rows.map(row => {
       const hit: { value: T; score: number; scoreDetails?: ScoreFactors } = { value: JSON.parse(row.payload) as T, score: row.score };
       if (explain) hit.scoreDetails = { rawBm25Rank: row.rawBm25Rank ?? null, tierFactor: row.tierFactor ?? null, recencyFactor: row.recencyFactor ?? null, finalScore: row.score, matchMode: useFts ? "fts5" : "substring" };
@@ -244,16 +271,17 @@ export class ScreenedSearchIndex<T> {
 
   /** Weighted capture-only fill after the caller fixes the legacy noncapture slots. The caller has already screened every row before append. */
   bestCaptureGroups(query: string, limit: number, now: number, useFts = this.available, explain = false): { value: T; score: number; scoreDetails?: ScoreFactors }[] {
-    if (!Number.isSafeInteger(limit) || limit < 1 || useFts && !ftsTerms(query)) return [];
-    const instant = new Date(now).toISOString(), score = useFts ? SCREENED_SCORE : SCREENED_SUBSTRING_SCORE;
+    const { match, rank } = curatedMatch(query, false);
+    if (!Number.isSafeInteger(limit) || limit < 1 || useFts && !match) return [];
+    const instant = new Date(now).toISOString(), score = useFts ? rankedScoreSql(rank) : SCREENED_SUBSTRING_SCORE;
     const weight = captureEventWeightSql("event");
-    const factors = explain ? rankedScoreSqlDetails(useFts ? "bm25(docs)" : "-1.0", useFts) : undefined;
+    const factors = explain ? rankedScoreSqlDetails(useFts ? rank : "-1.0", useFts) : undefined;
     const columns = factors ? `, ${factors.rawBm25Rank} AS rawBm25Rank, ${factors.tierFactor} AS tierFactor, ${factors.recencyFactor} AS recencyFactor` : "";
     const where = "WHERE tier = 'capture' AND (expires IS NULL OR expires > ?)" + (useFts ? " AND docs MATCH ?" : "");
     const selected: { value: T; score: number; scoreDetails?: ScoreFactors }[] = [], groups = new Set<string>();
     // Sort once in SQLite-owned TEMP storage, then stream past duplicate sessions without growing JS pages or re-sorting OFFSET windows.
     const statement = this.db.query(`SELECT payload, ref, event, session, ${score} AS score${columns} FROM docs ${where} ORDER BY score * ${weight} DESC, ref`);
-    const orderedArgs = [instant, ...(explain ? [instant] : []), now, ...(useFts ? [ftsTerms(query)] : [])];
+    const orderedArgs = [instant, ...(explain ? [instant] : []), now, ...(useFts ? [match] : [])];
     for (const row of statement.iterate(...orderedArgs) as Iterable<{ payload: string; ref: string; event: string | null; session: string | null; score: number; rawBm25Rank?: number | null; tierFactor?: number | null; recencyFactor?: number | null }>) {
       const session = typeof row.session === "string" && /^[a-f0-9]{16}$/.test(row.session) ? row.session : undefined;
       const group = session ? `session:${session}` : `row:${row.ref}`;

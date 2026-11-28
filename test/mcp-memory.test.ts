@@ -71,6 +71,19 @@ test("#646: stdio search returns only a byte-bounded prefix and observes only em
   } finally { sidecar.close(); }
 }, 45_000);
 
+test("#583: compound candidates reach the screened ranker and withheld rows never appear", async () => {
+  const f = fixture();
+  const visible = f.note("도서 관리 시스템 사용 안내");
+  f.note("도서 관리 시스템 내부 정보", f.project, ["path:hidden.ts"]);
+  f.note("도서 관리 시스템 외부 프로젝트", "project-b");
+  f.store.close();
+  const mcp = createMemoryMcp({ cwd: f.root, base: f.base, project: f.project, policy: { denyPaths: ["hidden.ts"] } });
+  try {
+    const result = await mcp.tools.amem_search({ query: "도서관리시스템", includeCapture: false }) as { hits: { view: { id: string } }[] };
+    expect(result.hits.map(hit => hit.view.id)).toEqual([visible]);
+  } finally { mcp.close(); }
+});
+
 test("policy removes rows before limits, prefixes and graph construction; scope cannot escape", async () => {
   const f = fixture();
   const safe = f.note("public choice"); const denied = f.note("hidden choice", f.project, ["path:hidden.ts"]); f.note("public sibling", "project-b"); f.store.close();

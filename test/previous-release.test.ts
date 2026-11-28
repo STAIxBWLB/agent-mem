@@ -1,3 +1,4 @@
+import { searchFileName } from "../src/memory/search-fts.ts";
 import { createHash } from "node:crypto";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { PLACEMENT_FORMAT, PLACEMENT_PROFILE_SCHEMA, PLACEMENT_SHARDS_SCHEMA, validatePlacementProfile, validatePlacementShards } from "../src/memory/sync-placement-format.ts";
@@ -169,6 +170,31 @@ await stageHookCapture("PostToolUse", { tool_name: "Read", tool_response: "old p
     const seen = JSON.parse(run(f, `const { MemoryStore } = await import(${JSON.stringify(prev("src/memory/store.ts"))}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)}, screen: () => "keep" });
 try { const v = s.get(${JSON.stringify(id!)}, "p"); console.log(JSON.stringify({ about: v?.about, listed: s.list({ project: "p" }).map(row => row.id) })); } finally { s.close(); }`));
     expect(seen).toEqual({ about: ["topic:deploy/target"], listed: [id!] });
+  });
+
+  test("#583 AC4: current and previous releases keep separate FTS caches on one home", () => {
+    const f = fixture(), project = "p", body = "개인 정보 처리 방침";
+    const older = (action: string) => run(f, `const { MemoryStore } = await import(${JSON.stringify(prev("src/memory/store.ts"))});
+const s = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)}, screen: () => "keep" });
+try { ${action} } finally { s.close(); }`);
+    const id = older(`const id = s.note({ op: "note", project: "p", scope: "project", tier: "long", kind: "decision", peer: "person", text: ${JSON.stringify(body)}, about: [], source: "person" }); s.search(${JSON.stringify(body)}, {project:"p",includeCapture:false}); console.log(id);`);
+    const previousName = run(f, `const fts = await import(${JSON.stringify(prev("src/memory/search-fts.ts"))});
+console.log(typeof fts.searchFileName === "function" ? fts.searchFileName() : "search.db");`);
+    const legacy = join(f.base, previousName), current = join(f.base, searchFileName());
+    const before = readFileSync(legacy);
+    const query = () => {
+      const store = new MemoryStore({ memoryDir: f.base, screen: () => "keep" });
+      try { expect(store.search("개인정보처리방침", { project, includeCapture: false }).hits[0]?.view?.id).toBe(id); }
+      finally { store.close(); }
+    };
+    query();
+    if (legacy !== current) expect(readFileSync(legacy)).toEqual(before);
+    const updated = readFileSync(current);
+    expect(older(`console.log(s.search(${JSON.stringify(body)}, {project:"p",includeCapture:false}).hits[0]?.view?.id);`)).toBe(id);
+    if (legacy !== current) expect(readFileSync(current)).toEqual(updated);
+    const lastLegacy = readFileSync(legacy);
+    query();
+    if (legacy !== current) expect(readFileSync(legacy)).toEqual(lastLegacy);
   });
 
   test("per-version index files: neither build rebuilds the other's index", () => {
