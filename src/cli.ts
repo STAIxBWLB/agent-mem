@@ -1673,7 +1673,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const refusal = placementWriterRefusalText(error);
         if (refusal === undefined || !options["--json"]) throw error;
         stampSync(refusal, stop?.cause());
-        return JSON.stringify({ ok: false, pushed: false, entries: 0, failure: { cause: "refusal" }, error: refusal }, null, 2);
+        // #657: a deadline that already fired during setup keeps its note after the fixed refusal text.
+        return JSON.stringify({ ok: false, pushed: false, entries: 0, failure: { cause: "refusal" }, error: deadlineNote(refusal, stop?.cause()) }, null, 2);
       }
       const attest = placementWriters.attest;
       attestPlacement = () => {

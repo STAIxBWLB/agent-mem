@@ -477,3 +477,23 @@ test("#657: a writer-context refusal that a deadline stop accompanies keeps the 
   expect(markedDeadline(forged)).toBeUndefined();                                                  // only the fixed numbers-only form reaches a marked session
   expect(markedDeadline(Error("x"))).toBeUndefined();
 });
+
+test("#657: a typed writer-context refusal returned by --json keeps the deadline note when the deadline fired during setup", async () => {
+  const { spyOn } = await import("bun:test");
+  const cadence = await import("../src/memory/sync-cadence.ts"), guard = await import("../src/memory/sync-placement-guard.ts"), writers = await import("../src/sync-placement-writer-context.ts");
+  const root = temp(), memory = join(root, "memory"), cwd = join(root, "repo");
+  mkdirSync(memory, { recursive: true }); mkdirSync(cwd, { recursive: true }); expect(memoryGitSync(["init", "-q", cwd], { encoding: "utf8" }).status).toBe(0);
+  const refusal = new writers.PlacementWriterContextError("setup receipt", "missing"), text = writers.placementWriterRefusalText(refusal)!;
+  // The deadline already fired while the writer context was being built: both are synchronous, so the seams stand in for the timing.
+  const spies = [
+    spyOn(cadence, "stopSignal").mockImplementation(() => ({ signal: AbortSignal.abort(), dispose() {}, cause: () => "deadline" as const, signalName: () => undefined })),
+    spyOn(guard, "readPlacementRuntimeMarkers").mockImplementation(() => ({ profile: { publicationFormat: "agent-mem.sync-placement/v1" }, shards: undefined })),
+    spyOn(writers, "activePlacementWriterContext").mockImplementation(() => { throw refusal; }),
+  ];
+  const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = memory;
+  try {
+    const result = JSON.parse(await runCli(["sync", "--if-due", "--force", "--json", "--progress", "off", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: false, syncDeadlineMs: 2000 }));
+    expect(result).toMatchObject({ ok: false, failure: { cause: "refusal" } });
+    expect(result.error).toBe(`${text} sync --if-due stopped at its 2 s deadline; run amem sync to finish without one.`);
+  } finally { for (const spy of spies) spy.mockRestore(); if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+});
