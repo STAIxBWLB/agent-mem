@@ -1146,4 +1146,11 @@ test("#659 AC2: setup all --apply refreshes an existing console manifest from th
   expect(JSON.parse(readFileSync(manifest, "utf8"))).toMatchObject({ module, sha256: createHash("sha256").update(readFileSync(module)).digest("hex") });
   expect(readSetupDrift({ home: f.env.AMEM_HOME!, env, cwd: f.home }).entries.filter(entry => entry.target === "console")).toEqual([]);
   expect(JSON.parse(await runSetup("all", "undo", options)).console).toBeUndefined(); expect(existsSync(manifest)).toBe(true);
+  // An inspection failure after native setup applied is a note, never a throw: here the manifest became a link.
+  const target = join(f.home, "elsewhere.json"); put(target, readFileSync(manifest, "utf8")); rmSync(manifest); symlinkSync(target, manifest);
+  const noted = JSON.parse(await runSetup("all", "apply", options));
+  expect(noted.console).toEqual({ error: expect.stringMatching(/^console plugin not refreshed: .*not a link.*; run amem setup console --apply after fixing it$/) });
+  // Existing-only: a manifest gone by the time the refresh runs is never created.
+  rmSync(manifest);
+  expect(consoleSetup("apply", env, undefined, { existingOnly: true })).toMatchObject({ change: "none" }); expect(existsSync(manifest)).toBe(false);
 });

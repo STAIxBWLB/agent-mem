@@ -18,8 +18,10 @@ export function consoleManifestFile(env: Readonly<Record<string, string | undefi
  * and a 0600 file, which is what agent-console's scanPlugins accepts. Preview writes nothing; undo removes only a manifest that points at this install.
  */
 export function consoleSetup(mode: "preview" | "apply" | "undo", env: Readonly<Record<string, string | undefined>> = process.env,
-  module = fileURLToPath(new URL("./ui/plugin.ts", import.meta.url))): ConsoleSetup {
+  module = fileURLToPath(new URL("./ui/plugin.ts", import.meta.url)), opts: { existingOnly?: boolean } = {}): ConsoleSetup {
   const file = consoleManifestFile(env), dir = dirname(file);
+  // #659: `setup all` only refreshes a manifest the person installed; an absent one (also one removed since the caller looked) is never created.
+  if (opts.existingOnly && !lstatSync(file, { throwIfNoEntry: false })) return { file, module, change: "none", reason: "no console manifest" };
   // acon refuses a manifest directory or file that is a link, another kind of entry or another user's; so does setup, before writing anything.
   for (const [path, kind] of [[dir, "directory"], [file, "file"]] as const) {
     const info = lstatSync(path, { throwIfNoEntry: false });
@@ -28,6 +30,8 @@ export function consoleSetup(mode: "preview" | "apply" | "undo", env: Readonly<R
     if (typeof process.getuid === "function" && info.uid !== process.getuid()) throw Error(`${path} is owned by another user; acon would refuse it`);
   }
   const before = lstatSync(file, { throwIfNoEntry: false }) ? JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown> : undefined;
+  // ponytail: a manifest removed between this read and the rename below is recreated; closing that needs a link-free replace-only primitive.
+  if (opts.existingOnly && !before) return { file, module, change: "none", reason: "no console manifest" };
   if (mode === "undo") {
     if (!before) return { file, module, change: "none", reason: "no console manifest" };
     if (before.module !== module) throw Error(`${file} points at another amem install (${String(before.module)}); left as is`);

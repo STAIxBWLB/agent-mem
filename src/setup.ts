@@ -24,7 +24,7 @@ import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effec
 import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { memoryHome } from "./memory/home.ts";
 import { listAgyReceiptLocations } from "./setup-drift.ts";
-import { consoleManifestFile, consoleSetup, consoleSetupText, type ConsoleSetup } from "./setup-console.ts";
+import { consoleSetup, consoleSetupText, type ConsoleSetup } from "./setup-console.ts";
 import { PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
@@ -899,10 +899,13 @@ export async function runSetup(target: string, mode: SetupPlan["mode"], options:
   // creates one, and undo leaves it to `setup console --undo`. A refresh error after setup applied is a note, never a throw.
   function withConsole(output: string): string {
     const env = options.env ?? process.env;
-    if (target !== "all" || mode === "undo" || !lstatSync(consoleManifestFile(env), { throwIfNoEntry: false })) return output;
+    if (target !== "all" || mode === "undo") return output;
     let plugin: ConsoleSetup | { error: string };
-    try { plugin = plan.root ? consoleSetup(mode, env, join(plan.root.path, "src", "ui", "plugin.ts")) : consoleSetup(mode, env); }
-    catch (error) { plugin = { error: `console plugin not refreshed: ${singleLine((error as Error).message)}; run amem setup console --apply after fixing it` }; }
+    // The inspection is part of the optional refresh: any error here, after native setup may have applied, is a note.
+    try {
+      plugin = consoleSetup(mode, env, plan.root ? join(plan.root.path, "src", "ui", "plugin.ts") : undefined, { existingOnly: true });
+      if (plugin.change === "none") return output;
+    } catch (error) { plugin = { error: `console plugin not refreshed: ${singleLine((error as Error).message)}; run amem setup console --apply after fixing it` }; }
     if (options.json) return JSON.stringify({ ...JSON.parse(output), console: plugin }, null, 2);
     return `${output}\n${"error" in plugin ? plugin.error : consoleSetupText(plugin, mode)}`;
   }
