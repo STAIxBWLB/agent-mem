@@ -791,6 +791,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         const preview = await person.previewPlacementCheckpoint(memoryHome(), { writerRoots, ownRoot }).catch(checkpointRefusalJson);
         if (typeof preview === "string") return preview;
         const out = typeof options["--out"] === "string" ? options["--out"] : undefined;
+        // A marked session's plan and its destination pass the policy screen before any file exists (#660).
+        if (out !== undefined) assertAgentAdministrative({ out, preview }, configuredPolicy(memoryHome(), context.cwd ?? process.cwd()));
         if (out !== undefined) { writePrivatePlan(out, JSON.stringify(preview, null, 2) + "\n"); preview.nextStep = `${person.CHECKPOINT_PREVIEW} --confirm --plan ${shellQuoteArg(out)}`; }
         if (options["--json"] === true) return JSON.stringify(preview, null, 2);
         const { placementJournalObjectCompositionText } = await import("./memory/sync-placement-journal-storage.ts"), h = preview.headroom;
@@ -891,10 +893,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if ((readPlacementRuntimeMarkers(home).profile as { publicationFormat?: string } | undefined)?.publicationFormat === "agent-mem.sync-placement/v1") {
         try { for (const root of readEffectiveSyncPlacementWriterRoots(home)) add("sync-placement", root); } catch { incomplete.push("sync-placement writer roots unreadable"); }
       }
+      let processArgs: string[] | undefined;
       try {
-        for (const { pid, root, host } of runningAmemRoots(processTable(context), context.embeddedAmem)) add(host ? "library-host" : "running", root, pid, host);
+        const rows = processTable(context)();
+        for (const { pid, root, host } of runningAmemRoots(() => rows, context.embeddedAmem)) add(host ? "library-host" : "running", root, pid, host);
+        processArgs = rows.split("\n");
       } catch { incomplete.push("running processes could not be listed"); }
-      return { writers: writers.sort((a, b) => a.source.localeCompare(b.source) || a.root.localeCompare(b.root) || (a.pid ?? 0) - (b.pid ?? 0)), incomplete };
+      return { writers: writers.sort((a, b) => a.source.localeCompare(b.source) || a.root.localeCompare(b.root) || (a.pid ?? 0) - (b.pid ?? 0)), incomplete, ...(processArgs ? { processArgs } : {}) };
     };
     const now = context.now ? () => new Date(context.now!()) : undefined;
     const plan = planFormatRaise(home, surface, minReader, inventory(), now);

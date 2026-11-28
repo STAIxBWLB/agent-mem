@@ -14,7 +14,8 @@ const PLAIN = /^(\d+)\.(\d+)\.(\d+)$/;
 const MAX_WRITERS = 256, PACKAGE_BYTES = 64 * 1024, MAX_ANCESTORS = 12;
 export type FormatRaiseSurface = typeof FORMAT_SURFACES[number] | "home";
 export interface FormatWriter { source: "setup" | "sync-placement" | "running" | "library-host" | "self"; root: string; version: string | null; pid?: number; host?: string }
-export interface FormatWriterInventory { writers: FormatWriter[]; incomplete: string[] }
+/** `processArgs`: the process table's argument lines, when it could be read; without them no root is retired as absent. */
+export interface FormatWriterInventory { writers: FormatWriter[]; incomplete: string[]; processArgs?: readonly string[] }
 export interface FormatRaisePlan {
   /** #660: `absent` lists setup and placement inventory roots removed from disk that no live process runs from; they cannot write here and are not counted. */
   home: string; file: string; record: FormatFloor; writers: FormatWriter[]; below: FormatWriter[]; absent: FormatWriter[]; incomplete: string[];
@@ -91,7 +92,10 @@ export function planFormatRaise(home: string, surface: string, minReader: string
   const base = realPath(home), existing = readFormatFloors(base) ?? [];
   const record: FormatFloor = { surface, minReader, since: now().toISOString().slice(0, 10) };
   const live = new Set(inventory.writers.filter(writer => writer.source === "running" || writer.source === "library-host" || writer.source === "self").map(writer => writer.root));
-  const absent = inventory.writers.filter(writer => (writer.source === "setup" || writer.source === "sync-placement") && writer.version === null && !live.has(writer.root) && installAbsent(writer.root));
+  // A deleted bundle can still be loaded by a surviving host: any process argument under the root keeps it counted.
+  const referenced = (root: string) => inventory.processArgs!.some(line => line.includes(`${root}/`));
+  const absent = inventory.processArgs === undefined ? [] : inventory.writers.filter(writer => (writer.source === "setup" || writer.source === "sync-placement") && writer.version === null
+    && !live.has(writer.root) && installAbsent(writer.root) && !referenced(writer.root));
   const below = inventory.writers.filter(writer => !absent.includes(writer) && (writer.version === null || versionBelow(writer.version, minReader)));
   const alreadyAtLeast = existing.some(floor => floor.surface === surface && PLAIN.test(floor.minReader) && !versionBelow(floor.minReader, minReader));
   return { home: base, file: join(base, FORMATS_FILE), record, writers: inventory.writers, below, absent, incomplete: inventory.incomplete, existing, alreadyAtLeast,

@@ -163,6 +163,12 @@ test("#660 AC3: --discovered-writers --out saves a private plan, and --confirm -
     const fresh = join(f.root, "fresh.json");
     await run("--discovered-writers", "--out", fresh);
     expect(JSON.parse(await run("--confirm", "--plan", fresh, "--json"))).toMatchObject({ window: 2, renewed: true });
+    // A marked session whose plan the policy withholds (a root name, absent from argv) writes no file.
+    writeFileSync(join(f.base, "amem.config.json"), JSON.stringify({ piiPatterns: ["kept writer"] }));
+    const denied = join(f.root, "withheld.json");
+    const marked = runCli(["migrate", "--sync-placement", "--checkpoint", "--discovered-writers", "--out", denied], { cwd: f.root, env: { CLAUDECODE: "1" }, stdinTTY: false, processTable: () => "" });
+    await expect(marked).rejects.toThrow("no partial result is shown");
+    expect(existsSync(denied)).toBe(false);
   } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
 }, 300_000);
 
@@ -174,6 +180,11 @@ test("#660 AC1: formats raise counts no removed install, and still refuses a pre
     const ready = await raise();
     expect(ready.absent.map((writer: { root: string }) => writer.root)).toEqual([removed]);
     expect(ready.below).toEqual([]); expect(ready.ready).toBe(true); expect(ready.refusal).toBeNull();
+    // A surviving host that still names a path under the removed root keeps it counted, and so does an unreadable process table.
+    const live = JSON.parse(await runCli(["formats", "raise", "home", "0.36.0", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => `  4343 node ${removed}/dist/host.js` }));
+    expect(live.absent).toEqual([]); expect(live.below.map((writer: { root: string }) => writer.root)).toEqual([removed]); expect(live.ready).toBe(false);
+    const blind = JSON.parse(await runCli(["formats", "raise", "home", "0.36.0", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => { throw Error("ps unavailable"); } }));
+    expect(blind.absent).toEqual([]); expect(blind.ready).toBe(false);
     writeFileSync(join(kept, "package.json"), "not json");
     const refused = await raise();
     expect(refused.below.map((writer: { root: string; version: unknown }) => [writer.root, writer.version])).toEqual([[kept, null]]);
