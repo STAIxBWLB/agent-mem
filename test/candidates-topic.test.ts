@@ -96,3 +96,10 @@ test("#580: the advertised topic schema stays bounded", () => {
   const remember = MCP_TOOLS.find(tool => tool.name === "amem_remember")!;
   expect((remember.inputSchema as { properties: Record<string, { maxLength?: number }> }).properties.topic?.maxLength).toBe(64);
 });
+
+test("#580 AC4: the MCP transport shows the allowed topic form instead of the generic refusal", async () => {
+  const { mcpServeOptions } = await import("../src/mcp.ts");
+  const { InvalidTopic } = await import("../src/memory/candidates.ts");
+  const text = mcpServeOptions({ tools: {} as never }).failureText!(new InvalidTopic("x"));
+  expect(text).toContain("[a-z0-9][a-z0-9/-]{0,63}");
+});

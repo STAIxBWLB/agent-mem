@@ -46,6 +46,7 @@ export function mcpServeOptions(options: McpOptions): ServeOptions {
     limits: { frameBytes: MCP_FRAME_BYTES, resultBytes: MCP_RESULT_BYTES },
     failureText(error) {
       const full = typeof error === "object" && error !== null && (error as { code?: unknown }).code === "candidate_queue_full";
+      if (typeof error === "object" && error !== null && (error as { code?: unknown }).code === "invalid_topic") return "Invalid topic: use 1-64 characters of a-z, 0-9, / and -, starting with a letter or digit ([a-z0-9][a-z0-9/-]{0,63}).";
       return full
         ? "The review queue is full: no more candidates are accepted. Do not retry; review pending candidates through the screened CLI."
         : /* refusal-by-design: human-authority only a person may inspect the underlying refusal. */ "Memory operation unavailable or refused; no partial result is shown.";

@@ -257,6 +257,11 @@ export class CandidateQueueFull extends Error {
   readonly code = "candidate_queue_full";
   constructor(readonly waiting: number) { super(`${waiting} unshown candidates await review; no more are accepted until the queue is reviewed. Run \`amem review\``); this.name = "CandidateQueueFull"; }
 }
+/** #580 AC4: an invalid `topic`; the MCP adapter shows its message, which names only the allowed form and no data. */
+export class InvalidTopic extends Error {
+  readonly code = "invalid_topic";
+  constructor(form: string) { super(`topic must match ${form}`); this.name = "InvalidTopic"; }
+}
 export class CandidateStore {
   readonly dir: string;
   readonly path: string;

@@ -9,7 +9,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_RESULT_BYTES } from "./mcp-bounds.ts";
 import type { McpHandlers, McpOptions } from "./mcp.ts";
-import { CandidateStore, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
+import { CandidateStore, InvalidTopic, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { candidateOverlaps } from "./memory/candidate-overlaps.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
@@ -408,7 +408,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         const kind = args.kind ?? "finding";
         if (typeof kind !== "string" || !["decision", "finding", "contract", "fail", "preference"].includes(kind)) unavailable();
         // #580 AC4: an invalid topic names the allowed form; a topic is for plain text proposals only.
-        if (args.topic !== undefined && !validTopic(args.topic)) throw new Error(`topic must match ${TOPIC_FORM}`);
+        if (args.topic !== undefined && !validTopic(args.topic)) throw new InvalidTopic(TOPIC_FORM);
         if (structured.some(key => args[key] !== undefined)) {
           if (args.topic !== undefined || kind !== "fail" || args.text !== undefined || args.title !== undefined || !Array.isArray(args.evidenceRefs) || args.evidenceRefs.length < 1 || args.evidenceRefs.length > 16) return unavailable();
           const evidenceRefs = args.evidenceRefs.map(value => typeof value === "string" && value.trim() && value.length <= 400 && !value.includes("\0") ? value : unavailable());
