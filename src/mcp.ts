@@ -21,7 +21,7 @@ export const MCP_TOOLS = [
   tool("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object({ list: string(200), includeClosed: { type: "boolean" } })),
   tool("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object({ list: string(200), fields: { type: "object", minProperties: 1, maxProperties: 12,
     additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 640 } } }, ["list", "fields"]), false),
-  tool("amem_remember", "Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail", "preference"] },
+  tool("amem_remember", "Propose a memory candidate (text, optional kind/title/topic), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. A topic that one live note carries proposes a correction of it; reuse the topic search/show print. Review and accept or reject through the CLI under current policy; this tool never writes curated notes.", object({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail", "preference"] }, topic: string(64),
     approach: failText, symptom: failText, cause: failText, evidenceRefs: { type: "array", minItems: 1, maxItems: 8, items: string(250) }, retryWhen: failText }), false),
   tool("amem_correct", "Propose a correction to an exact curated entry id visible in this project. The host binds its current revision; the full accepted body including reason and provenance headers must fit 4000 characters. Review and accept or reject through the CLI under current policy before any note or supersession is written.", object({ id: string(80), proposedText: string(4000), reason: string(4000), kind: { type: "string", enum: ["decision", "contract", "fail"] } }, ["id", "proposedText", "reason"]), false),
   tool("amem_vault_candidates", "List screened durable curated notes for review before moving them to a vault. Read only.", object({ limit })),
@@ -46,6 +46,8 @@ export function mcpServeOptions(options: McpOptions): ServeOptions {
     limits: { frameBytes: MCP_FRAME_BYTES, resultBytes: MCP_RESULT_BYTES },
     failureText(error) {
       const full = typeof error === "object" && error !== null && (error as { code?: unknown }).code === "candidate_queue_full";
+      if (typeof error === "object" && error !== null && (error as { code?: unknown }).code === "invalid_topic") return "Invalid topic: use 1-64 characters of a-z, 0-9, / and -, starting with a letter or digit ([a-z0-9][a-z0-9/-]{0,63}).";
+      if (typeof error === "object" && error !== null && (error as { code?: unknown }).code === "topic_overfull") return "More than 8 live notes carry this topic, so no candidate was queued. Ask the person to run amem consolidate, or use a more specific topic.";
       return full
         ? "The review queue is full: no more candidates are accepted. Do not retry; review pending candidates through the screened CLI."
         : /* refusal-by-design: human-authority only a person may inspect the underlying refusal. */ "Memory operation unavailable or refused; no partial result is shown.";

@@ -161,6 +161,16 @@ await stageHookCapture("PostToolUse", { tool_name: "Read", tool_response: "old p
     expect(pending(f.base)).toEqual([]);
   });
 
+  test("#580 AC5: the previous release reads and lists notes whose topic is an about node", () => {
+    const f = fixture();
+    const mine = new MemoryStore({ memoryDir: f.base, screen: () => "keep" });
+    let id: string;
+    try { id = mine.note({ op: "note", project: "p", scope: "project", tier: "long", kind: "decision", peer: "person", text: "deploy target is staging-b", about: ["topic:deploy/target"], source: "person" } as never); } finally { mine.close(); }
+    const seen = JSON.parse(run(f, `const { MemoryStore } = await import(${JSON.stringify(prev("src/memory/store.ts"))}); const s = new MemoryStore({ memoryDir: ${JSON.stringify(f.base)}, screen: () => "keep" });
+try { const v = s.get(${JSON.stringify(id!)}, "p"); console.log(JSON.stringify({ about: v?.about, listed: s.list({ project: "p" }).map(row => row.id) })); } finally { s.close(); }`));
+    expect(seen).toEqual({ about: ["topic:deploy/target"], listed: [id!] });
+  });
+
   test("per-version index files: neither build rebuilds the other's index", () => {
     const f = fixture();
     const schema = (file: string) => { const db = new Database(file, { readonly: true }); try { return (db.query("PRAGMA schema_version").get() as { schema_version: number }).schema_version; } finally { db.close(); } };

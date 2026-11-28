@@ -9,7 +9,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_RESULT_BYTES } from "./mcp-bounds.ts";
 import type { McpHandlers, McpOptions } from "./mcp.ts";
-import { CandidateStore, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
+import { CandidateStore, InvalidTopic, TOPIC_MATCH_LIMIT, TopicOverfull, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { candidateOverlaps } from "./memory/candidate-overlaps.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
@@ -28,6 +28,7 @@ import { boundRepoRoot, readRepoScope, repoReadPolicy, type RepoView } from "./m
 import { MemoryStore, openShardStore, type Graph, type View } from "./memory/store.ts";
 import { vaultCandidates } from "./memory/vault.ts";
 import { validOrigin, type CandidateOrigin } from "./memory/candidate-origin.ts";
+import { TOPIC_FORM, topicNode, topicOf, validTopic } from "./memory/topic.ts";
 import { groupByTask } from "./memory/task-group.ts";
 /** #423: how many ranked hits per requested slot a grouped search reads, so folded same-task hits do not empty the page. */
 const TASK_GROUP_WINDOW = 4;
@@ -164,7 +165,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
     const stale = () => { policyRevisionForCall(); return createRecallStalenessProbe({ cwd: staleRoot, rootConfirmed, policy: currentPolicy }); };
     const decorate = (view: View, probe: ReturnType<typeof stale>) => {
       const reason = probe.reason(view);
-      return { ...view, ...(reason ? { stale: true, staleReason: reason } : {}) };
+      return { ...view, ...(topicOf(view) === null ? {} : { topic: topicOf(view)! }), ...(reason ? { stale: true, staleReason: reason } : {}) };
     };
     const screen = async <T>(rows: T[]): Promise<T[]> => {
       if (rows.length > MCP_SCAN_LIMIT) unavailable();
@@ -212,11 +213,26 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       if (!current || current.id !== id || current.supersededBy || current.project !== project) return unavailable();
       return current;
     };
-    const propose = async (input: CandidateInput, target?: View, includeOverlaps = false): Promise<{ id: string; overlaps?: string[] }> => {
+    /**
+     * #580: live notes of the bound project that carry the exact topic node and pass the current policy. Shared rows of other
+     * projects and refused rows are invisible, matching correctionTarget. ponytail: a full project list per topic proposal;
+     * an indexed `about` lookup is the upgrade if proposals reach the read budget.
+     */
+    const topicCandidates = (topic: string) => {
+      const node = topicNode(topic), now = store.readNow();
+      return store.list({ project, limit: Number.MAX_SAFE_INTEGER }).filter(view => view.project === project && !view.supersededBy && recallViewIsLive(view, now) && view.about.includes(node));
+    };
+    const topicMatches = async (topic: string): Promise<View[]> => {
+      guard(); const rows = topicCandidates(topic), allowed: View[] = [];
+      for (const view of rows) { if (await currentPolicy().screen(view)) allowed.push(view); guard(); }
+      return allowed;
+    };
+    const topicMatchesNow = (topic: string) => { const policy = currentPolicy(); return topicCandidates(topic).filter(view => policy.screenStandalone(view)).map(view => view.id).sort().join(","); };
+    const propose = async (input: CandidateInput, target?: View, includeOverlaps = false, current: () => void = () => {}): Promise<{ id: string; overlaps?: string[] }> => {
       if (input.kind === "correction" && acceptedCorrectionText(input).length > 4000) return unavailable();
       const revision = target && candidateTargetRevision(target);
       const currentPolicy = () => createStandalonePolicy(configuredPolicyOptions(base, cwd, options.policy));
-      const check = () => { guard(); if (target && candidateTargetRevision(correctionTarget(target.id)) !== revision) unavailable(); };
+      const check = () => { guard(); if (target && candidateTargetRevision(correctionTarget(target.id)) !== revision) unavailable(); current(); };
       let supplied: ReturnType<NonNullable<MemoryMcpOptions["origin"]>>;
       try { supplied = options.origin?.(); } catch { supplied = undefined; }
       // Ids only and bounded (validOrigin, secret screen included); an invalid host value records no origin rather than refusing.
@@ -388,15 +404,34 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
       async amem_work_state_write(args) { bound(args, ["list", "fields"]); guard(); const result = await work.write(textOf(args, "list")!, args.fields as WorkListFields); guard(); return result; },
       async amem_remember(args) {
         const structured = ["approach", "symptom", "cause", "evidenceRefs", "retryWhen"];
-        bound(args, ["text", "title", "kind", ...structured]); guard();
+        bound(args, ["text", "title", "kind", "topic", ...structured]); guard();
         const kind = args.kind ?? "finding";
         if (typeof kind !== "string" || !["decision", "finding", "contract", "fail", "preference"].includes(kind)) unavailable();
+        // #580 AC4: an invalid topic names the allowed form; a topic is for plain text proposals only.
+        if (args.topic !== undefined && !validTopic(args.topic)) throw new InvalidTopic(TOPIC_FORM);
         if (structured.some(key => args[key] !== undefined)) {
-          if (kind !== "fail" || args.text !== undefined || args.title !== undefined || !Array.isArray(args.evidenceRefs) || args.evidenceRefs.length < 1 || args.evidenceRefs.length > 16) return unavailable();
+          if (args.topic !== undefined || kind !== "fail" || args.text !== undefined || args.title !== undefined || !Array.isArray(args.evidenceRefs) || args.evidenceRefs.length < 1 || args.evidenceRefs.length > 16) return unavailable();
           const evidenceRefs = args.evidenceRefs.map(value => typeof value === "string" && value.trim() && value.length <= 400 && !value.includes("\0") ? value : unavailable());
           return propose({ project, kind: "fail", approach: textOf(args, "approach")!, symptom: textOf(args, "symptom")!, cause: textOf(args, "cause")!, evidenceRefs, retryWhen: textOf(args, "retryWhen")! }, undefined, true);
         }
-        return propose({ project, kind: "memory", text: textOf(args, "text")!, ...(args.title === undefined ? {} : { title: textOf(args, "title")! }), noteKind: kind as "decision" | "finding" | "contract" | "fail" | "preference" }, undefined, true);
+        const text = textOf(args, "text")!, title = args.title === undefined ? undefined : textOf(args, "title")!;
+        const memory: CandidateInput = { project, kind: "memory", text, ...(title === undefined ? {} : { title }), noteKind: kind as "decision" | "finding" | "contract" | "fail" | "preference" };
+        if (args.topic === undefined) return propose(memory, undefined, true);
+        const topic = args.topic as string, matches = await topicMatches(topic), ids = matches.map(view => view.id).sort().join(",");
+        // A listed match set is always complete: past the limit the proposal refuses with guidance instead of truncating.
+        if (matches.length > TOPIC_MATCH_LIMIT) throw new TopicOverfull();
+        // The match set is part of what the proposal says; a note gaining or losing the topic before the append refuses it.
+        const unchanged = () => { if (topicMatchesNow(topic) !== ids) unavailable(); };
+        if (matches.length === 1) {
+          // #580 AC1: the same host-bound target and revision as amem_correct; acceptance stays with the person.
+          const target = correctionTarget(matches[0]!.id);
+          const input: CandidateInput = { project, kind: "correction", target: { id: target.id, revision: candidateTargetRevision(target) }, topic,
+            proposedText: title === undefined ? text : `${title}\n\n${text}`, reason: `Topic ${topic}: the newer statement replaces this note.`,
+            ...(["decision", "contract", "fail"].includes(kind as string) ? { noteKind: kind as "decision" | "contract" | "fail" } : {}) };
+          return propose(input, target, false, unchanged);
+        }
+        // #580 AC3: several notes share the topic; the person picks a target or keeps them apart, nothing is superseded here.
+        return propose({ ...memory, topic, ...(matches.length > 1 ? { topicMatches: matches.map(view => ({ id: view.id, revision: candidateTargetRevision(view) })) } : {}) }, undefined, true, unchanged);
       },
       async amem_correct(args) {
         bound(args, ["id", "proposedText", "reason", "kind"]); guard();

@@ -2,6 +2,7 @@ import { SearchIndex } from "./search-fts.ts";
 import { recallViewIsLive } from "./recall.ts";
 import { ACCEPTED_CONSOLIDATION_PREFIX } from "./candidates.ts";
 import type { View } from "./store.ts";
+import { topicOf } from "./topic.ts";
 
 export type ConsolidationAction = "merge" | "supersession" | "recurring-fix";
 export interface ConsolidationCluster { action: ConsolidationAction; sources: View[]; reason: string }
@@ -44,6 +45,8 @@ export function consolidationClusters(input: readonly View[], project: string, n
         if (row.kind !== peer.kind) continue;
         const lexical = wordOverlap(terms.get(row.id)!, terms.get(peer.id)!);
         if (row.text === peer.text) add("supersession", [row, peer], "Identical text; review one replacement for both originals.");
+        // #580: one topic on two live notes is a proposal for the person, never an automatic merge.
+        else if (topicOf(row) !== null && topicOf(row) === topicOf(peer)) add("supersession", [row, peer], `Both carry topic ${topicOf(row)}; review which statement is current.`);
         else if ((!candidates || candidates.has(peer.id)) && lexical >= 0.5 && sharedPath(row, peer)) add("merge", [row, peer], "Shared path and overlapping indexed terms; no equivalence is assumed.");
       }
       // A retained supersession chain is context, never a reason to resurrect an old body.
