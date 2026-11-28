@@ -123,7 +123,7 @@ test("#288 step 3: preview is readonly and reports composition, headroom and the
   expect(parts.epochFixed + parts.writerHistory + parts.journalChunks + parts.completedPublications.objects).toBe(preview.currentObjects);
   expect(preview.headroom.required).toBe(preview.headroom.liveAfter + 1 + preview.headroom.largestPlan.slots + preview.headroom.largestPlan.reservedJournalChunks);
   expect(preview.headroom.largestPlan.slots).toBeGreaterThan(0);
-  expect(preview.nextStep).toBe("(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install, then amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list");
+  expect(preview.nextStep).toBe("amem migrate --sync-placement --checkpoint --writer-root <install root> --out checkpoint-plan.json, repeating --writer-root for every install (or --discovered-writers), then amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json");
   // A below-minimum home floor is reported without writing.
   f.floor("0.22.0");
   expect((await previewPlacementCheckpoint(f.base, f.opts)).floorReady).toBe(false);
@@ -334,7 +334,7 @@ test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed m
     expect(text).toContain("home floor 0.30.0: missing; preview amem formats raise home 0.30.0");
     expect(text).toContain("completed plan:"); expect(text).toContain("prospective plan:");
     // #627: the human preview prints the saving form, never a <saved preview JSON> placeholder.
-    expect(text).toContain("next: (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install, then amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the same --writer-root list\n");
+    expect(text).toContain("next: amem migrate --sync-placement --checkpoint --writer-root <install root> --out checkpoint-plan.json, repeating --writer-root for every install (or --discovered-writers), then amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json\n");
     const saved = JSON.parse(await runCli(["migrate", "--sync-placement", "--checkpoint", "--json", ...roots], { cwd: f.root, env, stdinTTY: false }));
     const plan = join(f.root, "checkpoint-plan.json"); writeFileSync(plan, JSON.stringify(saved), { mode: 0o600 });
     // The below-minimum fixture floor makes confirm refuse with the floor step without writing.
@@ -343,7 +343,7 @@ test("#288 step 3: the CLI runs every mode for a marked session, refuses mixed m
     expect(await runCli(["migrate", "--sync-placement", "--checkpoint", "--resume"], { cwd: f.root, env, stdinTTY: false })).toContain("nothing pending");
     expect(await runCli(["migrate", "--sync-placement", "--checkpoint", "--abandon"], { cwd: f.root, env, stdinTTY: false })).toContain("nothing pending");
     // #627: the marked usage hint names the saving form and the confirm plan file, not a placeholder.
-    const usage = "A placement checkpoint previews with --sync-placement --checkpoint --writer-root <install root> (repeat), saves the plan with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), then confirms with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json and the same writer roots, or uses --resume / --abandon alone.";
+    const usage = "A placement checkpoint previews with --sync-placement --checkpoint --writer-root <install root> (repeat) or --discovered-writers, saves the plan with --out checkpoint-plan.json, then confirms with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json (the plan names its writer roots), or uses --resume / --abandon alone.";
     const mixed = await runCli(["migrate", "--sync-placement", "--checkpoint", "--confirm", ...roots], { cwd: f.root, env, stdinTTY: false }).then(() => undefined, (error: Error) => error);
     expect(mixed?.message).toBe(usage);
     for (const argv of [["--confirm", ...roots], ["--resume", "--abandon"], ["--plan", plan, ...roots], ["--resume", ...roots], ["--apply", ...roots], ["--list-remote"], ["--from-remote"]])

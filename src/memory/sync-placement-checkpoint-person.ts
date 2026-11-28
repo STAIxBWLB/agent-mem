@@ -4,14 +4,13 @@
  * person-written floor record (`amem formats raise` is the one writer).
  */
 import { randomBytes } from "node:crypto";
-import { lstatSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { types } from "node:util";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { realPath } from "./platform.ts";
 import { canonicalJSON } from "./generation.ts";
 import { assertFormatFloor, formatVersionBelow, readFormatFloors } from "./formats.ts";
-import { installVersion } from "./formats-raise.ts";
+import { installAbsent, installVersion } from "./formats-raise.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES, PLACEMENT_JOURNAL_MAX_OBJECTS } from "./sync-placement-journal-format.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
@@ -46,7 +45,7 @@ const MESSAGES: Record<PlacementCheckpointCause, string> = {
   obligation: "The placement journal has an unfinished append, publication, reservation, renewal or source recovery; finish it with amem sync (or the pending renewal with amem migrate --sync-placement --resume), then preview the checkpoint again.",
   changed: `The placement state changed since the checkpoint plan was sealed; preview a fresh plan with ${CHECKPOINT_PREVIEW} and confirm that one.`,
   inactive: "This home has no active sync placement; activate it with amem migrate --sync-placement --dry-run first.",
-  candidate: `A checkpoint carries one writer renewal: list the inventory and the roots to declare with amem migrate --sync-placement --writers, then pass the complete inventory as repeatable --writer-root <install root> (every amem install sharing this home), then preview again with ${CHECKPOINT_PREVIEW}.`,
+  candidate: `A checkpoint carries one writer renewal: list the inventory and the roots to declare with amem migrate --sync-placement --writers, then pass the complete inventory as repeatable --writer-root <install root> (every amem install sharing this home) or use --discovered-writers, then preview again with ${CHECKPOINT_PREVIEW}.`,
   history: "",
   "writer-missing": "",
 };
@@ -138,7 +137,7 @@ export async function previewPlacementCheckpoint(homeInput: string, opts: { writ
   const minReader = PLACEMENT_CHECKPOINT_MIN_READER;
   return { mode: "checkpoint-preview", window: window.window, nextWindow: intent.window, journalObjects, currentObjects: journal.objects, headroom,
     floorReady: homeFloorAtLeast(home, minReader), requiredHomeFloor: minReader, writers: roots.length, planHash: intent.seal, plan: intent,
-    nextStep: `(umask 077; set -C; ${CHECKPOINT_PREVIEW} --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every install, then ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json with the same --writer-root list` };
+    nextStep: `${CHECKPOINT_PREVIEW} --writer-root <install root> --out checkpoint-plan.json, repeating --writer-root for every install (or --discovered-writers), then ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json` };
 }
 async function checkpointHeadroom(home: string, intent: CheckpointIntent): Promise<{ headroom: PlacementCheckpointHeadroom; journalObjects: PlacementJournalObjectComposition; assertCurrent(): void }> {
   const epochHash = intent.epochHash, prospective = await checkpointProspective(home).catch(historyRefusal);
@@ -179,15 +178,8 @@ function reviewedHeadroom(value: unknown): unknown {
   if (!detached) throw new PlacementCheckpointError("changed");
   return detached;
 }
-/**
- * #634: an install whose root no longer exists (ENOENT or ENOTDIR on the root itself). An existing root with a missing or
- * unreadable package.json is not absent: it can still run, so the floor check keeps refusing it.
- */
-function installAbsent(root: string): boolean {
-  try { lstatSync(root); return false; } catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR"; }
-}
 function missingWriterMessage(root: string): string {
-  return `The install at ${root} no longer exists; drop that --writer-root, then save the preview again with (umask 077; set -C; ${CHECKPOINT_PREVIEW} --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every remaining install, and confirm it with ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json with the same --writer-root list.`;
+  return `The install at ${root} no longer exists; drop that --writer-root, then save the preview again with ${CHECKPOINT_PREVIEW} --writer-root <install root> --out checkpoint-plan.json, repeating --writer-root for every remaining install, and confirm it with ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json.`;
 }
 function checkFloor(home: string, roots: PlacementCheckpointInput["roots"] | undefined, minReader: string): void {
   if (!homeFloorAtLeast(home, minReader)) throw new PlacementCheckpointError("floor");
@@ -211,12 +203,14 @@ function checkWriterVersions(home: string, roots: PlacementCheckpointInput["root
  */
 export async function confirmPlacementCheckpoint(homeInput: string, value: unknown, opts: { writerRoots: readonly string[]; ownRoot: string; phase?: (phase: PlacementCheckpointPhase) => void }): Promise<{ window: number; renewed: true; planHash: string; nextStep: string }> {
   const home = realPath(homeInput), intent = checkpointPlanFrom(value), a = active(home), minReader = PLACEMENT_CHECKPOINT_MIN_READER;
+  // #660: without --writer-root the sealed plan names the roots; every one is still measured fresh here and under the fences.
+  const writerRoots = opts.writerRoots.length ? opts.writerRoots : intent.writerRevision.roots.map(root => root.root);
   if (intent.epochHash !== a.profile.placementHead) throw new PlacementCheckpointError("changed");
-  checkFloor(home, undefined, minReader); checkFloor(home, measured(home, opts.writerRoots, opts.ownRoot), minReader);
+  checkFloor(home, undefined, minReader); checkFloor(home, measured(home, writerRoots, opts.ownRoot), minReader);
   const prospective = await checkpointHeadroom(home, intent);
   if (canonicalJSON(reviewedHeadroom(value)) !== canonicalJSON(prospective.headroom)) throw new PlacementCheckpointError("changed");
   return withPlacementCheckpointFences(home, placementFenceDirectories(home, a), async (mutation, owner) => {
-    const now = active(home), roots = measured(home, opts.writerRoots, opts.ownRoot);
+    const now = active(home), roots = measured(home, writerRoots, opts.ownRoot);
     if (canonicalJSON(now) !== canonicalJSON(a)) throw new PlacementCheckpointError("changed");
     prospective.assertCurrent();
     checkFloor(home, roots, minReader);

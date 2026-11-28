@@ -227,11 +227,11 @@ amem setup <target> --apply
 If the live window needs compaction, review and confirm a checkpoint with the same complete root list.
 
 ```
-(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <new root> --writer-root <other roots> --json > checkpoint-plan.json)
-amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json --writer-root <new root> --writer-root <other roots>
+amem migrate --sync-placement --checkpoint --writer-root <new root> --writer-root <other roots> --out checkpoint-plan.json
+amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json
 ```
 
-`amem migrate --sync-placement --writers` lists the current inventory, the running install and the setup receipts' roots, each marked present or missing, and prints the checkpoint saving command filled in with the present roots. See [sync](sync.md).
+`--discovered-writers` replaces the `--writer-root` list with the roots `--writers` suggests, and the confirm reads its roots from the plan and measures them again (#660). `amem migrate --sync-placement --writers` lists the current inventory, the running install, the setup receipts' roots and library hosts found from live processes or `ahub`/`vmem` on `PATH`, each marked present or missing, and prints the checkpoint saving command filled in with the present roots. See [sync](sync.md).
 
 After a writer root changes, an opted-in sync-run checkpoint (`amem migrate --sync-placement --checkpoint-on-bound on --confirm`, see [sync](sync.md)) refuses with `checkpoint-refused` until this renewal is applied, because it runs only with identical writer pins.
 

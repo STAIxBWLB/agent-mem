@@ -18,7 +18,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual, types } from "node:util";
 import { HOOK_EVENTS } from "./hook-contract.ts";
-import { decodeReceipt, JOURNAL_MAX, readSetupWriterRoots, setupReceiptRemedy, SetupWriterRootsError, SETUP_TARGETS, type Receipt, type SetupTarget } from "./setup-writer-roots.ts";
+import { decodeReceipt, JOURNAL_MAX, readSetupWriterLaunchers, readSetupWriterRoots, setupReceiptRemedy, SetupWriterRootsError, SETUP_TARGETS, type Receipt, type SetupTarget } from "./setup-writer-roots.ts";
 export { readSetupWriterRoots, setupReceiptRemedy, SetupWriterRootsError, SETUP_TARGETS, type SetupTarget };
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 import { placementMarkerState } from "./memory/sync-placement-guard.ts";
@@ -261,7 +261,7 @@ const lifecycle = (target: SetupTarget) => target === "opencode" || target === "
  * as such with the renewal step to take first; an inventory that cannot be read is reported as unverified, never as a missing
  * entry. It writes nothing, refuses nothing and returns undefined on a home that is not activated for placement sync.
  */
-function placementWriterInventoryNote(root: string, home: string): string | undefined {
+function placementWriterInventoryNote(root: string, home: string, repairing = false): string | undefined {
   // #551 AC2: only a proven non-placement home stays silent. Markers that cannot be read or parsed prove nothing either way,
   // so they fall through to the inventory read below, which reports the state as unverified instead of as a missing root.
   if (placementMarkerState(home) === "not placement") return undefined;
@@ -271,8 +271,10 @@ function placementWriterInventoryNote(root: string, home: string): string | unde
   let canonical: string;
   try { canonical = realPath(root); } catch { return undefined; }
   if (roots.includes(canonical)) return undefined;
+  // #660 AC4: refreshing a receipt whose recorded install is gone is the repair the refusal asked for; the renewal comes after it.
+  if (repairing) return `WARNING: this install root is not yet in the active placement writer inventory. Finish applying setup to repair the stale receipt, then renew the inventory: list the roots with amem migrate --sync-placement --writers and run the command it prints. Setup writes no inventory entry and never refuses on this alone.`;
   // #551 AC2: the suggested argument is shell-quoted, so a root with a space, a quote or a shell metacharacter stays one argument.
-  return `WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory with the person while sessions keep running. Run amem migrate --sync-placement --dry-run --writer-root ${quote(canonical)}, adding --writer-root for every other install root, then use --apply with the same roots. If the live window needs compaction, save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ${quote(canonical)} --json > checkpoint-plan.json), adding the same other roots, and confirm with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the complete root list. Rerun setup after renewal. Setup writes no inventory entry and never refuses on this alone.`;
+  return `WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory with the person while sessions keep running. Run amem migrate --sync-placement --dry-run --writer-root ${quote(canonical)}, adding --writer-root for every other install root, then use --apply with the same roots. If the live window needs compaction, save the preview with amem migrate --sync-placement --checkpoint --writer-root ${quote(canonical)} --out checkpoint-plan.json, adding the same other roots, and confirm with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json. Rerun setup after renewal. Setup writes no inventory entry and never refuses on this alone.`;
 }
 export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", options: SetupContext = {}): SetupPlan {
   if (target !== "all" && !SETUP_TARGETS.includes(target as SetupTarget)) throw Error("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all [--apply|--undo]");
@@ -306,7 +308,9 @@ export function planSetup(target: string, mode: SetupPlan["mode"] = "preview", o
   }
   if (c.root) pluginNotes.push(`Registers the install root ${c.root.path} (amem ${c.root.version}) for hooks and MCP; current registrations change only on --apply.`);
   // #551: the root this plan registers may not be in the home's active placement inventory, which stops sync in writer verification.
-  const placementWriter = placementWriterInventoryNote(c.root?.path ?? fileURLToPath(new URL("..", import.meta.url)), dirname(c.state));
+  let repairing = false;
+  try { repairing = mode !== "undo" ? readSetupWriterLaunchers(dirname(c.state)).some(row => row.state === "missing" && targets.includes(row.target)) : false; } catch { repairing = false; }
+  const placementWriter = placementWriterInventoryNote(c.root?.path ?? fileURLToPath(new URL("..", import.meta.url)), dirname(c.state), repairing);
   if (placementWriter) pluginNotes.push(placementWriter);
   if (target === "all") pluginNotes.push("Antigravity is repository-scoped and excluded from all; run amem setup agy explicitly inside its repository.");
   if (targets.includes("jcode")) pluginNotes.push("Launch Jcode with JCODE_DISABLE_CLAUDE_MCP=1 and without a same-name project override: imported Claude stdio entries can replace this private amem binding with a shared daemon-cwd server. Use a new workspace-bound session when changing projects.");
@@ -768,7 +772,7 @@ function setupWriterCommands(plan: SetupPlan): string[] {
     if (all.some(value => /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value))) return ["amem doctor"];
     const flags = all.map(value => `--writer-root ${quote(value)}`).join(" ");
     return [`amem migrate --sync-placement --dry-run ${flags}`, `amem migrate --sync-placement --apply ${flags}`,
-      `(umask 077; set -C; amem migrate --sync-placement --checkpoint ${flags} --json > checkpoint-plan.json)`, `amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json ${flags}`];
+      `amem migrate --sync-placement --checkpoint ${flags} --out checkpoint-plan.json`, "amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json"];
   } catch { return ["amem doctor"]; }
 }
 

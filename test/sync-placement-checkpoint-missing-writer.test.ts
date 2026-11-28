@@ -67,7 +67,7 @@ test("#634 AC3: a removed install still passed as --writer-root refuses in previ
   const { f, retired, own, both } = await renewedWithRetired();
   const saved = await previewPlacementCheckpoint(f.base, own);
   rmSync(join(f.root, "retired writer"), { recursive: true });
-  const expected = `The install at ${retired} no longer exists; drop that --writer-root, then save the preview again with (umask 077; set -C; ${CHECKPOINT_PREVIEW} --writer-root <install root> --json > checkpoint-plan.json), repeating --writer-root for every remaining install, and confirm it with ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json with the same --writer-root list.`;
+  const expected = `The install at ${retired} no longer exists; drop that --writer-root, then save the preview again with ${CHECKPOINT_PREVIEW} --writer-root <install root> --out checkpoint-plan.json, repeating --writer-root for every remaining install, and confirm it with ${CHECKPOINT_PREVIEW} --confirm --plan checkpoint-plan.json.`;
   for (const error of [await refusal(() => previewPlacementCheckpoint(f.base, both)), await refusal(() => confirmPlacementCheckpoint(f.base, saved, both))]) {
     expect(error.causeClass).toBe("writer-missing");
     expect(error.message).toBe(expected);

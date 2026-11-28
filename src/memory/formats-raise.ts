@@ -14,9 +14,11 @@ const PLAIN = /^(\d+)\.(\d+)\.(\d+)$/;
 const MAX_WRITERS = 256, PACKAGE_BYTES = 64 * 1024, MAX_ANCESTORS = 12;
 export type FormatRaiseSurface = typeof FORMAT_SURFACES[number] | "home";
 export interface FormatWriter { source: "setup" | "sync-placement" | "running" | "library-host" | "self"; root: string; version: string | null; pid?: number; host?: string }
-export interface FormatWriterInventory { writers: FormatWriter[]; incomplete: string[] }
+/** `processArgs`: the process table's argument lines, when it could be read; without them no root is retired as absent. */
+export interface FormatWriterInventory { writers: FormatWriter[]; incomplete: string[]; processArgs?: readonly string[] }
 export interface FormatRaisePlan {
-  home: string; file: string; record: FormatFloor; writers: FormatWriter[]; below: FormatWriter[]; incomplete: string[];
+  /** #660: `absent` lists setup and placement inventory roots removed from disk that no live process runs from; they cannot write here and are not counted. */
+  home: string; file: string; record: FormatFloor; writers: FormatWriter[]; below: FormatWriter[]; absent: FormatWriter[]; incomplete: string[];
   existing: FormatFloor[]; alreadyAtLeast: boolean; ready: boolean;
 }
 
@@ -25,6 +27,14 @@ export function versionBelow(version: string, floor: string): boolean {
   const a = parts(version), b = parts(floor);
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i]! < b[i]!;
   return false;
+}
+
+/**
+ * #634/#660: an install whose root no longer exists (ENOENT or ENOTDIR on the root itself). An existing root with a missing or
+ * unreadable package.json is not absent: it can still run, so a floor check keeps refusing it.
+ */
+export function installAbsent(root: string): boolean {
+  try { lstatSync(root); return false; } catch (error) { const code = (error as NodeJS.ErrnoException).code; return code === "ENOENT" || code === "ENOTDIR"; }
 }
 
 /** The version of an amem install root, or null when it is not a readable `@staix/agent-mem` package with a plain release version. */
@@ -45,18 +55,21 @@ export function installVersion(root: string): string | null {
  * it as a library (ahub, vmem), found as `node_modules/@staix/agent-mem` in an ancestor of a script path on its command line. Bounded.
  * `embedded(dir)` answers whether `dir/node_modules/@staix/agent-mem` exists; it defaults to the filesystem.
  */
-export function runningAmemRoots(table: () => string, embedded: (dir: string) => boolean = dir => existsSync(join(dir, "node_modules", "@staix", "agent-mem", "package.json"))): { pid: number; root: string; host?: string }[] {
+const defaultEmbedded = (dir: string) => existsSync(join(dir, "node_modules", "@staix", "agent-mem", "package.json"));
+/** #660: the `node_modules/@staix/agent-mem` in the nearest of a script's ancestors (at most MAX_ANCESTORS), or null. Bounded, no crawl. */
+export function embeddedAmemRoot(script: string, embedded: (dir: string) => boolean = defaultEmbedded, memo = new Map<string, string | null>()): string | null {
+  let dir = dirname(script);
+  for (let depth = 0; depth < MAX_ANCESTORS && dir !== dirname(dir); depth++, dir = dirname(dir)) {
+    if (memo.has(dir)) return memo.get(dir)!;
+    let found: string | null = null;
+    try { if (embedded(dir)) found = join(dir, "node_modules", "@staix", "agent-mem"); } catch { /* unreadable: look further up */ }
+    if (found) { memo.set(dir, found); return found; }
+  }
+  return null;
+}
+export function runningAmemRoots(table: () => string, embedded: (dir: string) => boolean = defaultEmbedded): { pid: number; root: string; host?: string }[] {
   const out: { pid: number; root: string; host?: string }[] = [], memo = new Map<string, string | null>();
-  const library = (script: string): string | null => {
-    let dir = dirname(script);
-    for (let depth = 0; depth < MAX_ANCESTORS && dir !== dirname(dir); depth++, dir = dirname(dir)) {
-      if (memo.has(dir)) return memo.get(dir)!;
-      let found: string | null = null;
-      try { if (embedded(dir)) found = join(dir, "node_modules", "@staix", "agent-mem"); } catch { /* unreadable: look further up */ }
-      if (found) { memo.set(dir, found); return found; }
-    }
-    return null;
-  };
+  const library = (script: string) => embeddedAmemRoot(script, embedded, memo);
   for (const line of table().split("\n")) {
     const match = /^\s*(\d+)\s+(.*)$/.exec(line); if (!match) continue;
     const pid = Number(match[1]); if (pid === process.pid) continue;
@@ -78,9 +91,17 @@ export function planFormatRaise(home: string, surface: string, minReader: string
   if (!PLAIN.test(minReader)) throw new Error("minReader must be a plain release version such as 0.27.0");
   const base = realPath(home), existing = readFormatFloors(base) ?? [];
   const record: FormatFloor = { surface, minReader, since: now().toISOString().slice(0, 10) };
-  const below = inventory.writers.filter(writer => writer.version === null || versionBelow(writer.version, minReader));
+  const live = new Set(inventory.writers.filter(writer => writer.source === "running" || writer.source === "library-host" || writer.source === "self").map(writer => writer.root));
+  // A deleted bundle can still be loaded by a surviving host: an argument under the root, or a host script whose bounded
+  // ancestor layout (the one discovery uses) places this root as its embedded bundle, keeps it counted.
+  const scripts = inventory.processArgs?.flatMap(line => line.split(/\s+/).filter(token => token.startsWith("/"))) ?? [];
+  const referenced = (root: string) => inventory.processArgs!.some(line => line.includes(`${root}/`))
+    || scripts.some(script => embeddedAmemRoot(script, dir => join(dir, "node_modules", "@staix", "agent-mem") === root) === root);
+  const absent = inventory.processArgs === undefined ? [] : inventory.writers.filter(writer => (writer.source === "setup" || writer.source === "sync-placement") && writer.version === null
+    && !live.has(writer.root) && installAbsent(writer.root) && !referenced(writer.root));
+  const below = inventory.writers.filter(writer => !absent.includes(writer) && (writer.version === null || versionBelow(writer.version, minReader)));
   const alreadyAtLeast = existing.some(floor => floor.surface === surface && PLAIN.test(floor.minReader) && !versionBelow(floor.minReader, minReader));
-  return { home: base, file: join(base, FORMATS_FILE), record, writers: inventory.writers, below, incomplete: inventory.incomplete, existing, alreadyAtLeast,
+  return { home: base, file: join(base, FORMATS_FILE), record, writers: inventory.writers, below, absent, incomplete: inventory.incomplete, existing, alreadyAtLeast,
     ready: !below.length && !inventory.incomplete.length && !alreadyAtLeast };
 }
 

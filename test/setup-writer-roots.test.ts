@@ -182,25 +182,25 @@ test("#551 AC2: setup warns when the root it would register is outside the place
   expect(warning).toContain("outside the active placement writer inventory");
   // AC2: the suggested argument is shell-quoted, so the space in this root never splits it into two arguments.
   // #624: same-epoch renewal first, followed by checkpoint for compaction.
-  expect(warning).toBe(`WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory with the person while sessions keep running. Run amem migrate --sync-placement --dry-run --writer-root ${quote(outside)}, adding --writer-root for every other install root, then use --apply with the same roots. If the live window needs compaction, save the preview with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ${quote(outside)} --json > checkpoint-plan.json), adding the same other roots, and confirm with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json with the complete root list. Rerun setup after renewal. Setup writes no inventory entry and never refuses on this alone.`);
+  expect(warning).toBe(`WARNING: this install root is outside the active placement writer inventory, so placement sync stops in writer verification once setup registers it. Renew the inventory with the person while sessions keep running. Run amem migrate --sync-placement --dry-run --writer-root ${quote(outside)}, adding --writer-root for every other install root, then use --apply with the same roots. If the live window needs compaction, save the preview with amem migrate --sync-placement --checkpoint --writer-root ${quote(outside)} --out checkpoint-plan.json, adding the same other roots, and confirm with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json. Rerun setup after renewal. Setup writes no inventory entry and never refuses on this alone.`);
   expect(warning).not.toContain(`--writer-root ${outside}`);
   expect(warning).toContain("never refuses on this alone");
   expect(plan.notes).toContain(warning);
   const preview = await runSetup("kimi", "preview", { ...options(outside), json: false } as SetupContext);
   expect(preview).toContain("> Attention"); expect(preview).toContain(`--writer-root ${quote(outside)}`);
   const narrow = await runSetup("kimi", "preview", { ...options(outside), json: false, columns: 80 } as SetupContext & { columns: number });
-  const commands = narrow.replace(/\\\n\s+/g, " ").split("\n").filter(line => /^-> (?:\(umask 077; set -C; )?amem migrate /.test(line.trimStart()));
+  const commands = narrow.replace(/\\\n\s+/g, " ").split("\n").filter(line => /^-> amem migrate /.test(line.trimStart()));
   // #624: same-epoch dry-run and apply, then the saving checkpoint preview and confirm.
   expect(commands).toHaveLength(4);
   const flat = commands.map(line => line.trim().replace(/\s+/g, " "));
-  const heads = ["-> amem migrate --sync-placement --dry-run --writer-root ", "-> amem migrate --sync-placement --apply --writer-root ", "-> (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root ", "-> amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json --writer-root "];
+  const heads = ["-> amem migrate --sync-placement --dry-run --writer-root ", "-> amem migrate --sync-placement --apply --writer-root ", "-> amem migrate --sync-placement --checkpoint --writer-root ", "-> amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json"];
   flat.forEach((line, index) => expect(line.startsWith(heads[index]!), line).toBe(true));
-  expect(flat[2]).toEndWith(" --json > checkpoint-plan.json)");
-  for (const line of commands) {
+  expect(flat[2]).toEndWith(" --out checkpoint-plan.json");
+  // #660: the confirm step reads its writer roots from the saved plan.
+  expect(flat[3]).toBe(heads[3]);
+  for (const line of commands.slice(0, 3)) {
     // Fixture roots are controlled; ask the shell to split the displayed, quoted arguments without running amem.
-    // The saving preview's argv is the part inside the parentheses, before its redirect.
-    const flatLine = line.trim().replace(/\s+/g, " "), saving = /^-> \(umask 077; set -C; amem (.+) > checkpoint-plan\.json\)$/.exec(flatLine);
-    const command = saving ? saving[1]! : flatLine.slice("-> amem ".length);
+    const command = line.trim().replace(/\s+/g, " ").slice("-> amem ".length);
     const split = Bun.spawnSync(["sh", "-c", `set -- ${command}; printf '%s\\n' "$@"`]);
     expect(split.exitCode).toBe(0);
     const args = split.stdout.toString().trimEnd().split("\n");
@@ -284,8 +284,8 @@ test("setup writer commands use the plan's HOME-only relocated memory home", asy
   // #624: same-epoch renewal precedes the checkpoint commands.
   const checkpoint = text.indexOf("amem migrate --sync-placement --checkpoint --writer-root"), dryRun = text.indexOf("amem migrate --sync-placement --dry-run --writer-root");
   expect(checkpoint).toBeGreaterThanOrEqual(0); expect(dryRun).toBeGreaterThanOrEqual(0); expect(checkpoint).toBeGreaterThan(dryRun);
-  expect(text).toContain("(umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root");
-  const confirm = text.indexOf("amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json --writer-root");
+  expect(text).toContain("--out checkpoint-plan.json");
+  const confirm = text.indexOf("amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json");
   expect(confirm).toBeGreaterThan(checkpoint);
   expect(text).toContain("amem migrate --sync-placement --apply --writer-root");
   expect(text).toContain(`--writer-root ${quote(outside)}`);
@@ -301,3 +301,27 @@ test("#551 AC2: a home that never activated placement sync tells setup nothing a
   const plan = JSON.parse(await runSetup("kimi", "preview", { env: f.env, root: outside, native: () => { throw Error("no native client runs for this target"); }, stdinTTY: false, cwd: f.cwd, json: true })) as { placementWriter?: string };
   expect(plan.placementWriter).toBeUndefined();
 }, 60_000);
+
+test("#660 AC4: setup that repairs a receipt whose install was removed says to renew the inventory after setup", async () => {
+  const f = await placementActivationFixture(); cleanup.push(f.close);
+  expect((await activateSyncPlacement(f.options("apply"))).active).toBe(true);
+  const install = (name: string) => {
+    const root = join(f.root, name);
+    for (const part of [root, join(root, "bin"), join(root, "src")]) mkdirSync(part, { mode: 0o755 });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.21.0" }), { mode: 0o600 });
+    writeFileSync(join(root, "bin", "amem.js"), "// fixture only\n", { mode: 0o600 }); writeFileSync(join(root, "src", "cli.ts"), "// fixture only\n", { mode: 0o600 });
+    return root;
+  };
+  const seam: NonNullable<SetupContext["native"]> = () => { throw Error("no native client runs for this target"); };
+  const options = (root: string): SetupContext & { json: true } => ({ env: f.env, root, native: seam, stdinTTY: false, cwd: f.cwd, json: true });
+  const old = install("old install"), next = install("new install");
+  await runSetup("kimi", "apply", options(old));
+  rmSync(old, { recursive: true });
+  const repair = JSON.parse(await runSetup("kimi", "preview", options(next))) as { placementWriter?: string };
+  expect(repair.placementWriter).toContain("Finish applying setup to repair the stale receipt, then renew the inventory");
+  expect(repair.placementWriter).toContain("amem migrate --sync-placement --writers");
+  expect(repair.placementWriter).not.toContain("Rerun setup after renewal");
+  // Once the receipt names a present install again, a later move keeps the renew-first warning.
+  await runSetup("kimi", "apply", options(next));
+  expect((JSON.parse(await runSetup("kimi", "preview", options(install("third install")))) as { placementWriter?: string }).placementWriter).toContain("Rerun setup after renewal");
+}, 300_000);
