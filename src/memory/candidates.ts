@@ -125,7 +125,7 @@ function validate(input: CandidateInput): void {
   } else if (input.kind === "memory") {
     if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail", "preference"].includes(input.noteKind)
       || input.record !== undefined && !validRecord(input.record) || !validAbout(input.about) || input.topic !== undefined && !validTopic(input.topic)
-      || input.topicMatches !== undefined && (input.topic === undefined || !Array.isArray(input.topicMatches) || input.topicMatches.length < 2 || input.topicMatches.length > 8 || !input.topicMatches.every(validTarget))) throw new Error("invalid memory candidate");
+      || input.topicMatches !== undefined && (input.topic === undefined || !Array.isArray(input.topicMatches) || input.topicMatches.length < 2 || input.topicMatches.length > TOPIC_MATCH_LIMIT || !input.topicMatches.every(validTarget))) throw new Error("invalid memory candidate");
   } else if (input.kind === "promotion") {
     if (!validTarget(input.target) || !entryId(input.goalId)) throw new Error("invalid promotion candidate");
   } else if (input.kind === "consolidation") {
@@ -261,6 +261,12 @@ export class CandidateQueueFull extends Error {
 export class InvalidTopic extends Error {
   readonly code = "invalid_topic";
   constructor(form: string) { super(`topic must match ${form}`); this.name = "InvalidTopic"; }
+}
+/** #580: the most live notes one topic proposal lists; more refuse, so a listed match set is always complete. */
+export const TOPIC_MATCH_LIMIT = 8;
+export class TopicOverfull extends Error {
+  readonly code = "topic_overfull";
+  constructor() { super(`more than ${TOPIC_MATCH_LIMIT} live notes carry this topic; consolidate them with amem consolidate, or use a more specific topic`); this.name = "TopicOverfull"; }
 }
 export class CandidateStore {
   readonly dir: string;

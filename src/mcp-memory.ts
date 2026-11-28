@@ -9,7 +9,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_RESULT_BYTES } from "./mcp-bounds.ts";
 import type { McpHandlers, McpOptions } from "./mcp.ts";
-import { CandidateStore, InvalidTopic, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
+import { CandidateStore, InvalidTopic, TOPIC_MATCH_LIMIT, TopicOverfull, acceptedCorrectionText, candidateInputId, candidateTargetRevision, type CandidateInput } from "./memory/candidates.ts";
 import { candidateOverlaps } from "./memory/candidate-overlaps.ts";
 import { capacityReport } from "./memory/capacity.ts";
 import { CaptureStore, type CaptureRow } from "./memory/capture.ts";
@@ -418,6 +418,8 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
         const memory: CandidateInput = { project, kind: "memory", text, ...(title === undefined ? {} : { title }), noteKind: kind as "decision" | "finding" | "contract" | "fail" | "preference" };
         if (args.topic === undefined) return propose(memory, undefined, true);
         const topic = args.topic as string, matches = await topicMatches(topic), ids = matches.map(view => view.id).sort().join(",");
+        // A listed match set is always complete: past the limit the proposal refuses with guidance instead of truncating.
+        if (matches.length > TOPIC_MATCH_LIMIT) throw new TopicOverfull();
         // The match set is part of what the proposal says; a note gaining or losing the topic before the append refuses it.
         const unchanged = () => { if (topicMatchesNow(topic) !== ids) unavailable(); };
         if (matches.length === 1) {
@@ -429,7 +431,7 @@ export function createMemoryMcp(options: MemoryMcpOptions): MemoryMcp {
           return propose(input, target, false, unchanged);
         }
         // #580 AC3: several notes share the topic; the person picks a target or keeps them apart, nothing is superseded here.
-        return propose({ ...memory, topic, ...(matches.length > 1 ? { topicMatches: matches.slice(0, 8).map(view => ({ id: view.id, revision: candidateTargetRevision(view) })) } : {}) }, undefined, true, unchanged);
+        return propose({ ...memory, topic, ...(matches.length > 1 ? { topicMatches: matches.map(view => ({ id: view.id, revision: candidateTargetRevision(view) })) } : {}) }, undefined, true, unchanged);
       },
       async amem_correct(args) {
         bound(args, ["id", "proposedText", "reason", "kind"]); guard();

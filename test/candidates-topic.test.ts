@@ -103,3 +103,19 @@ test("#580 AC4: the MCP transport shows the allowed topic form instead of the ge
   const text = mcpServeOptions({ tools: {} as never }).failureText!(new InvalidTopic("x"));
   expect(text).toContain("[a-z0-9][a-z0-9/-]{0,63}");
 });
+
+test("#580: eight matches are all listed; a ninth refuses with guidance instead of a partial list", async () => {
+  const f = fixture(), mcp = f.open();
+  const ids = Array.from({ length: 8 }, (_, i) => f.note({ text: `deploy target is host-${i}` }));
+  const id = idOf(await mcp.tools.amem_remember({ text: "deploy target is host-new", topic: "deploy/target" }));
+  const input = f.sidecar.get(id, f.project)!.input;
+  expect(input.kind === "memory" ? input.topicMatches?.map(target => target.id).sort() : []).toEqual([...ids].sort());
+  f.note({ text: "deploy target is host-8" });
+  const before = f.sidecar.list({ project: f.project }).length;
+  const refused = mcp.tools.amem_remember({ text: "deploy target is host-newer", topic: "deploy/target" });
+  await expect(refused).rejects.toThrow("more than 8 live notes");
+  expect(f.sidecar.list({ project: f.project })).toHaveLength(before);
+  const { mcpServeOptions } = await import("../src/mcp.ts");
+  const { TopicOverfull } = await import("../src/memory/candidates.ts");
+  expect(mcpServeOptions({ tools: {} as never }).failureText!(new TopicOverfull())).toContain("amem consolidate");
+});
