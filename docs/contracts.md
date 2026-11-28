@@ -661,16 +661,19 @@ The [generation-neutral prune witness design](generation-neutral-prune-witness.m
 
 ### Korean recall set and baseline (agent-mem#62)
 
-`amem eval --set ko` scores a second built-in synthetic set, `src/memory/eval-set-ko.json` (same `amem.eval/v1` format, shipped in `src/`, read by `KO_FIXTURE_PATH`): 37 invented library and office-process entries (4 of them short tier, written a day after the long ones by the seeder's clock, each beside a long-tier twin on the same topic) and 38 questions. `ko` is a reserved `--set` name; a file with that name is reached as `./ko`. A question may carry an optional `tag` (lowercase, at most 40 characters) that labels what it probes; scoring ignores it, and `test/eval.test.ts` counts the five kinds (`particle`, `spacing`, `mixed`, `abbreviation`, `tier`: at least 4 each, 10, 7, 7, 7 and 7 today). All text is invented and written as literal Hangul. It measures only: no ranking or tokenizer change came with it.
+`amem eval --set ko` scores a second built-in synthetic set, `src/memory/eval-set-ko.json` (same `amem.eval/v1` format, shipped in `src/`, read by `KO_FIXTURE_PATH`): 37 invented library and office-process entries (4 of them short tier, written a day after the long ones by the seeder's clock, each beside a long-tier twin on the same topic) and 38 questions. `ko` is a reserved `--set` name; a file with that name is reached as `./ko`. A question may carry an optional `tag` (lowercase, at most 40 characters) that labels what it probes; scoring ignores it, and `test/eval.test.ts` counts the five kinds (`particle`, `spacing`, `mixed`, `abbreviation`, `tier`: at least 4 each, 10, 7, 7, 7 and 7 today). All fixture text is invented and written as literal Hangul.
 
-**Baseline** (2026-10-25, main `1b3dc50`, engine fts5, no model, no network, identical on every machine; pinned exactly in `test/eval.test.ts`, so a ranking change that moves it fails until this table and the test are updated together). Every question names a note the seeded store holds, so `all` equals `answerable` (38 of 38):
+**Compound search (#583).** The curated FTS cache indexes joined Hangul spans in a shadow column. Queries made only of Hangul and horizontal spaces, with at least three syllables after joining, also search that column by prefix. Ordinary terms still search the body. Screened recall applies policy before ranking shadow matches. The cache is derived from rows and uses `search-s3.db`, or `search-<generation>-s3.db` for an unsplit generation. Older versions keep their existing search files. The curated `index.db` tables and version stay unchanged.
 
-| | @1 | @5 | @10 |
-|---|---|---|---|
-| recall | 0.8684 | 0.9474 | 0.9474 |
-| hit | 0.8684 | 0.9474 | 0.9474 |
+| Set | Search | Recall@1 | Recall@5 | Recall@10 | MRR@10 | Search cache bytes |
+|---|---|---:|---:|---:|---:|---:|
+| Korean | Baseline | 0.8684 | 0.9474 | 0.9474 | 0.8934 | 69,632 |
+| Korean | Shadow | 0.9474 | 1.0000 | 1.0000 | 0.9592 | 81,920 (+17.65%) |
+| English | Baseline and shadow | 0.8281 | 0.9375 | 0.9375 | 0.9063 | 57,344 |
 
-MRR 0.8934. Five questions are not at rank 1, and they are the headroom this set exists to show: a paraphrase that shares no word with its note (rank 4); two compounds a person types without spaces while the note has them (`개인정보처리방침` against `개인 정보 처리 방침`, `도서관리시스템` against `도서 관리 시스템`) that are not found at all within 10, because the particle-stripped alternative and the prefix terms never join or split compounds; one spaced query against an unspaced note (`열람 실 개방`, rank 5); and a spaced fragment of a compound (`회의 록`, rank 2). Particle variants and mixed Korean-English terms are all at rank 1.
+The fixture size reports SQLite allocated pages, excluding WAL. The Korean set is fully answerable (38 of 38), and hit equals recall at each cutoff. `개인정보처리방침` and `도서관리시스템` move from outside the first ten results to rank 1, and `회의 록` moves from rank 2 to rank 1. The two remaining questions rank 4 and 5. The pinned tests and both eval runs use synthetic rows, with no model or network.
+
+**Candidate overlap (#583).** After removing a common trailing particle and filtering function words, two-syllable Hangul terms can contribute to overlap hints. Latin and other terms still need at least three characters. Hints do not accept, merge or supersede notes.
 
 **Scoring your own Korean entries without publishing them.** A set file with no `entries` names real entry ids of the bound project, so the Korean text stays in the person's own store and the question file stays local. `amem list --json` (or `amem show`) gives the ids; write the file anywhere outside the repository:
 

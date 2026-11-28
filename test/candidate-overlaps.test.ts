@@ -33,6 +33,15 @@ function fixture() {
   return { root, base, project, store, sidecar, note, put, hints, advance: (ms: number) => { now += ms; } };
 }
 
+test("#583: two-syllable Korean terms survive particles without promoting stop words or two-letter Latin terms", async () => {
+  const f = fixture();
+  const expected = f.note("도서 연체 정보를 확인합니다");
+  f.note("이것 또는 문서");
+  f.note("go js guide");
+  const hits = await f.hints(f.put("도서와 연체는 이것 또는 go js"));
+  expect(hits.map(hit => hit.id)).toEqual([expected]);
+});
+
 test("duplicate and related notes use consolidate's deterministic measure without deciding the candidate", async () => {
   const f = fixture(), exact = f.note(prose), relatedText = "transaction leases protect recovery checkpoints", related = f.note(relatedText), candidate = f.put();
   f.note("orchards require seasonal irrigation");

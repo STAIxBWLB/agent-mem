@@ -63,7 +63,7 @@ test("an existing curated subpath or redirected scaffold refuses before publicat
 });
 
 test("old indexes and prune-proof directories in a scaffold are never replaced or ignored", () => {
-  for (const name of ["index-v4.db", "index-v2-i4.db-wal", "search.db", "prune-plans", "public-prune-inputs"] as const) {
+  for (const name of ["index-v4.db", "index-v2-i4.db-wal", "search.db", "search-s3.db-wal", "prune-plans", "public-prune-inputs"] as const) {
     const f = fixture();
     try {
       ensureShardDescriptor(f.home, f.project); const project = shardDir(f.home, f.project), file = join(project, name);

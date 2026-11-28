@@ -1,4 +1,4 @@
-import { SearchIndex } from "./search-fts.ts";
+import { SearchIndex, stripKoreanParticle } from "./search-fts.ts";
 import { recallViewIsLive } from "./recall.ts";
 import { ACCEPTED_CONSOLIDATION_PREFIX } from "./candidates.ts";
 import type { View } from "./store.ts";
@@ -7,7 +7,15 @@ import { topicOf } from "./topic.ts";
 export type ConsolidationAction = "merge" | "supersession" | "recurring-fix";
 export interface ConsolidationCluster { action: ConsolidationAction; sources: View[]; reason: string }
 export const CONSOLIDATION_SOURCE_LIMIT = 256, CONSOLIDATION_PROPOSAL_LIMIT = 32;
-export const overlapWords = (row: Pick<View, "title" | "text">) => new Set((`${row.title ?? ""} ${row.text}`.toLowerCase().match(/[\p{L}\p{N}_]{3,}/gu) ?? []).filter(word => !["the", "and", "for", "with", "from", "this", "that", "approach", "symptom", "cause", "evidence", "retry", "when"].includes(word)).slice(0, 128));
+const OVERLAP_STOP = new Set(["the", "and", "for", "with", "from", "this", "that", "approach", "symptom", "cause", "evidence", "retry", "when",
+  "이것", "그것", "저것", "어떤", "무엇", "모든", "또는", "가장", "아주", "매우"]);
+export const overlapWords = (row: Pick<View, "title" | "text">) => new Set(
+  (`${row.title ?? ""} ${row.text}`.toLowerCase().match(/[\p{L}\p{N}_]+/gu) ?? []).flatMap(word => {
+    const hangul = /^[가-힣]+$/u.test(word);
+    const term = hangul ? stripKoreanParticle(word) : word;
+    return term.length >= (hangul ? 2 : 3) && !OVERLAP_STOP.has(term) ? [term] : [];
+  }).slice(0, 128),
+);
 /** A note written by accepting a consolidation candidate. Proposing over one would be a summary of summaries. */
 export function isAcceptedConsolidation(row: Pick<View, "text">): boolean {
   const end = row.text.indexOf("\n\n"); if (end < 0) return false;

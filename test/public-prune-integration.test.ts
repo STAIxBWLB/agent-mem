@@ -1,3 +1,4 @@
+import { searchFileName } from "../src/memory/search-fts.ts";
 import { runCli } from "../src/cli.ts";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -72,7 +73,7 @@ test("R20 actual get/list/search/history/intent/relations and rebuild share the 
     };
     check(); const before = store.derivedTables(); store.rebuild(); check(); expect(store.derivedTables()).toEqual(before);
     // Shared FTS remains a raw corpus, even though candidates are masked before exposing views.
-    const db = new Database(join(store.dir, "search.db"), { readonly: true });
+    const db = new Database(join(store.dir, searchFileName()), { readonly: true });
     try { expect(db.query("SELECT COUNT(*) AS n FROM docs WHERE ref = ?").get(f.graph.note.id)).toMatchObject({ n: 1 }); } finally { db.close(); }
   } finally { store.close(); }
   const catalog = readCatalogFresh(f.memoryDir).find(row => row.key === f.project); expect(catalog?.curatedAvailable).toBe(true);

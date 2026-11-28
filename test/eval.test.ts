@@ -434,7 +434,7 @@ test("a supersede cycle (a store the API refuses to build, but a hand-edited log
   expect(report.perQuestion[0]).toMatchObject({ answerable: false, present: 0, missing: 1 });
 });
 
-// agent-mem#62: the Korean recall set and its pinned baseline. Measure only: a ranking or tokenizer change that moves these numbers fails here until the receipt in docs/contracts.md is updated with it.
+// agent-mem#62: the Korean recall set and its pinned scores. a ranking or tokenizer change that moves these numbers fails here until the receipt in docs/contracts.md is updated with it.
 const KINDS = ["particle", "spacing", "mixed", "abbreviation", "tier"] as const;
 
 test("the Korean set is synthetic, written as literal Hangul, has at least 30 questions and each of the five kinds at least 4 times (agent-mem#62 AC2)", async () => {
@@ -455,39 +455,37 @@ test("the Korean set is synthetic, written as literal Hangul, has at least 30 qu
   for (const question of set.questions) expect(question.q, question.q).toMatch(/[가-힣]/);
 });
 
-test("the Korean baseline is pinned exactly: recall@1/5/10, hit, MRR and the answerable split, with no model and no network (agent-mem#62 AC1, AC4)", () => {
+test("the Korean search scores are pinned exactly: recall@1/5/10, hit, MRR and the answerable split, with no model and no network (agent-mem#62 AC1, AC4)", () => {
   const set = readEvalSet(KO_FIXTURE_PATH);
   const report = evalSeeded(set);
   expect(report.engine).toBe("fts5");
   // The numbers of the current search (BM25, particle-stripped Korean alternative, prefix terms). A ranking change that moves them lands with an updated receipt in docs/contracts.md.
   expect(report.all).toEqual({
     questions: 38,
-    recall: { 1: 0.8684, 5: 0.9474, 10: 0.9474 },
-    hit: { 1: 0.8684, 5: 0.9474, 10: 0.9474 },
-    mrr: 0.8934,
+    recall: { 1: 0.9474, 5: 1, 10: 1 },
+    hit: { 1: 0.9474, 5: 1, 10: 1 },
+    mrr: 0.9592,
   });
   expect(report.answerable).toEqual(report.all);                                            // every question names a note the seeded store holds: all of the miss is ranking
   const moved = report.perQuestion.filter(row => row.rank !== 1).map(row => [row.q, row.rank]);
   expect(moved).toEqual([
     ["예약된 책은 기간을 늘릴 수 없나요", 4],
-    ["개인정보처리방침", null],
     ["열람 실 개방", 5],
-    ["도서관리시스템", null],
-    ["회의 록", 2],
   ]);
+  for (const query of ["개인정보처리방침", "도서관리시스템"]) expect(report.perQuestion.find(row => row.q === query)?.rank).toBe(1);
   expect(JSON.stringify(evalSeeded(set))).toBe(JSON.stringify(report));                    // the same on every run
 });
 
 test("amem eval --set ko scores the built-in Korean set, as text and JSON, never touches the memory home, and --set <path> still works", async () => {
   const h = home();
   const text = await cli(h, ["eval", "--set", "ko"]);
-  expect(text).toContain("amem Evaluation"); expect(text).toContain("built-in fixture ko"); expect(text).toContain("fts5"); expect(text).toContain("개인정보처리방침");
+  expect(text).toContain("amem Evaluation"); expect(text).toContain("built-in fixture ko"); expect(text).toContain("fts5"); expect(text).toContain("열람 실 개방");
   const json = JSON.parse(await cli(h, ["eval", "--set", "ko", "--json"])) as { all: { questions: number; mrr: number; hit: Record<string, number> }; answerable: { questions: number } };
-  expect(json.all.questions).toBe(38); expect(json.all.mrr).toBe(0.8934); expect(json.all.hit).toEqual({ 1: 0.8684, 5: 0.9474, 10: 0.9474 }); expect(json.answerable.questions).toBe(38);
+  expect(json.all.questions).toBe(38); expect(json.all.mrr).toBe(0.9592); expect(json.all.hit).toEqual({ 1: 0.9474, 5: 1, 10: 1 }); expect(json.answerable.questions).toBe(38);
   expect((await import("node:fs")).readdirSync(h.memory)).toEqual([]);
   // A path to the same file gives the same numbers: the explicit form is unchanged.
   const same = JSON.parse(await cli(h, ["eval", "--set", fileURLToPath(KO_FIXTURE_PATH), "--json"])) as { all: { mrr: number } };
-  expect(same.all.mrr).toBe(0.8934);
+  expect(same.all.mrr).toBe(0.9592);
   // The built-in English set is still the default, and an unknown name is a path (an ENOENT), never a silent fallback.
   expect(JSON.parse(await cli(h, ["eval", "--json"])).all.questions).toBe(32);
   await expect(cli(h, ["eval", "--set", "constructor"])).rejects.toThrow("ENOENT");
