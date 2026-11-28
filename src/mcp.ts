@@ -48,7 +48,7 @@ export function mcpServeOptions(options: McpOptions): ServeOptions {
       const full = typeof error === "object" && error !== null && (error as { code?: unknown }).code === "candidate_queue_full";
       return full
         ? "The review queue is full: no more candidates are accepted. Do not retry; review pending candidates through the screened CLI."
-        : "Memory operation unavailable or refused; no partial result is shown.";
+        : /* refusal-by-design: human-authority only a person may inspect the underlying refusal. */ "Memory operation unavailable or refused; no partial result is shown.";
     },
     // The core invokes the observer only for a successful tool from the supplied table.
     ...(options.onEmitted ? { onEmitted: (name, id, value) => options.onEmitted!(name as McpToolName, id, value) } : {}),

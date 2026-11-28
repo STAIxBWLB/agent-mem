@@ -15,6 +15,8 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- A preference write that needs a format floor now points to `amem formats raise` for preview and confirmation. CI checks named refusal commands and flags and prevents the unnamed-refusal baseline from growing. Refs #584.
+
 - `amem formats raise` lists a setup or placement inventory root removed from disk, with no live process running from it, as `absent` instead of refusing it at an unknown version; a present root with a missing or corrupt `package.json` still refuses. When `amem setup <target> --apply` repairs a receipt whose install was removed, its placement warning says to renew the writer inventory after setup. Refs #660.
 - Placement admission lock refusals point to the admission dry-run and `amem sync --status`. Live-reader fence text changes from "is readers" to "blocked by live readers". Mixed-case GitHub keys and filesystem paths passed to `--admit` now refuse before creating a realm. Refs #658.
 - `amem sync --if-due` and other stopped placement syncs report a stop before any publication attempt as `Placement sync stopped before publication (phase ...)`, with failure cause `stopped` and no refusal, instead of `category other`. The stopped batch's realms read `not-run` instead of `failed`, and earlier batches keep their receipts and no-op entries. A deadline-stopped `--if-due` run names `amem sync` as the way to finish without the deadline, and it holds the backoff at 15 minutes instead of doubling it. A stop after the attempt was prepared still reports `unknown`. Refs #657.

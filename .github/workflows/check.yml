@@ -132,6 +132,15 @@ jobs:
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
             git fetch --no-tags --filter=blob:none --unshallow origin
           fi
+      - name: Check refusal remedies and baseline
+        env:
+          REFUSAL_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$REFUSAL_BASE" ] && [ "$REFUSAL_BASE" != "0000000000000000000000000000000000000000" ]; then
+            bun scripts/refusal-inventory.ts --base "$REFUSAL_BASE"
+          else
+            bun scripts/refusal-inventory.ts
+          fi
       - run: bun scripts/check-docs.ts
       - run: npm pack --dry-run
       # #420 AC1: advisory only; the ordinary test shards skip this 5,154-row workload.
