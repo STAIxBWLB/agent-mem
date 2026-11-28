@@ -98,10 +98,7 @@ export function formatFloorAtLeast(home: string, surface: FormatSurface, minimum
   return (readFormatFloors(home) ?? []).some(floor => (floor.surface === surface || floor.surface === "home") && !formatVersionBelow(floor.minReader, minimum));
 }
 
-/**
- * The step a person takes to raise a floor: the exact record, the file it goes in, and that this package never writes that file. It is the
- * next step a refusal names, so the writer that refuses keeps the path and the record from one place.
- */
+/** The preview and explicit confirmation a person uses to append a format floor. */
 export function floorRaiseHint(home: string, surface: FormatSurface, minReader: string): string {
-  return `append {"surface":"${surface}","minReader":"${minReader}","since":"YYYY-MM-DD"} to ${join(home, FORMATS_FILE)} by hand (amem never writes that file)`;
+  return `preview amem formats raise ${surface} ${minReader}, then run amem formats raise ${surface} ${minReader} --confirm to append the floor to ${join(home, FORMATS_FILE)}`;
 }

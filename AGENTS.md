@@ -5,6 +5,7 @@
 - Install with `bun install` (Bun 1.4.4, `.bun-version`).
 - Before reporting completion, run `bun x tsc --noEmit`, `bun scripts/check-boundary.ts` (prints `boundary: OK`), `bun test <file>...` for the test files the change affects, and `npm pack --dry-run`; report their results. The full suite is CI's proof at the PR head; run it locally or on dgx02 only when CI cannot run or a reviewer asks for it.
 - On the Mac, keep one heavy job per repository, including its worktrees. Remote runs on dgx02 (`dot remote run|verify`) take one slot per worktree, up to the `max_runs` that `dot remote status` reports; announce the slot in an `[FYI]` hub message before starting one, and never reply to another peer's slot or progress notice.
+- Run `bun scripts/refusal-inventory.ts` after changing refusal messages. The checker verifies named commands and options against `COMMANDS`, and CI rejects growth in `scripts/refusal-inventory.baseline.json`. Use a source-adjacent `refusal-by-design: operator-knowledge|world-action|human-authority <reason>` comment for a refusal that requires an external action or decision.
 
 ## Conventions and structure
 

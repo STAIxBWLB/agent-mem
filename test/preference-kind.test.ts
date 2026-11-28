@@ -31,7 +31,7 @@ async function cli(r: ReturnType<typeof rig>, args: string[]): Promise<string> {
   try { return await runCli(args, { cwd: r.cwd, env: {}, stdinTTY: true }); } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }
 const message = (promise: Promise<string>) => promise.then(() => "ok", error => (error as Error).message);
-/** A person records the floor by hand: amem never writes formats.json. */
+/** Seed the fixture with a previously confirmed format floor. */
 const floor = (memory: string, minReader: string, surface: "curated" | "home") =>
   writeFileSync(join(memory, "formats.json"), JSON.stringify([{ surface, minReader, since: "2026-11-11" }]) + "\n");
 const open = (r: ReturnType<typeof rig>) => new MemoryStore({ memoryDir: r.memory, deferPromotions: true });
@@ -48,13 +48,13 @@ function authored(r: ReturnType<typeof rig>): Record<string, string> {
   return files;
 }
 
-test("a preference note is refused below the home's floor, naming the cause, the record and the contract, and writes nothing", async () => {
+test("a preference note is refused below the home's floor, naming the cause, the command and the contract, and writes nothing", async () => {
   const r = rig();
   const empty = authored(r);
   const refusal = await message(cli(r, ["note", "add", "--kind", "preference", "always answer in Korean"]));
   expect(refusal).toContain(PREFERENCE_MIN_READER);
   expect(refusal).toContain("formats.json");
-  expect(refusal).toContain('"surface":"curated"');
+  expect(refusal).toContain(`amem formats raise curated ${PREFERENCE_MIN_READER} --confirm`);
   expect(refusal).toContain("Versions on one machine (#199)");
   expect(refusal).toContain("sync publish");
   // The refusal wrote nothing at all, not even an empty segment directory.

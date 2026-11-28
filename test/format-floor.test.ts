@@ -5,7 +5,7 @@ import { runCli } from "../src/cli.ts";
 import { drainHookCaptures, stageHookCapture } from "../src/hook-spool.ts";
 import { CandidateStore } from "../src/memory/candidates.ts";
 import { CaptureStore } from "../src/memory/capture.ts";
-import { assertFormatFloor, FORMAT_SURFACES, FORMATS_FILE, readFormatFloors } from "../src/memory/formats.ts";
+import { assertFormatFloor, FORMAT_SURFACES, FORMATS_FILE, PREFERENCE_MIN_READER, readFormatFloors } from "../src/memory/formats.ts";
 import { MemoryStore, openShardStore } from "../src/memory/store.ts";
 import { syncMemory } from "../src/memory/sync.ts";
 import { WorkListStore } from "../src/memory/work-lists.ts";
@@ -51,6 +51,27 @@ test("every surface below its floor refuses with format_floor and leaves the hom
   expect(await drainHookCaptures({ cwd: f.cwd, base: f.base, project }, () => { throw Error("nothing is drained below the floor"); })).toEqual({ captured: [], blocked: 1 });
   expect(snapshot(f.base)).toEqual(before);
   open.close();
+});
+
+test("#584: the preference floor refusal names a command that records the required floor", async () => {
+  const f = fixture(), project = memoryProjectKey(f.cwd);
+  const store = new MemoryStore({ memoryDir: f.base });
+  let refusal = "";
+  try {
+    store.note({ ...note(project), kind: "preference" });
+  } catch (error) {
+    refusal = (error as Error).message;
+  } finally { store.close(); }
+  const command = refusal.match(/amem formats raise curated [0-9.]+ --confirm/)?.[0];
+  expect(command).toBe(`amem formats raise curated ${PREFERENCE_MIN_READER} --confirm`);
+  const prior = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = f.base;
+  try {
+    await runCli(command!.split(" ").slice(1), { cwd: f.cwd, env: {}, processTable: () => "" });
+    expect(readFormatFloors(f.base)).toEqual([expect.objectContaining({ surface: "curated", minReader: PREFERENCE_MIN_READER })]);
+  } finally {
+    if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior;
+  }
 });
 
 test("a floor names one surface; at or below this version, or for another surface, it does not refuse", () => {
