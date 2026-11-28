@@ -39,6 +39,18 @@ test("due follows the stamp: no history is due, a recent attempt is not, and --f
   expect(readSyncState(home).failures).toBe(0);                                                  // a success clears the backoff
 });
 
+test("#657: a deadline stop holds the backoff at one step and never doubles it; a real failure still doubles", () => {
+  const home = temp();
+  recordSyncAttempt(home, false, T0, true);
+  expect(readSyncState(home).failures).toBe(1);                                                  // the first deadline still waits 15 minutes
+  recordSyncAttempt(home, false, T0 + MIN, true);
+  expect(readSyncState(home).failures).toBe(1);                                                  // a repeated deadline does not double it
+  recordSyncAttempt(home, false, T0 + 2 * MIN); recordSyncAttempt(home, false, T0 + 3 * MIN);
+  expect(readSyncState(home).failures).toBe(3);
+  recordSyncAttempt(home, false, T0 + 4 * MIN, true);
+  expect(readSyncState(home).failures).toBe(3);                                                  // a deadline keeps a remote failure's backoff as it was
+});
+
 test("a damaged, oversized, linked or hand-edited stamp is no history (due now), never a crash, and the stamp never holds an error text", () => {
   const home = temp(); const file = join(home, SYNC_STATE_FILE);
   for (const bad of ["{ nope", "[]", JSON.stringify({ lastAttemptAt: "yesterday", lastOkAt: 5, failures: -3 }), "x".repeat(10_000)]) {
@@ -355,7 +367,7 @@ test("the deadline running out during --if-due IS stamped as a failure: a remote
   const saved = { home: process.env.AMEM_HOME, ssh: process.env.GIT_SSH_COMMAND }; process.env.AMEM_HOME = memory; process.env.GIT_SSH_COMMAND = fakeSsh;
   const started = Date.now();
   try {
-    await expect(runCli(["sync", "--if-due", "--force", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 })).rejects.toThrow(/sync/);
+    await expect(runCli(["sync", "--if-due", "--force", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 })).rejects.toThrow(/sync --if-due stopped at its 2 s deadline; run amem sync to finish without one\.$/);
   } finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
   const elapsed = Date.now() - started;
   expect(elapsed).toBeGreaterThanOrEqual(1800); expect(elapsed).toBeLessThan(12_000);             // it ended because the SHORT deadline fired (not the 30 s one, not by itself: the ssh stand-in sleeps 120 s)
@@ -366,6 +378,21 @@ test("the deadline running out during --if-due IS stamped as a failure: a remote
   const stamp = readSyncState(memory);
   expect(stamp.failures).toBe(1);                                                                // and counts: a remote that did not answer in time is backed off from
   expect(stamp.lastOkAt).toBe(PRIOR.lastOkAt);                                                   // a failure keeps the last success
+  // #657: --json reports the same deadline note in its error, and a second deadline does not double the wait.
+  process.env.AMEM_HOME = memory; process.env.GIT_SSH_COMMAND = fakeSsh;
+  let json: string | undefined, thrown: unknown;
+  try { json = await runCli(["sync", "--if-due", "--force", "--json", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 }); }
+  catch (error) { thrown = error; }
+  finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
+  expect(thrown).toBeUndefined();                                                                // --json resolves with the failed result
+  expect(JSON.parse(json!)).toMatchObject({ ok: false, error: expect.stringMatching(/sync --if-due stopped at its 2 s deadline; run amem sync to finish without one\.$/) });
+  expect(readSyncState(memory).failures).toBe(1);
+  // A marked session's masked line keeps the fixed note and none of the raw transport error.
+  process.env.AMEM_HOME = memory; process.env.GIT_SSH_COMMAND = fakeSsh;
+  try {
+    await expect(runCli(["sync", "--if-due", "--force", "--remote", "ssh://example.invalid/x.git"], { cwd, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: true, syncDeadlineMs: 2000 }))
+      .rejects.toThrow(/^Memory operation unavailable or refused; no partial result is shown\. sync --if-due stopped at its 2 s deadline; run amem sync to finish without one\.$/);
+  } finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
 }, 90_000);
 
 test("a person who closes the terminal AFTER the deadline already fired did not stop the run: it stays a failure (#435)", async () => {
@@ -436,4 +463,37 @@ test("amem never registers a sync hook or a resident process: no setup, hook or 
   }
   const cadence = readFileSync(new URL("../src/memory/sync-cadence.ts", import.meta.url), "utf8");
   expect(cadence).not.toMatch(/Bun\.spawn|child_process|setInterval|setTimeout|detached/);
+});
+
+test("#657: a writer-context refusal that a deadline stop accompanies keeps the deadline note, and a marked session reads only its fixed form", async () => {
+  const { markedDeadline, withSyncDeadline } = await import("../src/cli.ts");
+  const { PlacementWriterContextError, placementSyncFailure, placementWriterRefusalText } = await import("../src/sync-placement-writer-context.ts");
+  const note = "sync --if-due stopped at its 30 s deadline; run amem sync to finish without one.";
+  const failure = withSyncDeadline(placementSyncFailure(new PlacementWriterContextError("setup receipt", "missing"), Error("transport refused at /private/home")), note);
+  expect(failure.message).toEndWith(note);
+  expect(placementWriterRefusalText(failure)).toBeDefined();                                       // the fixed refusal text still resolves
+  expect(markedDeadline(failure)).toBe(note);
+  const forged = Object.defineProperty(Error("x"), "syncDeadlineNote", { value: `${note} /private/home` });
+  expect(markedDeadline(forged)).toBeUndefined();                                                  // only the fixed numbers-only form reaches a marked session
+  expect(markedDeadline(Error("x"))).toBeUndefined();
+});
+
+test("#657: a typed writer-context refusal returned by --json keeps the deadline note when the deadline fired during setup", async () => {
+  const { spyOn } = await import("bun:test");
+  const cadence = await import("../src/memory/sync-cadence.ts"), guard = await import("../src/memory/sync-placement-guard.ts"), writers = await import("../src/sync-placement-writer-context.ts");
+  const root = temp(), memory = join(root, "memory"), cwd = join(root, "repo");
+  mkdirSync(memory, { recursive: true }); mkdirSync(cwd, { recursive: true }); expect(memoryGitSync(["init", "-q", cwd], { encoding: "utf8" }).status).toBe(0);
+  const refusal = new writers.PlacementWriterContextError("setup receipt", "missing"), text = writers.placementWriterRefusalText(refusal)!;
+  // The deadline already fired while the writer context was being built: both are synchronous, so the seams stand in for the timing.
+  const spies = [
+    spyOn(cadence, "stopSignal").mockImplementation(() => ({ signal: AbortSignal.abort(), dispose() {}, cause: () => "deadline" as const, signalName: () => undefined })),
+    spyOn(guard, "readPlacementRuntimeMarkers").mockImplementation(() => ({ profile: { publicationFormat: "agent-mem.sync-placement/v1" }, shards: undefined })),
+    spyOn(writers, "activePlacementWriterContext").mockImplementation(() => { throw refusal; }),
+  ];
+  const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = memory;
+  try {
+    const result = JSON.parse(await runCli(["sync", "--if-due", "--force", "--json", "--progress", "off", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: false, syncDeadlineMs: 2000 }));
+    expect(result).toMatchObject({ ok: false, failure: { cause: "refusal" } });
+    expect(result.error).toBe(`${text} sync --if-due stopped at its 2 s deadline; run amem sync to finish without one.`);
+  } finally { for (const spy of spies) spy.mockRestore(); if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 });

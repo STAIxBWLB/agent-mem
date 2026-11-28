@@ -15,7 +15,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ### Fixed
 
 - Placement admission lock refusals point to the admission dry-run and `amem sync --status`. Live-reader fence text changes from "is readers" to "blocked by live readers". Mixed-case GitHub keys and filesystem paths passed to `--admit` now refuse before creating a realm. Refs #658.
-
+- `amem sync --if-due` and other stopped placement syncs report a stop before any publication attempt as `Placement sync stopped before publication (phase ...)`, with failure cause `stopped` and no refusal, instead of `category other`. The stopped batch's realms read `not-run` instead of `failed`, and earlier batches keep their receipts and no-op entries. A deadline-stopped `--if-due` run names `amem sync` as the way to finish without the deadline, and it holds the backoff at 15 minutes instead of doubling it. A stop after the attempt was prepared still reports `unknown`. Refs #657.
 - The MCP schemas for `amem_brief`, `amem_work_state_write` and `amem_remember` lower their argument limits to fit the stdio frame. Requests accepted under the old limits can now be refused by schema validation. Oversized `amem_search` results return whole ranked hits with a truncation flag and a narrowing hint. Refs #646.
 
 ### Changed

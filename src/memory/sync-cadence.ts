@@ -131,15 +131,19 @@ const LOCAL = /^(usage:|another (sync|memory mutation|generation|shard sync)|no 
 export function syncOutcome(error: string | undefined, cause?: StopCause): SyncOutcome {
   if (error === undefined) return "ok";
   // A run its person ended (Ctrl-C, a closing terminal) is not a failure of the remote: the same Ctrl-C reads "fetch failed" or "stopped" depending on which step it hit, so the cause,
-  // not the text, decides. Only the deadline (a remote that did not answer in time) stays a failure to back off from.
+  // not the text, decides. Only the deadline stays a failure to back off from, and the CLI holds it at one step (recordSyncAttempt `hold`).
   if (cause === "person") return "local";
   return LOCAL.test(error.replace(/^amem sync: /, "")) ? "local" : "failed";
 }
 
-/** Records one attempt. A stamp that cannot be written never fails the sync it describes. */
-export function recordSyncAttempt(home: string, ok: boolean, at: number): SyncState {
+/**
+ * Records one attempt. A stamp that cannot be written never fails the sync it describes. `hold` (#657) is a run the `--if-due` deadline
+ * stopped: it waits at least one backoff step (15 minutes) but never doubles the wait, so a slow local run is not treated as a failing remote.
+ */
+export function recordSyncAttempt(home: string, ok: boolean, at: number, hold = false): SyncState {
   const prior = readSyncState(home), when = new Date(at).toISOString();
-  const next: SyncState = { lastAttemptAt: when, lastOkAt: ok ? when : prior.lastOkAt, failures: ok ? 0 : Math.min(prior.failures + 1, MAX_FAILURES) };
+  const failures = ok ? 0 : hold ? Math.max(prior.failures, 1) : Math.min(prior.failures + 1, MAX_FAILURES);
+  const next: SyncState = { lastAttemptAt: when, lastOkAt: ok ? when : prior.lastOkAt, failures };
   const file = join(home, SYNC_STATE_FILE), temp = `${file}.${process.pid}.tmp`;
   try {
     mkdirSync(home, { recursive: true, mode: 0o700 });

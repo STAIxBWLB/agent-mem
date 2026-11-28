@@ -12,6 +12,7 @@ import { syncMemory } from "../src/memory/sync.ts";
 import { readPlacementJournal } from "../src/memory/sync-placement-journal-storage.ts";
 import { SyncPlacementJournalError } from "../src/memory/sync-placement-journal-format.ts";
 import { placementInventory, placementInventoryBatches, syncPlacementInventory } from "../src/memory/sync-placement-inventory.ts";
+import { PLACEMENT_RETAINED_STOP_MESSAGE } from "../src/memory/sync-placement-refusal.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
 import { validatePlacementPublicationRoot } from "../src/memory/sync-placement-publication-plan.ts";
 import { SyncProgress, readSyncStatus, renderSyncStatus, syncProgressSidecar } from "../src/memory/sync-progress.ts";
@@ -62,6 +63,14 @@ test("#450 AC3: a crash inside the second publication stops before the third, re
   expect(status.inventory!.outcomes).toEqual(crashed.placementRealms!.map(item => ({ realm: item.realm === "user" ? "user" : item.realm.slice(0, 16), outcome: item.outcome })));
   expect(publication).toBe(2);
   const retained = f.plans();
+  // #657 AC2: a stop before the resumed retained publication starts keeps it unknown, with its recovery message, at the normal entry point.
+  const halt = new AbortController(); halt.abort();
+  const halted = await syncMemory(f.entry(), { ...f.opts(remote), signal: halt.signal });
+  expect(halted).toMatchObject({ ok: false, failure: { cause: "stopped" }, error: PLACEMENT_RETAINED_STOP_MESSAGE, placementPublication: { outcome: "unknown" } });
+  expect(halted.placementPublication?.refusal).toBeUndefined();
+  expect(halted.placementRealms!.filter(item => order.slice(2, 4).includes(item.realm)).map(item => item.outcome)).toEqual(["unknown", "unknown"]);
+  expect(halted.placementRealms!.filter(item => !order.slice(2, 4).includes(item.realm)).every(item => item.outcome === "not-run")).toBe(true);
+  expect(f.plans()).toEqual(retained);
   const resumed = await syncMemory(f.entry(), f.opts(remote));
   expect(resumed.ok).toBe(true);
   // The retained second publication runs first, through its own realms; then the rest in the usual order (already published ones are not-needed).
@@ -119,6 +128,29 @@ test("#450: cancellation between publications records remaining realms before th
   const status = readSyncStatus(f.home).operations[0]!;
   expect(status).toMatchObject({ state: "cancelled", cause: "cancelled", inventory: { publications: 3, completed: 1, realms: 5 } });
   expect(status.inventory!.outcomes!.map(item => item.outcome)).toEqual(result.placementRealms.map(item => item.outcome));
+}, 240_000);
+
+test("#657 AC3: a stop inside a later publication before its attempt reports that batch not-run and keeps the earlier batch's no-op entry", async () => {
+  const f = await inventoryFixture(2), remote = bare();
+  expect((await syncMemory(f.entry(), f.opts(remote))).ok).toBe(true);
+  expect((await syncMemory(f.entry(), f.opts(remote))).ok).toBe(true);                           // the full not-needed path writes each batch's no-op entry
+  const cache = join(f.home, "sync-noop-cache"), before = readdirSync(cache).sort();
+  expect(before.length).toBeGreaterThan(0);
+  const controller = new AbortController(), progress = new SyncProgress({ sink: syncProgressSidecar(f.home), intervalMs: 0 });
+  const open = (realm: Parameters<Parameters<typeof syncPlacementInventory>[2]["open"]>[0]) => openShardStore({ memoryDir: f.home, deferPromotions: true, ...(realm.scope === "user" ? { user: true } : { project: realm.key }) });
+  let publications = 0;
+  const result = await syncPlacementInventory(f.home, { ...f.opts(remote), progress, signal: controller.signal }, {
+    open, close: store => store.close(), publish: (primary, targets, options) => {
+      if (++publications === 2) controller.abort();                                               // stopped before the second publication's transport starts
+      return syncPlacementMemory(primary, options, undefined, undefined, undefined, targets);
+    },
+  });
+  expect(publications).toBe(2); expect(result.ok).toBe(false);
+  expect(result.failure).toEqual({ cause: "stopped" }); expect(result.placementPublication?.refusal).toBeUndefined();
+  expect(result.error).toContain("Placement sync stopped before publication (phase writer verification)");
+  expect(result.placementRealms.map(item => item.outcome)).toEqual(["not-needed", "not-needed", "not-run"]);
+  expect(readdirSync(cache).sort()).toEqual(before);
+  expect(readSyncStatus(f.home).operations[0]).toMatchObject({ state: "cancelled", cause: "cancelled" });
 }, 240_000);
 
 test("#448 AC3: a realm admitted after activation joins the inventory, is openable and is published with the rest", async () => {
