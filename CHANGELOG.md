@@ -7,6 +7,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 ### Added
 
 - `amem setup agy --refresh [--apply]` previews, then refreshes, every receipted Antigravity workspace in one run; a deleted repository is reported with its restore-then-undo step and one workspace's refusal never stops the others. `amem doctor` reports an existing acon console plugin manifest that names a missing module, a changed hash or an older amem install and names `amem setup console --apply`; `amem setup all` refreshes such a manifest when it already exists and never creates one. Refs #659.
+- `amem migrate --sync-placement --checkpoint` takes `--out <file>` (a new 0600 file, never an existing path or a link) and `--discovered-writers` (the roots `--writers` suggests). `--confirm --plan <file>` without `--writer-root` reads the roots from the sealed plan and measures each one again. `--writers` lists library hosts from live processes and from `ahub`/`vmem` on `PATH` under the additive `runningHosts` field and suggests those with a readable version. Refs #660.
 
 ### Changed
 
@@ -14,6 +15,7 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ### Fixed
 
+- `amem formats raise` lists a setup or placement inventory root removed from disk, with no live process running from it, as `absent` instead of refusing it at an unknown version; a present root with a missing or corrupt `package.json` still refuses. When `amem setup <target> --apply` repairs a receipt whose install was removed, its placement warning says to renew the writer inventory after setup. Refs #660.
 - Placement admission lock refusals point to the admission dry-run and `amem sync --status`. Live-reader fence text changes from "is readers" to "blocked by live readers". Mixed-case GitHub keys and filesystem paths passed to `--admit` now refuse before creating a realm. Refs #658.
 - `amem sync --if-due` and other stopped placement syncs report a stop before any publication attempt as `Placement sync stopped before publication (phase ...)`, with failure cause `stopped` and no refusal, instead of `category other`. The stopped batch's realms read `not-run` instead of `failed`, and earlier batches keep their receipts and no-op entries. A deadline-stopped `--if-due` run names `amem sync` as the way to finish without the deadline, and it holds the backoff at 15 minutes instead of doubling it. A stop after the attempt was prepared still reports `unknown`. Refs #657.
 - The MCP schemas for `amem_brief`, `amem_work_state_write` and `amem_remember` lower their argument limits to fit the stdio frame. Requests accepted under the old limits can now be refused by schema validation. Oversized `amem_search` results return whole ranked hits with a truncation flag and a narrowing hint. Refs #646.

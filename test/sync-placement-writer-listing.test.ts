@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { activationOwnRoot, placementActivationFixture } from "./fakes/sync-placement-activation.ts";
 import { activateSyncPlacement } from "../src/memory/sync-placement-activation.ts";
@@ -74,12 +74,12 @@ test("#639 AC3/AC4: CLI JSON is versioned, marked sessions pass the policy scree
   const { f } = await scene();
   const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
   try {
-    const plain = JSON.parse(await runCli(["migrate", "--sync-placement", "--writers", "--json"], { cwd: f.root, env: {}, stdinTTY: false }));
+    const plain = JSON.parse(await runCli(["migrate", "--sync-placement", "--writers", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => "" }));
     expect(plain.schema).toBe("amem.placement-writers/v1");
-    expect(Object.keys(plain)).toEqual(["schema", "inventory", "running", "receipts", "suggestedRoots", "command", "note"]);
-    const marked = await runCli(["migrate", "--sync-placement", "--writers", "--json"], { cwd: f.root, env: { CODEX_THREAD_ID: "t" }, stdinTTY: false });
+    expect(Object.keys(plain)).toEqual(["schema", "inventory", "running", "receipts", "runningHosts", "suggestedRoots", "command", "note"]);
+    const marked = await runCli(["migrate", "--sync-placement", "--writers", "--json"], { cwd: f.root, env: { CODEX_THREAD_ID: "t" }, stdinTTY: false, processTable: () => "" });
     expect(JSON.parse(marked)).toEqual(plain);
-    const text = await runCli(["migrate", "--sync-placement", "--writers"], { cwd: f.root, env: { CODEX_THREAD_ID: "t" }, stdinTTY: false });
+    const text = await runCli(["migrate", "--sync-placement", "--writers"], { cwd: f.root, env: { CODEX_THREAD_ID: "t" }, stdinTTY: false, processTable: () => "" });
     expect(text).toContain("roots to declare:"); expect(text).toContain(`next: ${plain.command}`);
     for (const argv of [["migrate", "--writers"], ["migrate", "--sync-placement", "--writers", "--checkpoint"], ["migrate", "--sync-placement", "--writers", "--apply"]])
       await expect(runCli(argv, { cwd: f.root, env: {}, stdinTTY: false })).rejects.toThrow("usage: amem migrate --sync-placement --writers [--json]");
@@ -118,3 +118,67 @@ test("#639 with #636: a stale agy receipt keeps its single next step; --writers 
   const reason = "Sync placement writer proof is missing (setup receipt category); list the agy workspaces with amem setup agy --list, or renew through amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json.";
   expect(writerFinding({ cause: "missing", category: "setup receipt", reason }).next).toEqual(["amem setup agy --refresh", "amem setup agy --list"]);
 });
+
+test("#660 AC2: --writers finds a host bundle from the process table and behind ahub/vmem on PATH, and suggests it", async () => {
+  const { f, running } = await scene();
+  const live = join(f.root, "live-host"), onPath = join(f.root, "path host"), bin = join(f.root, "bin");
+  const liveRoot = writer(join(live, "node_modules", "@staix", "agent-mem"), "0.41.0"), pathRoot = writer(join(onPath, "node_modules", "@staix", "agent-mem"), "0.41.0");
+  mkdirSync(join(live, "dist"), { recursive: true }); writeFileSync(join(live, "dist", "ahub.js"), "// host\n");
+  mkdirSync(join(onPath, "dist"), { recursive: true }); writeFileSync(join(onPath, "dist", "vmem.js"), "// host\n");
+  mkdirSync(bin); symlinkSync(join(onPath, "dist", "vmem.js"), join(bin, "vmem"));
+  const listing = listPlacementWriters(f.base, running, { table: () => `4242 /usr/local/bin/bun ${join(live, "dist", "ahub.js")} daemon\n`, path: `relative:${bin}` });
+  expect(listing.runningHosts).toEqual([
+    { pid: 4242, root: liveRoot, version: "0.41.0", host: join(live, "dist", "ahub.js") },
+    { root: pathRoot, version: "0.41.0", host: realPath(join(onPath, "dist", "vmem.js")) },
+  ]);
+  expect(listing.suggestedRoots).toContain(liveRoot); expect(listing.suggestedRoots).toContain(pathRoot);
+  expect(listing.command).toBe(placementWriterCommand(listing.suggestedRoots));
+  // A host bundle without a readable version is listed but never suggested.
+  writeFileSync(join(liveRoot, "package.json"), "{}");
+  expect(listPlacementWriters(f.base, running, { table: () => `4242 /usr/local/bin/bun ${join(live, "dist", "ahub.js")}\n` }).suggestedRoots).not.toContain(liveRoot);
+}, 300_000);
+
+test("#660 AC3: --discovered-writers --out saves a private plan, and --confirm --plan without --writer-root re-measures its roots", async () => {
+  const { f, own, kept, hosted } = await scene();
+  const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
+  const run = (...argv: string[]) => runCli(["migrate", "--sync-placement", "--checkpoint", ...argv], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => "" });
+  try {
+    const plan = join(f.root, "checkpoint plan.json");
+    const text = await run("--discovered-writers", "--out", plan);
+    expect(statSync(plan).mode & 0o777).toBe(0o600);
+    for (const root of [own, kept, hosted]) expect(text).toContain(`  ${root}`);           // every measured root is printed before confirming
+    expect(text).toContain(`next: amem migrate --sync-placement --checkpoint --confirm --plan '${plan}'`);
+    const saved = JSON.parse(readFileSync(plan, "utf8"));
+    expect(saved.plan.writerRevision.roots.map((root: { root: string }) => root.root).sort()).toEqual([own, kept, hosted].sort());
+    await expect(run("--discovered-writers", "--out", plan)).rejects.toThrow("the --out path already exists");
+    const link = join(f.root, "link.json"); symlinkSync(join(f.root, "elsewhere.json"), link);
+    await expect(run("--discovered-writers", "--out", link)).rejects.toThrow("choose a new --out file");
+    expect(existsSync(join(f.root, "elsewhere.json"))).toBe(false); expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    for (const argv of [["--discovered-writers", "--writer-root", own], ["--confirm", "--plan", plan, "--out", join(f.root, "x.json")], ["--resume", "--discovered-writers"]])
+      await expect(run(...argv)).rejects.toThrow("--out <file> and --discovered-writers apply only to a checkpoint preview");
+    // A root changed on disk since the preview refuses; the plan's own roots are measured, never trusted.
+    writeFileSync(join(kept, "src", "index.ts"), "// changed after the preview\n");
+    await expect(run("--confirm", "--plan", plan)).rejects.toThrow();
+    writeFileSync(join(kept, "src", "index.ts"), "// isolated writer\n");
+    const fresh = join(f.root, "fresh.json");
+    await run("--discovered-writers", "--out", fresh);
+    expect(JSON.parse(await run("--confirm", "--plan", fresh, "--json"))).toMatchObject({ window: 2, renewed: true });
+  } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
+}, 300_000);
+
+test("#660 AC1: formats raise counts no removed install, and still refuses a present root with a corrupt package.json", async () => {
+  const { f, kept, removed } = await scene();
+  const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
+  const raise = async () => JSON.parse(await runCli(["formats", "raise", "home", "0.36.0", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => "" }));
+  try {
+    const ready = await raise();
+    expect(ready.absent.map((writer: { root: string }) => writer.root)).toEqual([removed]);
+    expect(ready.below).toEqual([]); expect(ready.ready).toBe(true); expect(ready.refusal).toBeNull();
+    writeFileSync(join(kept, "package.json"), "not json");
+    const refused = await raise();
+    expect(refused.below.map((writer: { root: string; version: unknown }) => [writer.root, writer.version])).toEqual([[kept, null]]);
+    expect(refused.refusal).toContain("unknown version");
+    writeFileSync(join(kept, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.39.0" }));
+    expect(JSON.parse(await runCli(["formats", "raise", "home", "0.36.0", "--confirm", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => "" })).appended).toMatchObject({ surface: "home", minReader: "0.36.0" });
+  } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
+}, 300_000);

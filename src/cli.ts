@@ -26,7 +26,7 @@ import { deterministicRowScreen } from "./memory/sync-screen.ts";
 import { vaultCandidates, vaultCandidatesText, vaultCandidatesAllText } from "./memory/vault.ts";
 import type { IngestKind, IngestReceipt } from "./ingest.ts";
 import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { types } from "node:util";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -552,6 +552,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   const identity = cliAttribution() ?? { actor: "person" as const, peer: "person" }, actor = identity.actor;
   if (parsed.path[0] === "migrate" && options["--sync-placement"] === true) {
     const modes = ["--dry-run","--apply","--resume","--abandon","--deactivate"].filter(key=>options[key]===true);
+    // #660: the saved-plan file and root discovery belong to the checkpoint preview only.
+    if ((options["--out"] !== undefined || options["--discovered-writers"] !== undefined)
+      && (options["--checkpoint"] !== true || ["--confirm","--resume","--abandon","--json"].some(key => options[key] !== undefined && key !== "--json") || options["--discovered-writers"] !== undefined && options["--writer-root"] !== undefined))
+      throw new AgentUsageError("--out <file> and --discovered-writers apply only to a checkpoint preview: amem migrate --sync-placement --checkpoint --discovered-writers --out checkpoint-plan.json (or --writer-root <install root>, repeated, instead of --discovered-writers), then amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json.");
     if (modes.length>1 || parsed.positionals.length || ["--shards","--public-prune-view","--generation","--deactivate"].some(key=>options[key]!==undefined))
       throw new AgentUsageError("Sync placement is a home-wide forward-only migration; use only --sync-placement with --dry-run, --apply, --resume or pre-marker --abandon and the writer roots, never combine migration families or deactivate.");
     if (options["--list-remote"] === true && (modes.length || options["--admit"] !== undefined || options["--from-remote"] === true || options["--writer-root"] !== undefined || options["--confirm"] === true || options["--checkpoint"] === true || options["--plan"] !== undefined))
@@ -568,7 +572,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const chosen = [options["--confirm"] === true, options["--resume"] === true, options["--abandon"] === true].filter(Boolean).length;
       if (options["--admit"] !== undefined || options["--list-remote"] === true || options["--from-remote"] === true || options["--apply"] === true || options["--dry-run"] === true || chosen > 1 || (options["--confirm"] === true) !== (options["--plan"] !== undefined)
         || (options["--resume"] === true || options["--abandon"] === true) && options["--writer-root"] !== undefined)
-        throw new AgentUsageError("A placement checkpoint previews with --sync-placement --checkpoint --writer-root <install root> (repeat), saves the plan with (umask 077; set -C; amem migrate --sync-placement --checkpoint --writer-root <install root> --json > checkpoint-plan.json), then confirms with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json and the same writer roots, or uses --resume / --abandon alone.");
+        throw new AgentUsageError("A placement checkpoint previews with --sync-placement --checkpoint --writer-root <install root> (repeat) or --discovered-writers, saves the plan with --out checkpoint-plan.json, then confirms with amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json (the plan names its writer roots), or uses --resume / --abandon alone.");
     } else if (options["--plan"] !== undefined) {
       throw new AgentUsageError("--plan applies only to --sync-placement --checkpoint --confirm.");
     } else if (options["--admit"] !== undefined) {
@@ -579,8 +583,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     }
   } else if (parsed.path[0] === "migrate" && options["--writers"] !== undefined) {
     throw new CommandUsageError("usage: amem migrate --sync-placement --writers [--json]");
-  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined||options["--checkpoint"]!==undefined||options["--plan"]!==undefined)) {
-    throw new AgentUsageError("--writer-root, --abandon, --admit, --list-remote, --from-remote, --checkpoint and --plan apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
+  } else if (parsed.path[0] === "migrate" && (options["--writer-root"] !== undefined||options["--abandon"]!==undefined||options["--admit"]!==undefined||options["--list-remote"]!==undefined||options["--from-remote"]!==undefined||options["--checkpoint"]!==undefined||options["--plan"]!==undefined||options["--out"]!==undefined||options["--discovered-writers"]!==undefined)) {
+    throw new AgentUsageError("--writer-root, --abandon, --admit, --list-remote, --from-remote, --checkpoint, --plan, --out and --discovered-writers apply only to --sync-placement; run amem migrate --sync-placement --dry-run to review the inventory.");
   }
   if (parsed.path[0] === "skills" && parsed.path[1] === "export") {
     if (parsed.positionals.length !== 1) throw new CommandUsageError("usage: amem skills export <dir> [--json]");
@@ -733,7 +737,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (options["--sync-placement"] === true) {
       if (options["--writers"] === true) {
         const { listPlacementWriters, placementWritersText } = await import("./memory/sync-placement-writer-listing.ts");
-        const listing = listPlacementWriters(memoryHome(), fileURLToPath(new URL("..", import.meta.url)));
+        const listing = listPlacementWriters(memoryHome(), fileURLToPath(new URL("..", import.meta.url)), placementDiscovery(context));
         return options["--json"] === true ? JSON.stringify(listing, null, 2) : placementWritersText(listing);
       }
       if (options["--list-remote"] === true) {
@@ -749,7 +753,11 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       }
       if (options["--checkpoint"] === true) {
         const person = await import("./memory/sync-placement-checkpoint-person.ts");
-        const writerRoots = repeated(argv, "--writer-root"), ownRoot = fileURLToPath(new URL("..", import.meta.url));
+        const ownRoot = fileURLToPath(new URL("..", import.meta.url));
+        // #660: --discovered-writers measures the roots --writers suggests; the preview prints them before anything is confirmed.
+        const writerRoots = options["--discovered-writers"] === true
+          ? (await import("./memory/sync-placement-writer-listing.ts")).listPlacementWriters(memoryHome(), ownRoot, placementDiscovery(context)).suggestedRoots
+          : repeated(argv, "--writer-root");
         // Human output keeps the fixed refusal text. Classified JSON failures exit 1 and carry their safe own fields.
         const checkpointRefusalJson = async (error: unknown): Promise<string> => {
           if (options["--json"] === true && error instanceof person.PlacementCheckpointError && error.causeClass === "history" && error.history) {
@@ -782,6 +790,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         }
         const preview = await person.previewPlacementCheckpoint(memoryHome(), { writerRoots, ownRoot }).catch(checkpointRefusalJson);
         if (typeof preview === "string") return preview;
+        const out = typeof options["--out"] === "string" ? options["--out"] : undefined;
+        if (out !== undefined) { writePrivatePlan(out, JSON.stringify(preview, null, 2) + "\n"); preview.nextStep = `${person.CHECKPOINT_PREVIEW} --confirm --plan ${shellQuoteArg(out)}`; }
         if (options["--json"] === true) return JSON.stringify(preview, null, 2);
         const { placementJournalObjectCompositionText } = await import("./memory/sync-placement-journal-storage.ts"), h = preview.headroom;
         // Counts and hashes only; the sealed plan itself is in --json for the confirm step.
@@ -790,6 +800,8 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
           + `completed plan: ${h.completedPlan.slots} slots + ${h.completedPlan.reservedJournalChunks} reserved journal chunks; prospective plan: ${h.prospectivePlan.state === "cache-only" ? `${h.prospectivePlan.slots} slots + ${h.prospectivePlan.reservedJournalChunks} reserved journal chunks (cache-only; remote may have changed)` : h.prospectivePlan.state === "none" ? "none" : "unavailable without current remote evidence; using completed history"}\n`
           + `headroom after checkpoint: ${h.remaining} of ${h.limit} (live ${h.liveAfter}, next renewal ${h.nextRenewal}, largest plan ${h.largestPlan.slots} + ${h.largestPlan.reservedJournalChunks} reserved journal chunks)\n`
           + `home floor ${preview.requiredHomeFloor}: ${preview.floorReady ? "ready" : `missing; preview amem formats raise home ${preview.requiredHomeFloor}, then --confirm it`}; writers ${preview.writers}; plan ${preview.planHash}\n`
+          + `writer roots measured:\n${preview.plan.writerRevision.roots.map(root => `  ${root.root}`).join("\n")}\n`
+          + (out !== undefined ? `plan saved: ${out}\n` : "")
           + `next: ${preview.nextStep}\n`;
       }
       if (options["--admit"] !== undefined) {
@@ -880,8 +892,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         try { for (const root of readEffectiveSyncPlacementWriterRoots(home)) add("sync-placement", root); } catch { incomplete.push("sync-placement writer roots unreadable"); }
       }
       try {
-        const table = () => (context.processTable ?? (() => require("node:child_process").execFileSync("ps", ["-axo", "pid=,args="], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } }) as string))();
-        for (const { pid, root, host } of runningAmemRoots(table, context.embeddedAmem)) add(host ? "library-host" : "running", root, pid, host);
+        for (const { pid, root, host } of runningAmemRoots(processTable(context), context.embeddedAmem)) add(host ? "library-host" : "running", root, pid, host);
       } catch { incomplete.push("running processes could not be listed"); }
       return { writers: writers.sort((a, b) => a.source.localeCompare(b.source) || a.root.localeCompare(b.root) || (a.pid ?? 0) - (b.pid ?? 0)), incomplete };
     };
@@ -894,11 +905,13 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       out.header("amem", "Format floor"); out.section("Preview"); out.bullet("pending", "Review the proposed floor before confirming.");
       out.kv([["Surface", plan.record.surface], ["Minimum reader", plan.record.minReader], ["Since", plan.record.since], ["File", plan.file], ["Existing", plan.existing.length ? plan.existing.map(floor => `${floor.surface} >= ${floor.minReader}`).join(", ") : "none"]]);
       out.section("Writers", String(plan.writers.length));
-      if (plan.writers.length) out.table(["SOURCE", "VERSION", "INSTALL"], plan.writers.map(writer => [writer.source, writer.version ?? "?", `${writer.root}${writer.pid ? ` (pid ${writer.pid}${writer.host ? `, ${writer.host}` : ""})` : ""}`]), 2);
+      if (plan.writers.length) out.table(["SOURCE", "VERSION", "INSTALL"], plan.writers.map(writer => [writer.source, writer.version ?? (plan.absent.includes(writer) ? "absent" : "?"), `${writer.root}${writer.pid ? ` (pid ${writer.pid}${writer.host ? `, ${writer.host}` : ""})` : ""}`]), 2);
       else out.note("No writers found.");
+      // #660: a removed install cannot open this home, so it is shown but never counted as a writer below the floor.
+      if (plan.absent.length) out.note(`${plan.absent.length} removed install${plan.absent.length === 1 ? "" : "s"} (absent on disk, no live process) not counted.`);
       if (refusal) { out.section("Attention"); out.bullet("warn", refusal); }
       else out.next(`amem formats raise ${surface} ${minReader} --confirm`);
-      const legacy = [`preview: append ${JSON.stringify(plan.record)} to ${plan.file}`, `existing floors: ${plan.existing.length ? plan.existing.map(floor => `${floor.surface}>=${floor.minReader}`).join(", ") : "none"}`, `writers checked (${plan.writers.length}):`, ...plan.writers.map(writer => `  ${writer.source.padEnd(14)} ${writer.version ?? "unknown"}  ${writer.root}${writer.pid ? ` (pid ${writer.pid}${writer.host ? `, ${writer.host}` : ""})` : ""}`), refusal ? `refused: ${refusal}` : `ready: rerun with --confirm to append the record`].join("\n");
+      const legacy = [`preview: append ${JSON.stringify(plan.record)} to ${plan.file}`, `existing floors: ${plan.existing.length ? plan.existing.map(floor => `${floor.surface}>=${floor.minReader}`).join(", ") : "none"}`, `writers checked (${plan.writers.length}):`, ...plan.writers.map(writer => `  ${writer.source.padEnd(14)} ${writer.version ?? (plan.absent.includes(writer) ? "absent" : "unknown")}  ${writer.root}${writer.pid ? ` (pid ${writer.pid}${writer.host ? `, ${writer.host}` : ""})` : ""}`), refusal ? `refused: ${refusal}` : `ready: rerun with --confirm to append the record`].join("\n");
       return screenedLegacy(legacy, out.render(s.color).join("\n"));
     }
     const record = applyFormatRaise(plan, () => planFormatRaise(home, surface, minReader, inventory(), now));
@@ -1749,6 +1762,22 @@ export function markedDeadline(error: unknown): string | undefined {
   if (!error || typeof error !== "object" || types.isProxy(error)) return undefined;
   const note: unknown = Object.getOwnPropertyDescriptor(error, "syncDeadlineNote")?.value;
   return typeof note === "string" && /^sync --if-due stopped at its \d{1,6} s deadline; run amem sync to finish without one\.$/.test(note) ? note : undefined;
+}
+/** #660: the checkpoint preview saved for its confirm step: a new private file, never an existing path or a link, synced before return. */
+function writePrivatePlan(file: string, text: string): void {
+  let fd: number;
+  try { fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
+  catch (error) { throw new Error(`The checkpoint plan was not saved: ${(error as NodeJS.ErrnoException).code === "EEXIST" ? "the --out path already exists" : "the --out path cannot be created"}; choose a new --out file and preview again.`); }
+  try { writeSync(fd, text); fsyncSync(fd); } finally { closeSync(fd); }
+}
+const shellQuoteArg = (value: string) => /^[A-Za-z0-9_./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+/** The `pid args` process table `formats raise` and `--writers` read; `context.processTable` is the test seam. */
+function processTable(context: CliContext): () => string {
+  return context.processTable ?? (() => require("node:child_process").execFileSync("ps", ["-axo", "pid=,args="], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024, env: { ...process.env, LC_ALL: "C" } }) as string);
+}
+/** #660: what `--writers` and `--discovered-writers` search for library hosts: live processes and ahub/vmem on PATH. */
+function placementDiscovery(context: CliContext): import("./memory/sync-placement-writer-listing.ts").PlacementWriterDiscovery {
+  return { table: processTable(context), ...(context.embeddedAmem ? { embedded: context.embeddedAmem } : {}), path: (context.env ?? process.env).PATH ?? "" };
 }
 /** Color for human output only on an interactive stdout without NO_COLOR or TERM=dumb (#125). */
 /**
