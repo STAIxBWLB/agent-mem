@@ -62,7 +62,7 @@ Run `amem --help` or `amem <command> --help` for every option.
 | `amem_graph` | yes | Read the screened curated-memory neighbourhood. |
 | `amem_work_state_read` | yes | Read project work lists; closed lists/items can be included explicitly. |
 | `amem_work_state_write` | no | Append scalar project work-list fields; null clears, task selects an item, list status done closes. |
-| `amem_remember` | no | Propose a memory candidate (text, optional kind/title), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. |
+| `amem_remember` | no | Propose a memory candidate (text, optional kind/title/topic), or kind=fail with approach, symptom, cause, evidenceRefs and retryWhen. |
 | `amem_correct` | no | Propose a correction to an exact curated entry id visible in this project. |
 | `amem_vault_candidates` | yes | List screened durable curated notes for review before moving them to a vault. |
 | `amem_capacity` | yes | Read this machine's bounded capture capacity proposal; applying it requires the matching CLI preview and `--confirm`. |
