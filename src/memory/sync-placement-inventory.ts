@@ -23,7 +23,7 @@ import { projectState } from "./lifecycle.ts";
 import { SyncPlacementJournalError, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { SyncOptions, SyncResult } from "./sync.ts";
 import { bindPlacementAdvertisement, releasePlacementRun } from "./sync-placement-advertisement.ts";
-import { placementStoppedMessage } from "./sync-placement-refusal.ts";
+import { PLACEMENT_RETAINED_STOP_MESSAGE, placementStoppedMessage } from "./sync-placement-refusal.ts";
 import type { MemoryStore } from "./store.ts";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -155,7 +155,15 @@ async function runPlacementInventory(home: string, opts: SyncOptions, ports: Pla
   for (const [index, batch] of batches.entries()) {
     if (!batch.length) continue;
     if (stopped) { for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
-    if (opts.signal?.aborted) { stopped = { ok: false, pushed: false, entries: 0, error: placementStoppedMessage(results.length ? "between publications" : "start of the run"), failure: { cause: "stopped" } }; for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
+    if (opts.signal?.aborted) {
+      // #657: the first batch of a resumed run is a retained attempt that may already have published, so it stays unknown.
+      const retainedFirst = index === 0 && resumed !== undefined;
+      stopped = retainedFirst
+        ? { ok: false, pushed: false, entries: 0, error: PLACEMENT_RETAINED_STOP_MESSAGE, failure: { cause: "stopped" }, placementPublication: { outcome: "unknown", withheld: 0, exported: 0, policyCeiling: "last-positive-check-before-in-flight-push" } }
+        : { ok: false, pushed: false, entries: 0, error: placementStoppedMessage(results.length ? "between publications" : "start of the run"), failure: { cause: "stopped" } };
+      for (const realm of batch) realms.push({ realm: label(realm), outcome: retainedFirst ? "unknown" : "not-run", ...(retainedFirst ? { publication: index + 1 } : {}) });
+      continue;
+    }
     let result = await attempt(batch);
     // #578 Q2: by here the publication has returned, so its transport released every mutation and sync lock it took
     // (sync-placement-transport.ts finally) and `attempt` closed the stores it opened. The checkpoint fence takes those

@@ -384,9 +384,15 @@ test("the deadline running out during --if-due IS stamped as a failure: a remote
   try { json = await runCli(["sync", "--if-due", "--force", "--json", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 }); }
   catch (error) { thrown = error; }
   finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
-  const reported = json === undefined ? (thrown as Error).message : String(JSON.parse(json).error);
-  expect(reported).toEndWith("sync --if-due stopped at its 2 s deadline; run amem sync to finish without one.");
+  expect(thrown).toBeUndefined();                                                                // --json resolves with the failed result
+  expect(JSON.parse(json!)).toMatchObject({ ok: false, error: expect.stringMatching(/sync --if-due stopped at its 2 s deadline; run amem sync to finish without one\.$/) });
   expect(readSyncState(memory).failures).toBe(1);
+  // A marked session's masked line keeps the fixed note and none of the raw transport error.
+  process.env.AMEM_HOME = memory; process.env.GIT_SSH_COMMAND = fakeSsh;
+  try {
+    await expect(runCli(["sync", "--if-due", "--force", "--remote", "ssh://example.invalid/x.git"], { cwd, env: { CODEX_THREAD_ID: "fixture" }, stdinTTY: true, syncDeadlineMs: 2000 }))
+      .rejects.toThrow(/^Memory operation unavailable or refused; no partial result is shown\. sync --if-due stopped at its 2 s deadline; run amem sync to finish without one\.$/);
+  } finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
 }, 90_000);
 
 test("a person who closes the terminal AFTER the deadline already fired did not stop the run: it stays a failure (#435)", async () => {
@@ -457,4 +463,17 @@ test("amem never registers a sync hook or a resident process: no setup, hook or 
   }
   const cadence = readFileSync(new URL("../src/memory/sync-cadence.ts", import.meta.url), "utf8");
   expect(cadence).not.toMatch(/Bun\.spawn|child_process|setInterval|setTimeout|detached/);
+});
+
+test("#657: a writer-context refusal that a deadline stop accompanies keeps the deadline note, and a marked session reads only its fixed form", async () => {
+  const { markedDeadline, withSyncDeadline } = await import("../src/cli.ts");
+  const { PlacementWriterContextError, placementSyncFailure, placementWriterRefusalText } = await import("../src/sync-placement-writer-context.ts");
+  const note = "sync --if-due stopped at its 30 s deadline; run amem sync to finish without one.";
+  const failure = withSyncDeadline(placementSyncFailure(new PlacementWriterContextError("setup receipt", "missing"), Error("transport refused at /private/home")), note);
+  expect(failure.message).toEndWith(note);
+  expect(placementWriterRefusalText(failure)).toBeDefined();                                       // the fixed refusal text still resolves
+  expect(markedDeadline(failure)).toBe(note);
+  const forged = Object.defineProperty(Error("x"), "syncDeadlineNote", { value: `${note} /private/home` });
+  expect(markedDeadline(forged)).toBeUndefined();                                                  // only the fixed numbers-only form reaches a marked session
+  expect(markedDeadline(Error("x"))).toBeUndefined();
 });

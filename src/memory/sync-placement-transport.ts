@@ -40,7 +40,7 @@ import { placementCacheConfigStamp, placementCacheRootStamp, placementCacheTreeP
 import { PlacementSyncBoundError, placementSyncBoundDetail, placementSyncBoundMessage, placementSyncBoundReceipt, type PlacementSyncBound } from "./sync-placement-bound.ts";
 import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
 import type { SyncProgress, SyncProgressPhase } from "./sync-progress.ts";
-import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, placementStoppedMessage, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
+import { PlacementSyncRefusal, placementRefusalCategoryOf, placementRefusalMessage, placementStoppedMessage, PLACEMENT_RETAINED_STOP_MESSAGE, type PlacementRefusalCategory } from "./sync-placement-refusal.ts";
 import { SyncPlacementJournalError } from "./sync-placement-journal-format.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
 import { listRemotePlacementRealms, REMOTE_REALM_ADVERTISEMENT_BYTES, type RemoteOnlyRealm } from "./sync-placement-realm-discovery.ts";
@@ -858,11 +858,11 @@ class PlacementTransport {
       // #288 step 1: the bound's own numbers-only clause is rebuilt from the receipt for the receipt's fields, so the
       // thrown error's detail is carried over explicitly; the result's error is what the person reads.
       if(bound){this.bound=bound;const detail=placementSyncBoundDetail(error);return this.result(false,"not-needed",placementSyncBoundMessage(bound)+(detail?` ${detail}`:""));}
-      if(this.attemptHash)return this.result(false,"unknown","Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.");
+      if(this.attemptHash)return this.result(false,"unknown",PLACEMENT_RETAINED_STOP_MESSAGE);
       // #657: a stop before any attempt exists published nothing; it is reported as stopped in its phase, never as a refusal.
       if(this.opts.signal?.aborted)return this.journal?.publicationReservation
         // A reservation from an earlier run may have published even before this run read its attempt: keep it as unknown.
-        ?this.result(false,"unknown","Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.")
+        ?this.result(false,"unknown",PLACEMENT_RETAINED_STOP_MESSAGE)
         :this.result(false,"not-needed",placementStoppedMessage(this.phaseNow.replaceAll("-"," ")));
       if (error && typeof error === "object" && !types.isProxy(error) && error instanceof PlacementRealmRefusal && error.origin === "remote") { this.failureCause = "remote"; return this.result(false, "not-needed", error.message); }
       if (error instanceof LocalKeyOptInRefusal) { this.failureCause = "unavailable"; return this.result(false, "not-needed", error.message); }

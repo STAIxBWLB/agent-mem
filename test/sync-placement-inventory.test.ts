@@ -12,6 +12,7 @@ import { syncMemory } from "../src/memory/sync.ts";
 import { readPlacementJournal } from "../src/memory/sync-placement-journal-storage.ts";
 import { SyncPlacementJournalError } from "../src/memory/sync-placement-journal-format.ts";
 import { placementInventory, placementInventoryBatches, syncPlacementInventory } from "../src/memory/sync-placement-inventory.ts";
+import { PLACEMENT_RETAINED_STOP_MESSAGE } from "../src/memory/sync-placement-refusal.ts";
 import { syncPlacementMemory, type PlacementSyncPhase } from "../src/memory/sync-placement-transport.ts";
 import { validatePlacementPublicationRoot } from "../src/memory/sync-placement-publication-plan.ts";
 import { SyncProgress, readSyncStatus, renderSyncStatus, syncProgressSidecar } from "../src/memory/sync-progress.ts";
@@ -62,6 +63,14 @@ test("#450 AC3: a crash inside the second publication stops before the third, re
   expect(status.inventory!.outcomes).toEqual(crashed.placementRealms!.map(item => ({ realm: item.realm === "user" ? "user" : item.realm.slice(0, 16), outcome: item.outcome })));
   expect(publication).toBe(2);
   const retained = f.plans();
+  // #657 AC2: a stop before the resumed retained publication starts keeps it unknown, with its recovery message, at the normal entry point.
+  const halt = new AbortController(); halt.abort();
+  const halted = await syncMemory(f.entry(), { ...f.opts(remote), signal: halt.signal });
+  expect(halted).toMatchObject({ ok: false, failure: { cause: "stopped" }, error: PLACEMENT_RETAINED_STOP_MESSAGE, placementPublication: { outcome: "unknown" } });
+  expect(halted.placementPublication?.refusal).toBeUndefined();
+  expect(halted.placementRealms!.filter(item => order.slice(2, 4).includes(item.realm)).map(item => item.outcome)).toEqual(["unknown", "unknown"]);
+  expect(halted.placementRealms!.filter(item => !order.slice(2, 4).includes(item.realm)).every(item => item.outcome === "not-run")).toBe(true);
+  expect(f.plans()).toEqual(retained);
   const resumed = await syncMemory(f.entry(), f.opts(remote));
   expect(resumed.ok).toBe(true);
   // The retained second publication runs first, through its own realms; then the rest in the usual order (already published ones are not-needed).

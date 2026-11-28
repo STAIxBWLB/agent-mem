@@ -27,6 +27,7 @@ import { vaultCandidates, vaultCandidatesText, vaultCandidatesAllText } from "./
 import type { IngestKind, IngestReceipt } from "./ingest.ts";
 import { importClaudeMemCapture, importClaudeMemWorkState } from "./memory/import.ts";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, rmSync, writeFileSync } from "node:fs";
+import { types } from "node:util";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { captureSessionKey } from "./memory/capture-input.ts";
@@ -437,9 +438,11 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
     // #520/#551: a placement refusal keeps its fixed data - the receipt case its target and remedy, every other case its
     // category, cause class and remedy - so a marked session prints that instead of the masked line. Every other placement
     // and sync failure keeps the generic masked refusal below.
+    // #657: a deadline-stopped sync keeps its fixed numbers-only note on the refusal or masked line a marked session sees.
+    const deadline = marked ? markedDeadline(error) : undefined, withDeadline = (text: string) => deadline ? `${text} ${deadline}` : text;
     if (marked) {
       const refusal = (await import("./sync-placement-writer-context.ts")).placementWriterRefusalText(error);
-      if (refusal) throw new Error(refusal);
+      if (refusal) throw new Error(withDeadline(refusal));
     }
     if (marked) {
       // parseCommand is pure: when it rejects argv, the error it raised is a usage error, not memory data.
@@ -459,7 +462,7 @@ export async function runCli(argv: readonly string[], context: CliContext = {}):
       }
     }
     // Marked administrative failures must not reveal a target's private state or native errors.
-    if (marked) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+    if (marked) throw Error(withDeadline("Memory operation unavailable or refused; no partial result is shown."));
     throw error;
   }).then(output => {
     // Preserve the value and the policy-screened result; only the JSON presentation changes.
@@ -1695,9 +1698,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
   } catch (error) {
     if (sub === "sync") progress?.finish(stop?.cause() ? "cancelled" : "failed", stop?.cause() ? "cancelled" : "unavailable");
     if (sub === "sync") stampSync((error as Error).message, stop?.cause());
-    if (sub === "sync" && placementWriters?.lastRefusal) throw (await import("./sync-placement-writer-context.ts")).placementSyncFailure(placementWriters.lastRefusal, error);
-    if (sub === "sync" && error instanceof Error) error.message = deadlineNote(error.message, stop?.cause());
-    throw error;
+    const failure = sub === "sync" && placementWriters?.lastRefusal ? (await import("./sync-placement-writer-context.ts")).placementSyncFailure(placementWriters.lastRefusal, error) : error;
+    if (sub === "sync" && failure instanceof Error && stop?.cause() === "deadline") withSyncDeadline(failure, deadlineNote("", "deadline").trim());
+    throw failure;
   }
   finally {
     // A run that never reached the transport's receipt (an early refusal) must not stay "running".
@@ -1714,8 +1717,9 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       const result = JSON.parse(output) as { ok?: unknown; error?: unknown };
       if (result.ok === false) {
         failure = typeof result.error === "string" ? result.error : "sync failed";
-        if (placementWriters?.lastRefusal) { result.error = `${placementWriters.lastRefusal.message} ${failure}`; output = JSON.stringify(result,null,2); }
-        else if (stop?.cause() === "deadline") { result.error = deadlineNote(failure, "deadline"); output = JSON.stringify(result,null,2); }
+        if (placementWriters?.lastRefusal) result.error = `${placementWriters.lastRefusal.message} ${failure}`;
+        if (stop?.cause() === "deadline") result.error = deadlineNote(String(result.error ?? failure), "deadline");
+        if (placementWriters?.lastRefusal || stop?.cause() === "deadline") output = JSON.stringify(result,null,2);
       }
     } catch { /* not a sync result */ } }
     stampSync(failure, stop?.cause());
@@ -1734,6 +1738,17 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     ? `${output}\n(legacy malformed lines skipped: ${receipt.bridgeStatus.skippedRows})` : output;
 }
 
+/** #657: appends the deadline note to a sync failure and carries it, numbers only, for a marked session's fixed text. */
+export function withSyncDeadline<T extends Error>(error: T, note: string): T {
+  if (!error.message.includes(note)) error.message = `${error.message} ${note}`;
+  Object.defineProperty(error, "syncDeadlineNote", { value: note }); return error;
+}
+/** The deadline note a sync failure carries as an own property, accepted only in its fixed numbers-only form. */
+export function markedDeadline(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || types.isProxy(error)) return undefined;
+  const note: unknown = Object.getOwnPropertyDescriptor(error, "syncDeadlineNote")?.value;
+  return typeof note === "string" && /^sync --if-due stopped at its \d{1,6} s deadline; run amem sync to finish without one\.$/.test(note) ? note : undefined;
+}
 /** Color for human output only on an interactive stdout without NO_COLOR or TERM=dumb (#125). */
 /**
  * #418: one reporter per placement sync. The private sidecar backs `sync --status` in every mode; stderr gets human
