@@ -101,6 +101,13 @@ function runtimeMarkers(home: string): { profile: unknown | undefined; shards: u
 export function readPlacementRuntimeMarkers(home: string): { profile: unknown | undefined; shards: unknown | undefined } {
   return structuredClone(runtimeMarkers(home));
 }
+/**
+ * #656, internal fence reads only: the reader's own frozen snapshots, uncloned, so the shard-proof and binding WeakMaps hit while the
+ * markers are unchanged. Callers never mutate or return them; anything handed outward still takes readPlacementRuntimeMarkers.
+ */
+export function readPlacementRuntimeMarkerSnapshots(home: string): { profile: unknown | undefined; shards: unknown | undefined } {
+  return runtimeMarkers(home);
+}
 /** #551 AC2: whether a home is provably a placement home, provably not one, or unprovable from its own markers. */
 export type PlacementMarkerState = "placement" | "unverified" | "not placement";
 /**

@@ -2,7 +2,7 @@
 import { lstatSync, opendirSync } from "node:fs";
 import { join } from "node:path";
 import { hashJSON } from "./generation.ts";
-import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
+import { readPlacementRuntimeMarkerSnapshots } from "./sync-placement-guard.ts";
 import { readActivePlacementBinding, type ActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementWriterJournalAnchors, placementWriterJournalToken } from "./sync-placement-journal-storage.ts";
 import { readWriterHistory, isWriterRenewalIntentTempName } from "./sync-placement-writer-history.ts";
@@ -19,7 +19,7 @@ export interface EffectiveSyncPlacementWriters {
 }
 function fail():never{throw new SharedWriterRevisionError("changed");}
 function active(home:string):ActivePlacementBinding {
-  const markers=readPlacementRuntimeMarkers(home),value=readActivePlacementBinding(home,markers.profile,markers.shards);if(!value)fail();return value;
+  const markers=readPlacementRuntimeMarkerSnapshots(home),value=readActivePlacementBinding(home,markers.profile,markers.shards);if(!value)fail();return value;
 }
 const key=(value:ActivePlacementBinding)=>hashJSON({epoch:value.epoch,activation:value.activation,head:value.profile.placementHead,generation:value.profile.generation});
 const fileStamp=(home:string)=>{
@@ -67,7 +67,8 @@ export function readEffectiveSyncPlacementWriters(home:string):EffectiveSyncPlac
     if(placementWriterJournalToken(home,epochHash)!==token)fail();anchorToken=token;
   };
   const assertCurrent=()=>{
-    history.assertCurrent();if(key(active(home))!==bindingKey||fileStamp(home)!==initialStamp)fail();
+    // #656: one history pass per check, after the reads it brackets; the trailing pass covers the whole window.
+    if(key(active(home))!==bindingKey||fileStamp(home)!==initialStamp)fail();
     if(initial&&readInitialSyncPlacementWriterLocator(home).seal!==initial.seal)fail();
     if(history.sequence||history.window)requireWriterRenewalHomeFloor(home);
     anchors();history.assertCurrent();

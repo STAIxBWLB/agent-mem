@@ -119,3 +119,18 @@ test("placement home-floor refusal names preview, confirmation and approval with
   expect(text).toContain("exact command is approved"); expect(text).toContain("amem migrate --sync-placement --dry-run");
   expect(text).not.toMatch(/have the person|person-authored/i);
 });
+
+// #656: the floor memo is keyed by the file path and its stat stamp; any change is read again, and a parsed copy never aliases the cache.
+test("#656: readFormatFloors reuses a parse only while the file is unchanged", () => {
+  const f = fixture(), other = fixture();
+  expect(readFormatFloors(f.base)).toBeUndefined();
+  floor(f.base, [{ surface: "sync", minReader: "0.1.0", since: "2026-11-01" }]);
+  const first = readFormatFloors(f.base)!; expect(first).toEqual([{ surface: "sync", minReader: "0.1.0", since: "2026-11-01" }]);
+  first[0]!.minReader = "9.9.9"; expect(readFormatFloors(f.base)![0]!.minReader).toBe("0.1.0");
+  floor(f.base, [{ surface: "sync", minReader: "0.1.0", since: "2026-11-01" }, { surface: "home", minReader: "99.0.0", since: "2026-11-02" }]);
+  expect(readFormatFloors(f.base)).toHaveLength(2);
+  expect(() => assertFormatFloor(f.base, "sync")).toThrow();
+  expect(readFormatFloors(other.base)).toBeUndefined(); // another home never sees this entry
+  writeFileSync(join(f.base, FORMATS_FILE), "not json");
+  expect(() => readFormatFloors(f.base)).toThrow();
+});

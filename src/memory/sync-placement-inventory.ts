@@ -14,7 +14,7 @@ import { existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { readActivePlacementBinding } from "./sync-placement-active.ts";
 import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
-import { readPlacementJournal } from "./sync-placement-journal-storage.ts";
+import { readPlacementJournal, releasePlacementStorageCaches } from "./sync-placement-journal-storage.ts";
 import { PLACEMENT_CHECKPOINT_PENDING_MESSAGE, placementCheckpointPending } from "./sync-placement-checkpoint-storage.ts";
 import { readPlacementPublication } from "./sync-placement-publication-storage.ts";
 import { readEffectiveRealmInventory } from "./sync-placement-realm-effective.ts";
@@ -22,7 +22,7 @@ import { isLocalKey, localKeyOptInMessage, readShardDescriptor, shardDir, userSh
 import { projectState } from "./lifecycle.ts";
 import { SyncPlacementJournalError, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { SyncOptions, SyncResult } from "./sync.ts";
-import { bindPlacementAdvertisement } from "./sync-placement-advertisement.ts";
+import { bindPlacementAdvertisement, releasePlacementRun } from "./sync-placement-advertisement.ts";
 import type { MemoryStore } from "./store.ts";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -101,7 +101,12 @@ function journalRefusal(error: unknown): (SyncResult & { placementRealms: Placem
 
 export async function syncPlacementInventory(home: string, callerOpts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
   // #626: one remote advertisement per run, shared by its publications (never one a caller passed in).
+  // #656: the same scope keeps the visibility answer and the placement storage memos across batches; both end here, on every path.
   const opts: SyncOptions = bindPlacementAdvertisement({ ...callerOpts });
+  try { return await runPlacementInventory(home, opts, ports); }
+  finally { releasePlacementRun(opts); releasePlacementStorageCaches(); }
+}
+async function runPlacementInventory(home: string, opts: SyncOptions, ports: PlacementInventoryPorts): Promise<SyncResult & { placementRealms: PlacementRealmResult[] }> {
   let local: InventoryRealm[], missing: string[], inactive: string[], retained: string[] | undefined;
   try {
     // #288 step 3: a started checkpoint pauses every placement effect before any journal read, with its own cause and next step.

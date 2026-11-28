@@ -2,7 +2,7 @@
  * #417 AC1/AC3, #418 AC6: synthetic first placement sync. Counts complete writer attestations and policy
  * evaluations and records wall/CPU time; no real memory records, no network (a local bare remote).
  *
- *   bun scripts/bench-placement-sync.ts --rows 1000 --roots 4 [--row-bytes 300] [--progress] [--batch-floor]
+ *   bun scripts/bench-placement-sync.ts --rows 1000 --roots 4 [--row-bytes 300] [--progress] [--batch-floor] [--deterministic]
  *
  * Each attestation measures --roots synthetic copies of this package's runtime with the production
  * measureSyncPlacementWriters, so the per-attestation cost is real install I/O. Run it on dgx02, not the Mac.
@@ -72,8 +72,16 @@ try {
   const store = openShardStore({ memoryDir: home, project: PROJECT, deferPromotions: true });
   const sourceBytes = [...captureSyncPlacementContext(home, port).rows.values()].reduce((sum, row) => sum + Buffer.byteLength(canonicalJSON(row.row)), 0);
   let progressEvents = 0;
-  const options = { remote, visibility: async () => "private", placementAttestation: port.attest, policyVersion: port.policyVersion,
-    screen: () => { evaluations++; return true; }, ...(withProgress ? { progress: () => { progressEvents++; } } : {}) } as SyncOptions;
+  const deterministic = process.argv.includes("--deterministic");
+  // #656 AC1: --deterministic wires the CLI's own pair, a package-owned deterministicRowScreen and a config-reading policyVersion.
+  const config = await import("../src/memory/config.ts") as typeof import("../src/memory/config.ts") & { policyVersionReader?: (home: () => string, cwd: string) => () => string };
+  const { configuredPolicyOptions } = config, { deterministicRowScreen } = await import("../src/memory/sync-screen.ts");
+  const screen = deterministicRowScreen(configuredPolicyOptions(home, base));
+  // The CLI's own policyVersion: the cached reader where this tree has it (#656), else the per-call read it replaced.
+  const cliPolicyVersion = config.policyVersionReader ? config.policyVersionReader(() => home, base) : () => JSON.stringify(configuredPolicyOptions(home, base));
+  const options = { remote, visibility: async () => "private", placementAttestation: port.attest,
+    policyVersion: deterministic ? cliPolicyVersion : port.policyVersion,
+    screen: deterministic ? screen : () => { evaluations++; return true; }, ...(withProgress ? { progress: () => { progressEvents++; } } : {}) } as SyncOptions;
   attestations = 0; measureMs = 0; for (const key of Object.keys(byPhase)) delete byPhase[key];
   let failure: unknown;
   const cpu = process.cpuUsage(), started = performance.now();

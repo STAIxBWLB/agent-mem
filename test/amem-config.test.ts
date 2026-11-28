@@ -495,3 +495,17 @@ test("records rejects nonboolean machine and repository values without silently 
     expect(() => loadAmemConfig(repo.base, repo.cwd)).toThrow("records is not a boolean");
   }
 });
+
+// #656: the sync policy version is reused only while both config files and the home keep their stamps.
+test("#656: policyVersionReader rereads after any config change and never shares homes", async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import("node:fs"), { tmpdir } = await import("node:os"), { join } = await import("node:path");
+  const { policyVersionReader, configuredPolicyOptions } = await import("../src/memory/config.ts");
+  const root = mkdtempSync(join(tmpdir(), "amem-policy-version-")), a = join(root, "a"), b = join(root, "b"), repo = join(root, "repo");
+  for (const dir of [a, b, join(repo, ".git"), join(repo, ".amem")]) mkdirSync(dir, { recursive: true });
+  let home = a; const read = policyVersionReader(() => home, repo);
+  const expectLive = () => expect(read()).toBe(JSON.stringify(configuredPolicyOptions(home, repo)));
+  expectLive(); expectLive();
+  writeFileSync(join(a, "amem.config.json"), JSON.stringify({ piiPatterns: ["MACHINE_ONE"] })); expectLive(); expect(read()).toContain("MACHINE_ONE");
+  writeFileSync(join(repo, ".amem", "config"), JSON.stringify({ piiPatterns: ["REPO_ONE"] })); expect(read()).toContain("REPO_ONE");
+  home = b; expect(read()).not.toContain("MACHINE_ONE"); expectLive();
+});

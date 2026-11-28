@@ -1055,3 +1055,46 @@ test("#462: a source changed during the preflight's own yield refuses as source-
   expect(result.error).toContain("close other memory writers, then rerun amem sync");
   expect(final).toEqual({ state: "failed", category: "source-selection" });
 }, 120_000);
+
+// #656 AC2: a host screen callback keeps the per-row fence, so a mutation it makes mid-batch is refused before any plan or push.
+for (const [name, mutate] of [
+  ["a source segment", (f: Awaited<ReturnType<typeof fixture>>) => appendAuthoredLine(f.store.dir, "synthetic row appended by a host screen")],
+  ["a placement marker", (f: Awaited<ReturnType<typeof fixture>>) => appendFileSync(join(f.home, "profile.json"), "\n")],
+  ["the policy file", (f: Awaited<ReturnType<typeof fixture>>) => f.policy(["NEVER_PUBLIC_", "HOST_SCREEN_ADDED"])],
+] as const) test(`#656 AC2: a host screen that changes ${name} mid-batch is refused before any plan or push`, async () => {
+  const remote = bare(), f = await fixture({ seed: store => many(store, 12) });
+  f.store.note(note("synthetic authored segment row"));
+  let calls = 0;
+  const result = await syncPlacementMemory(f.store, { ...f.opts(remote), screen: () => { if (++calls === 3) mutate(f); return true; } }, undefined, undefined, frozen);
+  expect(result.ok).toBe(false); expect(calls).toBeGreaterThanOrEqual(3);
+  expect(f.plans()).toEqual([]); expect(refs(remote)).toEqual([]);
+}, 120_000);
+
+test("#656: with a package-owned screen, a source segment changed mid-slice is refused by the closing proof before any plan or push", async () => {
+  const { SyncProgress } = await import("../src/memory/sync-progress.ts"), { deterministicRowScreen } = await import("../src/memory/sync-screen.ts");
+  const remote = bare(), f = await fixture({ seed: store => many(store, 12) });
+  f.store.note(note("synthetic authored segment row"));
+  let changed = false;
+  // Fires after the third evaluated row, inside the first 64-row slice: no per-row fence runs until the closing prove().
+  const progress = new SyncProgress({ intervalMs: 0, sink: snapshot => {
+    if (!changed && snapshot.phase === "policy-evaluation" && (snapshot.completed ?? 0) === 3) { changed = true; appendAuthoredLine(f.store.dir, "synthetic row appended mid-slice"); }
+  } });
+  const result = await syncPlacementMemory(f.store, { ...f.opts(remote), screen: deterministicRowScreen({ piiPatterns: ["NEVER_PUBLIC_"] }), progress }, undefined, undefined, frozen);
+  expect(changed).toBe(true); expect(result.ok).toBe(false);
+  expect(f.plans()).toEqual([]); expect(refs(remote)).toEqual([]);
+}, 120_000);
+
+test("#656: a package-owned screen checks the fence per 64-row slice, a host screen per row", async () => {
+  const { deterministicRowScreen } = await import("../src/memory/sync-screen.ts");
+  const counts: Record<string, number> = {};
+  for (const kind of ["deterministic", "host"] as const) {
+    const remote = bare(), f = await fixture({ seed: store => many(store, 130) });
+    let checks = 0; const options: SyncOptions = { ...f.opts(remote), policyVersion: () => { checks++; return f.port.policyVersion!(); },
+      screen: kind === "host" ? () => true : deterministicRowScreen({ piiPatterns: ["NEVER_PUBLIC_"] }) };
+    const result = await syncPlacementMemory(f.store, options, undefined, undefined, frozen);
+    expect(result, result.error).toMatchObject({ ok: true, placementPublication: { outcome: "committed" } });
+    counts[kind] = checks;
+  }
+  // 130 rows: two fence checks per row for a host screen, one per 64-row slice for a package-owned one.
+  expect(counts.host! - counts.deterministic!).toBeGreaterThanOrEqual(2 * 130 - 10);
+}, 240_000);

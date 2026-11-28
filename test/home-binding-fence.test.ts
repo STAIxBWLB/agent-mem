@@ -531,3 +531,16 @@ test("an input that turns unsafe after the comparison gets a fresh comparison be
     expect(result.coverage.work).toBe("unavailable");
   } finally { mock.restore(); }
 });
+
+// #656: the live prune-advance check is memoized by the stat stamps of every path it read; a changed link is read again and refused.
+test("#656: a memoized prune advance is checked again once a chain link changes", async () => {
+  const { readActivePlacementBinding, withPlacementFenceMemo } = await import("../src/memory/sync-placement-active.ts"), { readPlacementRuntimeMarkers } = await import("../src/memory/sync-placement-guard.ts");
+  const fixture = await activated(), home = realPath(fixture.base), links = advancedPruneChain(home);
+  const bind = () => withPlacementFenceMemo(() => { const m = readPlacementRuntimeMarkers(home); return readActivePlacementBinding(home, m.profile, m.shards); });
+  expect(bind()).toBeDefined();
+  // A memo hit opens no chain link; a reader outside the fence scope still opens both.
+  expect((await observe(bind)).opened).not.toContain(links.tip);
+  expect(collectBindingReads(() => { const m = readPlacementRuntimeMarkers(home); return readActivePlacementBinding(home, m.profile, m.shards); }).paths).toContain(links.tip);
+  writeFileSync(links.older, readFileSync(links.older, "utf8").replace("\n", " \n"), { mode: 0o600 });
+  expect(bind).toThrow();
+});

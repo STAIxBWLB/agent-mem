@@ -249,3 +249,21 @@ test("#511: incomplete v3 markers refuse status without a legacy fallback", asyn
     await expect(runCli(["status", "--json"], { cwd: f.root, env: {} })).rejects.toThrow();
   } finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
 }, 240_000);
+
+// #656 AC3: one visibility read per inventory run and remote URL; a non-private answer still refuses before any lock or fetch.
+test("#656 AC3: an inventory run reads remote visibility once across its publications", async () => {
+  const journalStorage = await import("../src/memory/sync-placement-journal-storage.ts"), { spyOn } = await import("bun:test");
+  const f = await inventoryFixture(4), remote = bare();
+  let calls = 0;
+  const release = spyOn(journalStorage, "releasePlacementStorageCaches");
+  try {
+    const result = await syncMemory(f.entry(), { ...f.opts(remote), visibility: async () => { calls++; return "private"; } });
+    expect(result.ok).toBe(true); expect(new Set(result.placementRealms!.map(item => item.publication)).size).toBe(3);
+    expect(calls).toBe(1);
+    expect(release).toHaveBeenCalled(); // the run releases the storage memos on exit
+  } finally { release.mockRestore(); }
+  let publicCalls = 0;
+  const refused = await syncMemory(f.entry(), { ...f.opts(bare()), visibility: async () => { publicCalls++; return "public"; } });
+  expect(refused.ok).toBe(false); expect(publicCalls).toBe(1);
+  expect(refused.placementRealms!.filter(item => item.outcome === "not-run").length).toBeGreaterThan(0);
+}, 240_000);
