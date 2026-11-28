@@ -852,7 +852,7 @@ test("#520: doctor reports another workspace's agy receipt whose install is gone
   expect(row).toMatchObject({ target: "agy", phase: "applied", entry: "amem install", kind: "drift" });
   expect(row.reason).toContain("the applied agy setup receipt names an amem install that no longer exists");
   expect(row.reason).toContain("amem setup agy --list");
-  expect(writerFinding({ reason: row.reason }).next).toEqual(["amem setup agy --list"]);
+  expect(writerFinding({ reason: row.reason }).next).toEqual(["amem setup agy --refresh", "amem setup agy --list"]);
   expect(row.reason).toContain("amem setup agy --apply"); expect(row.reason).toContain("amem setup agy --undo");
   expect(opened).toContain(join(r.memory, "setup", `agy-${"d".repeat(64)}.json`));   // the guard sees the receipt read itself
   expect(opened).not.toContain(native); expect(JSON.stringify(section)).not.toContain(removed); expect(JSON.stringify(section)).not.toContain(native); expect(JSON.stringify(section)).not.toContain("PRIVATE_OTHER_WORKSPACE");

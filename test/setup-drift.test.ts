@@ -33,6 +33,21 @@ function fixture(extra: Record<string, string | undefined> = {}) {
   return { root, userHome, memory, env, paths: resolved.paths, legacyPaths: resolved.legacyPaths, bun, entry };
 }
 
+test("console drift keeps an explicit setup environment independent of the process hub home", () => {
+  const f = fixture();
+  const shared = join(f.root, "process-hub");
+  put(join(shared, "console", "plugins", "amem.json"), "invalid JSON");
+  const saved = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = shared;
+  try {
+    expect(readSetupDrift({ home: f.memory, env: f.env })).toMatchObject({ status: "skipped", checked: 0, entries: [] });
+    expect(readSetupDrift({ home: f.memory, env: { ...f.env, AGENTHUB_HOME: shared } }).entries)
+      .toContainEqual(expect.objectContaining({ target: "console", kind: "unavailable" }));
+  } finally {
+    if (saved === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = saved;
+  }
+});
+
 function receipt(f: ReturnType<typeof fixture>, target: SetupTarget, changes: { path: string; before: string | null; after: string | null }[], phase = "applied"): void {
   const directory = join(f.memory, "setup"); mkdirSync(directory, { recursive: true });
   const body = {

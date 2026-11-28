@@ -4,6 +4,10 @@ References: `#N` identifies agent-mem issues and PRs; `agent-hub#N` identifies a
 
 ## Unreleased
 
+### Added
+
+- `amem setup agy --refresh [--apply]` previews, then refreshes, every receipted Antigravity workspace in one run; a deleted repository is reported with its restore-then-undo step and one workspace's refusal never stops the others. `amem doctor` reports an existing acon console plugin manifest that names a missing module, a changed hash or an older amem install and names `amem setup console --apply`; `amem setup all` refreshes such a manifest when it already exists and never creates one. Refs #659.
+
 ### Changed
 
 - Local and remote realm admission and same-epoch placement writer renewal now run with existing amem reader sessions open. Initial placement activation still requires readers to close. Same-epoch renewal keeps the current checkpoint window. Use `--admit .` to select the current Git project. Refs #658.

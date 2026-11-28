@@ -1,5 +1,6 @@
 import { closeSync, constants, type Dir, existsSync, fstatSync, lstatSync, opendirSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { decodeReceipt, setupReceiptRemedy, type SetupTarget } from "./setup-writer-roots.ts";
@@ -8,10 +9,13 @@ import { amemCaptureCommand, amemCaptureHooks, managedAfter, managedHookEntries,
 import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { realPath } from "./memory/platform.ts";
+import { consoleManifestFile } from "./setup-console.ts";
+import { installVersion, versionBelow } from "./memory/formats-raise.ts";
 
 export type SetupDriftStatus = "ok" | "attention" | "skipped" | "unavailable";
 export interface SetupDriftEntry {
-  target: SetupTarget;
+  /** `console` is the acon plugin manifest (#659), which has no setup receipt. */
+  target: SetupTarget | "console";
   file: string;
   entry: string;
   reason: string;
@@ -204,6 +208,28 @@ export function listAgyReceiptLocations(home: string): { receipts: AgyReceiptLoc
   return { receipts, incomplete };
 }
 
+export const CONSOLE_DRIFT_REASON = "the acon console plugin manifest names a missing module or one whose hash changed; run amem setup console --apply to refresh it or amem setup console --undo to remove it";
+/** The manifest and its module, read without following links and bounded. */
+function consoleDrift(env: SetupEnvironment, budget: { remaining: number }): SetupDriftEntry | "absent" | "current" {
+  const file = consoleManifestFile(env), finding = (kind: SetupDriftEntry["kind"], reason: string): SetupDriftEntry => ({ target: "console", file, entry: "plugin manifest", reason, kind });
+  let manifest: Record<string, unknown>;
+  try {
+    const raw = safeImage(file, 64 * 1024, budget);
+    if (raw.bytes === null) return "absent";
+    const value: unknown = JSON.parse(Buffer.from(raw.bytes, "base64").toString("utf8"));
+    if (!plain(value) || typeof value.module !== "string" || !isAbsolute(value.module) || typeof value.sha256 !== "string") return finding("drift", CONSOLE_DRIFT_REASON);
+    manifest = value;
+  } catch { return finding("unavailable", "the acon console plugin manifest cannot be read safely; inspect it or run amem setup console --apply"); }
+  try {
+    const module = safeImage(String(manifest.module), SETUP_CONFIG_BYTES, budget);
+    if (module.bytes === null || createHash("sha256").update(Buffer.from(module.bytes, "base64")).digest("hex") !== manifest.sha256) return finding("drift", CONSOLE_DRIFT_REASON);
+  } catch { return finding("unavailable", "the acon console plugin module cannot be read safely; run amem setup console --apply"); }
+  // An intact module from an older install still loads, but it serves that release's panels: refresh it to this one.
+  const theirs = installVersion(dirname(dirname(dirname(String(manifest.module))))), ours = installVersion(fileURLToPath(new URL("..", import.meta.url)));
+  if (theirs !== null && ours !== null && versionBelow(theirs, ours)) return finding("drift", `the acon console plugin manifest names amem ${theirs}, older than this amem ${ours}; run amem setup console --apply to refresh it`);
+  return "current";
+}
+
 /** Read setup receipts and only the resolver-selected native config files. This function never writes. */
 export function readSetupDrift(options: { home: string; env?: SetupEnvironment; cwd?: string }): SetupDriftReport {
   const env = options.env ?? process.env;
@@ -327,6 +353,10 @@ export function readSetupDrift(options: { home: string; env?: SetupEnvironment; 
     const install = installMissing("agy", receipt.changes[0]!.after);
     if (install) { entries.push(installEntry("agy", "setup receipt of another workspace", install)); if (install === "unavailable") unavailable = true; }
   }
+  // #659: an acon plugin manifest goes stale when amem moves or its UI module changes; only an existing manifest is checked.
+  const plugin = consoleDrift(env, budget);
+  if (plugin !== "absent") { anyReceipt = true; checked++; }
+  if (typeof plugin === "object") { if (plugin.kind === "unavailable") unavailable = true; entries.push(plugin); }
   const status: SetupDriftStatus = entries.some(value => value.kind === "drift" || value.kind === "review-needed") ? "attention"
     : unavailable ? "unavailable" : anyReceipt ? "ok" : "skipped";
   return { status, checked, entries, ...(!anyReceipt && !entries.length ? { reason: "no applied setup receipts found" } : {}) };

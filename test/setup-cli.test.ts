@@ -32,7 +32,7 @@ function fixture() {
 test("setup command table, parser and actual help expose the same targets and apply/undo/list options", async () => {
   const f = fixture(), before = snapshot(f.root), help = await runCli(["setup", "--help"], f.context);
   expect(help).toContain("amem setup <target> [options]"); expect(help).toContain("\n  --apply "); expect(help).toContain("\n  --undo "); expect(help).toContain("\n  --list "); expect(help).toContain("amem setup agy --list");
-  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--adopt-current", "--apply", "--json", "--list", "--root", "--undo", "--verbose"]);
+  expect(COMMANDS.setup?.args?.[0]?.values).toEqual([...targets, "console"]); expect(Object.keys(COMMANDS.setup?.options ?? {}).sort()).toEqual(["--adopt-current", "--apply", "--json", "--list", "--refresh", "--root", "--undo", "--verbose"]);
   for (const target of targets) expect(parseCommand(["setup", target])).toMatchObject({ path: ["setup"], positionals: [target] });
   expect(parseCommand(["setup", "agy", "--list", "--json"]).options).toMatchObject({ "--list": true, "--json": true });
   for (const args of [["--list"], ["codex", "--list"], ["agy", "--list", "--apply"], ["agy", "--list", "--undo"], ["agy", "--list", "--root", f.root]]) {

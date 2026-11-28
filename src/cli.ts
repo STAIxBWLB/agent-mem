@@ -589,6 +589,20 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     return [`amem skills export: ${report.root}${report.linkedFrom ? ` (linked from ${report.linkedFrom})` : ""}`, "NAME                 CHANGE     PATH / REASON", ...report.actions.map(a => `${a.name.padEnd(20)} ${a.change.padEnd(10)} ${a.path}${a.reason ? ` / ${a.reason}` : ""}`)].join("\n");
   }
   if (parsed.path[0] === "setup") {
+    if (options["--refresh"] === true) {
+      const { refreshAgyWorkspaces, agyRefreshText, setupMemoryHome } = await import("./setup.ts");
+      const mode = options["--apply"] === true ? "apply" : "preview", env = context.env ?? process.env;
+      const result = refreshAgyWorkspaces(mode, { env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY,
+        ...(typeof options["--root"] === "string" ? { root: options["--root"] } : {}), ...(options["--adopt-current"] === true ? { adoptCurrent: true } : {}) });
+      if (result.workspaces.some(row => row.change === "refused")) context.onExitCode?.(1);
+      const output = options["--json"] === true ? JSON.stringify(result, null, 2) : agyRefreshText(result, mode);
+      if (actor === "agent") {
+        const policy = configuredPolicy(setupMemoryHome(env), context.cwd ?? process.cwd());
+        assertAgentAdministrative(result, policy);
+        assertAgentAdministrative(output, policy);
+      }
+      return output;
+    }
     if (options["--list"] === true) {
       const { setupMemoryHome } = await import("./setup.ts");
       const home = setupMemoryHome(context.env ?? process.env);
@@ -605,7 +619,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       return output;
     }
     if (parsed.positionals.length !== 1 || options["--apply"] === true && options["--undo"] === true
-      || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new CommandUsageError("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo] | amem setup agy --list [--json]");
+      || options["--adopt-current"] === true && (options["--apply"] !== true || parsed.positionals[0] === "console")) throw new CommandUsageError("usage: amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo] | amem setup agy --list [--json] | amem setup agy --refresh [--root <abs path>] [--apply [--adopt-current]] [--json]");
     if (parsed.positionals[0] === "console") {
       const { consoleSetup, consoleSetupText } = await import("./setup-console.ts");
       const mode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview";

@@ -45,7 +45,7 @@ export function decodeReceipt(value: Record<string, unknown>, target: SetupTarge
  * sync refusal, doctor and the marked diagnostic. It names the target and both commands, never the recorded path.
  */
 export function setupReceiptRemedy(target: SetupTarget, applied = false): string {
-  if (target === "agy") return `the ${applied ? "applied " : ""}agy setup receipt names an amem install that no longer exists; run amem setup agy --list, then from each listed stale repository run amem setup agy --apply to refresh its receipt or amem setup agy --undo to remove it`;
+  if (target === "agy") return `the ${applied ? "applied " : ""}agy setup receipt names an amem install that no longer exists; run amem setup agy --refresh --apply to refresh every receipted repository, or amem setup agy --list, then from each listed stale repository run amem setup agy --apply to refresh its receipt or amem setup agy --undo to remove it`;
   return `the ${applied ? "applied " : ""}${target} setup receipt names an amem install that no longer exists; run amem setup ${target} --apply to refresh the receipt or amem setup ${target} --undo to remove it`;
 }
 /**

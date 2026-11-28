@@ -23,6 +23,8 @@ export { readSetupWriterRoots, setupReceiptRemedy, SetupWriterRootsError, SETUP_
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { memoryHome } from "./memory/home.ts";
+import { listAgyReceiptLocations } from "./setup-drift.ts";
+import { consoleSetup, consoleSetupText, type ConsoleSetup } from "./setup-console.ts";
 import { PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
@@ -845,6 +847,44 @@ function setupResultText(result: SetupResult, s: Style, plan: SetupPlan, options
 /** Compatibility formatter for confirmation-style callers: the raw plan under `--json`, the readable plan otherwise. */
 export function setupConfirmationText(plan: SetupPlan, json: boolean, s: Style = PLAIN): string { return json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s); }
 
+export interface AgyRefreshRow { workspace: string; change: "update" | "unchanged" | "missing-workspace" | "refused"; reason?: string }
+/**
+ * #659: `amem setup agy --refresh [--apply]` previews, then refreshes, every applied Antigravity receipt in one run, each through the
+ * same per-workspace plan and apply as `cd <workspace> && amem setup agy --apply`. Only receipted workspaces are touched; one
+ * workspace's refusal is reported and never stops the others.
+ */
+export function refreshAgyWorkspaces(mode: "preview" | "apply", options: SetupContext = {}): { workspaces: AgyRefreshRow[]; incomplete: boolean } {
+  const listed = listAgyReceiptLocations(setupMemoryHome((options.env ?? process.env) as NodeJS.ProcessEnv));
+  const agent = cliAttribution()?.actor === "agent";
+  const workspaces = listed.receipts.map(({ workspace }): AgyRefreshRow => {
+    try {
+      if (!lstatSync(workspace, { throwIfNoEntry: false })?.isDirectory())
+        return { workspace, change: "missing-workspace", reason: "the repository directory no longer exists; restore it, then run amem setup agy --undo there to remove its receipt" };
+      const context = { ...options, cwd: workspace };
+      // Each plan must still bind exactly the receipt's workspace; one that now resolves elsewhere is that row's refusal.
+      const planned = (planMode: "preview" | "apply") => {
+        const plan = planSetup("agy", planMode, context);
+        if (plan.actions.length !== 1 || plan.actions[0]!.cwd !== workspace) throw Error("the receipt's repository no longer resolves to the same workspace; run amem setup agy --list and repair it from that repository");
+        // The agent screen `amem setup agy --apply` applies before any write, per workspace.
+        if (agent && !configuredPolicy(memoryHome(options.env ?? process.env), workspace).screenStandalone(JSON.parse(JSON.stringify(plan)))) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+        return plan;
+      };
+      if (planned("preview").actions.every(action => action.mcpChange === "unchanged")) return { workspace, change: "unchanged" };
+      if (mode === "apply") applySetup(planned("apply"), context);
+      return { workspace, change: "update" };
+    } catch (error) { return { workspace, change: "refused", reason: singleLine((error as Error).message) }; }
+  });
+  return { workspaces, incomplete: listed.incomplete };
+}
+export function agyRefreshText(result: ReturnType<typeof refreshAgyWorkspaces>, mode: "preview" | "apply"): string {
+  const verb = (row: AgyRefreshRow) => row.change === "update" && mode === "preview" ? "would update" : row.change === "update" ? "updated" : row.change;
+  const lines = result.workspaces.map(row => `${verb(row)}: ${row.workspace}${row.reason ? ` (${row.reason})` : ""}`);
+  if (!lines.length) lines.push("No Antigravity setup receipts found.");
+  if (result.incomplete) lines.push("Some Antigravity setup receipts could not be listed safely; run amem setup agy --list.");
+  if (mode === "preview" && result.workspaces.some(row => row.change === "update")) lines.push("Preview only; run amem setup agy --refresh --apply to update them.");
+  return lines.join("\n");
+}
+
 export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext & { json?: boolean; style?: Style; columns?: number; verbose?: boolean } = {}): Promise<string> {
   const plan = planSetup(target, mode, options), s = options.json ? PLAIN : options.style ?? PLAIN;
   const renderOptions: SetupRenderOptions = { columns: options.columns, verbose: options.verbose, ...(!options.json && mode !== "undo" && plan.placementWriter ? { writerCommands: setupWriterCommands(plan) } : {}) };
@@ -852,9 +892,23 @@ export async function runSetup(target: string, mode: SetupPlan["mode"], options:
     const policy = configuredPolicy(memoryHome(options.env ?? process.env), options.cwd ?? process.cwd());
     if (!policy.screenStandalone(JSON.parse(JSON.stringify(plan))) || (renderOptions.writerCommands && !policy.screenStandalone(renderOptions.writerCommands))) throw Error("Memory operation unavailable or refused; no partial result is shown.");
   }
-  if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s, renderOptions);
+  if (mode === "preview") return withConsole(options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s, renderOptions));
   const result = mode === "apply" ? applySetup(plan, options) : undoSetup(plan, options);
-  return options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s, plan, renderOptions);
+  return withConsole(options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s, plan, renderOptions));
+  // #659: `setup all` keeps an acon plugin manifest the person already installed in step, from the same install root; it never
+  // creates one, and undo leaves it to `setup console --undo`. A refresh error after setup applied is a note, never a throw.
+  function withConsole(output: string): string {
+    const env = options.env ?? process.env;
+    if (target !== "all" || mode === "undo") return output;
+    let plugin: ConsoleSetup | { error: string };
+    // The inspection is part of the optional refresh: any error here, after native setup may have applied, is a note.
+    try {
+      plugin = consoleSetup(mode, env, plan.root ? join(plan.root.path, "src", "ui", "plugin.ts") : undefined, { existingOnly: true });
+      if (plugin.change === "none") return output;
+    } catch (error) { plugin = { error: `console plugin not refreshed: ${singleLine((error as Error).message)}; run amem setup console --apply after fixing it` }; }
+    if (options.json) return JSON.stringify({ ...JSON.parse(output), console: plugin }, null, 2);
+    return `${output}\n${"error" in plugin ? plugin.error : consoleSetupText(plugin, mode)}`;
+  }
 }
 
 
