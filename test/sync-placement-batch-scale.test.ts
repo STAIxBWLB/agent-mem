@@ -31,7 +31,7 @@ test.skipIf(process.env.AMEM_PLACEMENT_SCALE !== "1")("#420 AC1: 5,154-row first
       const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = home;
       try {
         const result = await runCli(["formats", "raise", "sync", "0.28.0", "--confirm"], { cwd: home, env: {}, processTable: () => "" });
-        expect(result).toContain('"surface":"sync","minReader":"0.28.0"');
+        expect(result).toContain("Appended sync minimum reader 0.28.0");
         expect(readFormatFloors(home)).toEqual([expect.objectContaining({ surface: "sync", minReader: "0.28.0" })]);
       } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
     },
