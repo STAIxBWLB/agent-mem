@@ -92,8 +92,11 @@ export function planFormatRaise(home: string, surface: string, minReader: string
   const base = realPath(home), existing = readFormatFloors(base) ?? [];
   const record: FormatFloor = { surface, minReader, since: now().toISOString().slice(0, 10) };
   const live = new Set(inventory.writers.filter(writer => writer.source === "running" || writer.source === "library-host" || writer.source === "self").map(writer => writer.root));
-  // A deleted bundle can still be loaded by a surviving host: any process argument under the root keeps it counted.
-  const referenced = (root: string) => inventory.processArgs!.some(line => line.includes(`${root}/`));
+  // A deleted bundle can still be loaded by a surviving host: an argument under the root, or a host script whose bounded
+  // ancestor layout (the one discovery uses) places this root as its embedded bundle, keeps it counted.
+  const scripts = inventory.processArgs?.flatMap(line => line.split(/\s+/).filter(token => token.startsWith("/"))) ?? [];
+  const referenced = (root: string) => inventory.processArgs!.some(line => line.includes(`${root}/`))
+    || scripts.some(script => embeddedAmemRoot(script, dir => join(dir, "node_modules", "@staix", "agent-mem") === root) === root);
   const absent = inventory.processArgs === undefined ? [] : inventory.writers.filter(writer => (writer.source === "setup" || writer.source === "sync-placement") && writer.version === null
     && !live.has(writer.root) && installAbsent(writer.root) && !referenced(writer.root));
   const below = inventory.writers.filter(writer => !absent.includes(writer) && (writer.version === null || versionBelow(writer.version, minReader)));

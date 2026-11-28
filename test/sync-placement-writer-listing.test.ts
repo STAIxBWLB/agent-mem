@@ -173,7 +173,7 @@ test("#660 AC3: --discovered-writers --out saves a private plan, and --confirm -
 }, 300_000);
 
 test("#660 AC1: formats raise counts no removed install, and still refuses a present root with a corrupt package.json", async () => {
-  const { f, kept, removed } = await scene();
+  const { f, kept, removed, hosted } = await scene();
   const prior = process.env.AMEM_HOME; process.env.AMEM_HOME = f.base;
   const raise = async () => JSON.parse(await runCli(["formats", "raise", "home", "0.36.0", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => "" }));
   try {
@@ -191,5 +191,15 @@ test("#660 AC1: formats raise counts no removed install, and still refuses a pre
     expect(refused.refusal).toContain("unknown version");
     writeFileSync(join(kept, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.39.0" }));
     expect(JSON.parse(await runCli(["formats", "raise", "home", "0.36.0", "--confirm", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => "" })).appended).toMatchObject({ surface: "home", minReader: "0.36.0" });
+    // A host entry outside the bundle: <host>/dist/ahub.js whose inventoried <host>/node_modules/@staix/agent-mem was removed.
+    const host = join(f.root, "gone-host"), bundle = writer(join(host, "node_modules", "@staix", "agent-mem"), "0.38.0");
+    const roots = { writerRoots: [activationOwnRoot, kept, hosted, bundle], ownRoot: activationOwnRoot };
+    expect(await confirmPlacementCheckpoint(f.base, await previewPlacementCheckpoint(f.base, roots), roots)).toMatchObject({ window: 2, renewed: true });
+    rmSync(bundle, { recursive: true }); mkdirSync(join(host, "dist"), { recursive: true });
+    const hostRun = (table: string) => runCli(["formats", "raise", "home", "0.37.0", "--json"], { cwd: f.root, env: {}, stdinTTY: false, processTable: () => table }).then(JSON.parse);
+    const held = await hostRun(`  4444 node ${join(host, "dist", "ahub.js")}`);
+    expect(held.below.map((w: { root: string }) => w.root)).toEqual([bundle]); expect(held.absent).toEqual([]); expect(held.ready).toBe(false);
+    const freed = await hostRun(`  4445 node ${join(f.root, "other-host", "dist", "ahub.js")}`);
+    expect(freed.absent.map((w: { root: string }) => w.root)).toEqual([bundle]); expect(freed.below).toEqual([]); expect(freed.ready).toBe(true);
   } finally { if (prior === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = prior; }
 }, 300_000);
