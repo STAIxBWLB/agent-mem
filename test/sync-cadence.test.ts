@@ -39,6 +39,18 @@ test("due follows the stamp: no history is due, a recent attempt is not, and --f
   expect(readSyncState(home).failures).toBe(0);                                                  // a success clears the backoff
 });
 
+test("#657: a deadline stop holds the backoff at one step and never doubles it; a real failure still doubles", () => {
+  const home = temp();
+  recordSyncAttempt(home, false, T0, true);
+  expect(readSyncState(home).failures).toBe(1);                                                  // the first deadline still waits 15 minutes
+  recordSyncAttempt(home, false, T0 + MIN, true);
+  expect(readSyncState(home).failures).toBe(1);                                                  // a repeated deadline does not double it
+  recordSyncAttempt(home, false, T0 + 2 * MIN); recordSyncAttempt(home, false, T0 + 3 * MIN);
+  expect(readSyncState(home).failures).toBe(3);
+  recordSyncAttempt(home, false, T0 + 4 * MIN, true);
+  expect(readSyncState(home).failures).toBe(3);                                                  // a deadline keeps a remote failure's backoff as it was
+});
+
 test("a damaged, oversized, linked or hand-edited stamp is no history (due now), never a crash, and the stamp never holds an error text", () => {
   const home = temp(); const file = join(home, SYNC_STATE_FILE);
   for (const bad of ["{ nope", "[]", JSON.stringify({ lastAttemptAt: "yesterday", lastOkAt: 5, failures: -3 }), "x".repeat(10_000)]) {
@@ -355,7 +367,7 @@ test("the deadline running out during --if-due IS stamped as a failure: a remote
   const saved = { home: process.env.AMEM_HOME, ssh: process.env.GIT_SSH_COMMAND }; process.env.AMEM_HOME = memory; process.env.GIT_SSH_COMMAND = fakeSsh;
   const started = Date.now();
   try {
-    await expect(runCli(["sync", "--if-due", "--force", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 })).rejects.toThrow(/sync/);
+    await expect(runCli(["sync", "--if-due", "--force", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 })).rejects.toThrow(/sync --if-due stopped at its 2 s deadline; run amem sync to finish without one\.$/);
   } finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
   const elapsed = Date.now() - started;
   expect(elapsed).toBeGreaterThanOrEqual(1800); expect(elapsed).toBeLessThan(12_000);             // it ended because the SHORT deadline fired (not the 30 s one, not by itself: the ssh stand-in sleeps 120 s)
@@ -366,6 +378,15 @@ test("the deadline running out during --if-due IS stamped as a failure: a remote
   const stamp = readSyncState(memory);
   expect(stamp.failures).toBe(1);                                                                // and counts: a remote that did not answer in time is backed off from
   expect(stamp.lastOkAt).toBe(PRIOR.lastOkAt);                                                   // a failure keeps the last success
+  // #657: --json reports the same deadline note in its error, and a second deadline does not double the wait.
+  process.env.AMEM_HOME = memory; process.env.GIT_SSH_COMMAND = fakeSsh;
+  let json: string | undefined, thrown: unknown;
+  try { json = await runCli(["sync", "--if-due", "--force", "--json", "--remote", "ssh://example.invalid/x.git"], { cwd, env: {}, stdinTTY: true, syncDeadlineMs: 2000 }); }
+  catch (error) { thrown = error; }
+  finally { if (saved.home === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved.home; if (saved.ssh === undefined) delete process.env.GIT_SSH_COMMAND; else process.env.GIT_SSH_COMMAND = saved.ssh; }
+  const reported = json === undefined ? (thrown as Error).message : String(JSON.parse(json).error);
+  expect(reported).toEndWith("sync --if-due stopped at its 2 s deadline; run amem sync to finish without one.");
+  expect(readSyncState(memory).failures).toBe(1);
 }, 90_000);
 
 test("a person who closes the terminal AFTER the deadline already fired did not stop the run: it stays a failure (#435)", async () => {

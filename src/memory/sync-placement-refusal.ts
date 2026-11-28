@@ -40,6 +40,11 @@ export function placementRefusalCategoryOf(error: unknown): PlacementRefusalCate
 
 export function placementRefusalNextStep(category: PlacementRefusalCategory): string { return NEXT[category]; }
 
+/** #657: a stop before any publication attempt existed; it published nothing and names the command that finishes the run. */
+export function placementStoppedMessage(phase: string): string {
+  return `Placement sync stopped before publication (phase ${phase}); nothing was published for this batch. Run amem sync to finish it.`;
+}
+
 /** AC1/AC4: the person-facing refusal. `other` keeps the generic wording and still names the phase. */
 export function placementRefusalMessage(category: PlacementRefusalCategory, phase: SyncProgressPhase): string {
   const where = phase.replaceAll("-", " ");

@@ -23,6 +23,7 @@ import { projectState } from "./lifecycle.ts";
 import { SyncPlacementJournalError, type PlacementRealm } from "./sync-placement-journal-format.ts";
 import type { SyncOptions, SyncResult } from "./sync.ts";
 import { bindPlacementAdvertisement, releasePlacementRun } from "./sync-placement-advertisement.ts";
+import { placementStoppedMessage } from "./sync-placement-refusal.ts";
 import type { MemoryStore } from "./store.ts";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -154,7 +155,7 @@ async function runPlacementInventory(home: string, opts: SyncOptions, ports: Pla
   for (const [index, batch] of batches.entries()) {
     if (!batch.length) continue;
     if (stopped) { for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
-    if (opts.signal?.aborted) { stopped = { ok: false, pushed: false, entries: 0, error: "stopped", failure: { cause: "stopped" } }; for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
+    if (opts.signal?.aborted) { stopped = { ok: false, pushed: false, entries: 0, error: placementStoppedMessage(results.length ? "between publications" : "start of the run"), failure: { cause: "stopped" } }; for (const realm of batch) realms.push({ realm: label(realm), outcome: "not-run" }); continue; }
     let result = await attempt(batch);
     // #578 Q2: by here the publication has returned, so its transport released every mutation and sync lock it took
     // (sync-placement-transport.ts finally) and `attempt` closed the stores it opened. The checkpoint fence takes those
@@ -166,7 +167,9 @@ async function runPlacementInventory(home: string, opts: SyncOptions, ports: Pla
       else result = { ...result, error: [result.error, ran.message].filter(Boolean).join(" "), failure: { cause: "checkpoint-refused" } };
     }
     results.push(result);
-    const outcome: PlacementRealmOutcome = result.ok ? result.placementPublication?.outcome ?? "not-needed" : result.placementPublication?.outcome === "unknown" ? "unknown" : "failed";
+    // #657: a batch stopped before any attempt existed did not run; "not-run" keeps the sidecar readable by N-1 status readers.
+    const outcome: PlacementRealmOutcome = result.ok ? result.placementPublication?.outcome ?? "not-needed" : result.placementPublication?.outcome === "unknown" ? "unknown"
+      : result.failure?.cause === "stopped" ? "not-run" : "failed";
     for (const realm of batch) realms.push({ realm: label(realm), outcome, publication: index + 1 });
     if (!result.ok) stopped = result;
     else completed++;

@@ -1631,7 +1631,10 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     }
   }
   // Only a real attempt is stamped: a local refusal (lock held, no remote, policy, usage) is not, and a future stamp is no history (src/memory/sync-cadence.ts).
-  const stampSync = (error: string | undefined, cause?: StopCause) => { if (syncOutcome(error, cause) !== "local") recordSyncAttempt(syncHome, error === undefined, Date.now()); };
+  const stampSync = (error: string | undefined, cause?: StopCause) => { if (syncOutcome(error, cause) !== "local") recordSyncAttempt(syncHome, error === undefined, Date.now(), cause === "deadline"); };
+  // #657: a run the --if-due deadline stopped says so, and names the command that runs without one.
+  const deadlineNote = (text: string, cause?: StopCause) => cause === "deadline" && !text.includes("--if-due stopped")
+    ? `${text} sync --if-due stopped at its ${Math.round((context.syncDeadlineMs ?? SYNC_IF_DUE_DEADLINE_MS) / 1000)} s deadline; run amem sync to finish without one.` : text;
   const captureImport = sub === "import" && parsed.path[1] === "claude-mem", captureDays = options["--capture-days"] === undefined ? undefined : Number(options["--capture-days"]);
   if (captureImport && captureDays !== undefined && (!Number.isSafeInteger(captureDays) || captureDays <= 0)) throw new Error("--capture-days takes a positive integer");
   const captureArgs = new Set<number>();
@@ -1693,6 +1696,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
     if (sub === "sync") progress?.finish(stop?.cause() ? "cancelled" : "failed", stop?.cause() ? "cancelled" : "unavailable");
     if (sub === "sync") stampSync((error as Error).message, stop?.cause());
     if (sub === "sync" && placementWriters?.lastRefusal) throw (await import("./sync-placement-writer-context.ts")).placementSyncFailure(placementWriters.lastRefusal, error);
+    if (sub === "sync" && error instanceof Error) error.message = deadlineNote(error.message, stop?.cause());
     throw error;
   }
   finally {
@@ -1711,6 +1715,7 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       if (result.ok === false) {
         failure = typeof result.error === "string" ? result.error : "sync failed";
         if (placementWriters?.lastRefusal) { result.error = `${placementWriters.lastRefusal.message} ${failure}`; output = JSON.stringify(result,null,2); }
+        else if (stop?.cause() === "deadline") { result.error = deadlineNote(failure, "deadline"); output = JSON.stringify(result,null,2); }
       }
     } catch { /* not a sync result */ } }
     stampSync(failure, stop?.cause());

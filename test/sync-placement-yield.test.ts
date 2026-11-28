@@ -5,6 +5,7 @@ import { runCli } from "../src/cli.ts";
 import { canonicalJSON, hashJSON } from "../src/memory/generation.ts";
 import { entryId } from "../src/memory/store.ts";
 import { syncMemory, SYNC_FAILURE_CAUSES } from "../src/memory/sync.ts";
+import { syncPlacementMemory } from "../src/memory/sync-placement-transport.ts";
 import { PlacementSyncBoundError } from "../src/memory/sync-placement-bound.ts";
 import { placementJournalObjectComposition, placementJournalObjectCompositionText } from "../src/memory/sync-placement-journal-storage.ts";
 import { PLACEMENT_JOURNAL_CHUNK_MAX_BYTES } from "../src/memory/sync-placement-journal-format.ts";
@@ -137,4 +138,27 @@ test("#462 AC2: a failed placement sync names a closed cause instead of leaving 
   const stop = new AbortController(); stop.abort();
   const stopped = await syncMemory(f.store, { ...f.opts(), signal: stop.signal });
   expect(stopped.ok).toBe(false); expect(stopped.failure?.cause).toBe("stopped");
+  // #657 AC1: a stop before any attempt names its phase and the command that finishes the run, never a category refusal.
+  expect(stopped.placementPublication?.refusal).toBeUndefined(); expect(stopped.placementPublication?.attemptHash).toBeUndefined();
+  expect(stopped.error).toBe("Placement sync stopped before publication (phase start of the run); nothing was published for this batch. Run amem sync to finish it.");
+  const direct = await syncPlacementMemory(f.store, { ...f.opts(), signal: stop.signal });
+  expect(direct.failure).toEqual({ cause: "stopped" }); expect(direct.placementPublication?.refusal).toBeUndefined();
+  expect(direct.error).toBe("Placement sync stopped before publication (phase writer verification); nothing was published for this batch. Run amem sync to finish it.");
+  // #657: a stop inside source capture or policy evaluation, where the failing step throws as the signal fires, is the same stopped result in its own phase.
+  const capture = await import("../src/memory/sync-placement-capture.ts");
+  for (const [phase, spy] of [
+    ["source capture", () => spyOn(capture, "captureSyncPlacementContextAsync")],
+    ["policy evaluation", () => spyOn(materialize, "materializePlacementRows")],
+  ] as const) {
+    const mid = new AbortController(), mock = (spy() as ReturnType<typeof spyOn>).mockImplementation(async (input: unknown) => {
+      // The real materializer enters policy evaluation through its progress port before its first row.
+      if (phase === "policy evaluation") (input as { progress?: { phase(name: "policy-evaluation"): void } }).progress?.phase("policy-evaluation");
+      mid.abort(); throw Error("/secret/stopped/step");
+    });
+    try {
+      const result = await syncMemory(f.store, { ...f.opts(), signal: mid.signal });
+      expect(result.failure).toEqual({ cause: "stopped" }); expect(result.placementPublication?.refusal).toBeUndefined();
+      expect(result.error).toBe(`Placement sync stopped before publication (phase ${phase}); nothing was published for this batch. Run amem sync to finish it.`);
+    } finally { mock.mockRestore(); }
+  }
 });

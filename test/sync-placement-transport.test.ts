@@ -241,6 +241,13 @@ test("a real deadline after durable publication intent retains an unknown attemp
   expect(retained.facts.some(fact => fact.phase === "completed")).toBe(false);
   expect(refs(remote)).toEqual([]); expect(verifiedPublicRows(remote).size).toBe(0);
   expect([...f.capture().rows.values()].map(row => canonicalJSON(row.row)).sort()).toEqual(originalRows);
+  // #657: a stop before this run read the retained attempt is still unknown, never a fresh stopped-before-publication, and keeps the reservation.
+  const early = new AbortController(); early.abort();
+  const stoppedEarly = await syncPlacementMemory(f.store, { ...f.opts(remote), signal: early.signal });
+  expect(stoppedEarly).toMatchObject({ ok: false, failure: { cause: "stopped" }, placementPublication: { outcome: "unknown" } });
+  expect(stoppedEarly.placementPublication?.refusal).toBeUndefined();
+  expect(stoppedEarly.error).toBe("Placement sync stopped with a retained attempt that may have published; recheck its exact receipts before another publication.");
+  expect(journalStorage.readPlacementJournal(f.home, f.epochHash).publicationReservation?.attemptHash).toBe(attempt);
   const resumed = await syncMemory(f.store, f.opts(remote));
   expect(resumed).toMatchObject({ ok: true, pushed: true, placementPublication: { attemptHash: attempt, outcome: "committed" } });
   const completed = retainedPublication(f);
