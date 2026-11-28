@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
 export interface ConsoleSetup { file: string; module: string; change: "add" | "replace" | "unchanged" | "remove" | "none"; reason?: string }
+
+/** `$AGENTHUB_HOME/console/plugins/amem.json`, the acon plugin manifest; doctor and `setup all` read the same path. */
+export function consoleManifestFile(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const family = env.AGENTHUB_HOME?.trim() ? resolve(env.AGENTHUB_HOME) : join(env.HOME?.trim() || homedir(), ".agenthub");
+  return join(family, "console", "plugins", "amem.json");
+}
 
 /**
  * `amem setup console`: the acon plugin manifest `{api, tool, module, sha256}` at `$AGENTHUB_HOME/console/plugins/amem.json`, in a 0700 directory
@@ -13,8 +19,7 @@ export interface ConsoleSetup { file: string; module: string; change: "add" | "r
  */
 export function consoleSetup(mode: "preview" | "apply" | "undo", env: Readonly<Record<string, string | undefined>> = process.env,
   module = fileURLToPath(new URL("./ui/plugin.ts", import.meta.url))): ConsoleSetup {
-  const family = env.AGENTHUB_HOME?.trim() ? resolve(env.AGENTHUB_HOME) : join(env.HOME?.trim() || homedir(), ".agenthub");
-  const dir = join(family, "console", "plugins"), file = join(dir, "amem.json");
+  const file = consoleManifestFile(env), dir = dirname(file);
   // acon refuses a manifest directory or file that is a link, another kind of entry or another user's; so does setup, before writing anything.
   for (const [path, kind] of [[dir, "directory"], [file, "file"]] as const) {
     const info = lstatSync(path, { throwIfNoEntry: false });

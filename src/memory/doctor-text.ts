@@ -60,7 +60,7 @@ export function hintFinding(name: string, hint: string, section: Record<string, 
 export function writerFinding(section: Record<string, unknown>): Finding {
   const reason = String(section.reason ?? "");
   // #624: the checkpoint renewal comes first. Its saving preview is a subshell, so the finding names the bare checkpoint command; the reason keeps the saving form.
-  const commands = reason.includes("amem setup agy --list") ? ["amem setup agy --list"] : [...reason.matchAll(/amem (?:migrate --sync-placement --(?:checkpoint|dry-run|resume|abandon)|formats raise home [0-9.]+|setup [a-z]+ --(?:apply|undo))/g)].map(match => match[0]);
+  const commands = reason.includes("amem setup agy --list") ? ["amem setup agy --refresh", "amem setup agy --list"] : [...reason.matchAll(/amem (?:migrate --sync-placement --(?:checkpoint|dry-run|resume|abandon)|formats raise home [0-9.]+|setup [a-z]+ --(?:apply|undo))/g)].map(match => match[0]);
   // #639: a renewal needs the complete root list, so the read-only listing that prints it comes first. A stale agy receipt
   // (#636) is fixed first, so its single command stays alone.
   if (commands.includes("amem migrate --sync-placement --checkpoint")) commands.unshift("amem migrate --sync-placement --writers");
@@ -126,6 +126,9 @@ export function doctorText(report: DoctorReport, s: Style = PLAIN, opts: ReportT
   const findings: Finding[] = [];
   for (const [name, item] of entries) {
     if (name === "writers" && item.status === "attention") findings.push(writerFinding(item));
+    // #659: a stale acon plugin manifest is refreshed by its own setup command.
+    if (name === "setup" && Array.isArray(item.entries) && (item.entries as { target?: unknown; kind?: unknown }[]).some(entry => entry.target === "console" && entry.kind === "drift"))
+      findings.push({ text: "the acon console plugin manifest is stale", next: ["amem setup console --apply"] });
     if (name === "transition") findings.push({ text: `this directory resolved to ${item.previousKey} before and to ${item.key} now`, next: [String(item.aliasCommand), String(item.keepCommand)] });
     if (item.hint) findings.push(hintFinding(name, item.hint, item));
     if (name === "capture" && item.clis) for (const [cli, row] of Object.entries(item.clis as Record<string, { hint?: string }>)) if (row.hint) findings.push(captureFinding(cli, row.hint));

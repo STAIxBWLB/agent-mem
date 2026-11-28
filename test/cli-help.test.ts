@@ -101,7 +101,7 @@ test("formats raise reports missing and excess arguments in both sessions", () =
 test.each([
   ["completion", "amem completion zsh|bash|fish"],
   ["skills export", "amem skills export <dir> [--json]"],
-  ["setup", "amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo] | amem setup agy --list [--json]"],
+  ["setup", "amem setup claude|codex|kimi|pi|qwen|jcode|opencode|gemini|agy|all|console [--root <abs path>] [--apply [--adopt-current]|--undo] | amem setup agy --list [--json] | amem setup agy --refresh [--root <abs path>] [--apply [--adopt-current]] [--json]"],
   ["brief", "amem brief --for <intent> [--paths <path>] [--symbols <symbol>] [--bytes N] [--json]"],
   ["eval audit", "amem eval audit sample --seed <s> [--n <n>] [--project <key>] | amem eval audit score <sheet>"],
   ["eval audit score", "amem eval audit score <sheet> (the file `amem eval audit sample` wrote)"],

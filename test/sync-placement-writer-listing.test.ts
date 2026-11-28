@@ -116,5 +116,5 @@ test("#639 AC2: the doctor writer finding and the checkpoint candidate refusal n
 test("#639 with #636: a stale agy receipt keeps its single next step; --writers is not added before it", async () => {
   const { writerFinding } = await import("../src/memory/doctor-text.ts");
   const reason = "Sync placement writer proof is missing (setup receipt category); list the agy workspaces with amem setup agy --list, or renew through amem migrate --sync-placement --checkpoint --confirm --plan checkpoint-plan.json.";
-  expect(writerFinding({ cause: "missing", category: "setup receipt", reason }).next).toEqual(["amem setup agy --list"]);
+  expect(writerFinding({ cause: "missing", category: "setup receipt", reason }).next).toEqual(["amem setup agy --refresh", "amem setup agy --list"]);
 });

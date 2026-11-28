@@ -23,6 +23,7 @@ export { readSetupWriterRoots, setupReceiptRemedy, SetupWriterRootsError, SETUP_
 import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effective-writers.ts";
 import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { memoryHome } from "./memory/home.ts";
+import { listAgyReceiptLocations } from "./setup-drift.ts";
 import { PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
@@ -844,6 +845,35 @@ export function setupPlanText(plan: SetupPlan, s: Style = PLAIN, options: SetupR
 function setupResultText(result: SetupResult, s: Style, plan: SetupPlan, options: SetupRenderOptions = {}): string { return renderSetup(plan, result, s, options); }
 /** Compatibility formatter for confirmation-style callers: the raw plan under `--json`, the readable plan otherwise. */
 export function setupConfirmationText(plan: SetupPlan, json: boolean, s: Style = PLAIN): string { return json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s); }
+
+export interface AgyRefreshRow { workspace: string; change: "update" | "unchanged" | "missing-workspace" | "refused"; reason?: string }
+/**
+ * #659: `amem setup agy --refresh [--apply]` previews, then refreshes, every applied Antigravity receipt in one run, each through the
+ * same per-workspace plan and apply as `cd <workspace> && amem setup agy --apply`. Only receipted workspaces are touched; one
+ * workspace's refusal is reported and never stops the others.
+ */
+export function refreshAgyWorkspaces(mode: "preview" | "apply", options: SetupContext = {}): { workspaces: AgyRefreshRow[]; incomplete: boolean } {
+  const listed = listAgyReceiptLocations(setupMemoryHome((options.env ?? process.env) as NodeJS.ProcessEnv));
+  const workspaces = listed.receipts.map(({ workspace }): AgyRefreshRow => {
+    if (!lstatSync(workspace, { throwIfNoEntry: false })?.isDirectory())
+      return { workspace, change: "missing-workspace", reason: "the repository directory no longer exists; restore it, then run amem setup agy --undo there to remove its receipt" };
+    try {
+      const context = { ...options, cwd: workspace };
+      if (planSetup("agy", "preview", context).actions.every(action => action.mcpChange === "unchanged")) return { workspace, change: "unchanged" };
+      if (mode === "apply") applySetup(planSetup("agy", "apply", context), context);
+      return { workspace, change: "update" };
+    } catch (error) { return { workspace, change: "refused", reason: singleLine((error as Error).message) }; }
+  });
+  return { workspaces, incomplete: listed.incomplete };
+}
+export function agyRefreshText(result: ReturnType<typeof refreshAgyWorkspaces>, mode: "preview" | "apply"): string {
+  const verb = (row: AgyRefreshRow) => row.change === "update" && mode === "preview" ? "would update" : row.change === "update" ? "updated" : row.change;
+  const lines = result.workspaces.map(row => `${verb(row)}: ${row.workspace}${row.reason ? ` (${row.reason})` : ""}`);
+  if (!lines.length) lines.push("No Antigravity setup receipts found.");
+  if (result.incomplete) lines.push("Some Antigravity setup receipts could not be listed safely; run amem setup agy --list.");
+  if (mode === "preview" && result.workspaces.some(row => row.change === "update")) lines.push("Preview only; run amem setup agy --refresh --apply to update them.");
+  return lines.join("\n");
+}
 
 export async function runSetup(target: string, mode: SetupPlan["mode"], options: SetupContext & { json?: boolean; style?: Style; columns?: number; verbose?: boolean } = {}): Promise<string> {
   const plan = planSetup(target, mode, options), s = options.json ? PLAIN : options.style ?? PLAIN;

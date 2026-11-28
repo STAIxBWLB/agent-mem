@@ -7,7 +7,10 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runCli } from "../src/cli.ts";
 import { readSetupWriterRoots, setupReceiptRemedy } from "../src/setup-writer-roots.ts";
-import { applySetup, planSetup, runSetup, setupPlanText, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
+import { applySetup, planSetup, refreshAgyWorkspaces, runSetup, setupPlanText, SETUP_ALL_TARGETS, undoSetup, type SetupContext, type SetupPlan, type SetupTarget } from "../src/setup.ts";
+import { consoleSetup } from "../src/setup-console.ts";
+import { readSetupDrift } from "../src/setup-drift.ts";
+import { doctorText } from "../src/memory/doctor-text.ts";
 import { SETUP_CONFIG_BYTES } from "../src/setup-toml.ts";
 import { memoryGitEnv, memoryGitSync, realPath } from "../src/memory/platform.ts";
 const cleanup: Array<() => void> = [];
@@ -843,7 +846,7 @@ test("#636: a read-only listing leads to both stale Antigravity receipts", async
   expect((await list()).receipts.map((row: { state: string }) => row.state)).toEqual(["current", "current"]);
   rmSync(dirname(dirname(f.entry)), { recursive: true });
   const memory = f.env.AMEM_HOME!;
-  expect(() => readSetupWriterRoots(memory)).toThrow("run amem setup agy --list");
+  expect(() => readSetupWriterRoots(memory)).toThrow("amem setup agy --list");
   expect(setupReceiptRemedy("qwen")).toBe("the qwen setup receipt names an amem install that no longer exists; run amem setup qwen --apply to refresh the receipt or amem setup qwen --undo to remove it");
   const before = snapshot(f.home);
   const output = await runCli(["setup", "agy", "--list"], context);
@@ -1037,4 +1040,61 @@ test("setup refuses retargeted skill root after preview but still configures qwe
   expect(result.applied).toEqual(["qwen"]); expect(existsSync(f.file("qwen"))).toBe(true);
   expect(result.skills?.[0]?.report?.actions.every(a => a.change === "refused")).toBe(true);
   expect(readdirSync(first)).toEqual([]); expect(readdirSync(second)).toEqual([]); expect(readlinkSync(link)).toBe(second);
+});
+
+test("#659 AC3/AC4: setup agy --refresh previews and refreshes every receipted repository in one run, and only those", async () => {
+  const f = agyFixture(), memory = f.env.AMEM_HOME!, repos = [f.home, join(f.home, "second"), join(f.home, "third")], untouched = join(f.home, "unreceipted");
+  for (const repo of [...repos.slice(1), untouched]) { mkdirSync(repo, { recursive: true }); agyGit(repo, "init", "-q"); }
+  put(f.entry, "");
+  for (const cwd of repos) { const options = { ...f.options, cwd }; applySetup(planSetup("agy", "apply", options), options); }
+  rmSync(dirname(dirname(f.entry)), { recursive: true });
+  expect(() => readSetupWriterRoots(memory)).toThrow("amem setup agy --refresh --apply");
+  const entry = join(f.home, "new install", "bin", "amem.js"); put(entry, "");
+  const options = { ...f.options, entry }, before = snapshot(f.home);
+  const preview = refreshAgyWorkspaces("preview", options);
+  expect(preview).toEqual({ workspaces: repos.slice().sort().map(workspace => ({ workspace, change: "update" })), incomplete: false });
+  expect(snapshot(f.home)).toEqual(before);                                                       // a preview writes nothing
+  expect(refreshAgyWorkspaces("apply", options).workspaces.map(row => row.change)).toEqual(["update", "update", "update"]);
+  for (const repo of repos) expect(JSON.parse(text(join(repo, ".agents", "mcp_config.json"))).mcpServers.amem.args).toEqual(["--smol", entry, "mcp"]);
+  expect(existsSync(join(untouched, ".agents"))).toBe(false);                                     // AC4: an unreceipted repository is never touched
+  expect(() => readSetupWriterRoots(memory)).not.toThrow();                                        // the stale receipts no longer block placement sync
+  expect(refreshAgyWorkspaces("apply", options).workspaces.every(row => row.change === "unchanged")).toBe(true);
+  rmSync(repos[2]!, { recursive: true });
+  const gone = refreshAgyWorkspaces("preview", options).workspaces;
+  expect(gone.find(row => row.workspace === repos[2])).toMatchObject({ change: "missing-workspace", reason: expect.stringContaining("amem setup agy --undo") });
+  expect(gone.filter(row => row.workspace !== repos[2]).map(row => row.change)).toEqual(["unchanged", "unchanged"]);
+  const cli = JSON.parse(await runCli(["setup", "agy", "--refresh", "--json"], { cwd: f.home, env: f.env, stdinTTY: false }));
+  expect(cli.workspaces).toHaveLength(3);
+  await expect(runCli(["setup", "claude", "--refresh"], { cwd: f.home, env: f.env, stdinTTY: false })).rejects.toThrow("usage: amem setup agy --refresh");
+  await expect(runCli(["setup", "agy", "--refresh", "--undo"], { cwd: f.home, env: f.env, stdinTTY: false })).rejects.toThrow("usage: amem setup agy --refresh");
+});
+
+test("#659 AC1: doctor checks an existing console plugin manifest and names setup console --apply when it is stale", () => {
+  const f = fixture(), env = { ...f.env, AGENTHUB_HOME: join(f.home, "hub") }, memory = f.env.AMEM_HOME!, manifest = join(f.home, "hub", "console", "plugins", "amem.json");
+  const drift = () => readSetupDrift({ home: memory, env, cwd: f.home });
+  expect(drift().entries.filter(entry => entry.target === "console")).toEqual([]);                // absent: not a finding
+  consoleSetup("apply", env);
+  expect(drift()).toMatchObject({ status: "ok", checked: 1, entries: [] });
+  const report = (setup: ReturnType<typeof drift>) => doctorText({ schema: "amem.doctor/v1", status: "attention", home: { path: memory, source: "default" }, project: "p", sections: { setup } } as never);
+  for (const stale of [(value: Record<string, unknown>) => ({ ...value, sha256: "0".repeat(64) }), (value: Record<string, unknown>) => ({ ...value, module: join(f.home, "removed", "plugin.ts") })]) {
+    const original = readFileSync(manifest, "utf8");
+    put(manifest, JSON.stringify(stale(JSON.parse(original))));
+    const result = drift();
+    expect(result.status).toBe("attention");
+    expect(result.entries).toEqual([expect.objectContaining({ target: "console", kind: "drift", reason: expect.stringContaining("amem setup console --apply") })]);
+    expect(report(result)).toContain("amem setup console --apply");
+    put(manifest, original);
+  }
+});
+
+test("#659 AC2: setup all previews an existing console manifest refresh and never creates one", async () => {
+  const f = fixture(), env = { ...f.env, AGENTHUB_HOME: join(f.home, "hub") }, manifest = join(f.home, "hub", "console", "plugins", "amem.json");
+  const preview = async (...args: string[]) => JSON.parse(await runCli(["setup", "all", "--json", ...args], { cwd: f.home, env, stdinTTY: false }));
+  expect((await preview()).console).toBeUndefined(); expect(existsSync(manifest)).toBe(false);
+  consoleSetup("apply", env);
+  const stale = { ...JSON.parse(readFileSync(manifest, "utf8")), sha256: "0".repeat(64) }; put(manifest, JSON.stringify(stale));
+  expect((await preview()).console).toMatchObject({ change: "replace", file: manifest });
+  expect(JSON.parse(readFileSync(manifest, "utf8"))).toEqual(stale);                               // preview writes nothing
+  const root = fileURLToPath(new URL("..", import.meta.url));
+  expect((await preview("--root", root)).console).toMatchObject({ module: join(realPath(root), "src", "ui", "plugin.ts") });
 });
