@@ -21,6 +21,9 @@ export const AMEM_NAMES: CommandNames = { memory: "amem", goal: "amem goal" };
 import type { ForgetNearby } from "./forget-nearby.ts";
 import { forgetNearbyText } from "./forget-nearby.ts";
 import { groupByTask } from "./task-group.ts";
+import { topicOf } from "./topic.ts";
+/** #580: a note's topic beside its row, so an agent reuses the key it finds. */
+const withTopic = <T extends View>(view: T) => { const topic = topicOf(view); return topic === null ? view : { ...view, topic }; };
 export interface MemoryCommandOptions {
   /** Host-authenticated person intent. Never accept this from model arguments. Required for retained history/as-of. */
   person?: boolean;
@@ -160,7 +163,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
   const staleDetail = (view: View): string[] => { const marker = staleMarker(view).trimEnd(); return marker ? [marker] : []; };
   const ready = (rows: readonly View[]) => { try { opts.outputReady?.(rows); } catch { /* optional output metadata cannot fail recall */ } };
   const rendered = (legacy: string, formatted: string) => internal?.renderLegacy ? internal.renderLegacy(legacy, formatted) : formatted;
-  const decorated = (view: View) => { const info = staleInfo(view); return { ...view, ...(info.stale ? { stale: true, ...(info.reason ? { staleReason: info.reason } : {}) } : {}) }; };
+  const decorated = (view: View) => { const info = staleInfo(view); return { ...withTopic(view), ...(info.stale ? { stale: true, ...(info.reason ? { staleReason: info.reason } : {}) } : {}) }; };
   if (!["list", "search", "show", "graph"].includes(sub) && (rest.includes("--history") || rest.includes("--as-of"))) fail("history/as-of apply only to memory reads");
   try {
     switch (sub) {
@@ -199,7 +202,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           if (!json && internal?.render) return rendered(legacy, [memoryTableText([...rows.map(view => { const marker = staleMarker(view); return { id: view.id, kind: view.kind, tier: view.tier, peer: view.peer, scope: view.scope, at: view.at, text: `${view.title ? `${view.title}: ` : ""}${view.text}`, flags: [...(view.expiresAt && Date.parse(view.expiresAt) <= Date.parse(state.at) ? ["(expired)"] : []), ...(marker ? [marker.trim()] : []), ...(view.supersededBy ? [`superseded by ${view.supersededBy.slice(0, 8)}`] : [])] }; }), ...forgotten.map(row => ({ id: row.id, kind: "forgotten", at: row.at, text: "No retained text" }))], "Retained memory", internal?.render, `retained memory as of ${relativeTime(state.at, internal?.render.now ?? Date.now())}.`), ...result.notices.map(singleLine), ...(result.incomplete ? ["Retained state is incomplete."] : [])].join("\n"));
           return json ? JSON.stringify(result, null, 2) : legacy;
         }
-        if (json) return JSON.stringify(rows.map(view => ({ ...view, ...(folded.has(view.id) ? { folded: folded.get(view.id) } : {}), ...(opts.explainSearch && scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })), null, 2);
+        if (json) return JSON.stringify(rows.map(view => ({ ...withTopic(view), ...(folded.has(view.id) ? { folded: folded.get(view.id) } : {}), ...(opts.explainSearch && scoreDetails?.has(view.id) ? { scoreDetails: scoreDetails.get(view.id) } : {}) })), null, 2);
         const counted = opts.readable(store.withDeferredPromotions(() => store.list({ project, limit: Number.MAX_SAFE_INTEGER, includeSuperseded: true })));
         const withheld = all.length - readable.length;
         const legacy = [`memory for ${project} on machine ${store.machine.label}: ${counted.filter(view => view.tier === "long").length} long-term, ${counted.filter(view => view.tier === "short").length} short-term`, ...(rows.length ? opts.explainSearch
@@ -226,7 +229,7 @@ export async function rawMemoryCommand(args: string[], cwd: string, opts: Memory
           return json ? JSON.stringify(state, null, 2) : legacy;
         }
         const view = need(shown.entry, id); if (!opts.readable([view]).length) fail(`${view.id.slice(0, 8)} is withheld: it matches a PII pattern (the dashboard shows it)`);
-        ready([view]); return json ? JSON.stringify(view, null, 2) : internal?.render ? rendered([...staleDetail(view), ...detail(view)].join("\n"), [ ...staleDetail(view), memoryDetailText(view, { ...internal?.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) }) ].join("\n")) : [...staleDetail(view), ...detail(view)].join("\n");
+        ready([view]); return json ? JSON.stringify(withTopic(view), null, 2) : internal?.render ? rendered([...staleDetail(view), ...detail(view)].join("\n"), [ ...staleDetail(view), memoryDetailText(view, { ...internal?.render, ...(cliAttribution() ? { actor: noteDisplayActor(view.peer) } : {}) }) ].join("\n")) : [...staleDetail(view), ...detail(view)].join("\n");
       }
       case "graph": {
         const hops = Number(flag("--hops") ?? 1);

@@ -10,6 +10,7 @@ import { memoryHome } from "./home.ts";
 import { realPath } from "./platform.ts";
 import { stripPrivateDeep } from "./private-spans.ts";
 import { originNodes, validOrigin, type CandidateOrigin } from "./candidate-origin.ts";
+import { topicNode, validTopic } from "./topic.ts";
 const hasColumn = (db: Database, name: string): boolean => (db.query("PRAGMA table_info(candidates)").all() as { name: string }[]).some(column => column.name === name);
 import { MemoryStore, type GoalView, type NoteInput, type View } from "./store.ts";
 
@@ -39,10 +40,12 @@ export interface RecordSource { session: string; at: string; textHash: string }
  */
 export interface RecordSourceBinding { key: string; anchors: string[]; sources: RecordSource[] }
 export type CandidateInput = { project: string } & (
-  | { kind: "correction"; target: CandidateTarget; proposedText: string; reason: string; noteKind?: "decision" | "contract" | "fail" }
+  /** #580 `topic`: routed here because exactly one live note of the project carried it; the accepted note keeps it. */
+  | { kind: "correction"; target: CandidateTarget; proposedText: string; reason: string; noteKind?: "decision" | "contract" | "fail"; topic?: string }
   /** `about` is the deterministic edge set a proposer already knows (the anchors a Record names), so acceptance needs no re-extraction. */
   | { kind: "fail"; target?: CandidateTarget; approach: string; symptom: string; cause: string; evidenceRefs: string[]; retryWhen: string; about?: string[]; record?: RecordSourceBinding }
-  | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail" | "preference"; about?: string[]; record?: RecordSourceBinding }
+  /** #580 `topicMatches`: the live notes that shared `topic` when it was proposed (two or more); none is superseded on accept. */
+  | { kind: "memory"; text: string; title?: string; noteKind?: "decision" | "finding" | "contract" | "fail" | "preference"; about?: string[]; record?: RecordSourceBinding; topic?: string; topicMatches?: CandidateTarget[] }
   | { kind: "decay"; target: CandidateTarget; reason: string }
   | { kind: "promotion"; target: CandidateTarget; goalId: string }
   | { kind: "consolidation"; action: "merge" | "supersession" | "recurring-fix"; targets: CandidateTarget[]; text: string; about: string[]; noteKind: "decision" | "finding" | "contract" | "fail" }
@@ -113,7 +116,7 @@ const recordFailField = (key: "approach" | "symptom" | "cause" | "retryWhen", va
 function validate(input: CandidateInput): void {
   if (!input || !text(input.project, 400)) throw new Error("invalid candidate project");
   if (input.kind === "correction") {
-    if (!validTarget(input.target) || !text(input.proposedText) || !text(input.reason) || input.noteKind !== undefined && !["decision", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid correction candidate");
+    if (!validTarget(input.target) || !text(input.proposedText) || !text(input.reason) || input.topic !== undefined && !validTopic(input.topic) || input.noteKind !== undefined && !["decision", "contract", "fail"].includes(input.noteKind)) throw new Error("invalid correction candidate");
   } else if (input.kind === "fail") {
     if (input.target !== undefined && !validTarget(input.target) || input.record !== undefined && !validRecord(input.record) || !validAbout(input.about)
       || !recordFailField("approach", input.approach, input.record) || !recordFailField("symptom", input.symptom, input.record)
@@ -121,7 +124,8 @@ function validate(input: CandidateInput): void {
       || !Array.isArray(input.evidenceRefs) || input.evidenceRefs.length < 1 || input.evidenceRefs.length > 16 || !input.evidenceRefs.every(x => text(x, 400))) throw new Error("invalid fail candidate");
   } else if (input.kind === "memory") {
     if (!text(input.text, 3000) || input.title !== undefined && !text(input.title, 200) || input.noteKind !== undefined && !["decision", "finding", "contract", "fail", "preference"].includes(input.noteKind)
-      || input.record !== undefined && !validRecord(input.record) || !validAbout(input.about)) throw new Error("invalid memory candidate");
+      || input.record !== undefined && !validRecord(input.record) || !validAbout(input.about) || input.topic !== undefined && !validTopic(input.topic)
+      || input.topicMatches !== undefined && (input.topic === undefined || !Array.isArray(input.topicMatches) || input.topicMatches.length < 2 || input.topicMatches.length > 8 || !input.topicMatches.every(validTarget))) throw new Error("invalid memory candidate");
   } else if (input.kind === "promotion") {
     if (!validTarget(input.target) || !entryId(input.goalId)) throw new Error("invalid promotion candidate");
   } else if (input.kind === "consolidation") {
@@ -469,7 +473,8 @@ export class CandidateStore {
         tier: data.kind === "correction" && target!.local ? "short" : "long",
         kind: data.kind === "fail" ? "fail" : data.noteKind ?? (target?.kind === "contract" || target?.kind === "fail" || target?.kind === "preference" ? target.kind : "decision"), peer: attributionPeer(context.actor), source: "person",
         // A Record candidate carries the edges its anchors name, so the accepted note stays findable by path and symbol.
-        about: [...new Set([...(target?.about ?? []), ...(data.kind === "memory" || data.kind === "fail" ? data.about ?? [] : []), ...originNodes(candidate.origin)])],
+        about: [...new Set([...(target?.about ?? []), ...(data.kind === "memory" || data.kind === "fail" ? data.about ?? [] : []),
+          ...((data.kind === "memory" || data.kind === "correction") && data.topic !== undefined ? [topicNode(data.topic)] : []), ...originNodes(candidate.origin)])],
         text: data.kind === "correction" ? acceptedCorrectionText(data, id) : `Accepted candidate: ${id}\nTarget revision: ${(data.kind === "memory" ? undefined : data.target)?.revision ?? "none"}\nTarget entry: ${(data.kind === "memory" ? undefined : data.target)?.id ?? "none"}\n\n${body}` };
       if (note.text.length > 4000) throw new Error("accepted candidate text exceeds the v1 note limit");
       if (context.policy(structuredClone(candidate), target && structuredClone(target), structuredClone(note)) !== true) throw new Error("candidate refused by current host policy");

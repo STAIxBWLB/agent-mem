@@ -1102,6 +1102,17 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
         }
         if (input.kind === "model-answer") return `Model answer (not evidence; cannot accept, author an independent note with amem note add). ${input.text}`;
         if (input.kind === "consolidation") return `${input.action}. Sources: ${input.targets.map(target => `mem:${target.id}`).join(", ")}. ${input.text}`;
+        // #580: a topic correction shows the note it replaces beside the new text; several matches are listed for the person to pick.
+        if (input.kind === "correction" && input.topic !== undefined) {
+          const viewStore = curatedStore(project, { deferPromotions: true, screen: () => "skip" });
+          try {
+            const target = viewStore.get(input.target.id, project);
+            administrative({ candidate, target });
+            const old = target && target.id === input.target.id && candidateTargetRevision(target) === input.target.revision ? `${target.title ? `${target.title}: ` : ""}${target.text}` : "(changed or unavailable; reject or skip)";
+            return `topic correction (${input.topic}). Old mem:${input.target.id}: ${old} New: ${input.proposedText} Reason: ${input.reason}`;
+          } finally { viewStore.close(); }
+        }
+        if (input.kind === "memory" && input.topicMatches) return `topic ${input.topic} is on ${input.topicMatches.length} live notes (${input.topicMatches.map(target => `mem:${target.id}`).join(", ")}); accepting adds a note and supersedes none, or correct one with amem_correct. ${input.title ? `${input.title}: ` : ""}${input.text}`;
         return input.kind === "memory" ? `${input.title ? `${input.title}: ` : ""}${input.text}` : input.kind === "fail" ? `fail. Approach: ${input.approach} Symptom: ${input.symptom} Cause: ${input.cause} Retry when: ${input.retryWhen}`
           : input.kind === "correction" ? `correction. ${input.proposedText} Reason: ${input.reason}` : `decay. ${input.reason}`; };
       // #323 item 4: can the origin still be re-checked against capture? An expired session is reported as such, never as a failed check.
