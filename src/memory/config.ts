@@ -211,6 +211,32 @@ export function configuredPolicy(base: string, cwd?: string, options: Standalone
   return createStandalonePolicy(configuredPolicyOptions(base, cwd, options));
 }
 
+/**
+ * #656: the `amem sync` policy version, checked on every placement fence check. The string is reused only while the resolved
+ * home, the repository config root and the dev:ino:size:mtimeNs:ctimeNs stamps of both config files are unchanged; a stat error
+ * or any change reads and parses the files again. Keyed by those paths, so test homes never share an entry.
+ * ponytail: same-size in-place rewrites within one stat tick are not seen (profile-marker-cache ceiling); upgrade is a content hash.
+ */
+export function policyVersionReader(resolveHome: () => string, cwd: string): () => string {
+  let memo: { key: string; value: string } | undefined;
+  const stamp = (file: string): string | undefined => {
+    try { const s = lstatSync(file, { bigint: true, throwIfNoEntry: false }); return s ? [s.dev, s.ino, s.mode, s.size, s.mtimeNs, s.ctimeNs].map(String).join(":") : "absent"; }
+    catch { return undefined; }
+  };
+  const key = (home: string, root: string | undefined): string | undefined => {
+    const machine = stamp(machineConfigPath(home)), repo = root === undefined ? "none" : stamp(repoConfigPath(root));
+    return machine === undefined || repo === undefined ? undefined : JSON.stringify([home, root ?? null, machine, repo]);
+  };
+  return () => {
+    const home = resolveHome(), root = repoConfigRoot(cwd), before = key(home, root);
+    if (before !== undefined && memo?.key === before) return memo.value;
+    memo = undefined;
+    const value = JSON.stringify(configuredPolicyOptions(home, cwd));
+    if (before !== undefined && key(home, root) === before) memo = { key: before, value };
+    return value;
+  };
+}
+
 /** #578 Q2: the home's opt-in for a sync-run placement checkpoint. The machine file only; a repository file cannot set it. */
 export function checkpointOnBoundOptIn(base: string): boolean {
   return loadAmemConfig(base).config.syncPlacement?.checkpointOnBound === true;

@@ -4,14 +4,14 @@ import { constants, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, open
 import { join } from "node:path";
 import { canonicalJSON, hashJSON, readSelector } from "./generation.ts";
 import { generationSyncLock } from "./generation-sync.ts";
-import { placementAdvertisement } from "./sync-placement-advertisement.ts";
+import { placementAdvertisement, placementStorageCacheScope, placementVisibility } from "./sync-placement-advertisement.ts";
 import { generationSyncGit, generationSyncGitBytes, remoteVisibility, type SyncFailureCause, type SyncOptions, type SyncResult } from "./sync.ts";
 import { acquireMutation, assertMutationHandle, type MutationHandle } from "./mutation.ts";
 import { isLocalKey, localKeyOptInMessage, PlacementRealmRefusal, resolveShardProfile } from "./shard.ts";
 import { memoryPolicySnapshot } from "./policy.ts";
 import { outboundPolicyEvaluator, rowScreenIdentity } from "./sync-screen.ts";
-import { readActivePlacementBinding } from "./sync-placement-active.ts";
-import { readPlacementRuntimeMarkers } from "./sync-placement-guard.ts";
+import { readActivePlacementBinding, withPlacementFenceMemo } from "./sync-placement-active.ts";
+import { readPlacementRuntimeMarkers, readPlacementRuntimeMarkerSnapshots } from "./sync-placement-guard.ts";
 import { captureSyncPlacementContextAsync, placementCaptureContextHash, previewSyncPlacementSources, type PlacementCapture, type PlacementPendingSource } from "./sync-placement-capture.ts";
 import { readEffectiveSyncPlacementWriters, type EffectiveSyncPlacementWriters } from "./sync-placement-effective-writers.ts";
 import { SharedWriterRevisionError } from "./sync-placement-writer-revision-format.ts";
@@ -265,14 +265,16 @@ class PlacementTransport {
     }
     if (this.homeMutation) assertMutationHandle(this.homeMutation, this.home);
     for (const target of this.targets) if (target.mutation) assertMutationHandle(target.mutation, target.store.dir);
-    const markers = readPlacementRuntimeMarkers(this.home), active = readActivePlacementBinding(this.home, markers.profile, markers.shards);
+    // #656: the reader's frozen snapshots, so the binding memo hits while the markers are unchanged; nothing here mutates them.
+    const markers = readPlacementRuntimeMarkerSnapshots(this.home), active = readActivePlacementBinding(this.home, markers.profile, markers.shards);
     if (!active || active.profile.placementHead !== this.epochHash || active.epoch.homeHash !== this.journal.epoch.homeHash) refuse("epoch");
   }
   verify(fresh: boolean): void {
-    this.metadata();
+    const complete = fresh || this.provedAt === undefined || this.clock() - this.provedAt >= PLACEMENT_PROOF_REUSE_MS;
+    // #656: a reused-proof check may reuse the prune-advance answer while its files keep their stamps; a complete proof reads in full.
+    if (complete) this.metadata(); else withPlacementFenceMemo(() => this.metadata());
     if (this.factual) { this.progress?.alive(); return; }
     if (this.opts.signal?.aborted) refuse();
-    const complete = fresh || this.provedAt === undefined || this.clock() - this.provedAt >= PLACEMENT_PROOF_REUSE_MS;
     if (complete) {
       this.provedAt = undefined; this.attest(); this.capture?.assertUnchanged(); this.provedAt = this.clock();
       if(this.capture){this.lastPolicyHash=this.capture.context.policyHash;this.lastPolicyCheckUnixMs=Date.now();this.policyCheckSource="live";}
@@ -281,7 +283,8 @@ class PlacementTransport {
     if (!complete && this.capture && this.opts.policyVersion && this.opts.policyVersion() !== this.capturedPolicyVersion) refuse("policy");
     this.progress?.proof(complete);
     for (const target of this.targets) for (const check of target.selectorChecks ?? []) check();
-    this.metadata();
+    // #656: a reused proof runs no file or host callout between the two reads, so the opening metadata() covers it.
+    if (complete) this.metadata();
   }
   /** Fence check inside a proof scope: reuses a complete proof no older than PLACEMENT_PROOF_REUSE_MS. */
   check = (): void => this.verify(false);
@@ -358,7 +361,7 @@ class PlacementTransport {
     if (!existing && !this.opts.remote) refuse("remote");
     this.url = this.opts.remote ?? await this.required(["remote", "get-url", "origin"]);
     if (!this.url || this.url.length > 4096 || this.url.startsWith("-") || /[\r\n\0]/.test(this.url)) refuse("remote");
-    if (await this.call(() => (this.opts.visibility ?? remoteVisibility)(this.url)) !== "private") refuse("remote");
+    if (await this.call(() => placementVisibility(this.opts, this.url, this.opts.visibility ?? remoteVisibility)) !== "private") refuse("remote");
     await yieldTurn(); this.prove(); // a host callout ends any reusable proof
     if (!existsSync(this.root)) mkdirSync(this.root, { mode: 0o700 });
     const transport = acquireMutation(this.root); if (!transport) refuse("lock"); this.rootMutation=transport; this.releases.push(transport);
@@ -478,8 +481,16 @@ class PlacementTransport {
   evaluate(value: unknown) {
     // The configured policy is read once; complete proofs on both sides bind that read to the captured policy hash.
     if (!this.evaluator) { this.prove(); this.evaluator = outboundPolicyEvaluator(this.home, this.opts.screen); this.prove(); }
-    this.check(); const evaluate = this.evaluator, verdict = evaluate(structuredClone(value) as Record<string, unknown>); this.check(); return verdict;
+    const evaluate = this.evaluator;
+    // #656: no screen or a package-owned deterministic screen is pure and in memory, so the fence is checked once per 64-row
+    // slice; the closing prove() in materialize still binds every verdict before planning. A host callback keeps the per-row pair.
+    if (this.opts.screen === undefined || rowScreenIdentity(this.opts.screen) !== undefined) {
+      if (this.evaluated++ % 64 === 0) this.check();
+      return evaluate(structuredClone(value) as Record<string, unknown>);
+    }
+    this.check(); const verdict = evaluate(structuredClone(value) as Record<string, unknown>); this.check(); return verdict;
   }
+  evaluated = 0;
   nativeProofs(): Set<string> {
     const verified=new Set<string>();
     for(const target of this.targets){
@@ -734,7 +745,7 @@ class PlacementTransport {
   }
   async run():Promise<SyncResult>{
     let result:SyncResult;
-    try{result=await this.execute();}finally{releasePlacementStorageCaches();} // #420 memos live for one sync only
+    try{result=await this.execute();}finally{if(!placementStorageCacheScope(this.opts))releasePlacementStorageCaches();} // #420 memos live for one sync only; #656: an inventory run releases them itself
     // Success is reported only from the real receipt; a failed or stopped run can never leave a successful status.
     if(result.ok)this.progress?.finish("succeeded");
     else if(this.opts.signal?.aborted)this.progress?.finish("cancelled","cancelled");

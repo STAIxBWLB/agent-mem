@@ -2,7 +2,7 @@ import { freezeMetadata, isMetadataSnapshot, sameMetadataStamp } from "./profile
 /** Metadata-only v3 admission. Publication still requires the complete journal/source/policy proof. */
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 import { join } from "node:path";
-import { reportBindingRead } from "./binding-read-set.ts";
+import { collectBindingReads, reportBindingRead } from "./binding-read-set.ts";
 import { canonicalJSON, hashJSON } from "./generation.ts";
 import { realPath } from "./platform.ts";
 import { homeIdentityHash } from "./home-identity.ts";
@@ -30,6 +30,31 @@ export function assertPlacementViewAdvance(home: string, activation: SyncPlaceme
 }
 function assertLivePruneAdvance(home: string, initial: PlacementProfile, profile: PlacementProfile): void {
   if (initial.pruneInputSetHash === profile.pruneInputSetHash) return;
+  // #656: a fence check runs this per row. Reuse a positive answer only while every file and directory the full check read
+  // keeps its dev:ino:size:mtimeNs:ctimeNs stamp; a stat error or any change takes the full check again. Only a reused-proof
+  // fence check (inside withPlacementFenceMemo) uses the memo: every other reader, the brief fence included, reads in full.
+  if (fenceMemoDepth === 0) { assertLivePruneAdvanceUncached(home, initial, profile); return; }
+  const key = JSON.stringify([home, initial.pruneInputSetHash, profile.pruneInputSetHash, profile.generation]), cached = pruneAdvanceMemo.get(key);
+  if (cached && pathStamps(cached.paths) === cached.stamps) return;
+  pruneAdvanceMemo.delete(key);
+  const { paths } = collectBindingReads(() => assertLivePruneAdvanceUncached(home, initial, profile));
+  const stamps = pathStamps(paths);
+  // The stamps are taken after the read, so the check runs once more under them: a change between the read and the stamp is never memoized.
+  if (stamps !== undefined) assertLivePruneAdvanceUncached(home, initial, profile);
+  if (stamps !== undefined && pathStamps(paths) === stamps) { if (pruneAdvanceMemo.size >= 32) pruneAdvanceMemo.delete(pruneAdvanceMemo.keys().next().value!); pruneAdvanceMemo.set(key, { paths, stamps }); }
+}
+// ponytail: 32 entries across homes, keyed by resolved home; same-size in-place rewrites within one stat tick are not seen (profile-marker-cache ceiling).
+const pruneAdvanceMemo = new Map<string, { paths: string[]; stamps: string }>();
+let fenceMemoDepth = 0;
+/** #656: run a cheap fence check whose prune-advance answer may be reused while its files keep their stamps. */
+export function withPlacementFenceMemo<T>(work: () => T): T { fenceMemoDepth++; try { return work(); } finally { fenceMemoDepth--; } }
+function pathStamps(paths: readonly string[]): string | undefined {
+  const out: string[] = [];
+  try { for (const path of paths) { const s = lstatSync(path, { bigint: true, throwIfNoEntry: false }); if (!s) return undefined; out.push([s.dev, s.ino, s.mode, s.size, s.mtimeNs, s.ctimeNs].map(String).join(":")); } }
+  catch { return undefined; }
+  return JSON.stringify(out);
+}
+function assertLivePruneAdvanceUncached(home: string, initial: PlacementProfile, profile: PlacementProfile): void {
   const oldView = readPublicPruneViewForActivation(home, initial.pruneInputSetHash, profile.generation);
   const nextView = readPublicPruneViewForActivation(home, profile.pruneInputSetHash, profile.generation);
   if (!Object.keys(oldView.realms).every(key => Object.hasOwn(nextView.realms, key))) fail();
