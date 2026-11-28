@@ -1,5 +1,6 @@
 import { closeSync, constants, type Dir, existsSync, fstatSync, lstatSync, opendirSync, openSync, readSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { decodeReceipt, setupReceiptRemedy, type SetupTarget } from "./setup-writer-roots.ts";
@@ -9,6 +10,7 @@ import { resolveSetupPaths, type SetupEnvironment } from "./setup-paths.ts";
 import { HOOK_EVENTS } from "./hook-contract.ts";
 import { realPath } from "./memory/platform.ts";
 import { consoleManifestFile } from "./setup-console.ts";
+import { installVersion, versionBelow } from "./memory/formats-raise.ts";
 
 export type SetupDriftStatus = "ok" | "attention" | "skipped" | "unavailable";
 export interface SetupDriftEntry {
@@ -222,6 +224,9 @@ function consoleDrift(env: SetupEnvironment, budget: { remaining: number }): Set
     const module = safeImage(String(manifest.module), SETUP_CONFIG_BYTES, budget);
     if (module.bytes === null || createHash("sha256").update(Buffer.from(module.bytes, "base64")).digest("hex") !== manifest.sha256) return finding("drift", CONSOLE_DRIFT_REASON);
   } catch { return finding("unavailable", "the acon console plugin module cannot be read safely; run amem setup console --apply"); }
+  // An intact module from an older install still loads, but it serves that release's panels: refresh it to this one.
+  const theirs = installVersion(dirname(dirname(dirname(String(manifest.module))))), ours = installVersion(fileURLToPath(new URL("..", import.meta.url)));
+  if (theirs !== null && ours !== null && versionBelow(theirs, ours)) return finding("drift", `the acon console plugin manifest names amem ${theirs}, older than this amem ${ours}; run amem setup console --apply to refresh it`);
   return "current";
 }
 

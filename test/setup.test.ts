@@ -1085,6 +1085,12 @@ test("#659 AC1: doctor checks an existing console plugin manifest and names setu
     expect(report(result)).toContain("amem setup console --apply");
     put(manifest, original);
   }
+  // Design 1: an intact module from an older install is drift too; one from this release is not.
+  const old = join(f.home, "old install"), plugin = join(old, "src", "ui", "plugin.ts");
+  put(join(old, "package.json"), JSON.stringify({ name: "@staix/agent-mem", version: "0.1.0" })); put(plugin, "// an older release's plugin\n");
+  put(manifest, JSON.stringify({ api: 1, tool: "amem", module: plugin, sha256: createHash("sha256").update(readFileSync(plugin)).digest("hex") }));
+  expect(drift().entries).toEqual([expect.objectContaining({ target: "console", kind: "drift", reason: expect.stringMatching(/names amem 0\.1\.0, older than this amem [0-9.]+; run amem setup console --apply/) })]);
+  expect(report(drift())).toContain("amem setup console --apply");
 });
 
 test("#659 AC2: setup all previews an existing console manifest refresh and never creates one", async () => {
@@ -1097,4 +1103,47 @@ test("#659 AC2: setup all previews an existing console manifest refresh and neve
   expect(JSON.parse(readFileSync(manifest, "utf8"))).toEqual(stale);                               // preview writes nothing
   const root = fileURLToPath(new URL("..", import.meta.url));
   expect((await preview("--root", root)).console).toMatchObject({ module: join(realPath(root), "src", "ui", "plugin.ts") });
+});
+
+test("#659 review: refresh binds each row to its receipt's workspace, keeps per-row errors and the agent pre-apply screen", async () => {
+  const f = agyFixture(), outer = join(f.home, "outer"), moved = join(outer, "moved"), locked = join(f.home, "locked"), inner = join(locked, "repo"), privateRepo = join(f.home, "PRIVATE_REPO");
+  for (const repo of [moved, inner, privateRepo]) { mkdirSync(repo, { recursive: true }); agyGit(repo, "init", "-q"); }
+  put(f.entry, "");
+  for (const cwd of [f.home, moved, inner, privateRepo]) { const options = { ...f.options, cwd }; applySetup(planSetup("agy", "apply", options), options); }
+  rmSync(dirname(dirname(f.entry)), { recursive: true });
+  const entry = join(f.home, "new install", "bin", "amem.js"); put(entry, "");
+  // The receipt's workspace now sits inside another repository: its plan would bind the outer root, so that row refuses.
+  rmSync(join(moved, ".git"), { recursive: true }); agyGit(outer, "init", "-q");
+  // A workspace whose parent cannot be read refuses in its own row.
+  chmodSync(locked, 0o000);
+  try {
+    const rows = refreshAgyWorkspaces("apply", { ...f.options, entry }).workspaces;
+    const by = (workspace: string) => rows.find(row => row.workspace === workspace)!;
+    expect(by(moved)).toMatchObject({ change: "refused", reason: expect.stringContaining("no longer resolves to the same workspace") });
+    expect(by(inner).change).toBe("refused");
+    expect(by(f.home).change).toBe("update"); expect(by(privateRepo).change).toBe("update");
+    expect(existsSync(join(outer, ".agents"))).toBe(false);                                         // the outer repository is never written
+  } finally { chmodSync(locked, 0o700); }
+  // An agent-marked batch screens each workspace's plan before applying it, and keeps going past the withheld one.
+  const third = join(f.home, "third install", "bin", "amem.js"); put(third, "");
+  put(join(f.env.AMEM_HOME!, "amem.config.json"), JSON.stringify({ piiPatterns: ["PRIVATE_REPO"] }));
+  const before = text(join(privateRepo, ".agents", "mcp_config.json"));
+  const { withCliAttribution } = await import("../src/memory/cli-attribution.ts");
+  const marked = withCliAttribution({ actor: "agent", peer: "codex" }, () => refreshAgyWorkspaces("apply", { ...f.options, entry: third }));
+  expect(marked.workspaces.find(row => row.workspace === privateRepo)).toMatchObject({ change: "refused", reason: "Memory operation unavailable or refused; no partial result is shown." });
+  expect(text(join(privateRepo, ".agents", "mcp_config.json"))).toBe(before);
+  expect(marked.workspaces.find(row => row.workspace === f.home)!.change).toBe("update");
+});
+
+test("#659 AC2: setup all --apply refreshes an existing console manifest from the install root and never creates one", async () => {
+  const f = fixture(), env = { ...f.env, AGENTHUB_HOME: join(f.home, "hub") }, manifest = join(f.home, "hub", "console", "plugins", "amem.json");
+  const options = { ...f.options, env, json: true };
+  expect(JSON.parse(await runSetup("all", "apply", options)).console).toBeUndefined(); expect(existsSync(manifest)).toBe(false);
+  consoleSetup("apply", env);
+  put(manifest, JSON.stringify({ ...JSON.parse(readFileSync(manifest, "utf8")), sha256: "0".repeat(64) }));
+  const root = realPath(fileURLToPath(new URL("..", import.meta.url))), module = join(root, "src", "ui", "plugin.ts");
+  expect(JSON.parse(await runSetup("all", "apply", { ...options, root })).console).toMatchObject({ change: "replace", module });
+  expect(JSON.parse(readFileSync(manifest, "utf8"))).toMatchObject({ module, sha256: createHash("sha256").update(readFileSync(module)).digest("hex") });
+  expect(readSetupDrift({ home: f.env.AMEM_HOME!, env, cwd: f.home }).entries.filter(entry => entry.target === "console")).toEqual([]);
+  expect(JSON.parse(await runSetup("all", "undo", options)).console).toBeUndefined(); expect(existsSync(manifest)).toBe(true);
 });

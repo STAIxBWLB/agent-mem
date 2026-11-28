@@ -24,6 +24,7 @@ import { readEffectiveSyncPlacementWriters } from "./memory/sync-placement-effec
 import { placementMarkerState } from "./memory/sync-placement-guard.ts";
 import { memoryHome } from "./memory/home.ts";
 import { listAgyReceiptLocations } from "./setup-drift.ts";
+import { consoleManifestFile, consoleSetup, consoleSetupText, type ConsoleSetup } from "./setup-console.ts";
 import { PLAIN, singleLine, type Style } from "./memory/style.ts";
 import { canonicalPath, memoryGitEnv, memoryGitSync, processLiveness, processSignature, realPath } from "./memory/platform.ts";
 
@@ -854,13 +855,22 @@ export interface AgyRefreshRow { workspace: string; change: "update" | "unchange
  */
 export function refreshAgyWorkspaces(mode: "preview" | "apply", options: SetupContext = {}): { workspaces: AgyRefreshRow[]; incomplete: boolean } {
   const listed = listAgyReceiptLocations(setupMemoryHome((options.env ?? process.env) as NodeJS.ProcessEnv));
+  const agent = cliAttribution()?.actor === "agent";
   const workspaces = listed.receipts.map(({ workspace }): AgyRefreshRow => {
-    if (!lstatSync(workspace, { throwIfNoEntry: false })?.isDirectory())
-      return { workspace, change: "missing-workspace", reason: "the repository directory no longer exists; restore it, then run amem setup agy --undo there to remove its receipt" };
     try {
+      if (!lstatSync(workspace, { throwIfNoEntry: false })?.isDirectory())
+        return { workspace, change: "missing-workspace", reason: "the repository directory no longer exists; restore it, then run amem setup agy --undo there to remove its receipt" };
       const context = { ...options, cwd: workspace };
-      if (planSetup("agy", "preview", context).actions.every(action => action.mcpChange === "unchanged")) return { workspace, change: "unchanged" };
-      if (mode === "apply") applySetup(planSetup("agy", "apply", context), context);
+      // Each plan must still bind exactly the receipt's workspace; one that now resolves elsewhere is that row's refusal.
+      const planned = (planMode: "preview" | "apply") => {
+        const plan = planSetup("agy", planMode, context);
+        if (plan.actions.length !== 1 || plan.actions[0]!.cwd !== workspace) throw Error("the receipt's repository no longer resolves to the same workspace; run amem setup agy --list and repair it from that repository");
+        // The agent screen `amem setup agy --apply` applies before any write, per workspace.
+        if (agent && !configuredPolicy(memoryHome(options.env ?? process.env), workspace).screenStandalone(JSON.parse(JSON.stringify(plan)))) throw Error("Memory operation unavailable or refused; no partial result is shown.");
+        return plan;
+      };
+      if (planned("preview").actions.every(action => action.mcpChange === "unchanged")) return { workspace, change: "unchanged" };
+      if (mode === "apply") applySetup(planned("apply"), context);
       return { workspace, change: "update" };
     } catch (error) { return { workspace, change: "refused", reason: singleLine((error as Error).message) }; }
   });
@@ -882,9 +892,20 @@ export async function runSetup(target: string, mode: SetupPlan["mode"], options:
     const policy = configuredPolicy(memoryHome(options.env ?? process.env), options.cwd ?? process.cwd());
     if (!policy.screenStandalone(JSON.parse(JSON.stringify(plan))) || (renderOptions.writerCommands && !policy.screenStandalone(renderOptions.writerCommands))) throw Error("Memory operation unavailable or refused; no partial result is shown.");
   }
-  if (mode === "preview") return options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s, renderOptions);
+  if (mode === "preview") return withConsole(options.json ? JSON.stringify(plan, null, 2) : setupPlanText(plan, s, renderOptions));
   const result = mode === "apply" ? applySetup(plan, options) : undoSetup(plan, options);
-  return options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s, plan, renderOptions);
+  return withConsole(options.json ? JSON.stringify(result, null, 2) : setupResultText(result, s, plan, renderOptions));
+  // #659: `setup all` keeps an acon plugin manifest the person already installed in step, from the same install root; it never
+  // creates one, and undo leaves it to `setup console --undo`. A refresh error after setup applied is a note, never a throw.
+  function withConsole(output: string): string {
+    const env = options.env ?? process.env;
+    if (target !== "all" || mode === "undo" || !lstatSync(consoleManifestFile(env), { throwIfNoEntry: false })) return output;
+    let plugin: ConsoleSetup | { error: string };
+    try { plugin = plan.root ? consoleSetup(mode, env, join(plan.root.path, "src", "ui", "plugin.ts")) : consoleSetup(mode, env); }
+    catch (error) { plugin = { error: `console plugin not refreshed: ${singleLine((error as Error).message)}; run amem setup console --apply after fixing it` }; }
+    if (options.json) return JSON.stringify({ ...JSON.parse(output), console: plugin }, null, 2);
+    return `${output}\n${"error" in plugin ? plugin.error : consoleSetupText(plugin, mode)}`;
+  }
 }
 
 

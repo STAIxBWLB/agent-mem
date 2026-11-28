@@ -628,23 +628,12 @@ async function runCliCommand(argv: readonly string[], context: CliContext): Prom
       return options["--json"] === true ? JSON.stringify(result, null, 2) : consoleSetupText(result, mode);
     }
     const { runSetup } = await import("./setup.ts");
-    const setupMode = options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview";
-    const output = await runSetup(parsed.positionals[0]!, setupMode, {
+    return runSetup(parsed.positionals[0]!, options["--apply"] === true ? "apply" : options["--undo"] === true ? "undo" : "preview", {
       env: context.env ?? process.env, stdinTTY: context.stdinTTY ?? process.stdin.isTTY, cwd: context.cwd ?? process.cwd(),
       ...(typeof options["--root"] === "string" ? { root: options["--root"] } : {}),
       ...(options["--adopt-current"] === true ? { adoptCurrent: true } : {}),
       ...(context.setupConfirm ? { confirm: context.setupConfirm } : {}), json: options["--json"] === true, style: outputStyle(context, options), columns: reportWidth(context), verbose: options["--verbose"] === true,
     });
-    // #659: `setup all` keeps an acon plugin manifest the person already installed in step; it never creates one, and undo leaves it to `setup console --undo`.
-    const { consoleManifestFile, consoleSetup, consoleSetupText } = await import("./setup-console.ts"), env = context.env ?? process.env;
-    if (parsed.positionals[0] !== "all" || setupMode === "undo" || !lstatSync(consoleManifestFile(env), { throwIfNoEntry: false })) return output;
-    let plugin: import("./setup-console.ts").ConsoleSetup | { error: string };
-    try {
-      const root = typeof options["--root"] === "string" ? (await import("./setup.ts")).installRoot(options["--root"]).path : undefined;
-      plugin = root === undefined ? consoleSetup(setupMode, env) : consoleSetup(setupMode, env, join(root, "src", "ui", "plugin.ts"));
-    } catch (error) { plugin = { error: `console plugin not refreshed: ${(error as Error).message}; run amem setup console --apply after fixing it` }; }
-    if (options["--json"] === true) return JSON.stringify({ ...JSON.parse(output), console: plugin }, null, 2);
-    return `${output}\n${"error" in plugin ? plugin.error : consoleSetupText(plugin, setupMode)}`;
   }
   if (identity.actor === "agent") {
     const read = await agentCliRead(parsed, argv, { ...context, columns: reportWidth(context) ?? 80, style: options["--json"] === true ? PLAIN : outputStyle(context, options) });
