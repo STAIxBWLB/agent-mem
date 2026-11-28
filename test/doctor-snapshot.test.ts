@@ -33,9 +33,14 @@ function rig() {
   return { root, memory, cwd, project: memoryProjectKey(cwd) };
 }
 async function report(r: ReturnType<typeof rig>): Promise<unknown> {
-  const saved = process.env.AMEM_HOME; process.env.AMEM_HOME = r.memory;
+  const savedHome = process.env.AMEM_HOME, savedHub = process.env.AGENTHUB_HOME;
+  process.env.AMEM_HOME = r.memory;
+  process.env.AGENTHUB_HOME = join(r.root, "unused-agenthub");
   try { return JSON.parse(await runCli(["doctor", "--json"], { cwd: r.cwd, env: {}, stdinTTY: false })); }
-  finally { if (saved === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = saved; }
+  finally {
+    if (savedHome === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = savedHome;
+    if (savedHub === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = savedHub;
+  }
 }
 const note = (r: ReturnType<typeof rig>, text: string, about: string[] = [], peer = "me") => { const s = new MemoryStore({ memoryDir: r.memory, deferPromotions: true }); try { s.note({ op: "note", project: r.project, scope: "project", tier: "long", kind: "finding", peer, source: "person", text, about } as never); } finally { s.close(); } };
 
