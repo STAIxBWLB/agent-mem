@@ -9,7 +9,7 @@ import { dependencyReach } from "./boundary-graph.ts";
 const root = realPath(resolve(import.meta.dir, "../src"));
 const failures: string[] = [];
 const manifest = JSON.parse(readFileSync(resolve(root, "../package.json"), "utf8")) as { dependencies?: Record<string, string>; optionalDependencies?: Record<string, string>; peerDependencies?: Record<string, string> };
-const runtimeDependencies = { "@staix/cli-output": "0.1.3", "@staix/mcp-stdio": "0.2.0" };
+const runtimeDependencies = { "@staix/cli-output": "0.1.3", "@staix/mcp-stdio": "0.3.0" };
 const declared = manifest.dependencies ?? {};
 if (Object.keys(declared).length !== Object.keys(runtimeDependencies).length
   || Object.entries(runtimeDependencies).some(([name, version]) => declared[name] !== version)

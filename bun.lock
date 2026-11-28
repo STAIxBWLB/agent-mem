@@ -6,7 +6,7 @@
       "name": "@staix/agent-mem",
       "dependencies": {
         "@staix/cli-output": "0.1.3",
-        "@staix/mcp-stdio": "0.2.0",
+        "@staix/mcp-stdio": "0.3.0",
       },
       "devDependencies": {
         "@staix/agent-console": "0.1.3",
@@ -58,7 +58,7 @@
 
     "@staix/cli-output": ["@staix/cli-output@0.1.3", "", {}, "sha512-VccPNw9TOTGjAu1g7sICmID/AIzDJkgZnU9M2/1VjvrGaetBTCVO44RH163yXpyu4NtfC8Cm0t2do+XTlNEEig=="],
 
-    "@staix/mcp-stdio": ["@staix/mcp-stdio@0.2.0", "", {}, "sha512-uue0T7S24aQJsWWukn3ekW4WkJIVN8Oora07TpLPo4aH6o4OAkBCnewIhrWDFqkj86KLDqUX7LosELcTNupRpA=="],
+    "@staix/mcp-stdio": ["@staix/mcp-stdio@0.3.0", "", {}, "sha512-CEEk3EdfpMi46oGjECLNvtF3bMbywra9kVdwAkPkiUkPrOYC3eT1TGoeZ+Uta5E4/vPKd6RimGJlT2+UpXEmww=="],
 
     "@types/bun": ["@types/bun@1.4.3", "", { "dependencies": { "bun-types": "1.4.3" } }, "sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw=="],
 

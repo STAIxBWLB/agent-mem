@@ -9,7 +9,7 @@
 
 ## Conventions and structure
 
-- Keep exactly two pinned runtime dependencies, `@staix/cli-output` (0.1.3) and `@staix/mcp-stdio` (0.2.0). `src/` imports only these packages, Node built-ins, `bun:sqlite`, and relative files within `src/`. Keep both packages off write paths, including transitive imports. Keep CLI formatting in `*-text.ts` presentation modules and MCP transport in the stdio adapter. Run the boundary check after changes.
+- Keep exactly two pinned runtime dependencies, `@staix/cli-output` (0.1.3) and `@staix/mcp-stdio` (0.3.0). `src/` imports only these packages, Node built-ins, `bun:sqlite`, and relative files within `src/`. Keep both packages off write paths, including transitive imports. Keep CLI formatting in `*-text.ts` presentation modules and MCP transport in the stdio adapter. Run the boundary check after changes.
 - Keep TypeScript strict with `noUncheckedIndexedAccess` and explicit `.ts` relative import extensions.
 - Put library exports in `src/index.ts`, person-facing argument and identity checks in `src/cli.ts`, and portable memory implementation in `src/memory/`.
 - Add a `ponytail:` comment naming the ceiling and upgrade path for deliberate shortcuts.
